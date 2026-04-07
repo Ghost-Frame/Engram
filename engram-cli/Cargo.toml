@@ -1,0 +1,13 @@
+[package]
+name = "engram-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+engram-lib = { path = "../engram-lib" }
+clap = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
