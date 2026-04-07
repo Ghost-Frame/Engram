@@ -1,0 +1,11 @@
+[package]
+name = "kleos-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kleos-lib = { path = "../kleos-lib" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,9 @@
+/target
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.local
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

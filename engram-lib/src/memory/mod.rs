@@ -1,0 +1,494 @@
+pub mod fts;
+pub mod search;
+pub mod simhash;
+pub mod types;
+pub mod vector;
+
+use crate::db::Database;
+use crate::EngError;
+use crate::Result;
+use libsql::params;
+use types::{ListOptions, Memory, StoreRequest, StoreResult, UpdateRequest};
+
+// -- Constants ---
+
+const MAX_CONTENT_SIZE: usize = 102400; // 100KB
+
+// -- Helpers ---
+
+fn normalize_tags(tags: &Option<Vec<String>>) -> Option<String> {
+    tags.as_ref().and_then(|t| {
+        let normalized: Vec<String> = t
+            .iter()
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&normalized).unwrap())
+        }
+    })
+}
+
+fn clamp_importance(value: i32) -> i32 {
+    value.max(1).min(10)
+}
+
+fn embedding_to_json(embedding: &[f32]) -> String {
+    format!(
+        "[{}]",
+        embedding
+            .iter()
+            .map(|f| f.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+/// Map a libsql Row to a Memory struct.
+/// Column order must match the SELECT in query_memories and related queries.
+/// Order: id, content, category, source, session_id, importance, version,
+///   is_latest, parent_memory_id, root_memory_id, source_count, is_static,
+///   is_forgotten, is_archived, is_inference, is_fact, is_decomposed,
+///   forget_after, forget_reason, model, recall_hits, recall_misses,
+///   adaptive_score, pagerank_score, last_accessed_at, access_count, tags,
+///   episode_id, decay_score, confidence, sync_id, status, user_id, space_id,
+///   fsrs_stability, fsrs_difficulty, fsrs_storage_strength,
+///   fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses,
+///   fsrs_last_review_at, valence, arousal, dominant_emotion,
+///   created_at, updated_at
+pub(crate) fn row_to_memory(row: &libsql::Row) -> Result<Memory> {
+    Ok(Memory {
+        id: row.get::<i64>(0)?,
+        content: row.get::<String>(1)?,
+        category: row.get::<String>(2)?,
+        source: row.get::<String>(3)?,
+        session_id: row.get::<Option<String>>(4)?,
+        importance: row.get::<i32>(5)?,
+        embedding: None, // embedding BLOB not fetched in standard queries
+        version: row.get::<i32>(6)?,
+        is_latest: row.get::<i32>(7)? != 0,
+        parent_memory_id: row.get::<Option<i64>>(8)?,
+        root_memory_id: row.get::<Option<i64>>(9)?,
+        source_count: row.get::<i32>(10)?,
+        is_static: row.get::<i32>(11)? != 0,
+        is_forgotten: row.get::<i32>(12)? != 0,
+        is_archived: row.get::<i32>(13)? != 0,
+        is_inference: row.get::<i32>(14)? != 0,
+        is_fact: row.get::<i32>(15)? != 0,
+        is_decomposed: row.get::<i32>(16)? != 0,
+        forget_after: row.get::<Option<String>>(17)?,
+        forget_reason: row.get::<Option<String>>(18)?,
+        model: row.get::<Option<String>>(19)?,
+        recall_hits: row.get::<i32>(20)?,
+        recall_misses: row.get::<i32>(21)?,
+        adaptive_score: row.get::<Option<f64>>(22)?,
+        pagerank_score: row.get::<Option<f64>>(23)?,
+        last_accessed_at: row.get::<Option<String>>(24)?,
+        access_count: row.get::<i32>(25)?,
+        tags: row.get::<Option<String>>(26)?,
+        episode_id: row.get::<Option<i64>>(27)?,
+        decay_score: row.get::<Option<f64>>(28)?,
+        confidence: row.get::<f64>(29)?,
+        sync_id: row.get::<Option<String>>(30)?,
+        status: row.get::<String>(31)?,
+        user_id: row.get::<i64>(32)?,
+        space_id: row.get::<Option<i64>>(33)?,
+        fsrs_stability: row.get::<Option<f64>>(34)?,
+        fsrs_difficulty: row.get::<Option<f64>>(35)?,
+        fsrs_storage_strength: row.get::<Option<f64>>(36)?,
+        fsrs_retrieval_strength: row.get::<Option<f64>>(37)?,
+        fsrs_learning_state: row.get::<Option<i32>>(38)?,
+        fsrs_reps: row.get::<Option<i32>>(39)?,
+        fsrs_lapses: row.get::<Option<i32>>(40)?,
+        fsrs_last_review_at: row.get::<Option<String>>(41)?,
+        valence: row.get::<Option<f64>>(42)?,
+        arousal: row.get::<Option<f64>>(43)?,
+        dominant_emotion: row.get::<Option<String>>(44)?,
+        created_at: row.get::<String>(45)?,
+        updated_at: row.get::<String>(46)?,
+    })
+}
+
+/// Standard SELECT column list -- matches row_to_memory index order.
+pub(crate) const MEMORY_COLUMNS: &str = "id, content, category, source, session_id, importance, \
+    version, is_latest, parent_memory_id, root_memory_id, source_count, is_static, \
+    is_forgotten, is_archived, is_inference, is_fact, is_decomposed, \
+    forget_after, forget_reason, model, recall_hits, recall_misses, \
+    adaptive_score, pagerank_score, last_accessed_at, access_count, tags, \
+    episode_id, decay_score, confidence, sync_id, status, user_id, space_id, \
+    fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, \
+    fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
+    valence, arousal, dominant_emotion, created_at, updated_at";
+
+// -- Public CRUD functions ---
+
+pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
+    // 1. Validate content
+    let content = req.content.trim().to_string();
+    if content.is_empty() {
+        return Err(EngError::InvalidInput("content cannot be empty".to_string()));
+    }
+    if content.len() > MAX_CONTENT_SIZE {
+        return Err(EngError::InvalidInput(format!(
+            "content exceeds maximum size of {} bytes",
+            MAX_CONTENT_SIZE
+        )));
+    }
+
+    let user_id = req.user_id.unwrap_or(1);
+    let importance = clamp_importance(req.importance);
+
+    // 2. Compute simhash of content
+    let content_hash = simhash::simhash(&content);
+
+    // 3. Check for duplicates -- query last 1000 memories for this user
+    let dup_sql = "SELECT id, content FROM memories \
+        WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 \
+        ORDER BY id DESC LIMIT 1000";
+    let mut dup_rows = db.conn.query(dup_sql, params![user_id]).await?;
+    while let Some(row) = dup_rows.next().await? {
+        let existing_id: i64 = row.get(0)?;
+        let existing_content: String = row.get(1)?;
+        let existing_hash = simhash::simhash(&existing_content);
+        if simhash::hamming_distance(content_hash, existing_hash) < 3 {
+            return Ok(StoreResult {
+                id: existing_id,
+                created: false,
+                duplicate_of: Some(existing_id),
+            });
+        }
+    }
+
+    // 4. Normalize tags
+    let tags_json = normalize_tags(&req.tags);
+
+    // 5. Determine versioning fields if parent_memory_id is set
+    let (version, root_memory_id) = if let Some(parent_id) = req.parent_memory_id {
+        // Fetch parent to get its version and root
+        let parent_sql = format!(
+            "SELECT version, root_memory_id FROM memories WHERE id = ?1"
+        );
+        let mut parent_rows = db.conn.query(&parent_sql, params![parent_id]).await?;
+        if let Some(parent_row) = parent_rows.next().await? {
+            let parent_version: i32 = parent_row.get(0)?;
+            let parent_root: Option<i64> = parent_row.get(1)?;
+            // root is either the parent's root or the parent itself if it has none
+            let root = parent_root.unwrap_or(parent_id);
+            (parent_version + 1, Some(root))
+        } else {
+            return Err(EngError::NotFound(format!(
+                "parent memory {} not found",
+                parent_id
+            )));
+        }
+    } else {
+        (1, None)
+    };
+
+    // 6. Mark parent as not latest if versioning
+    if let Some(parent_id) = req.parent_memory_id {
+        db.conn
+            .execute(
+                "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1",
+                params![parent_id],
+            )
+            .await?;
+    }
+
+    let is_static = req.is_static.unwrap_or(false) as i32;
+
+    // 7. INSERT the new memory
+    let insert_sql = "INSERT INTO memories (
+        content, category, source, session_id, importance,
+        version, is_latest, parent_memory_id, root_memory_id,
+        is_static, tags, status, user_id, space_id,
+        fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state,
+        fsrs_reps, fsrs_lapses
+    ) VALUES (
+        ?1, ?2, ?3, ?4, ?5,
+        ?6, 1, ?7, ?8,
+        ?9, ?10, 'approved', ?11, ?12,
+        1.0, 1.0, 0,
+        0, 0
+    )";
+
+    db.conn
+        .execute(
+            insert_sql,
+            params![
+                content,
+                req.category,
+                req.source,
+                req.session_id,
+                importance,
+                version,
+                req.parent_memory_id,
+                root_memory_id,
+                is_static,
+                tags_json,
+                user_id,
+                req.space_id
+            ],
+        )
+        .await?;
+
+    // 8. Get the inserted row id
+    let mut id_rows = db
+        .conn
+        .query("SELECT last_insert_rowid()", ())
+        .await?;
+    let new_id: i64 = if let Some(row) = id_rows.next().await? {
+        row.get(0)?
+    } else {
+        return Err(EngError::Internal("failed to get last insert id".to_string()));
+    };
+
+    // 9. If embedding provided, UPDATE embedding_vec_1024 with JSON array
+    if let Some(ref emb) = req.embedding {
+        let emb_json = embedding_to_json(emb);
+        db.conn
+            .execute(
+                "UPDATE memories SET embedding_vec_1024 = vector(?1) WHERE id = ?2",
+                params![emb_json, new_id],
+            )
+            .await?;
+    }
+
+    Ok(StoreResult {
+        id: new_id,
+        created: true,
+        duplicate_of: None,
+    })
+}
+
+pub async fn get(db: &Database, id: i64) -> Result<Memory> {
+    let sql = format!(
+        "SELECT {} FROM memories WHERE id = ?1 AND is_forgotten = 0",
+        MEMORY_COLUMNS
+    );
+    let mut rows = db.conn.query(&sql, params![id]).await?;
+    let memory = if let Some(row) = rows.next().await? {
+        row_to_memory(&row)?
+    } else {
+        return Err(EngError::NotFound(format!("memory {} not found", id)));
+    };
+
+    // Log the access -- update access_count and last_accessed_at
+    db.conn
+        .execute(
+            "UPDATE memories SET \
+                access_count = access_count + 1, \
+                last_accessed_at = datetime('now'), \
+                updated_at = datetime('now') \
+             WHERE id = ?1",
+            params![id],
+        )
+        .await?;
+
+    Ok(memory)
+}
+
+pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
+    // Build WHERE clauses dynamically using a fixed-param approach.
+    // We use a simple approach: always include the base filters, optional
+    // filters as nullable comparisons in SQL.
+    let mut conditions = vec!["1=1".to_string()];
+
+    if !opts.include_forgotten {
+        conditions.push("is_forgotten = 0".to_string());
+    }
+    if !opts.include_archived {
+        conditions.push("is_archived = 0".to_string());
+    }
+    // Always filter to latest version
+    conditions.push("is_latest = 1".to_string());
+
+    if let Some(ref cat) = opts.category {
+        conditions.push(format!("category = '{}'", cat.replace('\'', "''")));
+    }
+    if let Some(ref src) = opts.source {
+        conditions.push(format!("source = '{}'", src.replace('\'', "''")));
+    }
+    if let Some(uid) = opts.user_id {
+        conditions.push(format!("user_id = {}", uid));
+    }
+    if let Some(sid) = opts.space_id {
+        conditions.push(format!("space_id = {}", sid));
+    }
+
+    let where_clause = conditions.join(" AND ");
+    let sql = format!(
+        "SELECT {} FROM memories WHERE {} ORDER BY id DESC LIMIT {} OFFSET {}",
+        MEMORY_COLUMNS, where_clause, opts.limit, opts.offset
+    );
+
+    let mut rows = db.conn.query(&sql, ()).await?;
+    let mut memories = Vec::new();
+    while let Some(row) = rows.next().await? {
+        memories.push(row_to_memory(&row)?);
+    }
+    Ok(memories)
+}
+
+pub async fn delete(db: &Database, id: i64) -> Result<()> {
+    // Soft delete -- set is_forgotten, record reason
+    let affected = db
+        .conn
+        .execute(
+            "UPDATE memories SET \
+                is_forgotten = 1, \
+                forget_reason = 'user_deleted', \
+                updated_at = datetime('now') \
+             WHERE id = ?1 AND is_forgotten = 0",
+            params![id],
+        )
+        .await?;
+
+    if affected == 0 {
+        return Err(EngError::NotFound(format!(
+            "memory {} not found or already deleted",
+            id
+        )));
+    }
+    Ok(())
+}
+
+pub async fn update(db: &Database, id: i64, req: UpdateRequest) -> Result<Memory> {
+    // 1. Get the existing memory (bypassing the is_forgotten check for get since
+    //    we need to fetch directly here, including already-non-latest ones)
+    let sql = format!(
+        "SELECT {} FROM memories WHERE id = ?1 AND is_forgotten = 0",
+        MEMORY_COLUMNS
+    );
+    let mut rows = db.conn.query(&sql, params![id]).await?;
+    let old = if let Some(row) = rows.next().await? {
+        row_to_memory(&row)?
+    } else {
+        return Err(EngError::NotFound(format!("memory {} not found", id)));
+    };
+
+    // 2. Mark old as not latest
+    db.conn
+        .execute(
+            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1",
+            params![id],
+        )
+        .await?;
+
+    // 3. Compute new field values (fallback to old values)
+    let new_content = req
+        .content
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| old.content.clone());
+
+    if new_content.is_empty() {
+        return Err(EngError::InvalidInput("content cannot be empty".to_string()));
+    }
+    if new_content.len() > MAX_CONTENT_SIZE {
+        return Err(EngError::InvalidInput(format!(
+            "content exceeds maximum size of {} bytes",
+            MAX_CONTENT_SIZE
+        )));
+    }
+
+    let new_category = req.category.as_deref().unwrap_or(&old.category).to_string();
+    let new_importance = clamp_importance(req.importance.unwrap_or(old.importance));
+    let new_is_static = req.is_static.unwrap_or(old.is_static) as i32;
+    let new_status = req.status.as_deref().unwrap_or(&old.status).to_string();
+
+    // Tags: if provided in request, normalize; otherwise keep old tags string
+    let new_tags_json = if req.tags.is_some() {
+        normalize_tags(&req.tags)
+    } else {
+        old.tags.clone()
+    };
+
+    // Determine root: old root_memory_id if set, else old.id is the root
+    let new_root_memory_id = old.root_memory_id.unwrap_or(old.id);
+    let new_version = old.version + 1;
+
+    // 4. INSERT new row
+    let insert_sql = "INSERT INTO memories (
+        content, category, source, session_id, importance,
+        version, is_latest, parent_memory_id, root_memory_id,
+        is_static, tags, status, user_id, space_id,
+        fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength,
+        fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at,
+        confidence
+    ) VALUES (
+        ?1, ?2, ?3, ?4, ?5,
+        ?6, 1, ?7, ?8,
+        ?9, ?10, ?11, ?12, ?13,
+        ?14, ?15, ?16, ?17,
+        ?18, ?19, ?20, ?21,
+        ?22
+    )";
+
+    db.conn
+        .execute(
+            insert_sql,
+            params![
+                new_content,
+                new_category,
+                old.source.clone(),
+                old.session_id.clone(),
+                new_importance,
+                new_version,
+                old.id,
+                new_root_memory_id,
+                new_is_static,
+                new_tags_json,
+                new_status,
+                old.user_id,
+                old.space_id,
+                old.fsrs_stability,
+                old.fsrs_difficulty,
+                old.fsrs_storage_strength,
+                old.fsrs_retrieval_strength,
+                old.fsrs_learning_state,
+                old.fsrs_reps,
+                old.fsrs_lapses,
+                old.fsrs_last_review_at.clone(),
+                old.confidence
+            ],
+        )
+        .await?;
+
+    // 5. Get new row id
+    let mut id_rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
+    let new_id: i64 = if let Some(row) = id_rows.next().await? {
+        row.get(0)?
+    } else {
+        return Err(EngError::Internal(
+            "failed to get last insert id after update".to_string(),
+        ));
+    };
+
+    // 6. If embedding provided, UPDATE the vector column
+    if let Some(ref emb) = req.embedding {
+        let emb_json = embedding_to_json(emb);
+        db.conn
+            .execute(
+                "UPDATE memories SET embedding_vec_1024 = vector(?1) WHERE id = ?2",
+                params![emb_json, new_id],
+            )
+            .await?;
+    }
+
+    // 7. Fetch and return the new row
+    let new_sql = format!(
+        "SELECT {} FROM memories WHERE id = ?1",
+        MEMORY_COLUMNS
+    );
+    let mut new_rows = db.conn.query(&new_sql, params![new_id]).await?;
+    if let Some(row) = new_rows.next().await? {
+        row_to_memory(&row)
+    } else {
+        Err(EngError::Internal(
+            "failed to fetch newly created memory version".to_string(),
+        ))
+    }
+}
