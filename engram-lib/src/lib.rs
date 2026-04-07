@@ -12,6 +12,7 @@ pub mod guard;
 pub mod intelligence;
 pub mod memory;
 pub mod personality;
+pub mod reranker;
 pub mod services;
 pub mod webhooks;
 

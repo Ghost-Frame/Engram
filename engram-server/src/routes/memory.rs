@@ -171,6 +171,8 @@ async fn search_memories(
         None
     };
 
+    let body_query = body.query.clone();
+
     let req = SearchRequest {
         query: body.query,
         embedding,
@@ -184,7 +186,14 @@ async fn search_memories(
         include_forgotten: body.include_forgotten,
     };
 
-    let results = hybrid_search(&state.db, req).await?;
+    let mut results = hybrid_search(&state.db, req).await?;
+
+    // Apply cross-encoder reranking if available
+    if let Some(ref reranker) = state.reranker {
+        if let Err(e) = reranker.rerank_results(&body_query, &mut results).await {
+            tracing::warn!("reranker failed, using original order: {}", e);
+        }
+    }
 
     let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
     let abstained = results.is_empty();

@@ -9,6 +9,7 @@ use kleos_lib::config::Config;
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::onnx::OnnxProvider;
 use kleos_lib::embeddings::EmbeddingProvider;
+use kleos_lib::reranker::Reranker;
 use state::AppState;
 use std::sync::Arc;
 
@@ -39,10 +40,26 @@ async fn main() {
             }
         };
 
+    let reranker: Option<Arc<Reranker>> = if config.reranker_enabled {
+        match Reranker::new(&config).await {
+            Ok(r) => {
+                tracing::info!("cross-encoder reranker ready");
+                Some(Arc::new(r))
+            }
+            Err(e) => {
+                tracing::warn!("reranker failed to initialize: {}. Results will not be reranked.", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let state = AppState {
         db: Arc::new(db),
         config: Arc::new(config),
         embedder,
+        reranker,
     };
 
     if let Err(e) = server::run(state).await {
