@@ -1,27 +1,31 @@
-use axum::Router;
+use axum::{middleware as axum_mw, Router};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::middleware::auth::auth_middleware;
 use crate::routes;
+use crate::state::AppState;
 
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(state: AppState) -> Result<(), Box<dyn std::error::Error>> {
+    let addr = format!("{}:{}", state.config.host, state.config.port);
+
     let app = Router::new()
-        .nest("/health", routes::health::router())
-        .nest("/api/memory", routes::memory::router())
-        .nest("/api/services", routes::services::router())
-        .nest("/api/guard", routes::guard::router())
-        .nest("/api/admin", routes::admin::router())
-        .nest("/api/graph", routes::graph::router())
-        .nest("/api/episodes", routes::episodes::router())
-        .nest("/api/webhooks", routes::webhooks::router())
-        .nest("/gui", routes::gui::router())
+        .merge(routes::health::router())
+        .merge(routes::memory::router())
+        .merge(routes::admin::router())
+        .merge(routes::tasks::router())
+        .merge(routes::axon::router())
+        .merge(routes::broca::router())
+        .merge(routes::soma::router())
+        .merge(routes::thymus::router())
+        .merge(routes::loom::router())
+        .layer(axum_mw::from_fn_with_state(state.clone(), auth_middleware))
         .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http())
+        .with_state(state.clone());
 
-    let addr = "127.0.0.1:7700";
     tracing::info!("engram-server listening on {}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }

@@ -1,9 +1,9 @@
 pub mod admin;
-pub mod episodes;
-pub mod graph;
-pub mod guard;
-pub mod gui;
+pub mod axon;
+pub mod broca;
 pub mod health;
+pub mod loom;
 pub mod memory;
-pub mod services;
-pub mod webhooks;
+pub mod soma;
+pub mod tasks;
+pub mod thymus;

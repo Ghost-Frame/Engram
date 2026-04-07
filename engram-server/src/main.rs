@@ -1,6 +1,14 @@
+mod error;
+mod extractors;
 mod middleware;
 mod routes;
 mod server;
+mod state;
+
+use engram_lib::config::Config;
+use engram_lib::db::Database;
+use state::AppState;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -11,7 +19,17 @@ async fn main() {
         )
         .init();
 
-    if let Err(e) = server::run().await {
+    let config = Config::from_env();
+    let db = Database::connect(&config.db_path)
+        .await
+        .expect("failed to connect to database");
+
+    let state = AppState {
+        db: Arc::new(db),
+        config: Arc::new(config),
+    };
+
+    if let Err(e) = server::run(state).await {
         tracing::error!("server error: {}", e);
         std::process::exit(1);
     }
