@@ -1,6 +1,7 @@
 pub mod chunking;
 pub mod download;
 pub mod normalize;
+pub mod onnx;
 
 use crate::Result;
 
