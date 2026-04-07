@@ -20,7 +20,7 @@ clap = { version = "4", features = ["derive", "env"] }
 toml = "0.8"
 hmac = "0.12"
 sha2 = "0.10"
-ort = "2.0.0-rc.12"
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 tokenizers = "0.21"
 ndarray = "0.16"
 dirs = "6"
