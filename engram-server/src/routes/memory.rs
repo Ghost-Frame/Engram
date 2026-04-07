@@ -6,7 +6,6 @@ use axum::{
 };
 use engram_lib::memory::{
     self,
-    fts::fts_search,
     search::hybrid_search,
     types::{ListOptions, SearchRequest, StoreRequest, UpdateRequest},
 };
@@ -99,6 +98,17 @@ async fn store_memory(
     // Inject the authenticated user's ID
     req.user_id = Some(auth.user_id);
 
+    // Compute embedding if provider available and none provided
+    if req.embedding.is_none() {
+        if let Some(ref embedder) = state.embedder {
+            match embedder.embed(&req.content).await {
+                Ok(emb) => req.embedding = Some(emb),
+                Err(e) => tracing::warn!("embedding failed for store: {}", e),
+            }
+        }
+    }
+
+    let embedded = req.embedding.is_some();
     let result = memory::store(&state.db, req).await?;
 
     if let Some(existing_id) = result.duplicate_of {
@@ -119,7 +129,7 @@ async fn store_memory(
         "id": result.id,
         "created_at": mem.created_at,
         "importance": mem.importance,
-        "embedded": false,
+        "embedded": embedded,
         "tags": parse_tags(&mem.tags),
         "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
     });
@@ -148,9 +158,22 @@ async fn search_memories(
     Auth(auth): Auth,
     Json(body): Json<SearchBody>,
 ) -> Result<Json<Value>, AppError> {
+    // Compute query embedding
+    let embedding = if let Some(ref embedder) = state.embedder {
+        match embedder.embed(&body.query).await {
+            Ok(emb) => Some(emb),
+            Err(e) => {
+                tracing::warn!("embedding failed for search: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let req = SearchRequest {
         query: body.query,
-        embedding: None, // no embedding provider yet
+        embedding,
         limit: body.limit,
         category: body.category,
         source: body.source,
@@ -224,8 +247,32 @@ async fn recall(
     let all_list = memory::list(&state.db, static_opts).await?;
     let static_memories: Vec<_> = all_list.into_iter().filter(|m| m.is_static).collect();
 
-    // Bucket 2: FTS search results
-    let fts_hits = fts_search(&state.db, &body.query, limit, user_id).await?;
+    // Bucket 2: Semantic search via hybrid (vector + FTS)
+    let query_embedding = if let Some(ref embedder) = state.embedder {
+        match embedder.embed(&body.query).await {
+            Ok(emb) => Some(emb),
+            Err(e) => {
+                tracing::warn!("embedding failed for recall: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let semantic_req = SearchRequest {
+        query: body.query.clone(),
+        embedding: query_embedding,
+        limit: Some(limit),
+        category: None,
+        source: None,
+        tags: None,
+        threshold: None,
+        user_id: Some(user_id),
+        space_id: body.space_id,
+        include_forgotten: None,
+    };
+    let semantic_results = hybrid_search(&state.db, semantic_req).await?;
 
     // Bucket 3: High-importance recent memories
     let recent_opts = ListOptions {
@@ -285,24 +332,17 @@ async fn recall(
     let mut semantic_count = 0usize;
     let mut recent_count = 0usize;
 
-    for hit in &fts_hits {
-        if seen_ids.contains(&hit.memory_id) {
-            continue;
-        }
-        match memory::get(&state.db, hit.memory_id).await {
-            Ok(m) => {
-                seen_ids.insert(m.id);
-                semantic_count += 1;
-                output.push(json!({
-                    "id": m.id,
-                    "content": m.content,
-                    "category": m.category,
-                    "recall_source": "semantic",
-                    "recall_score": hit.bm25_score,
-                    "tags": parse_tags(&m.tags),
-                }));
-            }
-            Err(_) => continue,
+    for r in &semantic_results {
+        if seen_ids.insert(r.memory.id) {
+            semantic_count += 1;
+            output.push(json!({
+                "id": r.memory.id,
+                "content": r.memory.content,
+                "category": r.memory.category,
+                "recall_source": "semantic",
+                "recall_score": r.score,
+                "tags": parse_tags(&r.memory.tags),
+            }));
         }
     }
 

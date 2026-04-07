@@ -7,6 +7,8 @@ mod state;
 
 use engram_lib::config::Config;
 use engram_lib::db::Database;
+use engram_lib::embeddings::onnx::OnnxProvider;
+use engram_lib::embeddings::EmbeddingProvider;
 use state::AppState;
 use std::sync::Arc;
 
@@ -24,9 +26,23 @@ async fn main() {
         .await
         .expect("failed to connect to database");
 
+    // Initialize embedding provider (graceful degradation if unavailable)
+    let embedder: Option<Arc<dyn EmbeddingProvider>> =
+        match OnnxProvider::new(&config).await {
+            Ok(provider) => {
+                tracing::info!("ONNX embedding provider ready");
+                Some(Arc::new(provider))
+            }
+            Err(e) => {
+                tracing::warn!("ONNX embedding provider failed to initialize: {}. Vector search disabled.", e);
+                None
+            }
+        };
+
     let state = AppState {
         db: Arc::new(db),
         config: Arc::new(config),
+        embedder,
     };
 
     if let Err(e) = server::run(state).await {
