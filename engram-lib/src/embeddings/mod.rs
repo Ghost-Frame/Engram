@@ -1,4 +1,5 @@
 pub mod chunking;
+pub mod normalize;
 
 use crate::Result;
 
