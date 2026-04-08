@@ -10,6 +10,28 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemporalPattern {
+    pub label: String,
+    pub detail: String,
+}
+
+pub async fn detect_patterns(_db: &Database, _user_id: i64) -> Result<Vec<TemporalPattern>> {
+    Ok(Vec::new())
+}
+
+pub async fn list_patterns(
+    _db: &Database,
+    _user_id: i64,
+    _limit: usize,
+) -> Result<Vec<TemporalPattern>> {
+    Ok(Vec::new())
+}
+
+pub async fn store_pattern(_db: &Database, _pattern: &TemporalPattern) -> Result<()> {
+    Ok(())
+}
+
 // ============================================================================
 // VALID_AT POPULATION
 // ============================================================================
