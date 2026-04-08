@@ -27,5 +27,6 @@ pub struct AppState {
     pub reranker: Option<Arc<Reranker>>,
     pub brain: Option<Arc<BrainManager>>,
     pub sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SessionBroadcast>>>>>,
+    #[allow(dead_code)]
     pub eidolon_config: Option<EidolonConfig>,
 }
