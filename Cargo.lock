@@ -749,6 +749,7 @@ dependencies = [
  "libsql",
  "ndarray 0.16.1",
  "ort",
+ "rand 0.8.5",
  "regex",
  "reqwest",
  "serde",
