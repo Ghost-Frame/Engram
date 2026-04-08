@@ -4,6 +4,7 @@ pub mod decomposition;
 pub mod temporal;
 pub mod digests;
 pub mod reflections;
+pub mod sentiment;
 pub mod causal;
 pub mod types;
 pub mod llm;

@@ -1,8 +1,9 @@
 use crate::db::Database;
-use crate::Result;
 use crate::memory::types::Memory;
+use crate::Result;
+use serde::Serialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Contradiction {
     pub memory_a: String,
     pub memory_b: String,

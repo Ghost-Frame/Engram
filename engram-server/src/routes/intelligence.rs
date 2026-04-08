@@ -86,10 +86,11 @@ struct ConsolidateBody {
 
 async fn consolidate_handler(
     State(state): State<AppState>,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Json(body): Json<ConsolidateBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let result = consolidate(&state.db, &body.memory_ids, auth.user_id).await?;
+    let ids: Vec<String> = body.memory_ids.into_iter().map(|id| id.to_string()).collect();
+    let result = consolidate(&state.db, &ids).await?;
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
@@ -100,12 +101,11 @@ struct CandidatesBody {
 
 async fn candidates_handler(
     State(state): State<AppState>,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Json(body): Json<CandidatesBody>,
 ) -> Result<Json<Value>, AppError> {
     let threshold = body.threshold.unwrap_or(0.7);
-    let groups =
-        find_consolidation_candidates(&state.db, auth.user_id, threshold).await?;
+    let groups = find_consolidation_candidates(&state.db, threshold).await?;
     Ok(Json(json!({ "groups": groups })))
 }
 
@@ -140,9 +140,9 @@ async fn contradictions_handler(
 
 async fn scan_contradictions_handler(
     State(state): State<AppState>,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let contradictions = scan_all_contradictions(&state.db, auth.user_id).await?;
+    let contradictions = scan_all_contradictions(&state.db).await?;
     Ok(Json(json!({ "contradictions": contradictions })))
 }
 
