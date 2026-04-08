@@ -1,8 +1,7 @@
 // GROUNDING CLIENT - Provider registry and orchestration (ported from TS grounding/client.ts)
 use super::types::*;
 use super::shell::ShellProvider;
-use std::collections::HashMap;
-use tracing::{info, warn};
+use tracing::info;
 
 pub struct GroundingClient {
     shell: ShellProvider,

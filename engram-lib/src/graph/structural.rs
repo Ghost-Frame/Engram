@@ -708,7 +708,7 @@ pub fn compose_systems(source_a: &str, source_b: &str, links_str: &str) -> Compo
         if parts.len() == 2 { let left = parts[0].trim(); let right = parts[1].trim();
             let ln = if left.starts_with("a.") || left.starts_with("b.") { &left[2..] } else { left };
             let rn = if right.starts_with("a.") || right.starts_with("b.") { &right[2..] } else { right };
-            links.insert(rn.to_lowercase(), ln.to_string()); } } }
+            links.insert(ln.to_lowercase(), rn.to_string()); } } }
     let aa = parse_en(source_a); let ab = parse_en(source_b);
     let rb: Vec<ENAction> = ab.iter().map(|a| ENAction {
         subject: links.get(&a.subject.to_lowercase()).cloned().unwrap_or_else(|| a.subject.clone()),

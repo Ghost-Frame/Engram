@@ -2,7 +2,7 @@
 //! Ported from llm/local.ts.
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Options for LLM calls.
 #[derive(Debug, Clone)]

@@ -1,7 +1,6 @@
 // GROUNDING QUALITY - Tool quality tracking (ported from TS grounding/quality.ts)
 use crate::Result;
 use libsql::Connection;
-use tracing::warn;
 
 const DEFAULT_DEGRADATION_THRESHOLD: f64 = 0.7;
 
