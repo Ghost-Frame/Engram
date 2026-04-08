@@ -1,3 +1,14 @@
 pub mod consolidation;
 pub mod contradiction;
 pub mod decomposition;
+pub mod temporal;
+pub mod digests;
+pub mod reflections;
+pub mod causal;
+pub mod types;
+pub mod llm;
+pub mod extraction;
+pub mod growth;
+pub mod predictive;
+pub mod reconsolidation;
+pub mod valence;

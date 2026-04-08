@@ -1,4 +1,5 @@
 pub mod fts;
+pub mod scoring;
 pub mod search;
 pub mod simhash;
 pub mod types;
@@ -32,7 +33,7 @@ fn normalize_tags(tags: &Option<Vec<String>>) -> Option<String> {
 }
 
 fn clamp_importance(value: i32) -> i32 {
-    value.max(1).min(10)
+    value.clamp(1, 10)
 }
 
 fn embedding_to_json(embedding: &[f32]) -> String {
@@ -167,9 +168,7 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
     // 5. Determine versioning fields if parent_memory_id is set
     let (version, root_memory_id) = if let Some(parent_id) = req.parent_memory_id {
         // Fetch parent to get its version and root
-        let parent_sql = format!(
-            "SELECT version, root_memory_id FROM memories WHERE id = ?1"
-        );
+        let parent_sql = "SELECT version, root_memory_id FROM memories WHERE id = ?1".to_string();
         let mut parent_rows = db.conn.query(&parent_sql, params![parent_id]).await?;
         if let Some(parent_row) = parent_rows.next().await? {
             let parent_version: i32 = parent_row.get(0)?;
@@ -491,4 +490,69 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest) -> Result<Memory
             "failed to fetch newly created memory version".to_string(),
         ))
     }
+}
+
+// -- Additional DB operations matching TS db.ts ---
+
+pub async fn mark_forgotten(db: &Database, id: i64) -> Result<()> {
+    db.conn.execute(
+        "UPDATE memories SET is_forgotten = 1, updated_at = datetime('now') WHERE id = ?1",
+        params![id],
+    ).await?;
+    Ok(())
+}
+
+pub async fn mark_archived(db: &Database, id: i64) -> Result<()> {
+    db.conn.execute(
+        "UPDATE memories SET is_archived = 1, updated_at = datetime('now') WHERE id = ?1",
+        params![id],
+    ).await?;
+    Ok(())
+}
+
+pub async fn mark_unarchived(db: &Database, id: i64) -> Result<()> {
+    db.conn.execute(
+        "UPDATE memories SET is_archived = 0, updated_at = datetime('now') WHERE id = ?1",
+        params![id],
+    ).await?;
+    Ok(())
+}
+
+pub async fn update_forget_reason(db: &Database, id: i64, reason: &str) -> Result<()> {
+    db.conn.execute(
+        "UPDATE memories SET forget_reason = ?1 WHERE id = ?2",
+        params![reason.to_string(), id],
+    ).await?;
+    Ok(())
+}
+
+pub async fn adjust_importance(db: &Database, memory_id: i64, user_id: i64, delta: i32) -> Result<()> {
+    if delta > 0 {
+        db.conn.execute(
+            "UPDATE memories SET importance = MIN(importance + ?1, 10) WHERE id = ?2 AND user_id = ?3",
+            params![delta, memory_id, user_id],
+        ).await?;
+    } else {
+        db.conn.execute(
+            "UPDATE memories SET importance = MAX(importance + ?1, 0) WHERE id = ?2 AND user_id = ?3",
+            params![delta, memory_id, user_id],
+        ).await?;
+    }
+    Ok(())
+}
+
+pub async fn insert_link(db: &Database, source_id: i64, target_id: i64, similarity: f64, link_type: &str) -> Result<()> {
+    db.conn.execute(
+        "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) VALUES (?1, ?2, ?3, ?4)",
+        params![source_id, target_id, similarity, link_type.to_string()],
+    ).await?;
+    Ok(())
+}
+
+pub async fn update_source_count(db: &Database, id: i64, source_count: i32) -> Result<()> {
+    db.conn.execute(
+        "UPDATE memories SET source_count = ?1, updated_at = datetime('now') WHERE id = ?2",
+        params![source_count, id],
+    ).await?;
+    Ok(())
 }
