@@ -9,8 +9,8 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
     let a_len = a.len();
     let b_len = b.len();
     let mut dp = vec![vec![0usize; b_len + 1]; a_len + 1];
-    for i in 0..=a_len { dp[i][0] = i; }
-    for j in 0..=b_len { dp[0][j] = j; }
+    for (i, row) in dp.iter_mut().enumerate() { row[0] = i; }
+    for (j, cell) in dp[0].iter_mut().enumerate() { *cell = j; }
     for i in 1..=a_len {
         for j in 1..=b_len {
             let cost = if a.as_bytes()[i - 1] == b.as_bytes()[j - 1] { 0 } else { 1 };

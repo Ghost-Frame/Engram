@@ -124,7 +124,7 @@ impl Reranker {
     pub async fn rerank_results(
         &self,
         query: &str,
-        results: &mut Vec<crate::memory::types::SearchResult>,
+        results: &mut [crate::memory::types::SearchResult],
     ) -> Result<()> {
         if results.is_empty() {
             return Ok(());
@@ -132,6 +132,7 @@ impl Reranker {
 
         let k = self.top_k.min(results.len());
 
+        #[allow(clippy::needless_range_loop)]
         for i in 0..k {
             let doc = results[i].memory.content.clone();
             let q = query.to_string();

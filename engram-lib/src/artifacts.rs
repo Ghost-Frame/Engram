@@ -76,6 +76,7 @@ pub async fn index_artifact(db: &Database, artifact_id: i64, mime_type: &str, da
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn store_artifact(
     db: &Database, memory_id: i64, filename: &str, mime_type: &str,
     size_bytes: i64, sha256: &str, storage_mode: &str,

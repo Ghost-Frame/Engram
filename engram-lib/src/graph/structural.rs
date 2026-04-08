@@ -198,7 +198,7 @@ fn has_cycle(graph: &StructuralGraph) -> bool {
         }
         stack.remove(node); false
     }
-    for node in &graph.nodes { if !visited.contains(node.as_str()) { if dfs(node, graph, &mut visited, &mut stack) { return true; } } }
+    for node in &graph.nodes { if !visited.contains(node.as_str()) && dfs(node, graph, &mut visited, &mut stack) { return true; } }
     false
 }
 
@@ -289,6 +289,7 @@ pub fn find_bridges(graph: &StructuralGraph) -> Vec<Bridge> {
     let mut visited: HashSet<String> = HashSet::new();
     let mut timer: usize = 0;
 
+    #[allow(clippy::too_many_arguments)]
     fn dfs(u: &str, parent: Option<&str>, graph: &StructuralGraph, disc: &mut HashMap<String, usize>,
            low: &mut HashMap<String, usize>, visited: &mut HashSet<String>, timer: &mut usize, bridges: &mut Vec<Bridge>) {
         visited.insert(u.to_string()); disc.insert(u.to_string(), *timer); low.insert(u.to_string(), *timer); *timer += 1;
@@ -550,7 +551,7 @@ pub fn compute_impact(source: &str, target_node: &str) -> ImpactResult {
     let ta = classify_topology(&temp); let mut ca = connected_components(&temp);
     let mut disc = Vec::new();
     if ca.len() > cb.len() { ca.sort_by_key(|c| c.len());
-        for i in 0..ca.len().saturating_sub(1) { for n in &ca[i] { disc.push(graph.node_map.get(n).map(|nd| nd.label.clone()).unwrap_or_else(|| n.clone())); } } }
+        for component in ca.iter().take(ca.len().saturating_sub(1)) { for n in component { disc.push(graph.node_map.get(n).map(|nd| nd.label.clone()).unwrap_or_else(|| n.clone())); } } }
     ImpactResult { removed_node: node_id.clone(), removed_label: graph.node_map.get(&node_id).map(|n| n.label.clone()).unwrap_or_else(|| target_node.to_string()),
         original_components: cb.len(), after_components: ca.len(), disconnected_nodes: disc, topology_before: tb, topology_after: ta }
 }

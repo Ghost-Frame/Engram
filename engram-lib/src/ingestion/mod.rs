@@ -95,7 +95,7 @@ pub async fn ingest(
             let result = processors::process_chunks(
                 db,
                 options.mode,
-                &[chunk.clone()],
+                std::slice::from_ref(chunk),
                 &process_options,
             )
             .await;
@@ -189,7 +189,7 @@ pub async fn ingest_binary(
             let result = processors::process_chunks(
                 db,
                 options.mode,
-                &[chunk.clone()],
+                std::slice::from_ref(chunk),
                 &process_options,
             )
             .await;

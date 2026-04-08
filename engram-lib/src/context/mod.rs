@@ -155,8 +155,8 @@ pub fn assemble_context_string(
 /// Assembles context from 8 layers:
 ///   1. Static facts (permanent, ranked by query relevance)
 ///   2. Semantic search (hybrid vector + FTS, optional rerank)
-///   2.5a. Version chain evolution (preference/fact change history)
-///   2.5b. Episode context (summarized conversation episodes)
+///      - 2.5a. Version chain evolution (preference/fact change history)
+///      - 2.5b. Episode context (summarized conversation episodes)
 ///   3. Linked memories (graph expansion from semantic results)
 ///   4. Recent memories (temporal context)
 ///   5. Inference (LLM-generated implicit connections -- stubbed)
@@ -176,7 +176,7 @@ pub async fn assemble_context(
         .unwrap_or(DEFAULT_TOKEN_BUDGET);
     let token_budget = raw_budget.min(MAX_TOKEN_BUDGET);
     let context_strategy = opts.strategy.unwrap_or(ContextStrategy::Balanced);
-    let depth = opts.depth.unwrap_or(3).max(1).min(3);
+    let depth = opts.depth.unwrap_or(3).clamp(1, 3);
 
     let max_memory_tokens = opts.max_memory_tokens.unwrap_or(DEFAULT_MAX_MEMORY_TOKENS);
     let _dedup_thresh = opts.dedup_threshold.unwrap_or(DEFAULT_DEDUP_THRESHOLD);

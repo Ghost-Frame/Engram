@@ -37,7 +37,7 @@ async fn put_scratch(
     let session = body.session.as_deref().unwrap_or("default");
     let agent = body.agent.as_deref().unwrap_or("unknown");
     let model = body.model.as_deref().unwrap_or("");
-    let ttl = body.ttl.unwrap_or(30).max(1).min(1440);
+    let ttl = body.ttl.unwrap_or(30).clamp(1, 1440);
     let entries = body.entries.unwrap_or_default();
     let mut stored = 0;
     for e in &entries {

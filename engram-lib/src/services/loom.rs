@@ -263,20 +263,16 @@ pub fn set_dot_path(
 pub fn interpolate(template: &str, vars: &serde_json::Value) -> String {
     let mut result = template.to_string();
     // Simple iterative replacement -- find {{ and }}
-    loop {
-        if let Some(start) = result.find("{{") {
-            if let Some(end_offset) = result[start..].find("}}") {
-                let path = result[start + 2..start + end_offset].trim().to_string();
-                let val = resolve_dot_path(vars, &path);
-                let replacement = match &val {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Null => String::new(),
-                    other => other.to_string(),
-                };
-                result.replace_range(start..start + end_offset + 2, &replacement);
-            } else {
-                break;
-            }
+    while let Some(start) = result.find("{{") {
+        if let Some(end_offset) = result[start..].find("}}") {
+            let path = result[start + 2..start + end_offset].trim().to_string();
+            let val = resolve_dot_path(vars, &path);
+            let replacement = match &val {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            result.replace_range(start..start + end_offset + 2, &replacement);
         } else {
             break;
         }
@@ -1005,8 +1001,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
         // Find last completed step output to use as run output
         let last_output = steps
             .iter()
-            .filter(|s| s.status == "completed")
-            .next_back()
+            .rfind(|s| s.status == "completed")
             .map(|s| s.output.clone())
             .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
