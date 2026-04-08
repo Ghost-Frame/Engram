@@ -1,158 +1,252 @@
 use axum::{
-    body::Body,
-    extract::{Request, State},
+    extract::State,
     http::StatusCode,
-    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use reqwest::Client;
+use engram_lib::memory::{
+    self,
+    search::hybrid_search,
+    types::{SearchRequest, StoreRequest},
+};
+use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::Arc;
-use tracing::warn;
+use tracing::info;
 
-use crate::config::SidecarConfig;
-use crate::scoring::{inject_search_context, inject_store_context};
-use crate::session::SharedSession;
+use crate::session::Observation;
+use crate::SidecarState;
 
-#[derive(Clone)]
-pub struct SidecarState {
-    pub config: Arc<SidecarConfig>,
-    pub session: SharedSession,
-    pub client: Client,
-}
+const FLUSH_THRESHOLD: usize = 5;
 
-pub fn router() -> Router<SidecarState> {
+pub fn router(state: SidecarState) -> Router {
     Router::new()
-        .route("/search", post(proxy_search))
-        .route("/memories/search", post(proxy_search))
-        .route("/store", post(proxy_store))
-        .route("/memory", post(proxy_store))
-        .route("/memories", post(proxy_store))
-        .route("/recall", post(proxy_recall))
         .route("/health", get(health))
-        .fallback(proxy_fallback)
+        .route("/observe", post(observe))
+        .route("/recall", post(recall))
+        .route("/end", post(end_session))
+        .with_state(state)
 }
 
-async fn health() -> Json<Value> {
-    Json(json!({ "status": "ok", "service": "engram-sidecar" }))
+async fn health(State(state): State<SidecarState>) -> Json<Value> {
+    let session = state.session.read().await;
+    Json(json!({
+        "status": "ok",
+        "session_id": session.id,
+        "observation_count": session.observation_count,
+        "stored_count": session.stored_count,
+        "ended": session.ended,
+    }))
 }
 
-/// Forward a search request with mode/agent context injected.
-async fn proxy_search(
+#[derive(Debug, Deserialize)]
+struct ObserveBody {
+    pub tool_name: String,
+    pub content: String,
+    #[serde(default = "default_importance")]
+    pub importance: i32,
+    #[serde(default = "default_category")]
+    pub category: String,
+}
+
+fn default_importance() -> i32 {
+    3
+}
+
+fn default_category() -> String {
+    "discovery".to_string()
+}
+
+async fn observe(
     State(state): State<SidecarState>,
-    Json(mut body): Json<Value>,
-) -> Result<Json<Value>, (StatusCode, String)> {
-    // Record query in session
-    if let Some(q) = body.get("query").and_then(|v| v.as_str()) {
-        state.session.write().await.record_query(q.to_string());
-    }
+    Json(body): Json<ObserveBody>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    let obs = Observation {
+        tool_name: body.tool_name,
+        content: body.content,
+        importance: body.importance,
+        category: body.category,
+        timestamp: chrono::Utc::now(),
+    };
 
-    // Inject search context
-    {
-        let session = state.session.read().await;
-        inject_search_context(&mut body, &session.agent, &session.mode);
-    }
+    let pending_count = {
+        let mut session = state.session.write().await;
+        if session.ended {
+            return Err((
+                StatusCode::GONE,
+                Json(json!({ "error": "session has ended" })),
+            ));
+        }
+        session.add_observation(obs)
+    };
 
-    forward_json(&state, "/search", body).await
-}
-
-/// Forward a store request with agent metadata injected.
-async fn proxy_store(
-    State(state): State<SidecarState>,
-    Json(mut body): Json<Value>,
-) -> Result<Json<Value>, (StatusCode, String)> {
-    {
-        let session = state.session.read().await;
-        inject_store_context(&mut body, &session.agent);
-    }
-
-    forward_json(&state, "/store", body).await
-}
-
-/// Forward recall request with agent filter.
-async fn proxy_recall(
-    State(state): State<SidecarState>,
-    Json(body): Json<Value>,
-) -> Result<Json<Value>, (StatusCode, String)> {
-    forward_json(&state, "/recall", body).await
-}
-
-/// Transparent proxy for all other routes.
-async fn proxy_fallback(
-    State(state): State<SidecarState>,
-    req: Request<Body>,
-) -> Result<Response, (StatusCode, String)> {
-    let path = req.uri().path().to_string();
-    let query = req
-        .uri()
-        .query()
-        .map(|q| format!("?{}", q))
-        .unwrap_or_default();
-    let method = req.method().clone();
-
-    let url = format!("{}{}{}", state.config.engram_url, path, query);
-
-    // Read body bytes, limit to 10 MiB
-    let body_bytes = axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024)
-        .await
-        .map_err(|e| {
-            warn!("failed to read fallback body: {}", e);
-            (StatusCode::BAD_REQUEST, format!("failed to read body: {}", e))
-        })?;
-
-    let resp = state
-        .client
-        .request(method, &url)
-        .header("Content-Type", "application/json")
-        .body(body_bytes)
-        .send()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("upstream error: {}", e)))?;
-
-    let status = StatusCode::from_u16(resp.status().as_u16())
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    let resp_bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("upstream body error: {}", e)))?;
+    let flushed = if pending_count >= FLUSH_THRESHOLD {
+        flush_pending(&state).await
+    } else {
+        0
+    };
 
     Ok((
-        status,
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        resp_bytes,
-    )
-        .into_response())
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "accepted": true,
+            "pending": pending_count.saturating_sub(flushed),
+            "flushed": flushed,
+        })),
+    ))
 }
 
-/// Helper: POST JSON to upstream and return the response as JSON.
-async fn forward_json(
-    state: &SidecarState,
-    path: &str,
-    body: Value,
-) -> Result<Json<Value>, (StatusCode, String)> {
-    let url = format!("{}{}", state.config.engram_url, path);
+#[derive(Debug, Deserialize)]
+struct RecallBody {
+    pub query: String,
+    #[serde(default = "default_recall_limit")]
+    pub limit: usize,
+}
 
-    let resp = state
-        .client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("upstream error: {}", e)))?;
+fn default_recall_limit() -> usize {
+    10
+}
 
-    let status = resp.status();
-    let resp_body: Value = resp
-        .json()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("upstream json error: {}", e)))?;
-
-    if status.is_success() {
-        Ok(Json(resp_body))
+async fn recall(
+    State(state): State<SidecarState>,
+    Json(body): Json<RecallBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let embedding = if let Some(ref embedder) = state.embedder {
+        match embedder.embed(&body.query).await {
+            Ok(emb) => Some(emb),
+            Err(e) => {
+                tracing::warn!("embedding failed for recall: {}", e);
+                None
+            }
+        }
     } else {
-        Err((
-            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            resp_body.to_string(),
-        ))
+        None
+    };
+
+    let req = SearchRequest {
+        query: body.query,
+        embedding,
+        limit: Some(body.limit),
+        category: None,
+        source: None,
+        tags: None,
+        threshold: None,
+        user_id: Some(state.user_id),
+        space_id: None,
+        include_forgotten: Some(false),
+        mode: None,
+        question_type: None,
+        expand_relationships: false,
+        include_links: false,
+        latest_only: true,
+        source_filter: None,
+    };
+
+    let results = hybrid_search(&state.db, req).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+    })?;
+
+    let session_id = {
+        let session = state.session.read().await;
+        session.id.clone()
+    };
+
+    Ok(Json(json!({
+        "results": results,
+        "count": results.len(),
+        "session_id": session_id,
+    })))
+}
+
+async fn end_session(
+    State(state): State<SidecarState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let flushed = flush_pending(&state).await;
+
+    let mut session = state.session.write().await;
+    session.end();
+
+    let duration = chrono::Utc::now()
+        .signed_duration_since(session.started_at)
+        .num_seconds();
+
+    info!(
+        session_id = %session.id,
+        observations = session.observation_count,
+        stored = session.stored_count,
+        duration_secs = duration,
+        "session ended"
+    );
+
+    Ok(Json(json!({
+        "ended": true,
+        "session_id": session.id,
+        "flushed": flushed,
+        "observation_count": session.observation_count,
+        "stored_count": session.stored_count,
+        "duration_secs": duration,
+    })))
+}
+
+async fn flush_pending(state: &SidecarState) -> usize {
+    let observations = {
+        let mut session = state.session.write().await;
+        session.drain_pending()
+    };
+
+    if observations.is_empty() {
+        return 0;
     }
+
+    let session_id = {
+        let session = state.session.read().await;
+        session.id.clone()
+    };
+
+    let mut stored = 0usize;
+    for obs in &observations {
+        let embedding = if let Some(ref embedder) = state.embedder {
+            match embedder.embed(&obs.content).await {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    tracing::warn!("embedding failed for observation: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let req = StoreRequest {
+            content: format!("[{}] {}", obs.tool_name, obs.content),
+            category: obs.category.clone(),
+            source: state.source.clone(),
+            importance: obs.importance,
+            tags: Some(vec!["sidecar".to_string(), obs.tool_name.clone()]),
+            embedding,
+            session_id: Some(session_id.clone()),
+            is_static: None,
+            user_id: Some(state.user_id),
+            space_id: None,
+            parent_memory_id: None,
+        };
+
+        match memory::store(&state.db, req).await {
+            Ok(result) => {
+                stored += 1;
+                if result.created {
+                    tracing::debug!(id = result.id, tool = %obs.tool_name, "observation stored");
+                } else if let Some(dup) = result.duplicate_of {
+                    tracing::debug!(dup_of = dup, tool = %obs.tool_name, "observation was duplicate");
+                }
+            }
+            Err(e) => {
+                tracing::error!(tool = %obs.tool_name, error = %e, "failed to store observation");
+            }
+        }
+    }
+
+    stored
 }

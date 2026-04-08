@@ -24,6 +24,13 @@ pub struct PublishEventRequest {
     pub user_id: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AxonStats {
+    pub total_events: i64,
+    pub channels: i64,
+    pub sources: i64,
+}
+
 fn row_to_event(row: &libsql::Row) -> Result<Event> {
     let payload_str: String = row.get(2)?;
     let payload: serde_json::Value = serde_json::from_str(&payload_str)?;
@@ -145,4 +152,41 @@ pub async fn list_channels(db: &Database) -> Result<Vec<String>> {
         results.push(channel);
     }
     Ok(results)
+}
+
+pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<AxonStats> {
+    let conn = &db.conn;
+    let mut rows = if let Some(uid) = user_id {
+        conn.query(
+            "SELECT
+                COUNT(*),
+                COUNT(DISTINCT channel),
+                COUNT(DISTINCT source)
+             FROM events
+             WHERE user_id = ?1",
+            libsql::params![uid],
+        )
+        .await?
+    } else {
+        conn.query(
+            "SELECT
+                COUNT(*),
+                COUNT(DISTINCT channel),
+                COUNT(DISTINCT source)
+             FROM events",
+            (),
+        )
+        .await?
+    };
+
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| EngError::Internal("no axon stats row".into()))?;
+
+    Ok(AxonStats {
+        total_events: row.get(0)?,
+        channels: row.get(1)?,
+        sources: row.get(2)?,
+    })
 }

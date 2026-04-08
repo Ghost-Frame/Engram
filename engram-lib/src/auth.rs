@@ -90,6 +90,22 @@ fn hash_key(raw_key: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn normalize_key(raw_key: &str) -> Option<String> {
+    let hex_portion = if let Some(rest) = raw_key.strip_prefix("engram_") {
+        rest
+    } else if let Some(rest) = raw_key.strip_prefix("eg_") {
+        rest
+    } else {
+        return None;
+    };
+
+    if hex_portion.len() != 32 || !hex_portion.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    Some(format!("engram_{}", hex_portion.to_ascii_lowercase()))
+}
+
 /// Generate a new random API key.
 /// Returns (full_key, key_prefix, key_hash).
 fn generate_key() -> (String, String, String) {
@@ -173,14 +189,11 @@ pub async fn create_key(
 
 /// Validate a raw API key from a request. Returns an AuthContext on success.
 pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
-    // Basic format check: "engram_" + 32 hex chars = 39 chars total
-    if !raw_key.starts_with("engram_") || raw_key.len() < 39 {
-        return Err(crate::EngError::Auth("invalid key format".into()));
-    }
-
-    let hex_portion = &raw_key[7..]; // everything after "engram_"
+    let normalized_key =
+        normalize_key(raw_key).ok_or_else(|| crate::EngError::Auth("invalid key format".into()))?;
+    let hex_portion = &normalized_key[7..];
     let key_prefix = &hex_portion[..8];
-    let key_hash = hash_key(raw_key);
+    let key_hash = hash_key(&normalized_key);
 
     let mut rows = db
         .conn

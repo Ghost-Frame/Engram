@@ -60,6 +60,12 @@ async fn store_memory(
     Auth(auth): Auth,
     Json(mut req): Json<StoreRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    if req.content.trim().is_empty() {
+        return Err(AppError(engram_lib::EngError::InvalidInput(
+            "content must not be empty".to_string(),
+        )));
+    }
+
     req.user_id = Some(auth.user_id);
     if req.embedding.is_none() {
         if let Some(ref embedder) = state.embedder {
@@ -75,6 +81,7 @@ async fn store_memory(
         return Ok((StatusCode::OK, Json(json!({
             "stored": false, "duplicate": true,
             "existing_id": existing_id, "boosted": true,
+            "distance": Value::Null,
         }))));
     }
     let mem = memory::get(&state.db, result.id).await?;
@@ -94,12 +101,14 @@ struct SearchBody {
     pub source: Option<String>,
     pub tags: Option<Vec<String>>,
     pub threshold: Option<f32>,
+    pub tag: Option<String>,
     pub space_id: Option<i64>,
     pub include_forgotten: Option<bool>,
     pub mode: Option<String>,
     pub question_type: Option<engram_lib::memory::types::QuestionType>,
     pub expand_relationships: Option<bool>,
     pub include_links: Option<bool>,
+    pub latest_only: Option<bool>,
     pub source_filter: Option<String>,
 }
 
@@ -120,13 +129,14 @@ async fn search_memories(
     let req = SearchRequest {
         query: body.query, embedding,
         limit: body.limit, category: body.category, source: body.source,
-        tags: body.tags, threshold: body.threshold,
+        tags: body.tags.or_else(|| body.tag.map(|tag| vec![tag])),
+        threshold: body.threshold,
         user_id: Some(auth.user_id), space_id: body.space_id,
         include_forgotten: body.include_forgotten, mode: body.mode,
         question_type: body.question_type,
         expand_relationships: body.expand_relationships.unwrap_or(false),
         include_links: body.include_links.unwrap_or(false),
-        latest_only: true,
+        latest_only: body.latest_only.unwrap_or(true),
         source_filter: body.source_filter,
     };
 
@@ -164,7 +174,8 @@ async fn search_memories(
 
 #[derive(Debug, Deserialize)]
 struct RecallBody {
-    pub query: String,
+    pub context: Option<String>,
+    pub query: Option<String>,
     pub limit: Option<usize>,
     pub space_id: Option<i64>,
 }
@@ -176,6 +187,11 @@ async fn recall(
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.unwrap_or(20);
     let user_id = auth.user_id;
+    let query = body
+        .query
+        .filter(|q| !q.trim().is_empty())
+        .or(body.context)
+        .unwrap_or_default();
 
     let static_opts = ListOptions {
         limit: 10, offset: 0, category: None, source: None,
@@ -186,14 +202,14 @@ async fn recall(
     let static_memories: Vec<_> = all_list.into_iter().filter(|m| m.is_static).collect();
 
     let query_embedding = if let Some(ref embedder) = state.embedder {
-        match embedder.embed(&body.query).await {
+        match embedder.embed(&query).await {
             Ok(emb) => Some(emb),
             Err(e) => { tracing::warn!("embedding failed for recall: {}", e); None }
         }
     } else { None };
 
     let semantic_req = SearchRequest {
-        query: body.query.clone(), embedding: query_embedding,
+        query: query.clone(), embedding: query_embedding,
         limit: Some(limit), category: None, source: None,
         tags: None, threshold: None,
         user_id: Some(user_id), space_id: body.space_id,

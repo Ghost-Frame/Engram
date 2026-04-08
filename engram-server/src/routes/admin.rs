@@ -24,25 +24,43 @@ struct CreateKeyRequest {
     user_id: Option<i64>,
 }
 
+async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
+    let mut rows = state
+        .db
+        .conn
+        .query(sql, ())
+        .await
+        .map_err(engram_lib::EngError::Database)?;
+    let row = rows
+        .next()
+        .await
+        .map_err(engram_lib::EngError::Database)?
+        .ok_or_else(|| engram_lib::EngError::Internal("missing stats row".into()))?;
+    row.get(0)
+        .map_err(engram_lib::EngError::Database)
+        .map_err(AppError)
+}
+
 async fn bootstrap(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    // Check if any keys exist for user_id=1
-    let existing = list_keys(&state.db, 1).await?;
-    if !existing.is_empty() {
+    let existing_count = count_rows(&state, "SELECT COUNT(*) FROM api_keys WHERE is_active = 1").await?;
+
+    if existing_count > 0 {
         return Ok((
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "bootstrap already complete" })),
         ));
     }
 
-    let scopes = vec![Scope::Admin];
+    let scopes = vec![Scope::Read, Scope::Write, Scope::Admin];
     let (key, raw_key) = create_key(&state.db, 1, "admin", scopes).await?;
 
     Ok((
         StatusCode::CREATED,
         Json(json!({
-            "key": raw_key,
+            "key": raw_key.clone(),
+            "api_key": raw_key,
             "name": key.name,
             "scopes": key.scopes,
             "user_id": key.user_id,
@@ -92,12 +110,32 @@ async fn list_api_keys(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
+    if !auth.has_scope(&Scope::Admin) {
+        return Err(AppError(engram_lib::EngError::Auth(
+            "admin scope required".to_string(),
+        )));
+    }
+
     let keys = list_keys(&state.db, auth.user_id).await?;
     Ok(Json(json!({ "keys": keys })))
 }
 
 async fn get_stats(
-    Auth(_auth): Auth,
-) -> Json<Value> {
-    Json(json!({ "status": "ok" }))
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    if !auth.has_scope(&Scope::Admin) {
+        return Err(AppError(engram_lib::EngError::Auth(
+            "admin scope required".to_string(),
+        )));
+    }
+
+    Ok(Json(json!({
+        "memories": count_rows(&state, "SELECT COUNT(*) FROM memories").await?,
+        "tasks": count_rows(&state, "SELECT COUNT(*) FROM tasks").await?,
+        "events": count_rows(&state, "SELECT COUNT(*) FROM events").await?,
+        "actions": count_rows(&state, "SELECT COUNT(*) FROM action_log").await?,
+        "agents": count_rows(&state, "SELECT COUNT(*) FROM agents").await?,
+        "api_keys": count_rows(&state, "SELECT COUNT(*) FROM api_keys WHERE is_active = 1").await?,
+    })))
 }

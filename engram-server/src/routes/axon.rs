@@ -9,7 +9,8 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::services::axon::{
-    get_event, list_channels, publish_event, query_events, PublishEventRequest,
+    get_event, get_stats as get_axon_stats, list_channels, publish_event, query_events,
+    PublishEventRequest,
 };
 
 pub fn router() -> Router<AppState> {
@@ -112,6 +113,10 @@ async fn list_channels_handler(
     Ok(Json(json!({ "channels": channels })))
 }
 
-async fn get_stats(Auth(_auth): Auth) -> Json<Value> {
-    Json(json!({ "status": "ok" }))
+async fn get_stats(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let stats = get_axon_stats(&state.db, Some(auth.user_id)).await?;
+    Ok(Json(json!(stats)))
 }

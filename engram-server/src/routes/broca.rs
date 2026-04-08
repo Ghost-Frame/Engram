@@ -8,7 +8,9 @@ use serde_json::{json, Value};
 use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
-use engram_lib::services::broca::{log_action, query_actions, LogActionRequest};
+use engram_lib::services::broca::{
+    get_action, get_stats as get_broca_stats, log_action, query_actions, LogActionRequest,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -100,13 +102,7 @@ async fn get_action_handler(
     Auth(_auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    // query_actions with no filters and a specific match is not directly supported;
-    // query with limit=1 and filter by ID manually
-    let entries = query_actions(&state.db, None, None, None, 1000, 0).await?;
-    let entry = entries
-        .into_iter()
-        .find(|e| e.id == id)
-        .ok_or_else(|| engram_lib::EngError::NotFound(format!("action {}", id)))?;
+    let entry = get_action(&state.db, id).await?;
     Ok(Json(json!(entry)))
 }
 
@@ -128,6 +124,10 @@ async fn get_feed_handler(
     Ok(Json(json!({ "items": entries, "count": entries.len() })))
 }
 
-async fn get_stats(Auth(_auth): Auth) -> Json<Value> {
-    Json(json!({ "status": "ok" }))
+async fn get_stats(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let stats = get_broca_stats(&state.db, Some(auth.user_id)).await?;
+    Ok(Json(json!(stats)))
 }

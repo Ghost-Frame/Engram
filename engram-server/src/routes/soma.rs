@@ -9,7 +9,8 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::services::soma::{
-    get_agent, heartbeat, list_agents, register_agent, RegisterAgentRequest,
+    get_agent, get_stats as get_soma_stats, heartbeat, list_agents, register_agent,
+    RegisterAgentRequest,
 };
 
 pub fn router() -> Router<AppState> {
@@ -162,6 +163,10 @@ async fn heartbeat_handler(
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn get_stats(Auth(_auth): Auth) -> Json<Value> {
-    Json(json!({ "status": "ok" }))
+async fn get_stats(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let stats = get_soma_stats(&state.db, Some(auth.user_id)).await?;
+    Ok(Json(json!(stats)))
 }

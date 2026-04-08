@@ -9,8 +9,8 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::services::chiasm::{
-    create_task, delete_task, get_task, list_tasks, update_task, CreateTaskRequest,
-    UpdateTaskRequest,
+    create_task, delete_task, get_feed as get_task_feed, get_stats as get_task_stats, get_task,
+    list_tasks, update_task, CreateTaskRequest, UpdateTaskRequest,
 };
 
 pub fn router() -> Router<AppState> {
@@ -52,6 +52,7 @@ struct CreateTaskBody {
 struct UpdateTaskBody {
     title: Option<String>,
     description: Option<String>,
+    summary: Option<String>,
     status: Option<String>,
     priority: Option<i32>,
     agent: Option<String>,
@@ -113,8 +114,12 @@ async fn create_task_handler(
     Ok((StatusCode::CREATED, Json(json!(task))))
 }
 
-async fn get_stats(Auth(_auth): Auth) -> Json<Value> {
-    Json(json!({ "status": "ok" }))
+async fn get_stats(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let stats = get_task_stats(&state.db, Some(auth.user_id)).await?;
+    Ok(Json(json!(stats)))
 }
 
 async fn get_task_handler(
@@ -134,7 +139,7 @@ async fn update_task_handler(
 ) -> Result<Json<Value>, AppError> {
     let req = UpdateTaskRequest {
         title: body.title,
-        description: body.description,
+        description: body.summary.or(body.description),
         status: body.status,
         priority: body.priority,
         agent: body.agent,
@@ -157,6 +162,14 @@ async fn delete_task_handler(
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn get_feed(Auth(_auth): Auth) -> Json<Value> {
-    Json(json!({ "items": [] }))
+async fn get_feed(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<ListTasksParams>,
+) -> Result<Json<Value>, AppError> {
+    let limit = params.limit.unwrap_or(100);
+    let offset = params.offset.unwrap_or(0);
+    let items = get_task_feed(&state.db, auth.user_id, limit, offset).await?;
+    let total = get_task_stats(&state.db, Some(auth.user_id)).await?.total;
+    Ok(Json(json!({ "items": items, "total": total })))
 }

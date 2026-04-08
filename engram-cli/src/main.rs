@@ -10,7 +10,7 @@ struct Cli {
     server: String,
 
     /// API key
-    #[arg(long, env = "ENGRAM_KEY")]
+    #[arg(long)]
     key: Option<String>,
 
     #[command(subcommand)]
@@ -94,7 +94,7 @@ impl Client {
     fn new(base_url: String, api_key: Option<String>) -> Self {
         Self {
             http: reqwest::Client::new(),
-            base_url,
+            base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
         }
     }
@@ -153,6 +153,15 @@ fn truncate(s: &str, max: usize) -> &str {
     }
 }
 
+fn value_as_string(value: Option<&Value>) -> Option<String> {
+    value.and_then(|v| {
+        v.as_str()
+            .map(ToOwned::to_owned)
+            .or_else(|| v.as_i64().map(|n| n.to_string()))
+            .or_else(|| v.as_u64().map(|n| n.to_string()))
+    })
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -163,7 +172,12 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
-    let client = Client::new(cli.server.clone(), cli.key.clone());
+    let api_key = cli
+        .key
+        .clone()
+        .or_else(|| std::env::var("ENGRAM_API_KEY").ok())
+        .or_else(|| std::env::var("ENGRAM_KEY").ok());
+    let client = Client::new(cli.server.clone(), api_key);
 
     match &cli.command {
         Commands::Store { content, category, importance, tags, source } => {
@@ -192,9 +206,9 @@ async fn main() {
 
             match client.post("/store", body).await {
                 Ok(v) => {
-                    if let Some(existing_id) = v.get("existing_id").and_then(|x| x.as_str()) {
+                    if let Some(existing_id) = value_as_string(v.get("existing_id")) {
                         println!("Duplicate of #{}", existing_id);
-                    } else if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                    } else if let Some(id) = value_as_string(v.get("id")) {
                         println!("Stored memory #{}", id);
                     } else {
                         println!("{}", serde_json::to_string_pretty(&v).unwrap());
@@ -218,7 +232,7 @@ async fn main() {
                         println!("No results.");
                     }
                     for item in &results {
-                        let id = item.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                        let id = value_as_string(item.get("id")).unwrap_or_else(|| "?".to_string());
                         let score = item
                             .get("score")
                             .and_then(|x| x.as_f64())
@@ -236,7 +250,7 @@ async fn main() {
         }
 
         Commands::Context { query, limit } => {
-            let body = json!({ "context": query, "limit": limit });
+            let body = json!({ "query": query, "context": query, "limit": limit });
             match client.post("/recall", body).await {
                 Ok(v) => {
                     println!("{}", serde_json::to_string_pretty(&v).unwrap());
@@ -262,7 +276,7 @@ async fn main() {
             match client.get(&format!("/list?limit={}&offset={}", limit, offset)).await {
                 Ok(v) => {
                     let items = v.as_array().cloned().unwrap_or_else(|| {
-                        v.get("memories")
+                        v.get("results")
                             .and_then(|r| r.as_array())
                             .cloned()
                             .unwrap_or_default()
@@ -271,7 +285,7 @@ async fn main() {
                         println!("No memories.");
                     }
                     for item in &items {
-                        let id = item.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                        let id = value_as_string(item.get("id")).unwrap_or_else(|| "?".to_string());
                         let category = item
                             .get("category")
                             .and_then(|x| x.as_str())
@@ -297,7 +311,7 @@ async fn main() {
         Commands::Bootstrap { db: _ } => {
             match client.post("/bootstrap", json!({})).await {
                 Ok(v) => {
-                    if let Some(key) = v.get("api_key").and_then(|x| x.as_str()) {
+                    if let Some(key) = value_as_string(v.get("api_key")).or_else(|| value_as_string(v.get("key"))) {
                         println!("{}", key);
                     } else {
                         println!("{}", serde_json::to_string_pretty(&v).unwrap());

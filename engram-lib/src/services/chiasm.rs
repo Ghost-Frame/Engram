@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 use crate::db::Database;
@@ -83,6 +84,33 @@ pub struct UpdateTaskRequest {
     pub tags: Option<Vec<String>>,
     pub metadata: Option<serde_json::Value>,
     pub due_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChiasmStats {
+    pub total: i64,
+    pub by_status: BTreeMap<String, i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedItem {
+    pub id: i64,
+    pub title: String,
+    pub status: String,
+    pub priority: i32,
+    pub agent: Option<String>,
+    pub project: Option<String>,
+    pub updated_at: String,
+    pub created_at: String,
+}
+
+fn normalize_status_bucket(status: &str) -> String {
+    match status {
+        "pending" | "open" => "open".to_string(),
+        "inprogress" | "in_progress" => "in_progress".to_string(),
+        "completed" | "done" => "done".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn row_to_task(row: &libsql::Row) -> Result<Task> {
@@ -286,4 +314,66 @@ pub async fn delete_task(db: &Database, id: i64) -> Result<()> {
     let conn = &db.conn;
     conn.execute("DELETE FROM tasks WHERE id = ?1", libsql::params![id]).await?;
     Ok(())
+}
+
+pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<ChiasmStats> {
+    let conn = &db.conn;
+    let mut by_status = BTreeMap::new();
+
+    let mut rows = if let Some(uid) = user_id {
+        conn.query(
+            "SELECT status, COUNT(*) FROM tasks WHERE user_id = ?1 GROUP BY status",
+            libsql::params![uid],
+        )
+        .await?
+    } else {
+        conn.query("SELECT status, COUNT(*) FROM tasks GROUP BY status", ())
+            .await?
+    };
+
+    let mut total = 0i64;
+    while let Some(row) = rows.next().await? {
+        let status: String = row.get(0)?;
+        let count: i64 = row.get(1)?;
+        total += count;
+        let bucket = normalize_status_bucket(&status);
+        *by_status.entry(bucket).or_insert(0) += count;
+    }
+
+    Ok(ChiasmStats { total, by_status })
+}
+
+pub async fn get_feed(
+    db: &Database,
+    user_id: i64,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<FeedItem>> {
+    let conn = &db.conn;
+    let mut rows = conn
+        .query(
+            "SELECT id, title, status, priority, agent, project, updated_at, created_at
+             FROM tasks
+             WHERE user_id = ?1
+             ORDER BY updated_at DESC, created_at DESC
+             LIMIT ?2 OFFSET ?3",
+            libsql::params![user_id, limit as i64, offset as i64],
+        )
+        .await?;
+
+    let mut items = Vec::new();
+    while let Some(row) = rows.next().await? {
+        items.push(FeedItem {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            status: row.get(2)?,
+            priority: row.get(3)?,
+            agent: row.get(4)?,
+            project: row.get(5)?,
+            updated_at: row.get(6)?,
+            created_at: row.get(7)?,
+        });
+    }
+
+    Ok(items)
 }
