@@ -20,9 +20,9 @@ use engram_lib::sessions::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/sessions", get(list_sessions_handler).post(create_session_handler))
-        .route("/sessions/:id", get(get_session_handler))
-        .route("/sessions/:id/append", post(append_handler))
-        .route("/sessions/:id/stream", get(stream_handler))
+        .route("/sessions/{id}", get(get_session_handler))
+        .route("/sessions/{id}/append", post(append_handler))
+        .route("/sessions/{id}/stream", get(stream_handler))
 }
 
 async fn create_session_handler(
@@ -77,6 +77,10 @@ async fn append_handler(
         let sessions = state.sessions.read().await;
         if let Some(broadcast) = sessions.get(&id) {
             let mut b = broadcast.lock().await;
+            const MAX_BUFFER: usize = 10_000;
+            if b.buffer.len() >= MAX_BUFFER {
+                b.buffer.remove(0); // drop oldest
+            }
             b.buffer.push(body.line.clone());
             let _ = b.tx.send(body.line);
         }

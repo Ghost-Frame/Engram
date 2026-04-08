@@ -26,14 +26,8 @@ pub async fn create_session(db: &Database, req: &SessionCreateRequest, user_id: 
         params![id.clone(), req.agent.clone(), user_id],
     ).await?;
 
-    Ok(SessionInfo {
-        id,
-        agent: req.agent.clone(),
-        user_id,
-        status: "active".to_string(),
-        created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-        updated_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-    })
+    // Fetch back the row so timestamps come from the DB (not local clock)
+    get_session(db, &id, user_id).await
 }
 
 pub async fn get_session(db: &Database, session_id: &str, user_id: i64) -> Result<SessionInfo> {
