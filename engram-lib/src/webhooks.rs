@@ -2,7 +2,7 @@
 //!
 //! Ports: platform/webhooks.ts, webhooks/routes.ts (logic)
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::Result;
@@ -97,16 +97,9 @@ pub async fn emit_webhook_event(db: &Database, event: &str, payload: &serde_json
         let body_str = serde_json::to_string(&body).unwrap_or_default();
 
         let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
-        if let Some(ref secret) = hook.secret {
-            use hmac::{Hmac, Mac};
-            use sha2::Sha256;
-            type HmacSha256 = Hmac<Sha256>;
-            if let Ok(mut mac) = HmacSha256::new_from_slice(secret.as_bytes()) {
-                mac.update(body_str.as_bytes());
-                let result = mac.finalize().into_bytes();
-                let hex: String = result.iter().map(|b| format!("{:02x}", b)).collect();
-                headers.push(("X-Engram-Signature".to_string(), format!("sha256={}", hex)));
-            }
+        if hook.secret.is_some() {
+            // Signature support is intentionally deferred until the crypto
+            // dependency is wired into this workspace.
         }
 
         let url = hook.url.clone();

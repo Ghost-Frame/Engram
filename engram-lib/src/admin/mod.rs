@@ -6,6 +6,18 @@ use crate::db::Database;
 use crate::Result;
 use self::types::*;
 
+fn scopes_for_role(role: &str) -> Vec<crate::auth::Scope> {
+    match role {
+        "admin" => vec![
+            crate::auth::Scope::Read,
+            crate::auth::Scope::Write,
+            crate::auth::Scope::Admin,
+        ],
+        "writer" => vec![crate::auth::Scope::Read, crate::auth::Scope::Write],
+        _ => vec![crate::auth::Scope::Read],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Compact (VACUUM + ANALYZE)
 // ---------------------------------------------------------------------------
@@ -171,16 +183,35 @@ pub async fn get_tenants(db: &Database) -> Result<Vec<TenantRow>> {
 // ---------------------------------------------------------------------------
 
 pub async fn provision_tenant(db: &Database, username: &str, email: Option<&str>, role: &str) -> Result<ProvisionResult> {
-    let user = crate::apikeys::insert_user(db, username, email, role).await?;
-    let space = crate::apikeys::insert_default_space(db, user.id).await?;
-    let scopes = crate::auth::derive_scopes_from_role(role);
-    let scope_str = scopes.join(",");
-    let (_key, raw) = crate::auth::create_key(db, user.id, "default", &scope_str, None, None).await?;
+    let is_admin = if role == "admin" { 1 } else { 0 };
+    let mut user_rows = db.conn.query(
+        "INSERT INTO users (username, email, role, is_admin) VALUES (?1, ?2, ?3, ?4) RETURNING id, username",
+        libsql::params![username, email.map(|v| v.to_string()), role, is_admin],
+    ).await?;
+    let user_row = user_rows
+        .next()
+        .await?
+        .ok_or_else(|| crate::EngError::Internal("insert user failed".into()))?;
+    let user_id: i64 = user_row.get(0).map_err(|e| crate::EngError::Internal(e.to_string()))?;
+    let username: String = user_row.get(1).map_err(|e| crate::EngError::Internal(e.to_string()))?;
+
+    let mut space_rows = db.conn.query(
+        "INSERT INTO spaces (user_id, name, description) VALUES (?1, ?2, ?3) RETURNING id",
+        libsql::params![user_id, "default", Option::<String>::None],
+    ).await?;
+    let space_row = space_rows
+        .next()
+        .await?
+        .ok_or_else(|| crate::EngError::Internal("insert default space failed".into()))?;
+    let space_id: i64 = space_row.get(0).map_err(|e| crate::EngError::Internal(e.to_string()))?;
+
+    let scopes = scopes_for_role(role);
+    let (_key, raw) = crate::auth::create_key(db, user_id, "default", scopes).await?;
     Ok(ProvisionResult {
-        user_id: user.id,
-        username: user.username,
+        user_id,
+        username,
         api_key: raw,
-        space_id: space.id,
+        space_id,
     })
 }
 

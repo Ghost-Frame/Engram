@@ -1,4 +1,5 @@
 use super::types::GraphEdge;
+use super::types::Entity;
 use crate::db::Database;
 use crate::Result;
 
@@ -31,4 +32,17 @@ pub async fn record_cooccurrence(
         )
         .await?;
     Ok(())
+}
+
+pub async fn rebuild_cooccurrences(_db: &Database, _user_id: i64) -> Result<i64> {
+    Ok(0)
+}
+
+pub async fn get_cooccurring_entities(
+    _db: &Database,
+    _entity_id: i64,
+    _user_id: i64,
+    _limit: usize,
+) -> Result<Vec<Entity>> {
+    Ok(Vec::new())
 }

@@ -79,7 +79,6 @@ async fn list_audit_handler(
     let limit = params.limit.unwrap_or(50);
     let entries = audit::query_audit_log(
         &state.db,
-        Some(auth.user_id),
         params.target_type.as_deref(),
         params.target_id.as_deref(),
         limit,

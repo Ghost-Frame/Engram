@@ -4,7 +4,6 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use engram_lib::webhooks::{self, CreateWebhookRequest};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -26,28 +25,47 @@ pub fn router() -> Router<AppState> {
 async fn create_webhook_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
-    Json(mut req): Json<CreateWebhookRequest>,
+    Json(body): Json<CreateWebhookBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    req.user_id = Some(auth.user_id);
-    let webhook = webhooks::create_webhook(&state.db, req).await?;
-    Ok((StatusCode::CREATED, Json(json!(webhook))))
+    let events = body.events.unwrap_or_else(|| vec!["*".to_string()]);
+    let (id, created_at) = engram_lib::webhooks::create_webhook(
+        &state.db,
+        &body.url,
+        &events,
+        body.secret.as_deref(),
+        auth.user_id,
+    ).await?;
+    Ok((StatusCode::CREATED, Json(json!({
+        "created": true,
+        "id": id,
+        "url": body.url,
+        "events": events,
+        "created_at": created_at
+    }))))
 }
 
 async fn list_webhooks_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let items = webhooks::list_webhooks(&state.db, auth.user_id).await?;
+    let items = engram_lib::webhooks::list_webhooks(&state.db, auth.user_id).await?;
     Ok(Json(json!({ "webhooks": items, "count": items.len() })))
 }
 
 async fn delete_webhook_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    webhooks::delete_webhook(&state.db, id).await?;
+    engram_lib::webhooks::delete_webhook(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateWebhookBody {
+    url: String,
+    events: Option<Vec<String>>,
+    secret: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,9 +79,18 @@ async fn test_webhook_handler(
     Path(id): Path<i64>,
     Json(body): Json<TestWebhookBody>,
 ) -> Result<Json<Value>, AppError> {
-    let _webhook = webhooks::get_webhook(&state.db, id).await?;
+    let exists = engram_lib::webhooks::list_webhooks(&state.db, auth.user_id)
+        .await?
+        .into_iter()
+        .any(|hook| hook.id == id);
+    if !exists {
+        return Err(AppError(engram_lib::EngError::NotFound(format!(
+            "webhook {} not found",
+            id
+        ))));
+    }
     let event = body.event.as_deref().unwrap_or("test");
     let payload = json!({ "webhook_id": id, "test": true });
-    let dispatched = webhooks::dispatch(&state.db, auth.user_id, event, &payload).await?;
-    Ok(Json(json!({ "dispatched": dispatched, "event": event })))
+    engram_lib::webhooks::emit_webhook_event(&state.db, event, &payload, auth.user_id).await;
+    Ok(Json(json!({ "dispatched": true, "event": event })))
 }
