@@ -96,7 +96,7 @@ pub async fn emit_webhook_event(db: &Database, event: &str, payload: &serde_json
         });
         let body_str = serde_json::to_string(&body).unwrap_or_default();
 
-        let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+        let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
         if hook.secret.is_some() {
             // Signature support is intentionally deferred until the crypto
             // dependency is wired into this workspace.
