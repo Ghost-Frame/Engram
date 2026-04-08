@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod activity;
 pub mod admin;
 pub mod agents;
 pub mod apikeys;
