@@ -8,6 +8,7 @@ pub mod conversations;
 pub mod episodes;
 pub mod gate;
 pub mod graph;
+pub mod growth;
 pub mod health;
 pub mod inbox;
 pub mod ingestion;

@@ -38,6 +38,7 @@ pub async fn run(state: AppState) -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::scratchpad::router())
         .merge(routes::activity::router())
         .merge(routes::gate::router())
+        .merge(routes::growth::router())
         .layer(axum_mw::from_fn_with_state(state.clone(), auth_middleware))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
