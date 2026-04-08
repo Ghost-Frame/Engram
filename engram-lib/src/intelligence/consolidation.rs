@@ -3,13 +3,13 @@ use crate::memory::types::Memory;
 use crate::Result;
 use serde::Serialize;
 
-pub async fn consolidate(db: &Database, memory_ids: &[String]) -> Result<Memory> {
+pub async fn consolidate(_db: &Database, _memory_ids: &[String]) -> Result<Memory> {
     todo!()
 }
 
 pub async fn find_consolidation_candidates(
-    db: &Database,
-    threshold: f32,
+    _db: &Database,
+    _threshold: f32,
 ) -> Result<Vec<Vec<String>>> {
     todo!()
 }

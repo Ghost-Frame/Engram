@@ -45,11 +45,10 @@ pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result
     let mut best: Option<(String, usize)> = None;
     for n in &names {
         let dist = edit_distance(name, n);
-        if dist <= 3 {
-            if best.is_none() || dist < best.as_ref().unwrap().1 {
+        if dist <= 3
+            && (best.is_none() || dist < best.as_ref().unwrap().1) {
                 best = Some((n.clone(), dist));
             }
-        }
     }
     if let Some((matched, _)) = best {
         return Ok(Some(matched));

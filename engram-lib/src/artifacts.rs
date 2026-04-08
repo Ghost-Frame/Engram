@@ -86,7 +86,7 @@ pub async fn store_artifact(
         libsql::params![memory_id, filename.to_string(), mime_type.to_string(), size_bytes, sha256.to_string(), storage_mode.to_string(), data, disk_path.map(|s| s.to_string()), is_encrypted as i64],
     ).await?;
     let row = rows.next().await?.ok_or_else(|| crate::EngError::Internal("failed to insert artifact".into()))?;
-    Ok(row.get::<i64>(0).map_err(|e| crate::EngError::Internal(e.to_string()))?)
+    row.get::<i64>(0).map_err(|e| crate::EngError::Internal(e.to_string()))
 }
 
 pub async fn get_artifacts_by_memory(db: &Database, memory_id: i64) -> Result<Vec<ArtifactRow>> {

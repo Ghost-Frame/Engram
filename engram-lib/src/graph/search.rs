@@ -3,17 +3,17 @@ use crate::db::Database;
 use crate::Result;
 
 pub async fn graph_search(
-    db: &Database,
-    query: &str,
-    limit: usize,
+    _db: &Database,
+    _query: &str,
+    _limit: usize,
 ) -> Result<Vec<GraphNode>> {
     todo!()
 }
 
 pub async fn neighborhood(
-    db: &Database,
-    node_id: &str,
-    depth: u32,
+    _db: &Database,
+    _node_id: &str,
+    _depth: u32,
 ) -> Result<(Vec<GraphNode>, Vec<super::types::GraphEdge>)> {
     todo!()
 }

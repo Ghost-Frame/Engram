@@ -81,7 +81,7 @@ async fn create_entity_handler(
         ],
     )
     .await
-    .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+    .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     let mut rows = conn
         .query(
@@ -91,12 +91,12 @@ async fn create_entity_handler(
             (),
         )
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     if let Some(row) = rows
         .next()
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
     {
         let entity = row_to_entity_json(&row)?;
         Ok((StatusCode::CREATED, Json(entity)))
@@ -137,13 +137,13 @@ async fn list_entities_handler(
             libsql::params![user_id, limit, offset],
         )
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     let mut results: Vec<Value> = Vec::new();
     while let Some(row) = rows
         .next()
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
     {
         results.push(row_to_entity_json(&row)?);
     }
@@ -169,12 +169,12 @@ async fn get_entity_handler(
             libsql::params![id],
         )
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     if let Some(row) = rows
         .next()
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
     {
         Ok(Json(row_to_entity_json(&row)?))
     } else {
@@ -197,7 +197,7 @@ async fn delete_entity_handler(
     let conn = state.db.connection();
     conn.execute("DELETE FROM entities WHERE id = ?1", libsql::params![id])
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -220,13 +220,13 @@ async fn entity_relationships_handler(
             libsql::params![id],
         )
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     let mut relationships: Vec<Value> = Vec::new();
     while let Some(row) = rows
         .next()
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
     {
         relationships.push(row_to_relationship_json(&row)?);
     }
@@ -250,17 +250,17 @@ async fn entity_memories_handler(
             libsql::params![id],
         )
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     let mut memory_ids: Vec<i64> = Vec::new();
     while let Some(row) = rows
         .next()
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
     {
         let mid: i64 = row
             .get(0)
-            .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+            .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
         memory_ids.push(mid);
     }
 
@@ -287,7 +287,7 @@ async fn create_relationship_handler(
         libsql::params![req.source_entity_id, req.target_entity_id, rel_type.to_string(), strength],
     )
     .await
-    .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+    .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     let mut rows = conn
         .query(
@@ -297,12 +297,12 @@ async fn create_relationship_handler(
             (),
         )
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     if let Some(row) = rows
         .next()
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
     {
         Ok((StatusCode::CREATED, Json(row_to_relationship_json(&row)?)))
     } else {
@@ -322,7 +322,7 @@ async fn build_graph_handler(
     Json(mut opts): Json<GraphBuildOptions>,
 ) -> Result<Json<Value>, AppError> {
     opts.user_id = auth.user_id;
-    let result = build_graph_data(&state.db, &opts).await.map_err(|e| AppError(e))?;
+    let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
     Ok(Json(json!(result)))
 }
 
@@ -385,26 +385,26 @@ async fn memory_entities_handler(
             libsql::params![id],
         )
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     let mut entities: Vec<Value> = Vec::new();
     while let Some(row) = rows
         .next()
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
     {
         let eid: i64 = row
             .get(0)
-            .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+            .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
         let name: String = row
             .get(1)
-            .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+            .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
         let entity_type: String = row
             .get(2)
-            .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+            .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
         let salience: f64 = row
             .get(3)
-            .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+            .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
         entities.push(json!({
             "id": eid,
             "name": name,
@@ -424,7 +424,7 @@ async fn detect_communities_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let result = detect_communities(&state.db, auth.user_id, 25).await.map_err(|e| AppError(e))?;
+    let result = detect_communities(&state.db, auth.user_id, 25).await.map_err(AppError)?;
     Ok(Json(json!(result)))
 }
 
@@ -439,7 +439,7 @@ async fn community_members_handler(
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(50) as usize;
-    let members = get_community_members(&state.db, id, auth.user_id, limit).await.map_err(|e| AppError(e))?;
+    let members = get_community_members(&state.db, id, auth.user_id, limit).await.map_err(AppError)?;
     Ok(Json(json!({ "members": members })))
 }
 
@@ -451,7 +451,7 @@ async fn community_stats_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_community_stats(&state.db, auth.user_id).await.map_err(|e| AppError(e))?;
+    let stats = get_community_stats(&state.db, auth.user_id).await.map_err(AppError)?;
     Ok(Json(json!({ "stats": stats })))
 }
 
@@ -463,7 +463,7 @@ async fn pagerank_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let result = update_pagerank_scores(&state.db, auth.user_id).await.map_err(|e| AppError(e))?;
+    let result = update_pagerank_scores(&state.db, auth.user_id).await.map_err(AppError)?;
     Ok(Json(json!(result)))
 }
 
@@ -475,7 +475,7 @@ async fn rebuild_cooccurrences_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let count = rebuild_cooccurrences(&state.db, auth.user_id).await.map_err(|e| AppError(e))?;
+    let count = rebuild_cooccurrences(&state.db, auth.user_id).await.map_err(AppError)?;
     Ok(Json(json!({ "rebuilt": count })))
 }
 
@@ -491,7 +491,7 @@ async fn entity_cooccurrences_handler(
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20) as usize;
     let entities = get_cooccurring_entities(&state.db, id, auth.user_id, limit)
-        .await.map_err(|e| AppError(e))?;
+        .await.map_err(AppError)?;
     Ok(Json(json!({ "cooccurrences": entities })))
 }
 
@@ -502,40 +502,40 @@ async fn entity_cooccurrences_handler(
 fn row_to_entity_json(row: &libsql::Row) -> Result<Value, AppError> {
     let id: i64 = row
         .get(0)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let name: String = row
         .get(1)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let entity_type: String = row
         .get(2)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let description: Option<String> = row
         .get(3)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let aliases_raw: Option<String> = row
         .get(4)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let user_id: i64 = row
         .get(5)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let space_id: Option<i64> = row
         .get(6)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let confidence: f64 = row
         .get(7)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let occurrence_count: i32 = row
         .get(8)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let first_seen_at: String = row
         .get(9)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let last_seen_at: String = row
         .get(10)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let created_at: String = row
         .get(11)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     let aliases: Value = aliases_raw
         .as_ref()
@@ -561,25 +561,25 @@ fn row_to_entity_json(row: &libsql::Row) -> Result<Value, AppError> {
 fn row_to_relationship_json(row: &libsql::Row) -> Result<Value, AppError> {
     let id: i64 = row
         .get(0)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let source_entity_id: i64 = row
         .get(1)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let target_entity_id: i64 = row
         .get(2)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let relationship_type: String = row
         .get(3)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let strength: f64 = row
         .get(4)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let evidence_count: i32 = row
         .get(5)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     let created_at: String = row
         .get(6)
-        .map_err(|e| AppError(engram_lib::EngError::Database(e.into())))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     Ok(json!({
         "id": id,

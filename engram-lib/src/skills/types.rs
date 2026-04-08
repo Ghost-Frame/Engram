@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum SkillCategory { ToolGuide, Workflow, Reference }
-impl Default for SkillCategory { fn default() -> Self { Self::Workflow } }
+#[derive(Default)]
+pub enum SkillCategory { ToolGuide, #[default]
+Workflow, Reference }
 
 impl std::fmt::Display for SkillCategory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -25,8 +26,9 @@ impl std::str::FromStr for SkillCategory {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum SkillVisibility { Private, Public }
-impl Default for SkillVisibility { fn default() -> Self { Self::Private } }
+#[derive(Default)]
+pub enum SkillVisibility { #[default]
+Private, Public }
 
 impl std::fmt::Display for SkillVisibility {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,8 +49,9 @@ impl std::str::FromStr for SkillVisibility {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum SkillOrigin { Imported, Captured, Derived, Fixed }
-impl Default for SkillOrigin { fn default() -> Self { Self::Imported } }
+#[derive(Default)]
+pub enum SkillOrigin { #[default]
+Imported, Captured, Derived, Fixed }
 
 impl std::fmt::Display for SkillOrigin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -116,8 +119,8 @@ impl std::fmt::Display for PatchType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct SkillMeta { pub name: String, pub description: String, #[serde(default)] pub category: Option<String>, #[serde(default)] pub tags: Option<Vec<String>> }
-impl Default for SkillMeta { fn default() -> Self { Self { name: String::new(), description: String::new(), category: None, tags: None } } }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillSearchResult { pub skill_id: i64, pub name: String, pub description: String, pub agent: String, pub category: String, pub origin: String, pub score: f64, pub source: String }

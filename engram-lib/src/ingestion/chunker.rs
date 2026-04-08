@@ -23,7 +23,7 @@ fn find_last_heading_break(window: &str) -> Option<usize> {
                 hash_count += 1;
                 j += 1;
             }
-            if hash_count >= 1 && hash_count <= 6 && j < bytes.len() && bytes[j] == b' ' {
+            if (1..=6).contains(&hash_count) && j < bytes.len() && bytes[j] == b' ' {
                 last_pos = Some(i);
             }
         }

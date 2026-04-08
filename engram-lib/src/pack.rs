@@ -8,9 +8,10 @@ use crate::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PackFormat { Text, Json, Xml }
+#[derive(Default)]
+pub enum PackFormat { #[default]
+Text, Json, Xml }
 
-impl Default for PackFormat { fn default() -> Self { Self::Text } }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PackCandidate {

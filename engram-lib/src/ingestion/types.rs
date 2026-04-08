@@ -9,16 +9,13 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum IngestMode {
     Extract,
+    #[default]
     Raw,
 }
 
-impl Default for IngestMode {
-    fn default() -> Self {
-        Self::Raw
-    }
-}
 
 impl std::fmt::Display for IngestMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -120,6 +117,7 @@ pub struct Chunk {
 // -- Options and results --
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ChunkerOptions {
     /// Maximum characters per chunk (default: 3000)
     pub max_chunk_size: Option<usize>,
@@ -129,15 +127,6 @@ pub struct ChunkerOptions {
     pub respect_structure: Option<bool>,
 }
 
-impl Default for ChunkerOptions {
-    fn default() -> Self {
-        Self {
-            max_chunk_size: None,
-            overlap: None,
-            respect_structure: None,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessOptions {

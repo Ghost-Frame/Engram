@@ -12,12 +12,12 @@ pub struct Contradiction {
 }
 
 pub async fn detect_contradictions(
-    db: &Database,
-    memory: &Memory,
+    _db: &Database,
+    _memory: &Memory,
 ) -> Result<Vec<Contradiction>> {
     todo!()
 }
 
-pub async fn scan_all_contradictions(db: &Database) -> Result<Vec<Contradiction>> {
+pub async fn scan_all_contradictions(_db: &Database) -> Result<Vec<Contradiction>> {
     todo!()
 }

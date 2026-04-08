@@ -104,12 +104,12 @@ impl Config {
         if let Some(ref dir) = self.embedding_model_dir {
             std::path::PathBuf::from(dir)
         } else {
-            let data_dir = dirs::data_dir()
+            
+            dirs::data_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("engram")
                 .join("models")
-                .join(model_short_name);
-            data_dir
+                .join(model_short_name)
         }
     }
 }

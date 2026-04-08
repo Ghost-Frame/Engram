@@ -8,6 +8,12 @@ pub struct GroundingClient {
     tool_cache: Vec<ToolSchema>,
 }
 
+impl Default for GroundingClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GroundingClient {
     pub fn new() -> Self {
         let shell = ShellProvider::new("default");

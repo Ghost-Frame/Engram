@@ -1006,7 +1006,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
         let last_output = steps
             .iter()
             .filter(|s| s.status == "completed")
-            .last()
+            .next_back()
             .map(|s| s.output.clone())
             .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 

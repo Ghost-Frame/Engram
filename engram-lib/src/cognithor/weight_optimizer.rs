@@ -27,6 +27,12 @@ pub struct WeightUpdate {
     pub timestamp: String,
 }
 
+impl Default for SearchWeightOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SearchWeightOptimizer {
     pub fn new() -> Self {
         Self {

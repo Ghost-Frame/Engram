@@ -138,8 +138,8 @@ pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> 
     let status = req.status.unwrap_or_else(|| "pending".to_string());
     let priority = req.priority.unwrap_or(5);
     let user_id = req.user_id.unwrap_or(1);
-    let tags_json = req.tags.as_ref().map(|t| serde_json::to_string(t)).transpose()?;
-    let metadata_json = req.metadata.as_ref().map(|m| serde_json::to_string(m)).transpose()?;
+    let tags_json = req.tags.as_ref().map(serde_json::to_string).transpose()?;
+    let metadata_json = req.metadata.as_ref().map(serde_json::to_string).transpose()?;
 
     conn.execute(
         "INSERT INTO tasks (title, description, status, priority, agent, project, tags, metadata, user_id, due_at)

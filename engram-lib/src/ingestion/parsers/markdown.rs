@@ -28,7 +28,7 @@ fn find_first_heading(text: &str) -> Option<String> {
         let trimmed = line.trim_start();
         if trimmed.starts_with('#') {
             let hash_count = trimmed.bytes().take_while(|&b| b == b'#').count();
-            if hash_count >= 1 && hash_count <= 6 {
+            if (1..=6).contains(&hash_count) {
                 let rest = &trimmed[hash_count..];
                 if rest.starts_with(' ') || rest.is_empty() {
                     let title = rest.trim().to_string();

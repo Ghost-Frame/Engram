@@ -99,7 +99,7 @@ fn build_summary(contents: &[(String, i32)], max_chars: usize) -> String {
     let mut scored: Vec<(&str, i32)> = Vec::new();
 
     for (content, importance) in contents {
-        for sentence in content.split(|c| c == '.' || c == '\n') {
+        for sentence in content.split(['.', '\n']) {
             let trimmed = sentence.trim();
             if trimmed.len() >= 15 {
                 scored.push((trimmed, *importance));
