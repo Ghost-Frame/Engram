@@ -4,6 +4,7 @@ use tokio::sync::{RwLock, broadcast};
 use kleos_lib::config::{Config, EidolonConfig};
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::EmbeddingProvider;
+use kleos_lib::llm::local::LocalModelClient;
 use kleos_lib::reranker::Reranker;
 use kleos_lib::services::brain::BrainManager;
 
@@ -26,6 +27,7 @@ pub struct AppState {
     pub embedder: Option<Arc<dyn EmbeddingProvider>>,
     pub reranker: Option<Arc<Reranker>>,
     pub brain: Option<Arc<BrainManager>>,
+    pub llm: Option<Arc<LocalModelClient>>,
     pub sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SessionBroadcast>>>>>,
     #[allow(dead_code)]
     pub eidolon_config: Option<EidolonConfig>,
