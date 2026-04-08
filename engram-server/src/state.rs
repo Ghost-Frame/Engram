@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::{RwLock, broadcast};
-use kleos_lib::config::Config;
+use kleos_lib::config::{Config, EidolonConfig};
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::EmbeddingProvider;
 use kleos_lib::reranker::Reranker;
@@ -27,4 +27,5 @@ pub struct AppState {
     pub reranker: Option<Arc<Reranker>>,
     pub brain: Option<Arc<BrainManager>>,
     pub sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SessionBroadcast>>>>>,
+    pub eidolon_config: Option<EidolonConfig>,
 }
