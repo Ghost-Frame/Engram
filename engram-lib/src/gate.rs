@@ -69,8 +69,8 @@ pub async fn respond_to_gate(db: &Database, gate_id: i64, approved: bool, reason
     // Return the (possibly resolved) command if approved
     if approved {
         let mut rows = db.conn.query(
-            "SELECT command FROM gate_requests WHERE id = ?1",
-            libsql::params![gate_id],
+            "SELECT command FROM gate_requests WHERE id = ?1 AND user_id = ?2",
+            libsql::params![gate_id, user_id],
         ).await?;
         if let Some(row) = rows.next().await? {
             let command: String = row.get(0)?;
@@ -85,11 +85,15 @@ pub async fn respond_to_gate(db: &Database, gate_id: i64, approved: bool, reason
 pub async fn complete_gate(db: &Database, gate_id: i64, output: &str, known_secrets: &[String], user_id: i64) -> Result<()> {
     let scrubbed = scrub_output(output, known_secrets);
 
-    db.conn.execute(
+    let rows_affected = db.conn.execute(
         "UPDATE gate_requests SET status = 'completed', output = ?1, updated_at = datetime('now')
          WHERE id = ?2 AND user_id = ?3",
         libsql::params![scrubbed, gate_id, user_id],
     ).await?;
+
+    if rows_affected == 0 {
+        return Err(crate::EngError::NotFound(format!("gate request {} not found", gate_id)));
+    }
 
     Ok(())
 }
@@ -129,8 +133,14 @@ pub fn check_dangerous_patterns(command: &str) -> Option<String> {
     let cmd_lower = command.to_lowercase();
 
     // Destructive rm patterns
-    if cmd_lower.contains("rm -rf /") && !cmd_lower.contains("rm -rf /tmp") {
-        return Some("Destructive rm -rf on critical path -- not allowed".to_string());
+    if cmd_lower.contains("rm -rf /") {
+        let after_parts: Vec<&str> = cmd_lower.splitn(2, "rm -rf /").collect();
+        let path_start = after_parts.get(1).unwrap_or(&"");
+        let is_tmp_safe = path_start.starts_with("tmp ") || path_start.starts_with("tmp/")
+            || *path_start == "tmp" || path_start.starts_with("tmp\n");
+        if !is_tmp_safe {
+            return Some("Destructive rm -rf on critical path -- not allowed".to_string());
+        }
     }
     if cmd_lower.contains("rm -rf ~/") {
         return Some("Destructive rm -rf on home directory -- not allowed".to_string());
