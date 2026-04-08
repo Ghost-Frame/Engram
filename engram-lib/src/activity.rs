@@ -4,7 +4,7 @@ use crate::db::Database;
 use crate::{EngError, Result};
 use crate::memory::{self, types::StoreRequest};
 use crate::services::axon::{publish_event, PublishEventRequest};
-use crate::services::soma::{heartbeat, list_agents, register_agent, RegisterAgentRequest};
+use crate::services::soma::{get_agent_by_name, heartbeat, register_agent, RegisterAgentRequest};
 
 // -- Types --
 
@@ -119,21 +119,17 @@ pub async fn process_activity(
     .await?;
 
     // Upsert agent in soma then heartbeat
-    let agents = list_agents(db, Some(user_id), false).await?;
-    let agent_id = if let Some(a) = agents.iter().find(|a| a.name == report.agent) {
-        a.id
-    } else {
-        let registered = register_agent(
-            db,
-            RegisterAgentRequest {
+    let agent_id = match get_agent_by_name(db, user_id, &report.agent).await {
+        Ok(a) => a.id,
+        Err(crate::EngError::NotFound(_)) => {
+            register_agent(db, RegisterAgentRequest {
                 user_id: Some(user_id),
                 name: report.agent.clone(),
                 category: Some("cli".to_string()),
                 description: None,
-            },
-        )
-        .await?;
-        registered.id
+            }).await?.id
+        }
+        Err(e) => return Err(e),
     };
     heartbeat(db, agent_id).await?;
 
