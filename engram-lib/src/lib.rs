@@ -1,19 +1,40 @@
 #![allow(dead_code)]
 
+pub mod admin;
+pub mod agents;
+pub mod apikeys;
+pub mod artifacts;
 pub mod audit;
 pub mod auth;
+pub mod cognithor;
 pub mod config;
+pub mod context;
+pub mod conversations;
 pub mod db;
 pub mod embeddings;
 pub mod episodes;
+pub mod facts;
 pub mod fsrs;
 pub mod graph;
+pub mod grounding;
 pub mod guard;
+pub mod inbox;
+pub mod ingestion;
 pub mod intelligence;
+pub mod jobs;
+pub mod llm;
 pub mod memory;
+pub mod pack;
 pub mod personality;
+pub mod preferences;
+pub mod projects;
+pub mod prompts;
+pub mod quota;
+pub mod ratelimit;
 pub mod reranker;
+pub mod scratchpad;
 pub mod services;
+pub mod skills;
 pub mod webhooks;
 
 use thiserror::Error;

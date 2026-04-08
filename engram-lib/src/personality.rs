@@ -825,6 +825,143 @@ pub async fn get_profile_for_injection(db: &Database, user_id: i64) -> Result<Op
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredSignal {
+    pub id: i64,
+    pub signal_type: String,
+    pub value: f64,
+    pub evidence: Option<String>,
+    pub user_id: i64,
+    pub agent: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredProfile {
+    pub user_id: i64,
+    pub traits: serde_json::Value,
+    pub last_updated_at: String,
+    pub created_at: String,
+}
+
+pub fn detect_signals(content: &str) -> Vec<(String, f64)> {
+    extract_signals_rule_based(content)
+        .into_iter()
+        .map(|signal| (signal.signal_type.as_str().to_string(), signal.intensity))
+        .collect()
+}
+
+pub async fn store_signal(
+    db: &Database,
+    signal_type: &str,
+    value: f64,
+    evidence: Option<&str>,
+    user_id: i64,
+    agent: Option<&str>,
+) -> Result<StoredSignal> {
+    let mut rows = db.conn.query(
+        "INSERT INTO personality_signals (signal_type, value, evidence, user_id, agent)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         RETURNING id, signal_type, value, evidence, user_id, agent, created_at",
+        libsql::params![
+            signal_type.to_string(),
+            value,
+            evidence.map(|v| v.to_string()),
+            user_id,
+            agent.map(|v| v.to_string())
+        ],
+    ).await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| crate::EngError::Internal("insert personality signal failed".into()))?;
+    Ok(StoredSignal {
+        id: row.get(0)?,
+        signal_type: row.get(1)?,
+        value: row.get(2)?,
+        evidence: row.get(3)?,
+        user_id: row.get(4)?,
+        agent: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+pub async fn list_signals(db: &Database, user_id: i64, limit: usize) -> Result<Vec<StoredSignal>> {
+    let mut rows = db.conn.query(
+        "SELECT id, signal_type, value, evidence, user_id, agent, created_at
+         FROM personality_signals
+         WHERE user_id = ?1
+         ORDER BY created_at DESC
+         LIMIT ?2",
+        libsql::params![user_id, limit as i64],
+    ).await?;
+    let mut signals = Vec::new();
+    while let Some(row) = rows.next().await? {
+        signals.push(StoredSignal {
+            id: row.get(0)?,
+            signal_type: row.get(1)?,
+            value: row.get(2)?,
+            evidence: row.get(3)?,
+            user_id: row.get(4)?,
+            agent: row.get(5)?,
+            created_at: row.get(6)?,
+        });
+    }
+    Ok(signals)
+}
+
+pub async fn get_profile(db: &Database, user_id: i64) -> Result<StoredProfile> {
+    if let Some(profile) = get_existing_profile(db, user_id).await? {
+        return Ok(profile);
+    }
+    update_profile(db, user_id).await
+}
+
+pub async fn update_profile(db: &Database, user_id: i64) -> Result<StoredProfile> {
+    let signals = list_signals(db, user_id, 200).await?;
+    let mut traits = serde_json::Map::new();
+    for signal in &signals {
+        traits.insert(signal.signal_type.clone(), serde_json::json!(signal.value));
+    }
+
+    let traits_value = serde_json::Value::Object(traits);
+    let mut rows = db.conn.query(
+        "INSERT INTO personality_profiles (user_id, traits, last_updated_at)
+         VALUES (?1, ?2, datetime('now'))
+         ON CONFLICT(user_id) DO UPDATE SET traits = excluded.traits, last_updated_at = excluded.last_updated_at
+         RETURNING user_id, traits, last_updated_at, created_at",
+        libsql::params![user_id, traits_value.to_string()],
+    ).await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| crate::EngError::Internal("upsert personality profile failed".into()))?;
+    Ok(StoredProfile {
+        user_id: row.get(0)?,
+        traits: serde_json::from_str(&row.get::<String>(1)?).unwrap_or(serde_json::json!({})),
+        last_updated_at: row.get(2)?,
+        created_at: row.get(3)?,
+    })
+}
+
+async fn get_existing_profile(db: &Database, user_id: i64) -> Result<Option<StoredProfile>> {
+    let mut rows = db.conn.query(
+        "SELECT user_id, traits, last_updated_at, created_at
+         FROM personality_profiles
+         WHERE user_id = ?1",
+        libsql::params![user_id],
+    ).await?;
+    match rows.next().await? {
+        Some(row) => Ok(Some(StoredProfile {
+            user_id: row.get(0)?,
+            traits: serde_json::from_str(&row.get::<String>(1)?).unwrap_or(serde_json::json!({})),
+            last_updated_at: row.get(2)?,
+            created_at: row.get(3)?,
+        })),
+        None => Ok(None),
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

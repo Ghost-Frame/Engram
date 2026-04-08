@@ -85,3 +85,10 @@ pub struct CreateRelationshipRequest {
     pub relationship_type: Option<String>,
     pub strength: Option<f64>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GraphBuildOptions {
+    #[serde(default)]
+    pub user_id: i64,
+    pub limit: Option<usize>,
+}

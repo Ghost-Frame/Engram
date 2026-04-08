@@ -60,6 +60,7 @@ async fn main() {
         config: Arc::new(config),
         embedder,
         reranker,
+        brain: None,
     };
 
     if let Err(e) = server::run(state).await {
