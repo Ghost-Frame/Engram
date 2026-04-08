@@ -61,6 +61,7 @@ async fn main() {
         embedder,
         reranker,
         brain: None,
+        sessions: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     };
 
     if let Err(e) = server::run(state).await {

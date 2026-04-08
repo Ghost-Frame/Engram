@@ -22,6 +22,7 @@ pub mod projects;
 pub mod prompts;
 pub mod scratchpad;
 pub mod security;
+pub mod sessions;
 pub mod skills;
 pub mod soma;
 pub mod tasks;
