@@ -16,22 +16,22 @@ pub struct AuditEntry {
 }
 
 pub async fn log_mutation(
-    db: &Database,
-    operation: &str,
-    resource_type: &str,
-    resource_id: &str,
-    actor: Option<&str>,
-    before: Option<serde_json::Value>,
-    after: Option<serde_json::Value>,
+    _db: &Database,
+    _operation: &str,
+    _resource_type: &str,
+    _resource_id: &str,
+    _actor: Option<&str>,
+    _before: Option<serde_json::Value>,
+    _after: Option<serde_json::Value>,
 ) -> Result<AuditEntry> {
     todo!()
 }
 
 pub async fn query_audit_log(
-    db: &Database,
-    resource_type: Option<&str>,
-    resource_id: Option<&str>,
-    limit: usize,
+    _db: &Database,
+    _resource_type: Option<&str>,
+    _resource_id: Option<&str>,
+    _limit: usize,
 ) -> Result<Vec<AuditEntry>> {
     todo!()
 }

@@ -279,7 +279,7 @@ pub async fn get_memory_entities(db: &Database, memory_id: i64) -> Result<Vec<En
          ORDER BY me.salience DESC",
         cols = ENTITY_COLUMNS
             .split(", ")
-            .map(|c| format!("{}", c))
+            .map(|c| c.to_string())
             .collect::<Vec<_>>()
             .join(", e.")
     );

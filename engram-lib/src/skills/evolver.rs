@@ -14,7 +14,7 @@ pub fn strip_code_fences(s: &str) -> String {
         let lines: Vec<&str> = trimmed.lines().collect();
         if lines.len() >= 2 {
             let start = 1;
-            let end = if lines.last().map_or(false, |l| l.trim() == "```") {
+            let end = if lines.last().is_some_and(|l| l.trim() == "```") {
                 lines.len() - 1
             } else {
                 lines.len()

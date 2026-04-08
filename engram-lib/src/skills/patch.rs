@@ -24,7 +24,7 @@ fn collect_recursive(base: &Path, current: &Path, snapshot: &mut HashMap<String,
         let entry = entry.map_err(|e| EngError::Internal(format!("dir entry: {}", e)))?;
         let path = entry.path();
         if path.is_dir() {
-            if path.file_name().map_or(false, |n| n.to_string_lossy().starts_with('.')) { continue; }
+            if path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) { continue; }
             collect_recursive(base, &path, snapshot)?;
         } else {
             let rel = path.strip_prefix(base)

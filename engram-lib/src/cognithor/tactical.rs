@@ -20,6 +20,12 @@ pub struct TacticalMemory {
     entries: HashMap<String, TacticalEntry>,
 }
 
+impl Default for TacticalMemory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TacticalMemory {
     pub fn new() -> Self {
         Self { entries: HashMap::new() }

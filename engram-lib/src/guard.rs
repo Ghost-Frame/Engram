@@ -28,14 +28,14 @@ pub struct GuardResult {
     pub redacted_content: Option<String>,
 }
 
-pub async fn evaluate(db: &Database, content: &str) -> Result<GuardResult> {
+pub async fn evaluate(_db: &Database, _content: &str) -> Result<GuardResult> {
     todo!()
 }
 
-pub async fn create_rule(db: &Database, rule: GuardRule) -> Result<GuardRule> {
+pub async fn create_rule(_db: &Database, _rule: GuardRule) -> Result<GuardRule> {
     todo!()
 }
 
-pub async fn list_rules(db: &Database) -> Result<Vec<GuardRule>> {
+pub async fn list_rules(_db: &Database) -> Result<Vec<GuardRule>> {
     todo!()
 }

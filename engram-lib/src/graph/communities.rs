@@ -100,7 +100,7 @@ pub async fn detect_communities(db: &Database, user_id: i64, max_iterations: u32
     let mut label_map: HashMap<usize, i64> = HashMap::new();
     let mut next_community: i64 = 0;
     for &c in community.values() {
-        if !label_map.contains_key(&c) { label_map.insert(c, next_community); next_community += 1; }
+        if let std::collections::hash_map::Entry::Vacant(e) = label_map.entry(c) { e.insert(next_community); next_community += 1; }
     }
     for (&node_id, &comm) in &community {
         let cid = label_map.get(&comm).copied().unwrap_or(0);

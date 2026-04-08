@@ -360,7 +360,7 @@ pub async fn update_rubric(db: &Database, id: i64, req: UpdateRubricRequest) -> 
         idx += 1;
     }
 
-    sets.push(format!("updated_at = datetime('now')"));
+    sets.push("updated_at = datetime('now')".to_string());
 
     if sets.is_empty() {
         return get_rubric(db, id).await;

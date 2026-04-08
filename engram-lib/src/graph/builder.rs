@@ -4,7 +4,7 @@ use crate::db::Database;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 
-pub async fn build_graph(db: &Database) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
+pub async fn build_graph(_db: &Database) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
     todo!()
 }
 

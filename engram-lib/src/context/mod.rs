@@ -566,7 +566,7 @@ pub async fn assemble_context(
 
                     let mut scored: Vec<(&StructuredFact, f64, bool)> = sf_rows.iter().map(|sf| {
                         let freshness = parse_freshness(sf.valid_at.as_deref(), sf.date_approx.as_deref(), now, year_ms);
-                        let is_stale = sf.valid_at.as_ref().map_or(false, |va| {
+                        let is_stale = sf.valid_at.as_ref().is_some_and(|va| {
                             parse_date_ms(va).map(|ms| now - ms > stale_ms).unwrap_or(false)
                         });
                         (sf, freshness, is_stale)
