@@ -25,7 +25,7 @@ async fn check_handler(
     Json(body): Json<GateCheckRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let result = check_command(&state.db, &body, auth.user_id).await?;
-    Ok((StatusCode::OK, Json(json!(result))))
+    Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
 #[derive(Deserialize)]
