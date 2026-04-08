@@ -1,7 +1,6 @@
 // GROUNDING SEARCH - Coordinated search across providers (ported from TS grounding/search.ts)
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult { pub source: String, pub title: String, pub content: String, pub url: Option<String>, pub score: f64, pub metadata: Option<serde_json::Value> }

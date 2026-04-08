@@ -12,7 +12,7 @@ use crate::db::Database;
 use crate::Result;
 use std::time::Instant;
 use types::{
-    Chunk, ChunkerOptions, FormatMeta, IngestOptions, IngestResult, IngestStatus, ProcessOptions,
+    Chunk, FormatMeta, IngestOptions, IngestResult, IngestStatus, ProcessOptions,
 };
 use uuid::Uuid;
 
@@ -32,7 +32,6 @@ pub async fn ingest(
     let start = Instant::now();
     let job_id = format!("ingest_{}", &Uuid::new_v4().to_string()[..8]);
     let mut errors: Vec<String> = Vec::new();
-    let mut total_documents: usize = 0;
     let mut total_chunks: usize = 0;
     let mut total_memories: usize = 0;
 
@@ -58,7 +57,7 @@ pub async fn ingest(
         }
     };
 
-    total_documents = docs.len();
+    let total_documents = docs.len();
 
     // 3. Process each document: chunk -> process
     let chunker_opts = options.chunker_options.as_ref();
