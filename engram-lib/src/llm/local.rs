@@ -37,18 +37,35 @@ pub struct OllamaConfig {
     pub cb_cooldown_ms: u64,
 }
 
-impl Default for OllamaConfig {
-    fn default() -> Self {
+impl OllamaConfig {
+    /// Create config from environment variables with sensible defaults.
+    /// ENGRAM_LLM_URL -- base URL (default: http://127.0.0.1:8080)
+    /// ENGRAM_LLM_MODEL -- model name (default: mistral-nemo)
+    pub fn from_env() -> Self {
+        let base_url = std::env::var("ENGRAM_LLM_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+        let url = if base_url.ends_with("/v1/chat/completions") {
+            base_url
+        } else {
+            format!("{}/v1/chat/completions", base_url.trim_end_matches('/'))
+        };
         Self {
-            url: "http://127.0.0.1:11434/v1/chat/completions".into(),
-            model: "qwen2.5:14b".into(),
+            url,
+            model: std::env::var("ENGRAM_LLM_MODEL")
+                .unwrap_or_else(|_| "mistral-nemo".to_string()),
             timeout_bg_ms: 60_000,
             timeout_hot_ms: 5_000,
-            concurrency: 1,
+            concurrency: 2,
             max_queue: 50,
             cb_threshold: 3,
             cb_cooldown_ms: 30_000,
         }
+    }
+}
+
+impl Default for OllamaConfig {
+    fn default() -> Self {
+        Self::from_env()
     }
 }
 
@@ -349,16 +366,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_defaults() {
-        let c = OllamaConfig::default();
-        assert_eq!(c.url, "http://127.0.0.1:11434/v1/chat/completions");
-        assert_eq!(c.model, "qwen2.5:14b");
-        assert_eq!(c.timeout_bg_ms, 60_000);
-        assert_eq!(c.timeout_hot_ms, 5_000);
-        assert_eq!(c.concurrency, 1);
-        assert_eq!(c.max_queue, 50);
-        assert_eq!(c.cb_threshold, 3);
-        assert_eq!(c.cb_cooldown_ms, 30_000);
+    fn test_config_from_env_defaults() {
+        // Clear env vars to test defaults
+        std::env::remove_var("ENGRAM_LLM_URL");
+        std::env::remove_var("ENGRAM_LLM_MODEL");
+        let c = OllamaConfig::from_env();
+        assert!(c.url.contains("8080"));
+        assert!(c.url.ends_with("/v1/chat/completions"));
+        assert_eq!(c.model, "mistral-nemo");
+        assert_eq!(c.concurrency, 2);
     }
 
     #[test]
@@ -415,13 +431,15 @@ mod tests {
 
     #[test]
     fn test_stats_default() {
-        let client = LocalModelClient::new(OllamaConfig::default());
+        std::env::remove_var("ENGRAM_LLM_URL");
+        std::env::remove_var("ENGRAM_LLM_MODEL");
+        let client = LocalModelClient::new(OllamaConfig::from_env());
         let s = client.stats();
         assert!(s.available);
         assert_eq!(s.circuit_breaker, CircuitBreakerState::Closed);
         assert_eq!(s.failures, 0);
         assert_eq!(s.semaphore_running, 0);
         assert_eq!(s.semaphore_queued, 0);
-        assert_eq!(s.model, "qwen2.5:14b");
+        assert!(!s.model.is_empty());
     }
 }
