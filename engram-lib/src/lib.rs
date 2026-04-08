@@ -16,6 +16,7 @@ pub mod embeddings;
 pub mod episodes;
 pub mod facts;
 pub mod fsrs;
+pub mod gate;
 pub mod graph;
 pub mod grounding;
 pub mod guard;
