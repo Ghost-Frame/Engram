@@ -63,7 +63,7 @@ struct EditBody {
 }
 
 async fn edit(
-    Auth(auth): Auth, State(state): State<AppState>, Path(id): Path<i64>, Json(body): Json<EditBody>,
+    Auth(_auth): Auth, State(state): State<AppState>, Path(id): Path<i64>, Json(body): Json<EditBody>,
 ) -> Result<Json<Value>, AppError> {
     engram_lib::inbox::edit_and_approve(
         &state.db, id,

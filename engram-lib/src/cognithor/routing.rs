@@ -50,13 +50,11 @@ pub fn analyze_query(query: &str) -> RoutingDecision {
         "preference".to_string()
     } else if lower.contains("when") || lower.contains("last") || lower.contains("recent") || lower.contains("today") {
         "temporal".to_string()
-    } else if lower.contains("why") || lower.contains("because") || lower.contains("reason") {
-        "reasoning".to_string()
     } else {
         "reasoning".to_string()
     };
 
-    let confidence = (total_score / 3.0).min(1.0).max(0.1);
+    let confidence = (total_score / 3.0).clamp(0.1, 1.0);
 
     RoutingDecision {
         is_code_query,

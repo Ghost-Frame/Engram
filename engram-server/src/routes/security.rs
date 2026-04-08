@@ -73,7 +73,7 @@ struct AuditParams {
 
 async fn list_audit_handler(
     State(state): State<AppState>,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Query(params): Query<AuditParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(50);
