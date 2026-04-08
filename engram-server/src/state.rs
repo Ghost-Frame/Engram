@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::{RwLock, broadcast};
-use engram_lib::config::Config;
+use engram_lib::config::{Config, EidolonConfig};
 use engram_lib::db::Database;
 use engram_lib::embeddings::EmbeddingProvider;
 use engram_lib::reranker::Reranker;
@@ -27,4 +27,5 @@ pub struct AppState {
     pub reranker: Option<Arc<Reranker>>,
     pub brain: Option<Arc<BrainManager>>,
     pub sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SessionBroadcast>>>>>,
+    pub eidolon_config: Option<EidolonConfig>,
 }

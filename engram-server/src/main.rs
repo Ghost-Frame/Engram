@@ -62,6 +62,7 @@ async fn main() {
         reranker,
         brain: None,
         sessions: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        eidolon_config: None,
     };
 
     if let Err(e) = server::run(state).await {
