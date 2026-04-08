@@ -842,6 +842,21 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_loom_run_logs_run ON loom_run_logs(run_id);
+
+        -- Gate requests
+        CREATE TABLE IF NOT EXISTS gate_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            agent TEXT NOT NULL,
+            command TEXT NOT NULL,
+            context TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reason TEXT,
+            output TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_gate_requests_user ON gate_requests(user_id, status);
         ",
     )
     .await?;

@@ -6,6 +6,7 @@ pub mod broca;
 pub mod context;
 pub mod conversations;
 pub mod episodes;
+pub mod gate;
 pub mod graph;
 pub mod health;
 pub mod inbox;
