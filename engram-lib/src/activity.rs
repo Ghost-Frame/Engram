@@ -14,6 +14,7 @@ pub struct ActivityReport {
     pub action: String,
     pub summary: String,
     pub project: Option<String>,
+    #[serde(alias = "metadata")]
     pub details: Option<serde_json::Value>,
 }
 
@@ -269,5 +270,23 @@ mod tests {
             details: None,
         };
         assert!(validate_activity_report(&long_summary).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_activity_fan_out_creates_memory() {
+        use crate::db::Database;
+        // Create in-memory DB and initialize schema
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        let report = ActivityReport {
+            agent: "test-agent".to_string(),
+            action: "task.started".to_string(),
+            summary: "Testing activity fan-out".to_string(),
+            project: Some("test".to_string()),
+            details: None,
+        };
+        let result = process_activity(&db, &report, 1).await;
+        assert!(result.is_ok(), "process_activity should succeed: {:?}", result.err());
+        assert!(result.unwrap() > 0, "should return a positive memory ID");
     }
 }

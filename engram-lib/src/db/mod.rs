@@ -41,4 +41,18 @@ impl Database {
     pub fn new_connection(&self) -> Result<Connection> {
         Ok(self.db.connect()?)
     }
+
+    /// Connect to an in-memory database (for testing). Skips WAL and mmap pragmas
+    /// that are incompatible with in-memory SQLite, but still creates the full schema.
+    pub async fn connect_memory() -> Result<Self> {
+        let db = Builder::new_local(":memory:").build().await?;
+        let conn = db.connect()?;
+
+        conn.execute("PRAGMA synchronous = NORMAL", ()).await?;
+        conn.execute("PRAGMA foreign_keys = ON", ()).await?;
+
+        schema::create_tables(&conn).await?;
+
+        Ok(Self { db, conn })
+    }
 }
