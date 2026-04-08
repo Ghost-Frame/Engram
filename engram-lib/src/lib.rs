@@ -36,6 +36,7 @@ pub mod ratelimit;
 pub mod reranker;
 pub mod scratchpad;
 pub mod services;
+pub mod sessions;
 pub mod skills;
 pub mod webhooks;
 
