@@ -11,7 +11,6 @@ pub struct Observation {
     pub id: i64,
     pub content: String,
     pub source: String,
-    pub materialized: bool,
     pub created_at: String,
 }
 
@@ -54,6 +53,8 @@ pub fn generate_observation_text(service: &str, context: &[String]) -> String {
 
 /// Reflect on recent activity and store an observation as a growth memory.
 pub async fn reflect(db: &Database, request: &GrowthReflectRequest, user_id: i64) -> Result<GrowthReflectResult> {
+    // Note: request.existing_growth and request.prompt_override are reserved for
+    // a future LLM-backed reflection path. Currently using rule-based generation.
     let observation_text = generate_observation_text(&request.service, &request.context);
 
     // Store as a "growth" category memory
@@ -97,7 +98,6 @@ pub async fn list_observations(db: &Database, user_id: i64, limit: usize) -> Res
             id: row.get(0)?,
             content: row.get(1)?,
             source: row.get::<Option<String>>(2)?.unwrap_or_default(),
-            materialized: false,
             created_at: row.get(3)?,
         });
     }
