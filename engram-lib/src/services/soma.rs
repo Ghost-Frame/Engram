@@ -32,6 +32,13 @@ pub struct RegisterAgentRequest {
     pub description: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SomaStats {
+    pub total_agents: i64,
+    pub active_agents: i64,
+    pub categories: i64,
+}
+
 fn row_to_agent(row: &libsql::Row) -> Result<Agent> {
     let is_active_int: i64 = row.get(13)?;
     Ok(Agent {
@@ -164,4 +171,42 @@ pub async fn get_agent_by_name(db: &Database, user_id: i64, name: &str) -> Resul
         .ok_or_else(|| EngError::NotFound(format!("agent '{}'", name)))?;
 
     row_to_agent(&row)
+}
+
+pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<SomaStats> {
+    let conn = &db.conn;
+    let mut rows = if let Some(uid) = user_id {
+        conn.query(
+            "SELECT
+                COUNT(*),
+                SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END),
+                COUNT(DISTINCT category)
+             FROM agents
+             WHERE user_id = ?1",
+            libsql::params![uid],
+        )
+        .await?
+    } else {
+        conn.query(
+            "SELECT
+                COUNT(*),
+                SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END),
+                COUNT(DISTINCT category)
+             FROM agents",
+            (),
+        )
+        .await?
+    };
+
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| EngError::Internal("no soma stats row".into()))?;
+    let active_agents: Option<i64> = row.get(1)?;
+
+    Ok(SomaStats {
+        total_agents: row.get(0)?,
+        active_agents: active_agents.unwrap_or(0),
+        categories: row.get(2)?,
+    })
 }

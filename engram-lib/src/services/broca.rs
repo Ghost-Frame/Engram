@@ -24,6 +24,13 @@ pub struct LogActionRequest {
     pub user_id: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrocaStats {
+    pub total_actions: i64,
+    pub agents: i64,
+    pub projects: i64,
+}
+
 fn row_to_action_entry(row: &libsql::Row) -> Result<ActionEntry> {
     let metadata_str: Option<String> = row.get(4)?;
     let metadata = metadata_str
@@ -130,4 +137,60 @@ pub async fn query_actions(
         results.push(row_to_action_entry(&row)?);
     }
     Ok(results)
+}
+
+pub async fn get_action(db: &Database, id: i64) -> Result<ActionEntry> {
+    let conn = &db.conn;
+    let mut rows = conn
+        .query(
+            "SELECT id, agent, action, summary, metadata, project, user_id, created_at
+             FROM action_log
+             WHERE id = ?1",
+            libsql::params![id],
+        )
+        .await?;
+
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| EngError::NotFound(format!("action {}", id)))?;
+
+    row_to_action_entry(&row)
+}
+
+pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<BrocaStats> {
+    let conn = &db.conn;
+    let mut rows = if let Some(uid) = user_id {
+        conn.query(
+            "SELECT
+                COUNT(*),
+                COUNT(DISTINCT agent),
+                COUNT(DISTINCT project)
+             FROM action_log
+             WHERE user_id = ?1",
+            libsql::params![uid],
+        )
+        .await?
+    } else {
+        conn.query(
+            "SELECT
+                COUNT(*),
+                COUNT(DISTINCT agent),
+                COUNT(DISTINCT project)
+             FROM action_log",
+            (),
+        )
+        .await?
+    };
+
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| EngError::Internal("no broca stats row".into()))?;
+
+    Ok(BrocaStats {
+        total_actions: row.get(0)?,
+        agents: row.get(1)?,
+        projects: row.get(2)?,
+    })
 }
