@@ -19,5 +19,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
-hmac = { workspace = true }
-sha2 = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tokio = { workspace = true }

@@ -84,7 +84,7 @@ async fn store_memory(
             "distance": Value::Null,
         }))));
     }
-    let mem = memory::get(&state.db, result.id, auth.user_id).await?;
+    let mem = memory::get(&state.db, result.id).await?;
     Ok((StatusCode::CREATED, Json(json!({
         "stored": true, "id": result.id, "created_at": mem.created_at,
         "importance": mem.importance, "embedded": embedded,
@@ -319,14 +319,21 @@ async fn list_memories(
 async fn get_memory(
     State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let mem = memory::get(&state.db, id, auth.user_id).await?;
+    let mem = memory::get(&state.db, id).await?;
+    if mem.user_id != auth.user_id {
+        return Err(AppError(engram_lib::EngError::NotFound(format!("memory {id} not found"))));
+    }
     Ok(Json(memory_to_json(&mem)))
 }
 
 async fn delete_memory(
     State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    memory::delete(&state.db, id, auth.user_id).await?;
+    let mem = memory::get(&state.db, id).await?;
+    if mem.user_id != auth.user_id {
+        return Err(AppError(engram_lib::EngError::NotFound(format!("memory {id} not found"))));
+    }
+    memory::delete(&state.db, id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -334,6 +341,10 @@ async fn update_memory(
     State(state): State<AppState>, Auth(auth): Auth,
     Path(id): Path<i64>, Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let updated = memory::update(&state.db, id, req, auth.user_id).await?;
+    let mem = memory::get(&state.db, id).await?;
+    if mem.user_id != auth.user_id {
+        return Err(AppError(engram_lib::EngError::NotFound(format!("memory {id} not found"))));
+    }
+    let updated = memory::update(&state.db, id, req).await?;
     Ok(Json(memory_to_json(&updated)))
 }
