@@ -13,6 +13,7 @@ pub fn shell_tools() -> Vec<ToolSchema> {
         ToolSchema { name: "shell_exec".into(), description: "Execute a shell command".into(), parameters: json!({"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"}},"required":["command"]}), return_schema: None, usage_hint: None, latency_hint: None, backend_type: BackendType::Shell, security_policy: None },
         ToolSchema { name: "file_read".into(), description: "Read a file".into(), parameters: json!({"type":"object","properties":{"path":{"type":"string"},"max_lines":{"type":"number"}},"required":["path"]}), return_schema: None, usage_hint: None, latency_hint: None, backend_type: BackendType::Shell, security_policy: None },
         ToolSchema { name: "file_list".into(), description: "List directory".into(), parameters: json!({"type":"object","properties":{"path":{"type":"string"},"recursive":{"type":"boolean"}},"required":["path"]}), return_schema: None, usage_hint: None, latency_hint: None, backend_type: BackendType::Shell, security_policy: None },
+        ToolSchema { name: "git_status".into(), description: "Get git status for a repository".into(), parameters: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}), return_schema: None, usage_hint: None, latency_hint: None, backend_type: BackendType::Shell, security_policy: None },
         ToolSchema { name: "system_info".into(), description: "System info".into(), parameters: json!({"type":"object","properties":{}}), return_schema: None, usage_hint: None, latency_hint: None, backend_type: BackendType::Shell, security_policy: None },
     ]
 }
@@ -27,6 +28,7 @@ impl ShellProvider {
             "shell_exec" => self.exec_shell(args, t).await,
             "file_read" => self.read_file(args).await,
             "file_list" => self.list_files(args, t).await,
+            "git_status" => self.git_status(args, t).await,
             "system_info" => self.system_info(t).await,
             _ => ToolResult { status: ToolStatus::Error, content: json!(null), error: Some(format!("Unknown tool: {}", tool_name)), execution_time_ms: None },
         }
@@ -66,8 +68,27 @@ impl ShellProvider {
     async fn list_files(&self, args: &serde_json::Value, timeout: u64) -> ToolResult {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
-        let cmd = if cfg!(target_os = "windows") { if recursive { format!("dir /s /b {}", path) } else { format!("dir /b {}", path) } } else { if recursive { format!("find {} -type f", path) } else { format!("ls -la {}", path) } };
+        let quoted = shell_quote(path);
+        let cmd = if cfg!(target_os = "windows") {
+            if recursive { format!("dir /s /b {}", quoted) } else { format!("dir /b {}", quoted) }
+        } else if recursive {
+            format!("find {} -type f", quoted)
+        } else {
+            format!("ls -la {}", quoted)
+        };
         self.exec_shell(&json!({"command": cmd}), timeout).await
+    }
+
+    async fn git_status(&self, args: &serde_json::Value, timeout: u64) -> ToolResult {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        self.exec_shell(
+            &json!({
+                "command": "git status --porcelain && git log --oneline -5",
+                "cwd": path,
+            }),
+            timeout,
+        )
+        .await
     }
 
     async fn system_info(&self, timeout: u64) -> ToolResult {
@@ -84,4 +105,12 @@ impl ShellProvider {
     }
     pub fn destroy_session(&mut self, id: &str) { self.sessions.remove(id); }
     pub fn list_sessions(&self) -> Vec<&SessionInfo> { self.sessions.values().collect() }
+}
+
+fn shell_quote(path: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("\"{}\"", path.replace('"', "\"\""))
+    } else {
+        format!("'{}'", path.replace('\'', "'\"'\"'"))
+    }
 }
