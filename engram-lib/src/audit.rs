@@ -75,6 +75,7 @@ pub async fn log_mutation(
 /// Log an HTTP request to the audit trail. Used by the audit middleware.
 ///
 /// Fire-and-forget compatible -- errors are discarded by the caller.
+#[allow(clippy::too_many_arguments)]
 pub async fn log_request(
     db: &Database,
     user_id: Option<i64>,

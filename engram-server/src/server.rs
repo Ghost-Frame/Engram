@@ -6,10 +6,10 @@ use crate::middleware::auth::auth_middleware;
 use crate::routes;
 use crate::state::AppState;
 
-pub async fn run(state: AppState) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = format!("{}:{}", state.config.host, state.config.port);
-
-    let app = Router::new()
+/// Build the Axum router with all routes and middleware applied.
+/// Exposed as a public function so integration tests can build an in-process app.
+pub fn build_router(state: AppState) -> Router {
+    Router::new()
         .merge(routes::health::router())
         .merge(routes::memory::router())
         .merge(routes::admin::router())
@@ -50,8 +50,12 @@ pub async fn run(state: AppState) -> Result<(), Box<dyn std::error::Error>> {
         .layer(axum_mw::from_fn_with_state(state.clone(), auth_middleware))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
-        .with_state(state.clone());
+        .with_state(state)
+}
 
+pub async fn run(state: AppState) -> Result<(), Box<dyn std::error::Error>> {
+    let addr = format!("{}:{}", state.config.host, state.config.port);
+    let app = build_router(state);
     tracing::info!("engram-server listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
