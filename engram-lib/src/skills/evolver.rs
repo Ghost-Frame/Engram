@@ -55,7 +55,6 @@ pub struct EvolutionResult {
 }
 
 /// Persist an evolved skill to the database.
-#[allow(clippy::too_many_arguments)]
 pub async fn persist_evolved_skill(
     db: &Database, name: &str, description: &str, code: &str,
     agent: &str, parent_ids: &[i64], tags: &[String], user_id: i64,

@@ -126,7 +126,13 @@ impl DualStrength {
         if elapsed_days <= 0.0 || stability <= 0.0 {
             return *self;
         }
-        let retrieval = f32::powf(1.0 + elapsed_days / (9.0 * stability), -1.0 / 0.5).clamp(0.0, 1.0);
+        let retrieval = f32::max(
+            0.0,
+            f32::min(
+                1.0,
+                f32::powf(1.0 + elapsed_days / (9.0 * stability), -1.0 / 0.5),
+            ),
+        );
         DualStrength {
             storage: self.storage,
             retrieval,
@@ -158,13 +164,19 @@ pub fn retrievability_with_w20(stability: f32, elapsed_days: f32, w20: f32) -> f
         return 1.0;
     }
     let factor = forgetting_factor(w20);
-    f32::powf(1.0 + factor * elapsed_days / stability, -w20).clamp(0.0, 1.0)
+    f32::max(
+        0.0,
+        f32::min(
+            1.0,
+            f32::powf(1.0 + factor * elapsed_days / stability, -w20),
+        ),
+    )
 }
 
 pub fn initial_difficulty(grade: Rating) -> f32 {
     let g = grade as u8 as f32;
     let d = FSRS6_WEIGHTS[4] - f32::exp(FSRS6_WEIGHTS[5] * (g - 1.0)) + 1.0;
-    d.clamp(FSRS_MIN_DIFFICULTY, FSRS_MAX_DIFFICULTY)
+    f32::max(FSRS_MIN_DIFFICULTY, f32::min(FSRS_MAX_DIFFICULTY, d))
 }
 
 pub fn initial_stability(grade: Rating) -> f32 {
@@ -179,7 +191,7 @@ pub fn next_difficulty(current_d: f32, grade: Rating) -> f32 {
     let mean_reversion_scale = (10.0 - current_d) / 9.0;
     let new_d = current_d + delta * mean_reversion_scale;
     let final_d = FSRS6_WEIGHTS[7] * d0 + (1.0 - FSRS6_WEIGHTS[7]) * new_d;
-    final_d.clamp(FSRS_MIN_DIFFICULTY, FSRS_MAX_DIFFICULTY)
+    f32::max(FSRS_MIN_DIFFICULTY, f32::min(FSRS_MAX_DIFFICULTY, final_d))
 }
 
 pub fn recall_stability(s: f32, d: f32, r: f32, grade: Rating) -> f32 {
@@ -192,21 +204,24 @@ pub fn recall_stability(s: f32, d: f32, r: f32, grade: Rating) -> f32 {
         * f32::powf(s, -FSRS6_WEIGHTS[9])
         * (f32::exp(FSRS6_WEIGHTS[10] * (1.0 - r)) - 1.0)
         * hard_penalty * easy_bonus + 1.0;
-    (s * factor).clamp(FSRS_MIN_STABILITY, FSRS_MAX_STABILITY)
+    f32::max(FSRS_MIN_STABILITY, f32::min(FSRS_MAX_STABILITY, s * factor))
 }
 
 pub fn forget_stability(d: f32, s: f32, r: f32) -> f32 {
     let new_s = FSRS6_WEIGHTS[11] * f32::powf(d, -FSRS6_WEIGHTS[12])
         * (f32::powf(s + 1.0, FSRS6_WEIGHTS[13]) - 1.0)
         * f32::exp(FSRS6_WEIGHTS[14] * (1.0 - r));
-    new_s.min(s).clamp(FSRS_MIN_STABILITY, FSRS_MAX_STABILITY)
+    f32::max(
+        FSRS_MIN_STABILITY,
+        f32::min(f32::min(new_s, s), FSRS_MAX_STABILITY),
+    )
 }
 
 pub fn same_day_stability(s: f32, grade: Rating) -> f32 {
     let g = grade as u8 as f32;
     let new_s = s * f32::exp(FSRS6_WEIGHTS[17] * (g - 3.0 + FSRS6_WEIGHTS[18]))
         * f32::powf(s, -FSRS6_WEIGHTS[19]);
-    new_s.clamp(FSRS_MIN_STABILITY, FSRS_MAX_STABILITY)
+    f32::max(FSRS_MIN_STABILITY, f32::min(FSRS_MAX_STABILITY, new_s))
 }
 
 pub fn next_interval(stability: f32, desired_r: f32) -> i32 {
