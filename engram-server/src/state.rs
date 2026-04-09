@@ -27,6 +27,7 @@ pub struct AppState {
     pub embedder: Option<Arc<dyn EmbeddingProvider>>,
     pub reranker: Option<Arc<Reranker>>,
     pub brain: Option<Arc<BrainManager>>,
+    #[allow(dead_code)]
     pub llm: Option<Arc<LocalModelClient>>,
     pub sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SessionBroadcast>>>>>,
     #[allow(dead_code)]
