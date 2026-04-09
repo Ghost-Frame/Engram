@@ -69,7 +69,7 @@ async fn publish_event_handler(
 
 async fn list_events_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(params): Query<QueryEventsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100);
@@ -83,6 +83,7 @@ async fn list_events_handler(
         params.source.as_deref(),
         limit,
         0,
+        auth.user_id,
     )
     .await?;
 
@@ -98,18 +99,18 @@ async fn list_events_handler(
 
 async fn get_event_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let event = get_event(&state.db, id).await?;
+    let event = get_event(&state.db, id, auth.user_id).await?;
     Ok(Json(json!(event)))
 }
 
 async fn list_channels_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let channels = list_channels(&state.db).await?;
+    let channels = list_channels(&state.db, auth.user_id).await?;
     Ok(Json(json!({ "channels": channels })))
 }
 

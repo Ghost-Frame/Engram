@@ -75,9 +75,9 @@ pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memo
     Ok(memories)
 }
 
-pub async fn get_memory_without_embedding(db: &Database, id: i64) -> Result<Option<Memory>> {
-    let sql = format!("SELECT {} FROM memories WHERE id = ?1", MEMORY_COLUMNS);
-    let mut rows = db.conn.query(&sql, libsql::params![id]).await?;
+pub async fn get_memory_without_embedding(db: &Database, id: i64, user_id: i64) -> Result<Option<Memory>> {
+    let sql = format!("SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2", MEMORY_COLUMNS);
+    let mut rows = db.conn.query(&sql, libsql::params![id, user_id]).await?;
     match rows.next().await? {
         Some(row) => Ok(Some(row_to_memory(&row)?)),
         None => Ok(None),

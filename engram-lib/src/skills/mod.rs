@@ -196,13 +196,13 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
         }
     }
 
-    get_skill(db, id).await
+    get_skill(db, id, user_id).await
 }
 
-pub async fn get_skill(db: &Database, id: i64) -> Result<Skill> {
+pub async fn get_skill(db: &Database, id: i64, user_id: i64) -> Result<Skill> {
     let conn = db.connection();
-    let sql = format!("SELECT {} FROM skill_records WHERE id = ?1", SKILL_COLUMNS);
-    let mut rows = conn.query(&sql, params![id]).await?;
+    let sql = format!("SELECT {} FROM skill_records WHERE id = ?1 AND user_id = ?2", SKILL_COLUMNS);
+    let mut rows = conn.query(&sql, params![id, user_id]).await?;
     rows.next().await?
         .map(|row| row_to_skill(&row))
         .transpose()?
@@ -236,33 +236,33 @@ pub async fn list_skills(db: &Database, user_id: i64, agent: Option<&str>, limit
     Ok(skills)
 }
 
-pub async fn update_skill(db: &Database, id: i64, req: UpdateSkillRequest) -> Result<Skill> {
+pub async fn update_skill(db: &Database, id: i64, req: UpdateSkillRequest, user_id: i64) -> Result<Skill> {
     let conn = db.connection();
-    // Verify exists
-    get_skill(db, id).await?;
+    // Verify ownership
+    get_skill(db, id, user_id).await?;
 
     if let Some(ref code) = req.code {
-        conn.execute("UPDATE skill_records SET code = ?1, updated_at = datetime('now') WHERE id = ?2", params![code.as_str(), id]).await?;
+        conn.execute("UPDATE skill_records SET code = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3", params![code.as_str(), id, user_id]).await?;
     }
     if let Some(ref desc) = req.description {
-        conn.execute("UPDATE skill_records SET description = ?1, updated_at = datetime('now') WHERE id = ?2", params![desc.as_str(), id]).await?;
+        conn.execute("UPDATE skill_records SET description = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3", params![desc.as_str(), id, user_id]).await?;
     }
     if let Some(active) = req.is_active {
-        conn.execute("UPDATE skill_records SET is_active = ?1, updated_at = datetime('now') WHERE id = ?2", params![active as i32, id]).await?;
+        conn.execute("UPDATE skill_records SET is_active = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3", params![active as i32, id, user_id]).await?;
     }
     if let Some(deprecated) = req.is_deprecated {
-        conn.execute("UPDATE skill_records SET is_deprecated = ?1, updated_at = datetime('now') WHERE id = ?2", params![deprecated as i32, id]).await?;
+        conn.execute("UPDATE skill_records SET is_deprecated = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3", params![deprecated as i32, id, user_id]).await?;
     }
     if let Some(ref meta) = req.metadata {
-        conn.execute("UPDATE skill_records SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2", params![meta.as_str(), id]).await?;
+        conn.execute("UPDATE skill_records SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3", params![meta.as_str(), id, user_id]).await?;
     }
 
-    get_skill(db, id).await
+    get_skill(db, id, user_id).await
 }
 
-pub async fn delete_skill(db: &Database, id: i64) -> Result<()> {
+pub async fn delete_skill(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let conn = db.connection();
-    let affected = conn.execute("DELETE FROM skill_records WHERE id = ?1", params![id]).await?;
+    let affected = conn.execute("DELETE FROM skill_records WHERE id = ?1 AND user_id = ?2", params![id, user_id]).await?;
     if affected == 0 {
         return Err(EngError::NotFound(format!("skill {} not found", id)));
     }

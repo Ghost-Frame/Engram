@@ -131,7 +131,7 @@ pub async fn process_activity(
         }
         Err(e) => return Err(e),
     };
-    heartbeat(db, agent_id).await?;
+    heartbeat(db, agent_id, user_id).await?;
 
     // Publish Axon event
     let channel = action_to_channel(&report.action).to_string();

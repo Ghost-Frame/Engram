@@ -86,11 +86,11 @@ struct ConsolidateBody {
 
 async fn consolidate_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(body): Json<ConsolidateBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let ids: Vec<String> = body.memory_ids.into_iter().map(|id| id.to_string()).collect();
-    let result = consolidate(&state.db, &ids).await?;
+    let result = consolidate(&state.db, &ids, auth.user_id).await?;
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
@@ -101,11 +101,11 @@ struct CandidatesBody {
 
 async fn candidates_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(body): Json<CandidatesBody>,
 ) -> Result<Json<Value>, AppError> {
     let threshold = body.threshold.unwrap_or(0.7);
-    let groups = find_consolidation_candidates(&state.db, threshold).await?;
+    let groups = find_consolidation_candidates(&state.db, threshold, auth.user_id).await?;
     Ok(Json(json!({ "groups": groups })))
 }
 
@@ -130,19 +130,19 @@ async fn list_consolidations_handler(
 
 async fn contradictions_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let mem = memory::get(&state.db, memory_id).await?;
+    let mem = memory::get(&state.db, memory_id, auth.user_id).await?;
     let contradictions = detect_contradictions(&state.db, &mem).await?;
     Ok(Json(json!({ "contradictions": contradictions })))
 }
 
 async fn scan_contradictions_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let contradictions = scan_all_contradictions(&state.db).await?;
+    let contradictions = scan_all_contradictions(&state.db, auth.user_id).await?;
     Ok(Json(json!({ "contradictions": contradictions })))
 }
 
@@ -152,10 +152,10 @@ async fn scan_contradictions_handler(
 
 async fn decompose_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let child_ids = decompose(&state.db, memory_id).await?;
+    let child_ids = decompose(&state.db, memory_id, auth.user_id).await?;
     Ok(Json(json!({ "child_ids": child_ids })))
 }
 
@@ -296,10 +296,10 @@ async fn list_chains_handler(
 
 async fn get_chain_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let chain = get_chain(&state.db, id).await?;
+    let chain = get_chain(&state.db, id, auth.user_id).await?;
     Ok(Json(json!(chain)))
 }
 
@@ -314,7 +314,7 @@ struct AddLinkBody {
 
 async fn add_link_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(body): Json<AddLinkBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let strength = body.strength.unwrap_or(1.0);
@@ -326,6 +326,7 @@ async fn add_link_handler(
         body.effect_memory_id,
         strength,
         order_index,
+        auth.user_id,
     )
     .await?;
     Ok((StatusCode::CREATED, Json(json!(link))))

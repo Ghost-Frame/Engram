@@ -73,7 +73,7 @@ struct AuditParams {
 
 async fn list_audit_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(params): Query<AuditParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(50);
@@ -82,6 +82,7 @@ async fn list_audit_handler(
         params.target_type.as_deref(),
         params.target_id.as_deref(),
         limit,
+        auth.user_id,
     )
     .await?;
     Ok(Json(json!({ "entries": entries, "count": entries.len() })))
