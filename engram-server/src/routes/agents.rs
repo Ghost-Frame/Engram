@@ -5,10 +5,15 @@ use axum::{
     Json, Router,
 };
 use engram_lib::agents;
+use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::Sha256;
+use std::{fs, path::PathBuf, sync::OnceLock};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+type HmacSha256 = Hmac<Sha256>;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -140,15 +145,24 @@ async fn get_passport(
         )));
     }
 
-    // TODO: Implement HMAC signing for passports (requires signing secret infrastructure)
+    let issued_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let payload = json!({
+        "agent_id": agent.id,
+        "user_id": auth.user_id,
+        "name": agent.name,
+        "trust_score": agent.trust_score,
+        "issued_at": issued_at,
+        "expires_at": null,
+    });
+    let signature = sign_value(&payload)?;
     Ok(Json(json!({
         "agent_id": agent.id,
         "user_id": auth.user_id,
         "name": agent.name,
         "trust_score": agent.trust_score,
-        "issued_at": chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        "issued_at": issued_at,
         "expires_at": null,
-        "signature": "not_implemented",
+        "signature": signature,
     })))
 }
 
@@ -203,9 +217,9 @@ struct VerifyBody {
 async fn verify(
     Json(body): Json<VerifyBody>,
 ) -> Result<Json<Value>, AppError> {
-    // TODO: Implement HMAC verification (requires signing secret infrastructure)
-    if body.passport.is_some() {
-        return Ok(Json(json!({ "type": "passport", "valid": false, "error": "verification not implemented" })));
+    if let Some(passport) = body.passport {
+        let result = verify_signed_value(&passport)?;
+        return Ok(Json(json!({ "type": "passport", "valid": result })));
     }
     if body.execution.is_some() {
         return Ok(Json(json!({ "type": "execution", "valid": false, "error": "verification not implemented" })));
@@ -219,4 +233,61 @@ async fn verify(
     Err(AppError(engram_lib::EngError::InvalidInput(
         "Provide 'passport', 'execution', 'message', or 'tool_manifest' to verify".into(),
     )))
+}
+
+fn signing_secret() -> Result<&'static str, AppError> {
+    static SECRET: OnceLock<String> = OnceLock::new();
+    let secret = SECRET.get_or_init(load_or_create_signing_secret);
+    if secret.trim().is_empty() {
+        return Err(AppError(engram_lib::EngError::Internal(
+            "signing secret is empty".into(),
+        )));
+    }
+    Ok(secret.as_str())
+}
+
+fn load_or_create_signing_secret() -> String {
+    let path = signing_secret_path();
+    if let Ok(existing) = fs::read_to_string(&path) {
+        let trimmed = existing.trim().to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+
+    let generated = uuid::Uuid::new_v4().to_string();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&path, &generated);
+    generated
+}
+
+fn signing_secret_path() -> PathBuf {
+    if let Ok(path) = std::env::var("ENGRAM_SIGNING_SECRET_FILE") {
+        return PathBuf::from(path);
+    }
+    PathBuf::from("engram-signing-secret.txt")
+}
+
+fn sign_value(payload: &Value) -> Result<String, AppError> {
+    let secret = signing_secret()?;
+    let bytes = serde_json::to_vec(payload)
+        .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?;
+    mac.update(&bytes);
+    let digest = mac.finalize().into_bytes();
+    Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
+}
+
+fn verify_signed_value(value: &Value) -> Result<bool, AppError> {
+    let Some(signature) = value.get("signature").and_then(|v| v.as_str()) else {
+        return Ok(false);
+    };
+    let mut unsigned = value.clone();
+    if let Some(obj) = unsigned.as_object_mut() {
+        obj.remove("signature");
+    }
+    Ok(sign_value(&unsigned)? == signature)
 }

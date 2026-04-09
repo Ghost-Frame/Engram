@@ -19,3 +19,5 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
