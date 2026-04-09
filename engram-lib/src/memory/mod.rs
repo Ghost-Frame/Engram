@@ -262,12 +262,12 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
     })
 }
 
-pub async fn get(db: &Database, id: i64) -> Result<Memory> {
+pub async fn get(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
     let sql = format!(
-        "SELECT {} FROM memories WHERE id = ?1 AND is_forgotten = 0",
+        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
         MEMORY_COLUMNS
     );
-    let mut rows = db.conn.query(&sql, params![id]).await?;
+    let mut rows = db.conn.query(&sql, params![id, user_id]).await?;
     let memory = if let Some(row) = rows.next().await? {
         row_to_memory(&row)?
     } else {
@@ -281,8 +281,8 @@ pub async fn get(db: &Database, id: i64) -> Result<Memory> {
                 access_count = access_count + 1, \
                 last_accessed_at = datetime('now'), \
                 updated_at = datetime('now') \
-             WHERE id = ?1",
-            params![id],
+             WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
         )
         .await?;
 
@@ -331,7 +331,7 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     Ok(memories)
 }
 
-pub async fn delete(db: &Database, id: i64) -> Result<()> {
+pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
     // Soft delete -- set is_forgotten, record reason
     let affected = db
         .conn
@@ -340,8 +340,8 @@ pub async fn delete(db: &Database, id: i64) -> Result<()> {
                 is_forgotten = 1, \
                 forget_reason = 'user_deleted', \
                 updated_at = datetime('now') \
-             WHERE id = ?1 AND is_forgotten = 0",
-            params![id],
+             WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
+            params![id, user_id],
         )
         .await?;
 
@@ -354,14 +354,13 @@ pub async fn delete(db: &Database, id: i64) -> Result<()> {
     Ok(())
 }
 
-pub async fn update(db: &Database, id: i64, req: UpdateRequest) -> Result<Memory> {
-    // 1. Get the existing memory (bypassing the is_forgotten check for get since
-    //    we need to fetch directly here, including already-non-latest ones)
+pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) -> Result<Memory> {
+    // 1. Get the existing memory, scoped to user_id
     let sql = format!(
-        "SELECT {} FROM memories WHERE id = ?1 AND is_forgotten = 0",
+        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
         MEMORY_COLUMNS
     );
-    let mut rows = db.conn.query(&sql, params![id]).await?;
+    let mut rows = db.conn.query(&sql, params![id, user_id]).await?;
     let old = if let Some(row) = rows.next().await? {
         row_to_memory(&row)?
     } else {
@@ -371,8 +370,8 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest) -> Result<Memory
     // 2. Mark old as not latest
     db.conn
         .execute(
-            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1",
-            params![id],
+            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
         )
         .await?;
 
@@ -494,34 +493,34 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest) -> Result<Memory
 
 // -- Additional DB operations matching TS db.ts ---
 
-pub async fn mark_forgotten(db: &Database, id: i64) -> Result<()> {
+pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.conn.execute(
-        "UPDATE memories SET is_forgotten = 1, updated_at = datetime('now') WHERE id = ?1",
-        params![id],
+        "UPDATE memories SET is_forgotten = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+        params![id, user_id],
     ).await?;
     Ok(())
 }
 
-pub async fn mark_archived(db: &Database, id: i64) -> Result<()> {
+pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.conn.execute(
-        "UPDATE memories SET is_archived = 1, updated_at = datetime('now') WHERE id = ?1",
-        params![id],
+        "UPDATE memories SET is_archived = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+        params![id, user_id],
     ).await?;
     Ok(())
 }
 
-pub async fn mark_unarchived(db: &Database, id: i64) -> Result<()> {
+pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.conn.execute(
-        "UPDATE memories SET is_archived = 0, updated_at = datetime('now') WHERE id = ?1",
-        params![id],
+        "UPDATE memories SET is_archived = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+        params![id, user_id],
     ).await?;
     Ok(())
 }
 
-pub async fn update_forget_reason(db: &Database, id: i64, reason: &str) -> Result<()> {
+pub async fn update_forget_reason(db: &Database, id: i64, reason: &str, user_id: i64) -> Result<()> {
     db.conn.execute(
-        "UPDATE memories SET forget_reason = ?1 WHERE id = ?2",
-        params![reason.to_string(), id],
+        "UPDATE memories SET forget_reason = ?1 WHERE id = ?2 AND user_id = ?3",
+        params![reason.to_string(), id, user_id],
     ).await?;
     Ok(())
 }
@@ -541,7 +540,18 @@ pub async fn adjust_importance(db: &Database, memory_id: i64, user_id: i64, delt
     Ok(())
 }
 
-pub async fn insert_link(db: &Database, source_id: i64, target_id: i64, similarity: f64, link_type: &str) -> Result<()> {
+pub async fn insert_link(db: &Database, source_id: i64, target_id: i64, similarity: f64, link_type: &str, user_id: i64) -> Result<()> {
+    // Validate both memories belong to this user before inserting the link
+    let count_sql = "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0";
+    let mut rows = db.conn.query(count_sql, params![source_id, target_id, user_id]).await?;
+    if let Some(row) = rows.next().await? {
+        let count: i64 = row.get(0)?;
+        if count < 2 {
+            return Err(EngError::NotFound(
+                format!("one or both memories ({}, {}) do not belong to user {}", source_id, target_id, user_id)
+            ));
+        }
+    }
     db.conn.execute(
         "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) VALUES (?1, ?2, ?3, ?4)",
         params![source_id, target_id, similarity, link_type.to_string()],
@@ -549,10 +559,10 @@ pub async fn insert_link(db: &Database, source_id: i64, target_id: i64, similari
     Ok(())
 }
 
-pub async fn update_source_count(db: &Database, id: i64, source_count: i32) -> Result<()> {
+pub async fn update_source_count(db: &Database, id: i64, source_count: i32, user_id: i64) -> Result<()> {
     db.conn.execute(
-        "UPDATE memories SET source_count = ?1, updated_at = datetime('now') WHERE id = ?2",
-        params![source_count, id],
+        "UPDATE memories SET source_count = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
+        params![source_count, id, user_id],
     ).await?;
     Ok(())
 }

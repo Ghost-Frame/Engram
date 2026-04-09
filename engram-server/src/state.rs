@@ -1,9 +1,24 @@
 use std::sync::Arc;
-use engram_lib::config::Config;
+use std::collections::HashMap;
+use tokio::sync::{RwLock, broadcast};
+use engram_lib::config::{Config, EidolonConfig};
 use engram_lib::db::Database;
 use engram_lib::embeddings::EmbeddingProvider;
+use engram_lib::llm::local::LocalModelClient;
 use engram_lib::reranker::Reranker;
 use engram_lib::services::brain::BrainManager;
+
+pub struct SessionBroadcast {
+    pub buffer: Vec<String>,
+    pub tx: broadcast::Sender<String>,
+}
+
+impl SessionBroadcast {
+    pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(1024);
+        SessionBroadcast { buffer: Vec::new(), tx }
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -12,4 +27,9 @@ pub struct AppState {
     pub embedder: Option<Arc<dyn EmbeddingProvider>>,
     pub reranker: Option<Arc<Reranker>>,
     pub brain: Option<Arc<BrainManager>>,
+    #[allow(dead_code)]
+    pub llm: Option<Arc<LocalModelClient>>,
+    pub sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SessionBroadcast>>>>>,
+    #[allow(dead_code)]
+    pub eidolon_config: Option<EidolonConfig>,
 }

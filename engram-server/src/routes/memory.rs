@@ -84,7 +84,7 @@ async fn store_memory(
             "distance": Value::Null,
         }))));
     }
-    let mem = memory::get(&state.db, result.id).await?;
+    let mem = memory::get(&state.db, result.id, auth.user_id).await?;
     Ok((StatusCode::CREATED, Json(json!({
         "stored": true, "id": result.id, "created_at": mem.created_at,
         "importance": mem.importance, "embedded": embedded,
@@ -317,23 +317,23 @@ async fn list_memories(
 }
 
 async fn get_memory(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let mem = memory::get(&state.db, id).await?;
+    let mem = memory::get(&state.db, id, auth.user_id).await?;
     Ok(Json(memory_to_json(&mem)))
 }
 
 async fn delete_memory(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    memory::delete(&state.db, id).await?;
+    memory::delete(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
 async fn update_memory(
-    State(state): State<AppState>, Auth(_auth): Auth,
+    State(state): State<AppState>, Auth(auth): Auth,
     Path(id): Path<i64>, Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let updated = memory::update(&state.db, id, req).await?;
+    let updated = memory::update(&state.db, id, req, auth.user_id).await?;
     Ok(Json(memory_to_json(&updated)))
 }

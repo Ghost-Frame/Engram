@@ -140,10 +140,12 @@ struct ListMessagesParams {
 
 async fn list_msgs(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
     Query(params): Query<ListMessagesParams>,
 ) -> Result<Json<Value>, AppError> {
+    // Verify conversation ownership before accessing messages
+    conversations::get_conversation_for_user(&state.db, id, auth.user_id).await?;
     let limit = params.limit.unwrap_or(100);
     let offset = params.offset.unwrap_or(0);
     let messages = conversations::list_messages(&state.db, id, limit, offset).await?;

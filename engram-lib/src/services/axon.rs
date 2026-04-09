@@ -71,15 +71,15 @@ pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Ev
     let id_row = rows.next().await?.ok_or_else(|| EngError::Internal("no rowid".into()))?;
     let id: i64 = id_row.get(0)?;
 
-    get_event(db, id).await
+    get_event(db, id, user_id).await
 }
 
-pub async fn get_event(db: &Database, id: i64) -> Result<Event> {
+pub async fn get_event(db: &Database, id: i64, user_id: i64) -> Result<Event> {
     let conn = &db.conn;
     let mut rows = conn.query(
         "SELECT id, channel, payload, action, source, agent, user_id, created_at
-         FROM events WHERE id = ?1",
-        libsql::params![id],
+         FROM events WHERE id = ?1 AND user_id = ?2",
+        libsql::params![id, user_id],
     )
     .await?;
 
@@ -98,16 +98,17 @@ pub async fn query_events(
     source: Option<&str>,
     limit: usize,
     offset: usize,
+    user_id: i64,
 ) -> Result<Vec<Event>> {
     let conn = &db.conn;
 
     let mut sql = String::from(
         "SELECT id, channel, payload, action, source, agent, user_id, created_at
-         FROM events WHERE 1=1",
+         FROM events WHERE user_id = ?1",
     );
 
-    let mut param_idx = 1usize;
-    let mut params_vec: Vec<libsql::Value> = Vec::new();
+    let mut param_idx = 2usize;
+    let mut params_vec: Vec<libsql::Value> = vec![libsql::Value::Integer(user_id)];
 
     if let Some(c) = channel {
         sql.push_str(&format!(" AND channel = ?{}", param_idx));
@@ -141,10 +142,10 @@ pub async fn query_events(
     Ok(results)
 }
 
-pub async fn list_channels(db: &Database) -> Result<Vec<String>> {
+pub async fn list_channels(db: &Database, user_id: i64) -> Result<Vec<String>> {
     let conn = &db.conn;
     let mut rows = conn
-        .query("SELECT DISTINCT channel FROM events ORDER BY channel ASC", ())
+        .query("SELECT DISTINCT channel FROM events WHERE user_id = ?1 ORDER BY channel ASC", libsql::params![user_id])
         .await?;
     let mut results = Vec::new();
     while let Some(row) = rows.next().await? {

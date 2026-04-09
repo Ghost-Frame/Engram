@@ -102,10 +102,10 @@ async fn list_agents_handler(
 
 async fn get_agent_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let agent = get_agent(&state.db, id).await?;
+    let agent = get_agent(&state.db, id, auth.user_id).await?;
     Ok(Json(json!(agent)))
 }
 
@@ -116,7 +116,7 @@ async fn update_agent_handler(
     Json(body): Json<UpdateAgentBody>,
 ) -> Result<Json<Value>, AppError> {
     // Fetch existing agent to get current name
-    let existing = get_agent(&state.db, id).await?;
+    let existing = get_agent(&state.db, id, auth.user_id).await?;
 
     // Re-register with updated fields (lib uses INSERT OR IGNORE, so we update directly via re-register)
     // Since lib only supports INSERT OR IGNORE (not UPDATE), we need to use the DB directly
@@ -134,7 +134,7 @@ async fn update_agent_handler(
         .await
         .map_err(engram_lib::EngError::Database)?;
 
-    let agent = get_agent(&state.db, id).await?;
+    let agent = get_agent(&state.db, id, auth.user_id).await?;
     Ok(Json(json!(agent)))
 }
 
@@ -156,10 +156,10 @@ async fn delete_agent_handler(
 
 async fn heartbeat_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    heartbeat(&state.db, id).await?;
+    heartbeat(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

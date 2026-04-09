@@ -9,6 +9,7 @@ use engram_lib::config::Config;
 use engram_lib::db::Database;
 use engram_lib::embeddings::onnx::OnnxProvider;
 use engram_lib::embeddings::EmbeddingProvider;
+use engram_lib::llm::local::{LocalModelClient, OllamaConfig};
 use engram_lib::reranker::Reranker;
 use state::AppState;
 use std::sync::Arc;
@@ -55,12 +56,28 @@ async fn main() {
         None
     };
 
+    // Initialize local LLM client (graceful degradation if unavailable)
+    let llm: Option<Arc<LocalModelClient>> = {
+        let config = OllamaConfig::from_env();
+        let client = LocalModelClient::new(config);
+        if client.probe().await {
+            tracing::info!("local LLM client ready");
+            Some(Arc::new(client))
+        } else {
+            tracing::warn!("local LLM unavailable. LLM-dependent features disabled.");
+            None
+        }
+    };
+
     let state = AppState {
         db: Arc::new(db),
         config: Arc::new(config),
         embedder,
         reranker,
         brain: None,
+        llm,
+        sessions: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        eidolon_config: None,
     };
 
     if let Err(e) = server::run(state).await {
