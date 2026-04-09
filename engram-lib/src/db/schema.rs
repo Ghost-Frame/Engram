@@ -218,6 +218,7 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent);
         CREATE INDEX IF NOT EXISTS idx_conversations_session ON conversations(session_id);
         CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id);
+        CREATE INDEX IF NOT EXISTS idx_conv_started ON conversations(started_at DESC);
 
         -- Messages
         CREATE TABLE IF NOT EXISTS messages (
@@ -229,6 +230,7 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, created_at);
 
         -- Webhooks
         CREATE TABLE IF NOT EXISTS webhooks (
@@ -238,6 +240,7 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             events TEXT NOT NULL DEFAULT 'memory.created',
             secret TEXT,
             is_active BOOLEAN NOT NULL DEFAULT 1,
+            active BOOLEAN NOT NULL DEFAULT 1,
             last_triggered_at TEXT,
             failure_count INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -251,19 +254,24 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             key TEXT NOT NULL UNIQUE,
             count INTEGER NOT NULL DEFAULT 0,
             window_start TEXT NOT NULL DEFAULT (datetime('now')),
+            window_seconds INTEGER NOT NULL DEFAULT 60,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_rate_limits_key ON rate_limits(key);
+        CREATE INDEX IF NOT EXISTS idx_rate_limits_window ON rate_limits(window_start);
 
         -- Tenant quotas
         CREATE TABLE IF NOT EXISTS tenant_quotas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
             max_memories INTEGER NOT NULL DEFAULT 100000,
+            max_conversations INTEGER DEFAULT 1000,
             max_spaces INTEGER NOT NULL DEFAULT 10,
             max_api_keys INTEGER NOT NULL DEFAULT 10,
+            max_memory_size_bytes INTEGER DEFAULT 102400,
             max_agents INTEGER NOT NULL DEFAULT 20,
             storage_bytes_limit INTEGER NOT NULL DEFAULT 1073741824,
+            rate_limit_override INTEGER,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -281,12 +289,16 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_events(user_id);
         CREATE INDEX IF NOT EXISTS idx_usage_type ON usage_events(event_type);
         CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_usage_user_type ON usage_events(user_id, event_type, created_at);
 
         -- Intelligence: consolidations
         CREATE TABLE IF NOT EXISTS consolidations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_ids TEXT NOT NULL,
             result_memory_id INTEGER REFERENCES memories(id),
+            summary_memory_id INTEGER REFERENCES memories(id),
+            source_memory_ids TEXT,
+            cluster_label TEXT,
             strategy TEXT NOT NULL DEFAULT 'merge',
             confidence REAL NOT NULL DEFAULT 1.0,
             user_id INTEGER NOT NULL DEFAULT 1,
@@ -299,8 +311,11 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             entity_type TEXT NOT NULL DEFAULT 'concept',
+            type TEXT NOT NULL DEFAULT 'generic',
             description TEXT,
             aliases TEXT,
+            aka TEXT,
+            metadata TEXT,
             user_id INTEGER NOT NULL DEFAULT 1,
             space_id INTEGER,
             confidence REAL NOT NULL DEFAULT 1.0,
@@ -308,6 +323,7 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
             last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(name, entity_type, user_id)
         );
         CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
@@ -320,6 +336,7 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             source_entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
             target_entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
             relationship_type TEXT NOT NULL DEFAULT 'related',
+            relationship TEXT NOT NULL DEFAULT 'related',
             strength REAL NOT NULL DEFAULT 1.0,
             evidence_count INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -373,6 +390,17 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             subject TEXT NOT NULL,
             predicate TEXT NOT NULL,
             object TEXT NOT NULL,
+            verb TEXT NOT NULL DEFAULT '',
+            quantity REAL,
+            unit TEXT,
+            date_ref TEXT,
+            date_approx TEXT,
+            location TEXT,
+            context TEXT,
+            episode_id INTEGER,
+            valid_at TEXT,
+            invalid_at TEXT,
+            invalidated_by INTEGER,
             confidence REAL NOT NULL DEFAULT 1.0,
             user_id INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -381,6 +409,13 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_facts_predicate ON structured_facts(predicate);
         CREATE INDEX IF NOT EXISTS idx_facts_memory ON structured_facts(memory_id);
         CREATE INDEX IF NOT EXISTS idx_facts_user ON structured_facts(user_id);
+        CREATE INDEX IF NOT EXISTS idx_sf_verb ON structured_facts(verb);
+        CREATE INDEX IF NOT EXISTS idx_sf_date ON structured_facts(date_approx);
+        CREATE INDEX IF NOT EXISTS idx_sf_episode ON structured_facts(episode_id) WHERE episode_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_sf_location ON structured_facts(location COLLATE NOCASE) WHERE location IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_sf_valid ON structured_facts(valid_at) WHERE valid_at IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_sf_invalid ON structured_facts(invalid_at) WHERE invalid_at IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_sf_subject_verb ON structured_facts(subject COLLATE NOCASE, verb, user_id);
 
         -- Current state (per-agent key-value store)
         CREATE TABLE IF NOT EXISTS current_state (
@@ -388,6 +423,10 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             agent TEXT NOT NULL,
             key TEXT NOT NULL,
             value TEXT NOT NULL,
+            memory_id INTEGER REFERENCES memories(id) ON DELETE SET NULL,
+            previous_value TEXT,
+            previous_memory_id INTEGER,
+            updated_count INTEGER NOT NULL DEFAULT 1,
             user_id INTEGER NOT NULL DEFAULT 1,
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -395,6 +434,8 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_current_state_agent ON current_state(agent);
         CREATE INDEX IF NOT EXISTS idx_current_state_user ON current_state(user_id);
+        CREATE INDEX IF NOT EXISTS idx_cs_key ON current_state(key COLLATE NOCASE);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_key_user ON current_state(key, user_id);
 
         -- User preferences
         CREATE TABLE IF NOT EXISTS user_preferences (
@@ -402,11 +443,17 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             key TEXT NOT NULL,
             value TEXT NOT NULL,
+            domain TEXT,
+            preference TEXT,
+            strength REAL NOT NULL DEFAULT 1.0,
+            evidence_memory_id INTEGER REFERENCES memories(id) ON DELETE SET NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(user_id, key)
         );
         CREATE INDEX IF NOT EXISTS idx_user_prefs_user ON user_preferences(user_id);
+        CREATE INDEX IF NOT EXISTS idx_up_domain ON user_preferences(domain COLLATE NOCASE);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_up_domain_pref_user ON user_preferences(domain, preference, user_id);
 
         -- Entity co-occurrences
         CREATE TABLE IF NOT EXISTS entity_cooccurrences (
@@ -414,11 +461,19 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             entity_a_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
             entity_b_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
             count INTEGER NOT NULL DEFAULT 1,
+            cooccurrence_count INTEGER NOT NULL DEFAULT 1,
+            score REAL NOT NULL DEFAULT 0.0,
+            last_memory_id INTEGER REFERENCES memories(id) ON DELETE SET NULL,
+            user_id INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(entity_a_id, entity_b_id)
         );
         CREATE INDEX IF NOT EXISTS idx_cooccurrences_a ON entity_cooccurrences(entity_a_id);
         CREATE INDEX IF NOT EXISTS idx_cooccurrences_b ON entity_cooccurrences(entity_b_id);
+        CREATE INDEX IF NOT EXISTS idx_ec_score ON entity_cooccurrences(score DESC);
+        CREATE INDEX IF NOT EXISTS idx_ec_user ON entity_cooccurrences(user_id);
 
         -- Tier4: causal chains
         CREATE TABLE IF NOT EXISTS causal_chains (
@@ -476,18 +531,33 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             content TEXT NOT NULL,
             memory_count INTEGER NOT NULL DEFAULT 0,
             user_id INTEGER NOT NULL DEFAULT 1,
+            schedule TEXT NOT NULL DEFAULT 'daily',
+            webhook_url TEXT,
+            webhook_secret TEXT,
+            include_stats BOOLEAN NOT NULL DEFAULT 1,
+            include_new_memories BOOLEAN NOT NULL DEFAULT 1,
+            include_contradictions BOOLEAN NOT NULL DEFAULT 1,
+            include_reflections BOOLEAN NOT NULL DEFAULT 1,
+            last_sent_at TEXT,
+            next_send_at TEXT,
+            active BOOLEAN NOT NULL DEFAULT 1,
+            failure_count INTEGER NOT NULL DEFAULT 0,
             started_at TEXT,
             ended_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_digests_user ON digests(user_id);
         CREATE INDEX IF NOT EXISTS idx_digests_period ON digests(period);
+        CREATE INDEX IF NOT EXISTS idx_digests_next ON digests(next_send_at) WHERE active = 1;
 
         -- Tier4: reflections
         CREATE TABLE IF NOT EXISTS reflections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             content TEXT NOT NULL,
             reflection_type TEXT NOT NULL DEFAULT 'insight',
+            themes TEXT,
+            period_start TEXT,
+            period_end TEXT,
             source_memory_ids TEXT,
             confidence REAL NOT NULL DEFAULT 1.0,
             user_id INTEGER NOT NULL DEFAULT 1,
@@ -495,28 +565,41 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_reflections_user ON reflections(user_id);
         CREATE INDEX IF NOT EXISTS idx_reflections_type ON reflections(reflection_type);
+        CREATE INDEX IF NOT EXISTS idx_reflections_period ON reflections(period_end DESC);
 
         -- Tier4: personality signals
         CREATE TABLE IF NOT EXISTS personality_signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             signal_type TEXT NOT NULL,
+            subject TEXT NOT NULL DEFAULT '',
+            valence TEXT NOT NULL DEFAULT 'neutral',
             value REAL NOT NULL,
+            intensity REAL DEFAULT 0.5,
+            reasoning TEXT,
+            source_text TEXT,
             evidence TEXT,
+            memory_id INTEGER REFERENCES memories(id) ON DELETE CASCADE,
             user_id INTEGER NOT NULL DEFAULT 1,
             agent TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_personality_signals_user ON personality_signals(user_id);
         CREATE INDEX IF NOT EXISTS idx_personality_signals_type ON personality_signals(signal_type);
+        CREATE INDEX IF NOT EXISTS idx_personality_signals_memory ON personality_signals(memory_id);
 
         -- Tier4: personality profiles
         CREATE TABLE IF NOT EXISTS personality_profiles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
             traits TEXT NOT NULL DEFAULT '{}',
+            profile TEXT NOT NULL DEFAULT '{}',
+            signal_count INTEGER NOT NULL DEFAULT 0,
+            is_stale BOOLEAN NOT NULL DEFAULT 0,
             last_updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE INDEX IF NOT EXISTS idx_personality_profiles_user ON personality_profiles(user_id);
 
         -- Tier4: scratchpad
         CREATE TABLE IF NOT EXISTS scratchpad (
@@ -524,6 +607,10 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             agent TEXT NOT NULL,
             key TEXT NOT NULL,
             content TEXT NOT NULL,
+            session TEXT,
+            model TEXT,
+            entry_key TEXT,
+            value TEXT,
             ttl_seconds INTEGER,
             expires_at TEXT,
             user_id INTEGER NOT NULL DEFAULT 1,
@@ -533,14 +620,24 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_scratchpad_agent ON scratchpad(agent);
         CREATE INDEX IF NOT EXISTS idx_scratchpad_expires ON scratchpad(expires_at) WHERE expires_at IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_scratchpad_user_expires ON scratchpad(user_id, expires_at);
+        CREATE INDEX IF NOT EXISTS idx_scratchpad_session ON scratchpad(user_id, session);
 
         -- Skill system: skill records
         CREATE TABLE IF NOT EXISTS skill_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            skill_id TEXT UNIQUE,
             name TEXT NOT NULL,
             agent TEXT NOT NULL,
             description TEXT,
             code TEXT NOT NULL,
+            path TEXT,
+            content TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT 'workflow',
+            origin TEXT NOT NULL DEFAULT 'imported',
+            generation INTEGER NOT NULL DEFAULT 0,
+            lineage_change_summary TEXT,
+            creator_id TEXT,
             language TEXT NOT NULL DEFAULT 'javascript',
             version INTEGER NOT NULL DEFAULT 1,
             parent_skill_id INTEGER REFERENCES skill_records(id),
@@ -554,8 +651,18 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             avg_duration_ms REAL,
             is_active BOOLEAN NOT NULL DEFAULT 1,
             is_deprecated BOOLEAN NOT NULL DEFAULT 0,
+            total_selections INTEGER NOT NULL DEFAULT 0,
+            total_applied INTEGER NOT NULL DEFAULT 0,
+            total_completions INTEGER NOT NULL DEFAULT 0,
+            visibility TEXT NOT NULL DEFAULT 'private',
+            lineage_source_task_id TEXT,
+            lineage_content_diff TEXT NOT NULL DEFAULT '',
+            lineage_content_snapshot TEXT NOT NULL DEFAULT '{}',
+            total_fallbacks INTEGER NOT NULL DEFAULT 0,
             metadata TEXT,
             user_id INTEGER NOT NULL DEFAULT 1,
+            first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+            last_updated TEXT NOT NULL DEFAULT (datetime('now')),
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(name, agent, version, user_id)
@@ -564,12 +671,14 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_skill_records_name ON skill_records(name);
         CREATE INDEX IF NOT EXISTS idx_skill_records_user ON skill_records(user_id);
         CREATE INDEX IF NOT EXISTS idx_skill_records_active ON skill_records(is_active);
+        CREATE INDEX IF NOT EXISTS idx_skill_records_category ON skill_records(category);
         CREATE INDEX IF NOT EXISTS idx_skill_records_parent ON skill_records(parent_skill_id);
 
         -- Skill lineage parents (many-to-many)
         CREATE TABLE IF NOT EXISTS skill_lineage_parents (
             skill_id INTEGER NOT NULL REFERENCES skill_records(id) ON DELETE CASCADE,
             parent_id INTEGER NOT NULL REFERENCES skill_records(id) ON DELETE CASCADE,
+            parent_skill_id TEXT,
             PRIMARY KEY (skill_id, parent_id)
         );
 
@@ -614,6 +723,8 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             skill_id INTEGER NOT NULL REFERENCES skill_records(id) ON DELETE CASCADE,
             tool_name TEXT NOT NULL,
+            tool_key TEXT,
+            critical INTEGER NOT NULL DEFAULT 0,
             is_optional BOOLEAN NOT NULL DEFAULT 0,
             UNIQUE(skill_id, tool_name)
         );
@@ -622,25 +733,46 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
         -- Tool quality records
         CREATE TABLE IF NOT EXISTS tool_quality_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_key TEXT UNIQUE,
+            backend TEXT NOT NULL DEFAULT '',
+            server TEXT NOT NULL DEFAULT 'default',
             tool_name TEXT NOT NULL,
+            description_hash TEXT NOT NULL DEFAULT '',
+            total_calls INTEGER NOT NULL DEFAULT 0,
+            total_successes INTEGER NOT NULL DEFAULT 0,
+            total_failures INTEGER NOT NULL DEFAULT 0,
+            avg_execution_ms REAL NOT NULL DEFAULT 0,
+            llm_flagged_count INTEGER NOT NULL DEFAULT 0,
+            quality_score REAL NOT NULL DEFAULT 1.0,
+            last_execution_at TEXT,
             agent TEXT NOT NULL,
             success BOOLEAN NOT NULL,
             latency_ms REAL,
             error_type TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_tool_quality_tool ON tool_quality_records(tool_name);
         CREATE INDEX IF NOT EXISTS idx_tool_quality_agent ON tool_quality_records(agent);
+        CREATE INDEX IF NOT EXISTS idx_tool_quality_score ON tool_quality_records(quality_score);
 
         -- Artifacts
         CREATE TABLE IF NOT EXISTS artifacts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            memory_id INTEGER REFERENCES memories(id) ON DELETE CASCADE,
+            filename TEXT,
             artifact_type TEXT NOT NULL DEFAULT 'file',
             content TEXT,
             content_hash TEXT,
             mime_type TEXT,
             size_bytes INTEGER,
+            sha256 TEXT,
+            storage_mode TEXT NOT NULL DEFAULT 'inline',
+            data BLOB,
+            disk_path TEXT,
+            is_indexed INTEGER NOT NULL DEFAULT 0,
+            is_encrypted INTEGER NOT NULL DEFAULT 0,
             source_url TEXT,
             agent TEXT,
             session_id TEXT,
@@ -654,6 +786,8 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_artifacts_type ON artifacts(artifact_type);
         CREATE INDEX IF NOT EXISTS idx_artifacts_agent ON artifacts(agent);
         CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_memory ON artifacts(memory_id);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_hash ON artifacts(sha256);
 
         -- Chiasm: Task tracking
         CREATE TABLE IF NOT EXISTS tasks (

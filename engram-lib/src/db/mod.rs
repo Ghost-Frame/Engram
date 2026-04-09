@@ -25,8 +25,8 @@ impl Database {
         conn.execute("PRAGMA temp_store = MEMORY", ()).await?;
         conn.execute("PRAGMA mmap_size = 268435456", ()).await?; // 256MB
 
-        // Create all tables
-        schema::create_tables(&conn).await?;
+        // Run schema migrations (idempotent)
+        migrations::run_migrations(&conn).await?;
 
         info!("database connected: {}", db_path);
 
