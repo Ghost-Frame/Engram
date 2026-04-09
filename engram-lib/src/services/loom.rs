@@ -263,20 +263,16 @@ pub fn set_dot_path(
 pub fn interpolate(template: &str, vars: &serde_json::Value) -> String {
     let mut result = template.to_string();
     // Simple iterative replacement -- find {{ and }}
-    loop {
-        if let Some(start) = result.find("{{") {
-            if let Some(end_offset) = result[start..].find("}}") {
-                let path = result[start + 2..start + end_offset].trim().to_string();
-                let val = resolve_dot_path(vars, &path);
-                let replacement = match &val {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Null => String::new(),
-                    other => other.to_string(),
-                };
-                result.replace_range(start..start + end_offset + 2, &replacement);
-            } else {
-                break;
-            }
+    while let Some(start) = result.find("{{") {
+        if let Some(end_offset) = result[start..].find("}}") {
+            let path = result[start + 2..start + end_offset].trim().to_string();
+            let val = resolve_dot_path(vars, &path);
+            let replacement = match &val {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            result.replace_range(start..start + end_offset + 2, &replacement);
         } else {
             break;
         }
@@ -315,7 +311,10 @@ pub async fn get_logs(
     step_id: Option<i64>,
     level: Option<&str>,
     limit: usize,
+    user_id: i64,
 ) -> Result<Vec<LogEntry>> {
+    // Verify run ownership
+    get_run(db, run_id, user_id).await?;
     let mut rows = if let Some(sid) = step_id {
         if let Some(lvl) = level {
             db.conn
@@ -798,7 +797,9 @@ pub async fn cancel_run(db: &Database, id: i64, user_id: i64) -> Result<bool> {
 // Step management
 // ---------------------------------------------------------------------------
 
-pub async fn get_steps(db: &Database, run_id: i64) -> Result<Vec<Step>> {
+pub async fn get_steps(db: &Database, run_id: i64, user_id: i64) -> Result<Vec<Step>> {
+    // Verify run ownership
+    get_run(db, run_id, user_id).await?;
     let mut rows = db
         .conn
         .query(
@@ -839,8 +840,10 @@ pub async fn get_step(db: &Database, id: i64) -> Result<Step> {
     }
 }
 
-pub async fn complete_step(db: &Database, step_id: i64, output: serde_json::Value) -> Result<()> {
+pub async fn complete_step(db: &Database, step_id: i64, output: serde_json::Value, user_id: i64) -> Result<()> {
     let step = get_step(db, step_id).await?;
+    // Verify run ownership
+    get_run(db, step.run_id, user_id).await?;
 
     if step.status != "running" {
         return Err(EngError::InvalidInput(format!(
@@ -876,8 +879,10 @@ pub async fn complete_step(db: &Database, step_id: i64, output: serde_json::Valu
     Ok(())
 }
 
-pub async fn fail_step(db: &Database, step_id: i64, error: &str) -> Result<()> {
+pub async fn fail_step(db: &Database, step_id: i64, error: &str, user_id: i64) -> Result<()> {
     let step = get_step(db, step_id).await?;
+    // Verify run ownership
+    get_run(db, step.run_id, user_id).await?;
 
     if step.retry_count < step.max_retries {
         // Retry -- reset to pending with incremented count
@@ -990,7 +995,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
             .await?;
     }
 
-    let steps = get_steps(db, run_id).await?;
+    let steps = get_steps(db, run_id, run.user_id).await?;
 
     // Build name->step map for dependency resolution
     let step_map: HashMap<String, Step> =
@@ -1005,8 +1010,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
         // Find last completed step output to use as run output
         let last_output = steps
             .iter()
-            .filter(|s| s.status == "completed")
-            .next_back()
+            .rfind(|s| s.status == "completed")
             .map(|s| s.output.clone())
             .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
@@ -1116,7 +1120,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
         match ready.step_type.as_str() {
             "transform" => {
                 // Execute inline
-                execute_transform_step(db, ready.id, &ready.config, &ready.merged_input).await?;
+                execute_transform_step(db, ready.id, &ready.config, &ready.merged_input, run.user_id).await?;
             }
             // webhook and llm: leave as running -- Phase 2 will add HTTP executors
             "webhook" | "llm" => {
@@ -1147,6 +1151,7 @@ pub async fn execute_transform_step(
     step_id: i64,
     config: &serde_json::Value,
     input: &serde_json::Value,
+    user_id: i64,
 ) -> Result<()> {
     let result: std::result::Result<serde_json::Value, String> = (|| {
         if let Some(mapping) = config.get("mapping") {
@@ -1194,10 +1199,10 @@ pub async fn execute_transform_step(
 
     match result {
         Ok(output) => {
-            Box::pin(complete_step(db, step_id, output)).await?;
+            Box::pin(complete_step(db, step_id, output, user_id)).await?;
         }
         Err(err_msg) => {
-            Box::pin(fail_step(db, step_id, &err_msg)).await?;
+            Box::pin(fail_step(db, step_id, &err_msg, user_id)).await?;
         }
     }
 

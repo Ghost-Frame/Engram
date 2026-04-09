@@ -83,11 +83,11 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
     get_agent_by_name(db, user_id, &req.name).await
 }
 
-pub async fn heartbeat(db: &Database, agent_id: i64) -> Result<()> {
+pub async fn heartbeat(db: &Database, agent_id: i64, user_id: i64) -> Result<()> {
     let conn = &db.conn;
     conn.execute(
-        "UPDATE agents SET last_seen_at = datetime('now') WHERE id = ?1",
-        libsql::params![agent_id],
+        "UPDATE agents SET last_seen_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+        libsql::params![agent_id, user_id],
     )
     .await?;
     Ok(())
@@ -133,15 +133,15 @@ pub async fn list_agents(
     Ok(results)
 }
 
-pub async fn get_agent(db: &Database, id: i64) -> Result<Agent> {
+pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
     let conn = &db.conn;
     let mut rows = conn.query(
         "SELECT id, user_id, name, category, description, code_hash,
                 trust_score, total_ops, successful_ops, failed_ops,
                 guard_allows, guard_warns, guard_blocks, is_active,
                 revoked_at, revoke_reason, last_seen_at, created_at
-         FROM agents WHERE id = ?1",
-        libsql::params![id],
+         FROM agents WHERE id = ?1 AND user_id = ?2",
+        libsql::params![id, user_id],
     )
     .await?;
 

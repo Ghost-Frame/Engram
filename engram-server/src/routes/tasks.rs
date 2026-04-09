@@ -124,16 +124,16 @@ async fn get_stats(
 
 async fn get_task_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let task = get_task(&state.db, id).await?;
+    let task = get_task(&state.db, id, auth.user_id).await?;
     Ok(Json(json!(task)))
 }
 
 async fn update_task_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
     Json(body): Json<UpdateTaskBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -149,16 +149,16 @@ async fn update_task_handler(
         due_at: body.due_at,
     };
 
-    let task = update_task(&state.db, id, req).await?;
+    let task = update_task(&state.db, id, req, auth.user_id).await?;
     Ok(Json(json!(task)))
 }
 
 async fn delete_task_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_task(&state.db, id).await?;
+    delete_task(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

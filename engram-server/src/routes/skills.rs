@@ -128,24 +128,24 @@ async fn search_skills_handler(
 }
 
 async fn get_skill_handler(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let skill = skills::get_skill(&state.db, id).await?;
+    let skill = skills::get_skill(&state.db, id, auth.user_id).await?;
     Ok(Json(json!(skill)))
 }
 
 async fn delete_skill_handler(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    skills::delete_skill(&state.db, id).await?;
+    skills::delete_skill(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
 async fn update_skill_handler(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
     Json(req): Json<UpdateSkillRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let skill = skills::update_skill(&state.db, id, req).await?;
+    let skill = skills::update_skill(&state.db, id, req, auth.user_id).await?;
     Ok(Json(json!(skill)))
 }
 // ---------------------------------------------------------------------------
@@ -153,17 +153,19 @@ async fn update_skill_handler(
 // ---------------------------------------------------------------------------
 
 async fn record_execution_handler(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
     Json(body): Json<RecordExecutionBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    skills::get_skill(&state.db, id, auth.user_id).await?;
     skills::record_execution(&state.db, id, body.success, body.duration_ms, body.error_type.as_deref(), body.error_message.as_deref()).await?;
     Ok((StatusCode::CREATED, Json(json!({ "recorded": true, "skill_id": id }))))
 }
 
 async fn get_executions_handler(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
     Query(params): Query<GetExecutionsParams>,
 ) -> Result<Json<Value>, AppError> {
+    skills::get_skill(&state.db, id, auth.user_id).await?;
     let limit = params.limit.unwrap_or(20);
     let executions = skills::get_executions(&state.db, id, limit).await?;
     Ok(Json(json!({ "executions": executions, "count": executions.len() })))
@@ -174,16 +176,18 @@ async fn get_executions_handler(
 // ---------------------------------------------------------------------------
 
 async fn judge_handler(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
     Json(body): Json<JudgeBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    skills::get_skill(&state.db, id, auth.user_id).await?;
     let judgment = skills::add_judgment(&state.db, id, &body.judge_agent, body.score, body.rationale.as_deref()).await?;
     Ok((StatusCode::CREATED, Json(json!(judgment))))
 }
 
 async fn get_judgments_handler(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
+    skills::get_skill(&state.db, id, auth.user_id).await?;
     let judgments = skills::get_judgments(&state.db, id).await?;
     Ok(Json(json!({ "judgments": judgments, "count": judgments.len() })))
 }
@@ -193,22 +197,25 @@ async fn get_judgments_handler(
 // ---------------------------------------------------------------------------
 
 async fn get_tags_handler(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
+    skills::get_skill(&state.db, id, auth.user_id).await?;
     let tags = skills::get_skill_tags(&state.db, id).await?;
     Ok(Json(json!({ "tags": tags })))
 }
 
 async fn get_deps_handler(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
+    skills::get_skill(&state.db, id, auth.user_id).await?;
     let deps = skills::get_tool_deps(&state.db, id).await?;
     Ok(Json(json!({ "deps": deps })))
 }
 
 async fn get_lineage_handler(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
+    skills::get_skill(&state.db, id, auth.user_id).await?;
     let lineage = skills::get_lineage(&state.db, id).await?;
     Ok(Json(json!({ "lineage": lineage })))
 }
@@ -259,8 +266,9 @@ async fn stats_handler(
 }
 
 async fn detail_handler(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
+    skills::get_skill(&state.db, id, auth.user_id).await?;
     let detail = dashboard::get_skill_detail(&state.db, id).await?;
     Ok(Json(detail))
 }

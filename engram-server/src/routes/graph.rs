@@ -157,7 +157,7 @@ async fn list_entities_handler(
 
 async fn get_entity_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
@@ -165,8 +165,8 @@ async fn get_entity_handler(
         .query(
             "SELECT id, name, entity_type, description, aliases, user_id, space_id, \
              confidence, occurrence_count, first_seen_at, last_seen_at, created_at \
-             FROM entities WHERE id = ?1",
-            libsql::params![id],
+             FROM entities WHERE id = ?1 AND user_id = ?2",
+            libsql::params![id, auth.user_id],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
@@ -191,11 +191,11 @@ async fn get_entity_handler(
 
 async fn delete_entity_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
-    conn.execute("DELETE FROM entities WHERE id = ?1", libsql::params![id])
+    conn.execute("DELETE FROM entities WHERE id = ?1 AND user_id = ?2", libsql::params![id, auth.user_id])
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     Ok(Json(json!({ "deleted": true, "id": id })))
@@ -207,17 +207,18 @@ async fn delete_entity_handler(
 
 async fn entity_relationships_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
     let mut rows = conn
         .query(
-            "SELECT id, source_entity_id, target_entity_id, relationship_type, \
-             strength, evidence_count, created_at \
-             FROM entity_relationships \
-             WHERE source_entity_id = ?1 OR target_entity_id = ?1",
-            libsql::params![id],
+            "SELECT er.id, er.source_entity_id, er.target_entity_id, er.relationship_type, \
+             er.strength, er.evidence_count, er.created_at \
+             FROM entity_relationships er \
+             WHERE (er.source_entity_id = ?1 OR er.target_entity_id = ?1) \
+             AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2)",
+            libsql::params![id, auth.user_id],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
@@ -240,14 +241,16 @@ async fn entity_relationships_handler(
 
 async fn entity_memories_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
     let mut rows = conn
         .query(
-            "SELECT memory_id FROM memory_entities WHERE entity_id = ?1",
-            libsql::params![id],
+            "SELECT me.memory_id FROM memory_entities me \
+             JOIN entities e ON e.id = me.entity_id \
+             WHERE me.entity_id = ?1 AND e.user_id = ?2",
+            libsql::params![id, auth.user_id],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
@@ -273,10 +276,29 @@ async fn entity_memories_handler(
 
 async fn create_relationship_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(req): Json<CreateRelationshipRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let conn = state.db.connection();
+    // Verify both entities belong to the authenticated user
+    let mut check = conn
+        .query(
+            "SELECT COUNT(*) FROM entities WHERE id IN (?1, ?2) AND user_id = ?3",
+            libsql::params![req.source_entity_id, req.target_entity_id, auth.user_id],
+        )
+        .await
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
+    let count: i64 = check
+        .next()
+        .await
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
+        .and_then(|r| r.get::<i64>(0).ok())
+        .unwrap_or(0);
+    if count < 2 {
+        return Err(AppError(engram_lib::EngError::NotFound(
+            "one or both entities not found".into(),
+        )));
+    }
     let rel_type = req.relationship_type.as_deref().unwrap_or("related");
     let strength = req.strength.unwrap_or(1.0);
 
@@ -338,11 +360,11 @@ struct GraphSearchBody {
 
 async fn graph_search_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(body): Json<GraphSearchBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.unwrap_or(20);
-    let nodes = graph_search(&state.db, &body.query, limit).await?;
+    let nodes = graph_search(&state.db, &body.query, limit, auth.user_id).await?;
     Ok(Json(json!({ "nodes": nodes })))
 }
 
@@ -357,12 +379,12 @@ struct NeighborhoodQuery {
 
 async fn neighborhood_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<String>,
     Query(params): Query<NeighborhoodQuery>,
 ) -> Result<Json<Value>, AppError> {
     let depth = params.depth.unwrap_or(2);
-    let (nodes, edges) = neighborhood(&state.db, &id, depth).await?;
+    let (nodes, edges) = neighborhood(&state.db, &id, depth, auth.user_id).await?;
     Ok(Json(json!({ "nodes": nodes, "edges": edges })))
 }
 
@@ -372,7 +394,7 @@ async fn neighborhood_handler(
 
 async fn memory_entities_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
@@ -381,8 +403,9 @@ async fn memory_entities_handler(
             "SELECT e.id, e.name, e.entity_type, me.salience \
              FROM memory_entities me \
              JOIN entities e ON e.id = me.entity_id \
-             WHERE me.memory_id = ?1",
-            libsql::params![id],
+             JOIN memories m ON m.id = me.memory_id \
+             WHERE me.memory_id = ?1 AND m.user_id = ?2",
+            libsql::params![id, auth.user_id],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;

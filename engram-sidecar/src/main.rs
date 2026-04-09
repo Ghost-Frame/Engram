@@ -6,6 +6,7 @@ use engram_lib::config::Config;
 use engram_lib::db::Database;
 use engram_lib::embeddings::onnx::OnnxProvider;
 use engram_lib::embeddings::EmbeddingProvider;
+use engram_lib::llm::local::{LocalModelClient, OllamaConfig};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -33,6 +34,7 @@ pub struct SidecarState {
     pub db: Arc<Database>,
     pub config: Arc<Config>,
     pub embedder: Option<Arc<dyn EmbeddingProvider>>,
+    pub llm: Option<Arc<LocalModelClient>>,
     pub session: Arc<RwLock<session::Session>>,
     pub source: String,
     pub user_id: i64,
@@ -64,6 +66,18 @@ async fn main() {
         }
     };
 
+    let llm: Option<Arc<LocalModelClient>> = {
+        let llm_config = OllamaConfig::from_env();
+        let client = LocalModelClient::new(llm_config);
+        if client.probe().await {
+            tracing::info!("local LLM client ready for sidecar");
+            Some(Arc::new(client))
+        } else {
+            tracing::warn!("local LLM unavailable for sidecar. Observations stored without enrichment.");
+            None
+        }
+    };
+
     let session_id = cli
         .session_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -74,6 +88,7 @@ async fn main() {
         db: Arc::new(db),
         config: Arc::new(config),
         embedder,
+        llm,
         session: Arc::new(RwLock::new(session::Session::new(session_id))),
         source: cli.source,
         user_id: cli.user_id,
