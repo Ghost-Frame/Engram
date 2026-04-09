@@ -27,7 +27,7 @@ async fn build_context(
         )));
     }
 
-    let result = assemble_context(&state.db, body, auth.user_id).await?;
+    let result = assemble_context(&state.db, body, auth.user_id, state.embedder.clone(), state.llm.clone()).await?;
 
     Ok(Json(json!(result)))
 }

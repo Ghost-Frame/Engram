@@ -10,18 +10,22 @@ pub mod scoring;
 pub mod types;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::db::Database;
+use crate::embeddings::EmbeddingProvider;
+use crate::llm::local::LocalModelClient;
 use crate::memory::search::hybrid_search;
 use crate::memory::types::SearchRequest;
+use crate::{personality, scratchpad};
 use crate::Result;
 
 pub use types::*;
 use budget::{estimate_tokens, truncate_to_token_budget};
 use deps::*;
 use modes::*;
-// TODO: use scoring::cosine_similarity when embedding dedup is wired in
+use scoring::cosine_similarity;
 
 // ---------------------------------------------------------------------------
 // Attribution helper
@@ -147,6 +151,98 @@ pub fn assemble_context_string(
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Check whether content is semantically duplicate against already-added blocks.
+/// Computes the candidate embedding on-demand using the provider.
+/// Returns false when no provider or embedding fails.
+async fn is_semantic_duplicate(
+    content: &str,
+    block_embeddings: &[Vec<f32>],
+    provider: &Option<Arc<dyn EmbeddingProvider>>,
+    thresh: f64,
+) -> bool {
+    if block_embeddings.is_empty() {
+        return false;
+    }
+    let p = match provider {
+        Some(p) => p,
+        None => return false,
+    };
+    let emb = match p.embed(content).await {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    block_embeddings
+        .iter()
+        .any(|e| cosine_similarity(&emb, e) as f64 > thresh)
+}
+
+/// Build a working-memory block from scratchpad entries.
+/// Returns None when rows is empty.
+fn build_working_memory_block(rows: &[scratchpad::ScratchEntry]) -> Option<String> {
+    if rows.is_empty() {
+        return None;
+    }
+    const MAX_CHARS: usize = 4000;
+    const VALUE_MAX: usize = 300;
+    let mut lines: Vec<String> = Vec::new();
+    let mut total_len: usize = 0;
+    for (i, row) in rows.iter().enumerate() {
+        let model_part = if !row.model.is_empty() {
+            format!("/{}", row.model)
+        } else {
+            String::new()
+        };
+        let mut value = row.value.trim().to_string();
+        if value.len() > VALUE_MAX {
+            value = format!("{}...", &value[..VALUE_MAX]);
+        }
+        let session_prefix: String = row.session.chars().take(8).collect();
+        let time_part = format_scratch_age(&row.updated_at);
+        let value_part = if !value.is_empty() {
+            format!(" {}", value)
+        } else {
+            String::new()
+        };
+        let line = format!(
+            "- [{}{} #{}] {}{} ({})",
+            row.agent, model_part, session_prefix, row.key, value_part, time_part
+        );
+        if total_len + line.len() > MAX_CHARS && !lines.is_empty() {
+            lines.push(format!("- ... {} more entries truncated", rows.len() - i));
+            break;
+        }
+        total_len += line.len() + 1;
+        lines.push(line);
+    }
+    Some(format!("<working-memory>\n{}\n</working-memory>", lines.join("\n")))
+}
+
+/// Format a relative age string for a scratchpad entry timestamp.
+fn format_scratch_age(updated_at: &str) -> String {
+    let normalized = if updated_at.contains('Z') {
+        updated_at.to_string()
+    } else {
+        format!("{}Z", updated_at.replace(' ', "T"))
+    };
+    if let Ok(dt) = normalized.parse::<chrono::DateTime<chrono::Utc>>() {
+        let diff_min = chrono::Utc::now()
+            .signed_duration_since(dt)
+            .num_minutes()
+            .max(0);
+        if diff_min <= 1 {
+            "just now".to_string()
+        } else {
+            format!("{}m ago", diff_min)
+        }
+    } else {
+        "just now".to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Core context assembly -- progressive disclosure algorithm
 // ---------------------------------------------------------------------------
 
@@ -159,12 +255,14 @@ pub fn assemble_context_string(
 ///      - 2.5b. Episode context (summarized conversation episodes)
 ///   3. Linked memories (graph expansion from semantic results)
 ///   4. Recent memories (temporal context)
-///   5. Inference (LLM-generated implicit connections -- stubbed)
+///   5. Inference (LLM-generated implicit connections via local model)
 ///   + Supplementary: working memory, current state, personality, preferences, facts
 pub async fn assemble_context(
     db: &Database,
     mut opts: ContextOptions,
     user_id: i64,
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    llm_client: Option<Arc<LocalModelClient>>,
 ) -> Result<ContextResult> {
     // --- Apply mode preset ---
     apply_context_mode(&mut opts);
@@ -179,7 +277,7 @@ pub async fn assemble_context(
     let depth = opts.depth.unwrap_or(3).clamp(1, 3);
 
     let max_memory_tokens = opts.max_memory_tokens.unwrap_or(DEFAULT_MAX_MEMORY_TOKENS);
-    let _dedup_thresh = opts.dedup_threshold.unwrap_or(DEFAULT_DEDUP_THRESHOLD);
+    let dedup_thresh = opts.dedup_threshold.unwrap_or(DEFAULT_DEDUP_THRESHOLD);
     let source_filter = opts.source.clone();
 
     let flags = resolve_layer_flags(&opts, depth);
@@ -202,19 +300,17 @@ pub async fn assemble_context(
     let t0 = Instant::now();
     let mut timing = ContextTiming::default();
 
-    // --- Embedding map for dedup (stubbed -- no cached embeddings available yet) ---
-    let _block_embeddings: Vec<Vec<f32>> = Vec::new();
-    let _emb_map: HashMap<i64, Vec<f32>> = HashMap::new();
+    // --- Embedding map for dedup ---
+    let mut block_embeddings: Vec<Vec<f32>> = Vec::new();
 
-    let _is_duplicate = |_mem_id: i64| -> bool {
-        // TODO: when embedding cache is available, check cosine similarity
-        // against block_embeddings with dedup_thresh
-        false
+    // --- Embed query ---
+    let t_embed = Instant::now();
+    let query_emb: Option<Vec<f32>> = if let Some(ref p) = embedding_provider {
+        p.embed(&opts.query).await.ok()
+    } else {
+        None
     };
-
-    // --- Embed query (stubbed -- no embedding provider wired in yet) ---
-    let query_emb: Option<Vec<f32>> = None;
-    timing.embed_ms = Some(t0.elapsed().as_millis() as u64);
+    timing.embed_ms = Some(t_embed.elapsed().as_millis() as u64);
 
     // ---- Phase 1: Static facts, ranked by query relevance ----
     if flags.include_static {
@@ -223,15 +319,25 @@ pub async fn assemble_context(
             statics.retain(|s| s.source.contains(sf.as_str()));
         }
 
-        // Score by source_count (no embedding-based relevance yet)
-        let mut scored: Vec<(usize, f64)> = statics.iter().enumerate().map(|(i, s)| {
-            let relevance = 0.5 + (s.source_count as f64 / 20.0).min(0.1);
-            (i, relevance)
-        }).collect();
+        // Score by cosine similarity when embedding provider is available; fall back to source_count.
+        let mut scored: Vec<(usize, f64, Option<Vec<f32>>)> = Vec::new();
+        for (i, s) in statics.iter().enumerate() {
+            let mut relevance = 0.5;
+            let static_emb: Option<Vec<f32>> = if let Some(ref p) = embedding_provider {
+                p.embed(&s.content).await.ok()
+            } else {
+                None
+            };
+            if let (Some(ref qe), Some(ref emb)) = (&query_emb, &static_emb) {
+                relevance = cosine_similarity(qe, emb) as f64;
+            }
+            relevance += (s.source_count as f64 / 20.0).min(0.1);
+            scored.push((i, relevance, static_emb));
+        }
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let static_budget_fraction = resolve_static_budget_fraction(&context_strategy);
-        for (idx, relevance) in scored {
+        for (idx, relevance, static_emb) in scored {
             let mem = &statics[idx];
             let truncated = truncate(&mem.content);
             let tokens = estimate_tokens(&truncated);
@@ -252,6 +358,9 @@ pub async fn assemble_context(
             });
             seen_ids.insert(mem.id);
             used_tokens += tokens;
+            if let Some(emb) = static_emb {
+                block_embeddings.push(emb);
+            }
         }
     }
     timing.static_ms = Some(t0.elapsed().as_millis() as u64 - timing.embed_ms.unwrap_or(0));
@@ -293,6 +402,22 @@ pub async fn assemble_context(
             break;
         }
 
+        // Compute embedding once for dedup check and block tracking
+        let candidate_emb: Option<Vec<f32>> = if let Some(ref p) = embedding_provider {
+            p.embed(&truncated).await.ok()
+        } else {
+            None
+        };
+        if let Some(ref emb) = candidate_emb {
+            if !block_embeddings.is_empty()
+                && block_embeddings
+                    .iter()
+                    .any(|e| cosine_similarity(emb, e) as f64 > dedup_thresh)
+            {
+                continue;
+            }
+        }
+
         let raw_score = r.score;
         if raw_score < min_relev {
             continue;
@@ -327,6 +452,9 @@ pub async fn assemble_context(
         });
         seen_ids.insert(r.memory.id);
         used_tokens += tokens;
+        if let Some(emb) = candidate_emb {
+            block_embeddings.push(emb);
+        }
     }
 
     timing.semantic_ms = Some(t0.elapsed().as_millis() as u64
@@ -456,6 +584,20 @@ pub async fn assemble_context(
                 if used_tokens + tokens > (token_budget as f64 * 0.88) as usize {
                     break;
                 }
+                let candidate_emb: Option<Vec<f32>> = if let Some(ref p) = embedding_provider {
+                    p.embed(&truncated).await.ok()
+                } else {
+                    None
+                };
+                if let Some(ref emb) = candidate_emb {
+                    if !block_embeddings.is_empty()
+                        && block_embeddings
+                            .iter()
+                            .any(|e| cosine_similarity(emb, e) as f64 > dedup_thresh)
+                    {
+                        continue;
+                    }
+                }
                 blocks.push(ContextBlock {
                     id: l.id,
                     content: truncated,
@@ -470,6 +612,9 @@ pub async fn assemble_context(
                 });
                 seen_ids.insert(l.id);
                 used_tokens += tokens;
+                if let Some(emb) = candidate_emb {
+                    block_embeddings.push(emb);
+                }
             }
         }
     }
@@ -489,6 +634,20 @@ pub async fn assemble_context(
             if used_tokens + tokens > recent_ceiling {
                 break;
             }
+            let candidate_emb: Option<Vec<f32>> = if let Some(ref p) = embedding_provider {
+                p.embed(&truncated).await.ok()
+            } else {
+                None
+            };
+            if let Some(ref emb) = candidate_emb {
+                if !block_embeddings.is_empty()
+                    && block_embeddings
+                        .iter()
+                        .any(|e| cosine_similarity(emb, e) as f64 > dedup_thresh)
+                {
+                    continue;
+                }
+            }
             blocks.push(ContextBlock {
                 id: r.id,
                 content: truncated,
@@ -503,21 +662,77 @@ pub async fn assemble_context(
             });
             seen_ids.insert(r.id);
             used_tokens += tokens;
+            if let Some(emb) = candidate_emb {
+                block_embeddings.push(emb);
+            }
         }
     }
     timing.recent_ms = Some(t_recent.elapsed().as_millis() as u64);
 
-    // ---- Phase 5: Inference (stubbed -- no LLM available yet) ----
-    timing.inference_ms = Some(0);
+    // ---- Phase 5: Inference (LLM-generated implicit connections) ----
+    let t_inference = Instant::now();
+    let semantic_for_inference: Vec<_> = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Semantic)
+        .collect();
+    if flags.include_inference
+        && semantic_for_inference.len() >= 2
+        && used_tokens < (token_budget as f64 * 0.95) as usize
+    {
+        if let Some(ref llm) = llm_client {
+            if llm.is_available() {
+                let top_facts: String = semantic_for_inference
+                    .iter()
+                    .take(6)
+                    .map(|b| format!("[{}] {}", b.id, b.content))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let system_prompt = "You find implicit connections between memories that aren't directly stated. Given these memories, identify 0-3 implicit connections. For each, write a single sentence stating the connection. If none exist, return \"none\". Be concise. Only state connections that are genuinely useful and non-obvious.";
+                let user_prompt = format!("Query: {}\n\nMemories:\n{}", opts.query, top_facts);
+                if let Ok(result) = llm.call(system_prompt, &user_prompt, None).await {
+                    if !result.to_lowercase().starts_with("none") {
+                        let tokens = estimate_tokens(&result);
+                        if used_tokens + tokens <= token_budget {
+                            blocks.push(ContextBlock {
+                                id: 0,
+                                content: result.trim().to_string(),
+                                category: "inference".to_string(),
+                                score: 60.0,
+                                source: ContextBlockSource::Inference,
+                                tokens,
+                                created_at: None,
+                                model: None,
+                                origin: None,
+                                parent_id: None,
+                            });
+                            used_tokens += tokens;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    timing.inference_ms = Some(t_inference.elapsed().as_millis() as u64);
 
     // ---- Assembly: supplementary sections ----
     let t_assembly = Instant::now();
     let mut supplementary: Vec<SupplementarySection> = Vec::new();
+    let mut personality_block_tokens: usize = 0;
 
-    // Working memory (stubbed -- scratchpad module not yet available)
+    // Working memory
+    if flags.include_working_memory {
+        let session_filter: Option<&str> = opts.session.as_deref().filter(|s| !s.is_empty());
+        if let Ok(scratch_rows) = scratchpad::list_entries(db, user_id, None, None, session_filter).await {
+            if let Some(wm) = build_working_memory_block(&scratch_rows) {
+                supplementary.push(SupplementarySection {
+                    label: "working_memory".to_string(),
+                    content: wm,
+                });
+            }
+        }
+    }
 
     // Current state
-    let personality_block_tokens: usize = 0;
     if flags.include_current_state {
         if let Ok(state_rows) = get_current_state(db, user_id).await {
             if !state_rows.is_empty() {
@@ -536,8 +751,20 @@ pub async fn assemble_context(
         }
     }
 
-    // Personality profile (stubbed -- personality module not fully implemented)
-    let _ = personality_block_tokens;
+    // Personality profile
+    if flags.include_personality {
+        if let Ok(Some((profile, _is_stale))) = personality::get_profile_for_injection(db, user_id).await {
+            let tokens = estimate_tokens(&profile);
+            if tokens <= (token_budget as f64 * 0.10) as usize {
+                supplementary.push(SupplementarySection {
+                    label: "personality".to_string(),
+                    content: format!("## Personality\n{}", profile),
+                });
+                personality_block_tokens = tokens;
+                used_tokens += tokens;
+            }
+        }
+    }
 
     // User preferences
     if flags.include_preferences {
