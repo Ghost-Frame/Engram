@@ -7,7 +7,86 @@ use crate::db::Database;
 use crate::intelligence::llm::{call_llm, is_llm_available, LlmOptions};
 use crate::intelligence::types::{GrowthReflectRequest, GrowthReflectResult};
 use crate::Result;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrowthObservation {
+    pub id: i64,
+    pub content: String,
+    pub source: String,
+    pub importance: i64,
+    pub created_at: String,
+}
+
+pub async fn list_observations(
+    db: &Database,
+    user_id: i64,
+    limit: usize,
+) -> Result<Vec<GrowthObservation>> {
+    let conn = db.connection();
+    let mut rows = conn
+        .query(
+            "SELECT id, content, source, importance, created_at \
+             FROM memories \
+             WHERE category = 'growth' AND is_forgotten = 0 AND user_id = ?1 \
+             ORDER BY created_at DESC LIMIT ?2",
+            libsql::params![user_id, limit as i64],
+        )
+        .await?;
+
+    let mut observations = Vec::new();
+    while let Some(row) = rows.next().await? {
+        observations.push(GrowthObservation {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            source: row.get(2)?,
+            importance: row.get(3)?,
+            created_at: row.get(4)?,
+        });
+    }
+    Ok(observations)
+}
+
+pub async fn materialize(
+    db: &Database,
+    observation_id: i64,
+    user_id: i64,
+) -> Result<i64> {
+    let conn = db.connection();
+    let mut rows = conn
+        .query(
+            "SELECT content, source FROM memories WHERE id = ?1 AND user_id = ?2 AND category = 'growth'",
+            libsql::params![observation_id, user_id],
+        )
+        .await?;
+
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| crate::EngError::NotFound(format!("growth observation {} not found", observation_id)))?;
+
+    let content: String = row.get(0)?;
+    let source: String = row.get(1)?;
+
+    conn.execute(
+        "INSERT INTO memories (content, category, source, importance, version, is_latest, \
+         source_count, is_static, is_forgotten, confidence, status, user_id, \
+         created_at, updated_at) \
+         VALUES (?1, 'insight', ?2, 8, 1, 1, 1, 1, 0, 1.0, 'approved', ?3, \
+         datetime('now'), datetime('now'))",
+        libsql::params![content, source, user_id],
+    )
+    .await?;
+
+    let mut id_rows = conn.query("SELECT last_insert_rowid()", ()).await?;
+    let id: i64 = if let Some(id_row) = id_rows.next().await? {
+        id_row.get(0)?
+    } else {
+        0
+    };
+    Ok(id)
+}
 
 /// Service-specific reflection prompts.
 fn get_prompt_for_service(service: &str, prompt_override: Option<&str>) -> String {

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod activity;
 pub mod admin;
 pub mod agents;
 pub mod apikeys;
@@ -15,6 +16,7 @@ pub mod embeddings;
 pub mod episodes;
 pub mod facts;
 pub mod fsrs;
+pub mod gate;
 pub mod graph;
 pub mod grounding;
 pub mod guard;
@@ -34,6 +36,7 @@ pub mod ratelimit;
 pub mod reranker;
 pub mod scratchpad;
 pub mod services;
+pub mod sessions;
 pub mod skills;
 pub mod webhooks;
 

@@ -119,7 +119,7 @@ pub async fn detect_contradictions(
 ///
 /// Compares all structured_facts with the same subject+predicate to find
 /// conflicting objects. Returns all detected contradictions.
-pub async fn scan_all_contradictions(db: &Database) -> Result<Vec<Contradiction>> {
+pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec<Contradiction>> {
     let conn = db.connection();
     let mut contradictions = Vec::new();
 

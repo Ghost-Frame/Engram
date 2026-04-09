@@ -19,6 +19,9 @@ ndarray = { workspace = true }
 reqwest = { workspace = true }
 dirs = { workspace = true }
 regex = { workspace = true }
+zip = { workspace = true }
+pdf-extract = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

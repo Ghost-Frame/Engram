@@ -57,7 +57,7 @@ struct LlmDecompositionResponse {
 
 /// Decompose a memory into atomic facts.
 /// Returns the decomposed memory IDs (newly created child facts).
-pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
+pub async fn decompose(db: &Database, memory_id: i64, _user_id: i64) -> Result<Vec<i64>> {
     let conn = db.connection();
 
     // Fetch the memory content
