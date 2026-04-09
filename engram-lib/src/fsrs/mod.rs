@@ -432,8 +432,7 @@ mod tests {
         let expected = s
             * f32::exp(FSRS6_WEIGHTS[17] * (0.0 + FSRS6_WEIGHTS[18]))
             * f32::powf(s, -FSRS6_WEIGHTS[19]);
-        let expected_clamped =
-            f32::max(FSRS_MIN_STABILITY, f32::min(FSRS_MAX_STABILITY, expected));
+        let expected_clamped = expected.clamp(FSRS_MIN_STABILITY, FSRS_MAX_STABILITY);
         assert!(
             (new_s - expected_clamped).abs() < 0.001,
             "got {}, expected {}",
