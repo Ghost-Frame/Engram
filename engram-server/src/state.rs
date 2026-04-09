@@ -20,6 +20,12 @@ impl SessionBroadcast {
     }
 }
 
+impl Default for SessionBroadcast {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Database>,
