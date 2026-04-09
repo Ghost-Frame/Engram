@@ -1,142 +1,295 @@
-//! Growth reflection -- observe patterns, record learnings, materialize to actionable memories.
+//! Growth reflection -- LLM-backed self-reflection and growth tracking.
+//!
+//! Observes recent activity, generates observations about patterns, and
+//! stores them as growth memories.
 
 use crate::db::Database;
-use crate::Result;
+use crate::intelligence::llm::{call_llm, is_llm_available, LlmOptions};
 use crate::intelligence::types::{GrowthReflectRequest, GrowthReflectResult};
-use libsql::params;
-use serde::{Deserialize, Serialize};
+use crate::Result;
+use tracing::{info, warn};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Observation {
-    pub id: i64,
-    pub content: String,
-    pub source: String,
-    pub created_at: String,
+/// Service-specific reflection prompts.
+fn get_prompt_for_service(service: &str, prompt_override: Option<&str>) -> String {
+    if let Some(override_prompt) = prompt_override {
+        return override_prompt.to_string();
+    }
+
+    match service {
+        "engram" => "You are Engram's internal self-reflection process. Engram is a persistent memory system.\n\
+            Examine the recent activity and ask yourself:\n\
+            - Which memories get searched most vs never?\n\
+            - What contradictions persist unresolved?\n\
+            - What knowledge gaps exist (frequent searches with no results)?\n\
+            - What categories are growing fastest?\n\
+            - Are memory quality patterns improving or degrading?".to_string(),
+
+        "claude-code" => "You are the self-reflection process for Claude Code sessions with Master (Zan).\n\
+            Examine the session activity and ask yourself:\n\
+            - Did a particular approach to a task work well or poorly?\n\
+            - Did Master correct a pattern that should be remembered?\n\
+            - Was there drift from expected behavior? Why?\n\
+            - Was something learned about the codebase or infrastructure?\n\
+            - Was there a communication style Master preferred?".to_string(),
+
+        "eidolon" => "You are Eidolon's self-reflection process. Eidolon is the daemon that orchestrates the neurosymbolic brain.\n\
+            Examine the dream cycle results and ask yourself:\n\
+            - What did this dream cycle reveal about memory patterns?\n\
+            - Which patterns keep merging (over-correlated)?\n\
+            - What connections are surprising?\n\
+            - Is the substrate getting better or worse at targeted activation?".to_string(),
+
+        _ => "You are a self-reflection process for a service in the Syntheos ecosystem.\n\
+            Examine the recent activity and extract ONE useful observation about patterns, improvements, or concerns.".to_string(),
+    }
 }
 
-/// Generate a rule-based observation text from activity context.
-/// (No LLM required -- pattern-based summarization.)
-pub fn generate_observation_text(service: &str, context: &[String]) -> String {
-    if context.is_empty() {
-        return format!("{} has no recent activity to reflect on.", service);
+/// Validate that an observation is meaningful (not empty, not meta-commentary).
+fn validate_observation(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.len() < 10 || trimmed.len() > 500 {
+        return false;
+    }
+    if trimmed.to_uppercase() == "NOTHING" {
+        return false;
+    }
+    if trimmed.starts_with("I don't") || trimmed.starts_with("There is nothing") {
+        return false;
+    }
+    true
+}
+
+/// Perform a growth reflection -- observe recent activity and generate an observation.
+pub async fn reflect(
+    db: &Database,
+    req: &GrowthReflectRequest,
+    user_id: i64,
+) -> Result<GrowthReflectResult> {
+    let conn = db.connection();
+
+    if req.context.is_empty() {
+        return Err(crate::EngError::InvalidInput(
+            "context array is required and must not be empty".to_string(),
+        ));
     }
 
-    let completed = context.iter().filter(|c| c.contains("task.completed")).count();
-    let errors = context.iter().filter(|c| c.contains("error.raised")).count();
-    let blocked = context.iter().filter(|c| c.contains("task.blocked")).count();
-    let total = context.len();
-
-    let mut parts = Vec::new();
-    if completed > 0 {
-        parts.push(format!("{} tasks completed", completed));
-    }
-    if errors > 0 {
-        parts.push(format!("{} errors raised", errors));
-    }
-    if blocked > 0 {
-        parts.push(format!("{} tasks blocked", blocked));
+    if !is_llm_available() {
+        warn!(service = %req.service, "growth_reflect_skipped: llm_unavailable");
+        return Ok(GrowthReflectResult {
+            observation: None,
+            stored_memory_id: None,
+            reflection_id: None,
+        });
     }
 
-    let summary = if parts.is_empty() {
-        format!("{} items of activity observed", total)
-    } else {
-        parts.join(", ")
+    let system_prompt = get_prompt_for_service(
+        &req.service,
+        req.prompt_override.as_deref(),
+    );
+
+    let rules = "\nRules:\n\
+        - Output ONE concise observation (1-3 sentences max)\n\
+        - Write in first person as the service\n\
+        - Be specific -- not generic advice\n\
+        - If nothing interesting happened, output exactly: NOTHING\n\
+        - Do NOT output meta-commentary, explanations, or multiple options\n\
+        - Do NOT repeat things already known";
+
+    let full_system = format!("{}{}", system_prompt, rules);
+
+    let mut user_prompt = format!("Recent activity:\n\n{}\n\n", req.context.join("\n"));
+    if let Some(ref existing) = req.existing_growth {
+        let truncated = if existing.len() > 4000 {
+            &existing[..4000]
+        } else {
+            existing
+        };
+        user_prompt.push_str(&format!(
+            "Things I already know (do NOT repeat these):\n{}\n\n",
+            truncated
+        ));
+    }
+    user_prompt.push_str("What did I learn or notice? One observation, or NOTHING.");
+
+    let opts = LlmOptions {
+        temperature: 0.7,
+        max_tokens: 300,
     };
 
-    format!(
-        "Growth reflection for {}: {}. Recent context: {}",
-        service,
-        summary,
-        context.iter().take(3).cloned().collect::<Vec<_>>().join("; ")
+    let response = match call_llm(&full_system, &user_prompt, Some(opts)).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, service = %req.service, "growth_reflect_failed");
+            return Ok(GrowthReflectResult {
+                observation: None,
+                stored_memory_id: None,
+                reflection_id: None,
+            });
+        }
+    };
+
+    let trimmed = response.trim().to_string();
+
+    if !validate_observation(&trimmed) {
+        info!(service = %req.service, "growth_nothing_observed");
+        return Ok(GrowthReflectResult {
+            observation: None,
+            stored_memory_id: None,
+            reflection_id: None,
+        });
+    }
+
+    // Store as growth memory
+    let source = format!("{}-growth", req.service);
+
+    conn.execute(
+        "INSERT INTO memories (content, category, source, importance, version, is_latest, \
+         source_count, is_static, is_forgotten, confidence, status, user_id, \
+         created_at, updated_at) \
+         VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1.0, 'approved', ?3, \
+         datetime('now'), datetime('now'))",
+        libsql::params![trimmed.clone(), source.clone(), user_id],
     )
-}
+    .await?;
 
-/// Reflect on recent activity and store an observation as a growth memory.
-pub async fn reflect(db: &Database, request: &GrowthReflectRequest, user_id: i64) -> Result<GrowthReflectResult> {
-    // Note: request.existing_growth and request.prompt_override are reserved for
-    // a future LLM-backed reflection path. Currently using rule-based generation.
-    let observation_text = generate_observation_text(&request.service, &request.context);
+    let mut id_row = conn.query("SELECT last_insert_rowid()", ()).await?;
+    let memory_id: i64 = if let Some(row) = id_row.next().await? {
+        row.get(0)?
+    } else {
+        0
+    };
 
-    // Store as a "growth" category memory
-    db.conn.execute(
-        "INSERT INTO memories (content, category, source, importance, user_id)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            observation_text.clone(),
-            "growth".to_string(),
-            format!("{}-growth", request.service),
-            5i64,
-            user_id,
+    // Store in reflections table
+    conn.execute(
+        "INSERT INTO reflections (content, reflection_type, source_memory_ids, \
+         confidence, user_id, created_at) \
+         VALUES (?1, 'growth', ?2, 1.0, ?3, datetime('now'))",
+        libsql::params![
+            trimmed.clone(),
+            format!("[{}]", memory_id),
+            user_id
         ],
-    ).await?;
+    )
+    .await?;
 
-    let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-    let memory_id: i64 = rows.next().await?
-        .ok_or_else(|| crate::EngError::Internal("no rowid".into()))?
-        .get(0)?;
+    let mut refl_id_row = conn.query("SELECT last_insert_rowid()", ()).await?;
+    let reflection_id: i64 = if let Some(row) = refl_id_row.next().await? {
+        row.get(0)?
+    } else {
+        0
+    };
+
+    info!(
+        service = %req.service,
+        memory_id,
+        reflection_id,
+        observation = %trimmed.chars().take(80).collect::<String>(),
+        "growth_observation_stored"
+    );
 
     Ok(GrowthReflectResult {
-        observation: Some(observation_text),
+        observation: Some(trimmed),
         stored_memory_id: Some(memory_id),
-        reflection_id: None,
+        reflection_id: Some(reflection_id),
     })
 }
 
-/// List growth observations (memories with category = "growth").
-pub async fn list_observations(db: &Database, user_id: i64, limit: usize) -> Result<Vec<Observation>> {
-    let mut rows = db.conn.query(
-        "SELECT id, content, source, created_at
-         FROM memories
-         WHERE category = 'growth' AND user_id = ?1 AND is_forgotten = 0 AND is_latest = 1
-         ORDER BY id DESC LIMIT ?2",
-        params![user_id, limit as i64],
-    ).await?;
+/// Self-reflection for Engram -- called periodically (e.g., every hour).
+/// Gathers memory stats, builds context, and generates a growth observation.
+pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectResult> {
+    let conn = db.connection();
 
-    let mut observations = Vec::new();
-    while let Some(row) = rows.next().await? {
-        observations.push(Observation {
-            id: row.get(0)?,
-            content: row.get(1)?,
-            source: row.get::<Option<String>>(2)?.unwrap_or_default(),
-            created_at: row.get(3)?,
+    // Min activity threshold: 50 new memories in last hour
+    let mut count_row = conn
+        .query(
+            "SELECT COUNT(*) FROM memories \
+             WHERE created_at > datetime('now', '-1 hour') AND user_id = ?1",
+            libsql::params![user_id],
+        )
+        .await?;
+    let recent_count: i64 = if let Some(row) = count_row.next().await? {
+        row.get(0)?
+    } else {
+        0
+    };
+
+    if recent_count < 50 {
+        return Ok(GrowthReflectResult {
+            observation: None,
+            stored_memory_id: None,
+            reflection_id: None,
         });
     }
-    Ok(observations)
-}
 
-/// Materialize an observation: create an actionable memory derived from it.
-/// The original growth memory is kept; a new "discovery" memory is created.
-pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Result<i64> {
-    // Fetch the observation
-    let mut rows = db.conn.query(
-        "SELECT content FROM memories WHERE id = ?1 AND user_id = ?2 AND category = 'growth'",
-        params![observation_id, user_id],
-    ).await?;
+    // 15% probability gate
+    if rand::random::<f64>() > 0.15 {
+        return Ok(GrowthReflectResult {
+            observation: None,
+            stored_memory_id: None,
+            reflection_id: None,
+        });
+    }
 
-    let content: String = rows.next().await?
-        .ok_or_else(|| crate::EngError::NotFound(format!("observation {} not found", observation_id)))?
-        .get(0)?;
+    // Build context from memory stats
+    let mut stats_row = conn
+        .query(
+            "SELECT COUNT(*) as total, \
+                    SUM(CASE WHEN access_count = 0 THEN 1 ELSE 0 END) as never_accessed, \
+                    SUM(CASE WHEN category = 'growth' THEN 1 ELSE 0 END) as growth_count, \
+                    AVG(importance) as avg_importance \
+             FROM memories WHERE is_forgotten = 0 AND user_id = ?1",
+            libsql::params![user_id],
+        )
+        .await?;
 
-    // Create an actionable discovery memory
-    let actionable = format!("Actionable: {}", content);
-    db.conn.execute(
-        "INSERT INTO memories (content, category, source, importance, user_id)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            actionable,
-            "discovery".to_string(),
-            "growth-materialization".to_string(),
-            6i64,
-            user_id,
-        ],
-    ).await?;
+    let (total, never_accessed, growth_count, avg_importance) =
+        if let Some(row) = stats_row.next().await? {
+            (
+                row.get::<i64>(0).unwrap_or(0),
+                row.get::<i64>(1).unwrap_or(0),
+                row.get::<i64>(2).unwrap_or(0),
+                row.get::<f64>(3).unwrap_or(0.0),
+            )
+        } else {
+            (0, 0, 0, 0.0)
+        };
 
-    let mut id_rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-    let new_id: i64 = id_rows.next().await?
-        .ok_or_else(|| crate::EngError::Internal("no rowid".into()))?
-        .get(0)?;
+    let context = vec![
+        format!(
+            "Memory stats: {} total, {} never accessed, {} growth entries, avg importance {:.1}",
+            total, never_accessed, growth_count, avg_importance
+        ),
+        format!("New memories in last hour: {}", recent_count),
+    ];
 
-    Ok(new_id)
+    // Get existing growth for anti-repeat
+    let mut growth_rows = conn
+        .query(
+            "SELECT content FROM memories \
+             WHERE category = 'growth' AND source = 'engram-growth' AND is_forgotten = 0 AND user_id = ?1 \
+             ORDER BY created_at DESC LIMIT 10",
+            libsql::params![user_id],
+        )
+        .await?;
+
+    let mut existing_lines = Vec::new();
+    while let Some(row) = growth_rows.next().await? {
+        let content: String = row.get(0)?;
+        existing_lines.push(format!("- {}", content));
+    }
+
+    let req = GrowthReflectRequest {
+        service: "engram".to_string(),
+        context,
+        existing_growth: if existing_lines.is_empty() {
+            None
+        } else {
+            Some(existing_lines.join("\n"))
+        },
+        prompt_override: None,
+    };
+
+    reflect(db, &req, user_id).await
 }
 
 #[cfg(test)]
@@ -144,70 +297,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_generate_observation_from_context() {
-        let context = vec![
-            "task.completed: Fixed auth bug".to_string(),
-            "task.completed: Added rate limiting".to_string(),
-            "error.raised: Build failed".to_string(),
-        ];
-        let obs = generate_observation_text("test-agent", &context);
-        assert!(!obs.is_empty());
-        assert!(obs.len() > 10);
+    fn test_validate_observation_valid() {
+        assert!(validate_observation(
+            "I noticed that memory access patterns shift during weekday evenings."
+        ));
     }
 
     #[test]
-    fn test_generate_observation_empty_context() {
-        let obs = generate_observation_text("test-agent", &[]);
-        assert!(!obs.is_empty()); // still generates something
+    fn test_validate_observation_too_short() {
+        assert!(!validate_observation("short"));
     }
 
-    #[tokio::test]
-    async fn test_reflect_stores_growth_memory() {
-        use crate::db::Database;
-        let db = Database::connect_memory().await.expect("in-memory db");
-
-        let request = GrowthReflectRequest {
-            service: "test-agent".to_string(),
-            context: vec!["task.completed: Did some work".to_string()],
-            existing_growth: None,
-            prompt_override: None,
-        };
-        let result = reflect(&db, &request, 1).await;
-        assert!(result.is_ok());
-        let r = result.unwrap();
-        assert!(r.observation.is_some());
-        assert!(r.stored_memory_id.is_some());
+    #[test]
+    fn test_validate_observation_nothing() {
+        assert!(!validate_observation("NOTHING"));
     }
 
-    #[tokio::test]
-    async fn test_list_observations_returns_growth_memories() {
-        use crate::db::Database;
-        let db = Database::connect_memory().await.expect("in-memory db");
-
-        // Store a growth memory directly
-        db.conn.execute(
-            "INSERT INTO memories (content, category, source, importance, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-            libsql::params!["Test growth observation".to_string(), "growth".to_string(), "test".to_string(), 5i64, 1i64],
-        ).await.expect("insert");
-
-        let obs = list_observations(&db, 1, 10).await.expect("list");
-        assert!(!obs.is_empty());
+    #[test]
+    fn test_validate_observation_meta() {
+        assert!(!validate_observation("I don't see anything interesting"));
+        assert!(!validate_observation("There is nothing notable"));
     }
 
-    #[tokio::test]
-    async fn test_materialize_observation() {
-        use crate::db::Database;
-        let db = Database::connect_memory().await.expect("in-memory db");
+    #[test]
+    fn test_get_prompt_override() {
+        let p = get_prompt_for_service("engram", Some("Custom prompt"));
+        assert_eq!(p, "Custom prompt");
+    }
 
-        // Insert a growth memory
-        db.conn.execute(
-            "INSERT INTO memories (content, category, source, importance, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-            libsql::params!["Growth obs to materialize".to_string(), "growth".to_string(), "test".to_string(), 5i64, 1i64],
-        ).await.expect("insert");
-        let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await.expect("rowid");
-        let id: i64 = rows.next().await.expect("row").expect("exists").get(0).expect("id");
-
-        let result = materialize(&db, id, 1).await;
-        assert!(result.is_ok());
+    #[test]
+    fn test_get_prompt_default() {
+        let p = get_prompt_for_service("unknown_service", None);
+        assert!(p.contains("self-reflection process"));
     }
 }
