@@ -308,7 +308,7 @@ pub async fn assemble_context(
         }
 
         // Check if this is a fact with a parent
-        let mem_detail = get_memory_without_embedding(db, r.memory.id).await.ok().flatten();
+        let mem_detail = get_memory_without_embedding(db, r.memory.id, user_id).await.ok().flatten();
         let parent_id = mem_detail.as_ref()
             .filter(|m| m.is_fact)
             .and_then(|m| m.parent_memory_id);
@@ -346,7 +346,7 @@ pub async fn assemble_context(
             if used_tokens >= (token_budget as f64 * 0.72) as usize {
                 break;
             }
-            let mem = get_memory_without_embedding(db, sid).await.ok().flatten();
+            let mem = get_memory_without_embedding(db, sid, user_id).await.ok().flatten();
             let mem = match mem {
                 Some(m) => m,
                 None => continue,
@@ -396,7 +396,7 @@ pub async fn assemble_context(
             .map(|b| b.id)
             .collect();
         for sid in semantic_for_ep {
-            let mem = get_memory_without_embedding(db, sid).await.ok().flatten();
+            let mem = get_memory_without_embedding(db, sid, user_id).await.ok().flatten();
             let ep_id = match mem.and_then(|m| m.episode_id) {
                 Some(id) => id,
                 None => continue,

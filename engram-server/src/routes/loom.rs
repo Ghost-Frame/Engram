@@ -150,10 +150,10 @@ async fn cancel_run_handler(
 
 async fn get_steps_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let steps = get_steps(&state.db, id).await?;
+    let steps = get_steps(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "steps": steps })))
 }
 
@@ -166,7 +166,7 @@ struct GetLogsParams {
 
 async fn get_logs_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
     Query(params): Query<GetLogsParams>,
 ) -> Result<Json<Value>, AppError> {
@@ -177,6 +177,7 @@ async fn get_logs_handler(
         params.step_id,
         params.level.as_deref(),
         limit,
+        auth.user_id,
     )
     .await?;
     Ok(Json(json!({ "logs": logs })))
@@ -193,11 +194,11 @@ struct CompleteStepBody {
 
 async fn complete_step_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
     Json(body): Json<CompleteStepBody>,
 ) -> Result<Json<Value>, AppError> {
-    complete_step(&state.db, id, body.output).await?;
+    complete_step(&state.db, id, body.output, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -208,11 +209,11 @@ struct FailStepBody {
 
 async fn fail_step_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
     Json(body): Json<FailStepBody>,
 ) -> Result<Json<Value>, AppError> {
-    fail_step(&state.db, id, &body.error).await?;
+    fail_step(&state.db, id, &body.error, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

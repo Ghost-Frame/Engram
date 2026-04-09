@@ -33,7 +33,7 @@ struct ConsolidationLlmResult {
     importance: Option<i32>,
 }
 
-pub async fn consolidate(db: &Database, memory_ids: &[String]) -> Result<Memory> {
+pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> Result<Memory> {
     let source_ids = parse_memory_ids(memory_ids)?;
     if source_ids.len() < 2 {
         return Err(crate::EngError::InvalidInput(
@@ -41,7 +41,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String]) -> Result<Memory>
         ));
     }
 
-    let memories = load_memories(db, &source_ids).await?;
+    let memories = load_memories(db, &source_ids, user_id).await?;
     let first = memories.first().ok_or_else(|| {
         crate::EngError::InvalidInput("no memories available to consolidate".to_string())
     })?;
@@ -49,7 +49,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String]) -> Result<Memory>
     ensure_same_scope(&memories)?;
 
     if let Some(existing_id) = find_existing_consolidation(db, first.user_id, &source_ids).await? {
-        return fetch_memory(db, existing_id).await;
+        return fetch_memory(db, existing_id, first.user_id).await;
     }
 
     let prompt_input = build_cluster_prompt(db, &memories).await?;
@@ -102,7 +102,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String]) -> Result<Memory>
     )
     .await?;
 
-    update_source_count(db, stored.id, memories.len() as i32).await?;
+    update_source_count(db, stored.id, memories.len() as i32, first.user_id).await?;
     db.conn
         .execute(
             "UPDATE memories SET tags = ?1, episode_id = ?2, confidence = ?3, model = ?4, updated_at = datetime('now') WHERE id = ?5",
@@ -117,7 +117,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String]) -> Result<Memory>
         .await?;
 
     for source in &memories {
-        insert_link(db, stored.id, source.id, 1.0, "consolidates").await?;
+        insert_link(db, stored.id, source.id, 1.0, "consolidates", first.user_id).await?;
     }
 
     let removed_duplicates = llm_result
@@ -139,12 +139,13 @@ pub async fn consolidate(db: &Database, memory_ids: &[String]) -> Result<Memory>
         )
         .await?;
 
-    fetch_memory(db, stored.id).await
+    fetch_memory(db, stored.id, first.user_id).await
 }
 
 pub async fn find_consolidation_candidates(
     db: &Database,
     threshold: f32,
+    user_id: i64,
 ) -> Result<Vec<Vec<String>>> {
     let sim_floor = f64::from(threshold.clamp(0.0, 1.0));
     let mut rows = db
@@ -156,6 +157,7 @@ pub async fn find_consolidation_candidates(
              JOIN memories mt ON mt.id = ml.target_id
              WHERE ml.type = 'similarity'
                AND ml.similarity >= ?1
+               AND ms.user_id = ?2
                AND ms.user_id = mt.user_id
                AND ms.is_forgotten = 0
                AND mt.is_forgotten = 0
@@ -164,7 +166,7 @@ pub async fn find_consolidation_candidates(
                AND ms.is_latest = 1
                AND mt.is_latest = 1
                AND ms.category = mt.category",
-            params![sim_floor],
+            params![sim_floor, user_id],
         )
         .await?;
 
@@ -262,17 +264,17 @@ fn parse_memory_ids(memory_ids: &[String]) -> Result<Vec<i64>> {
     Ok(parsed)
 }
 
-async fn load_memories(db: &Database, ids: &[i64]) -> Result<Vec<Memory>> {
+async fn load_memories(db: &Database, ids: &[i64], user_id: i64) -> Result<Vec<Memory>> {
     let mut memories = Vec::with_capacity(ids.len());
     for &id in ids {
-        memories.push(fetch_memory(db, id).await?);
+        memories.push(fetch_memory(db, id, user_id).await?);
     }
     Ok(memories)
 }
 
-async fn fetch_memory(db: &Database, id: i64) -> Result<Memory> {
-    let sql = format!("SELECT {} FROM memories WHERE id = ?1", MEMORY_COLUMNS);
-    let mut rows = db.conn.query(&sql, params![id]).await?;
+async fn fetch_memory(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
+    let sql = format!("SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2", MEMORY_COLUMNS);
+    let mut rows = db.conn.query(&sql, params![id, user_id]).await?;
     if let Some(row) = rows.next().await? {
         row_to_memory(&row)
     } else {

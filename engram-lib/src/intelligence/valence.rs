@@ -75,12 +75,12 @@ pub fn analyze_valence(content: &str) -> ValenceResult {
     }
 }
 
-pub async fn store_valence(db: &Database, memory_id: i64, content: &str) -> Result<ValenceResult> {
+pub async fn store_valence(db: &Database, memory_id: i64, content: &str, user_id: i64) -> Result<ValenceResult> {
     let result = analyze_valence(content);
     if result.dominant_emotion != "neutral" {
         db.conn.execute(
-            "UPDATE memories SET valence = ?1, arousal = ?2, dominant_emotion = ?3 WHERE id = ?4",
-            params![result.valence, result.arousal, result.dominant_emotion.clone(), memory_id],
+            "UPDATE memories SET valence = ?1, arousal = ?2, dominant_emotion = ?3 WHERE id = ?4 AND user_id = ?5",
+            params![result.valence, result.arousal, result.dominant_emotion.clone(), memory_id, user_id],
         ).await?;
     }
     Ok(result)

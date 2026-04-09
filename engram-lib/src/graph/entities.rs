@@ -88,14 +88,14 @@ async fn find_entity_by_name_type(
     }
 }
 
-pub async fn get_entity(db: &Database, id: i64) -> Result<Entity> {
+pub async fn get_entity(db: &Database, id: i64, user_id: i64) -> Result<Entity> {
     let conn = db.connection();
     let query = format!(
-        "SELECT {} FROM entities WHERE id = ?1 LIMIT 1",
+        "SELECT {} FROM entities WHERE id = ?1 AND user_id = ?2 LIMIT 1",
         ENTITY_COLUMNS
     );
 
-    let mut rows = conn.query(&query, libsql::params![id]).await?;
+    let mut rows = conn.query(&query, libsql::params![id, user_id]).await?;
 
     match rows.next().await? {
         Some(row) => row_to_entity(&row),
@@ -152,9 +152,9 @@ pub async fn find_entity_by_name(
     }
 }
 
-pub async fn delete_entity(db: &Database, id: i64) -> Result<()> {
+pub async fn delete_entity(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let conn = db.connection();
-    conn.execute("DELETE FROM entities WHERE id = ?1", libsql::params![id])
+    conn.execute("DELETE FROM entities WHERE id = ?1 AND user_id = ?2", libsql::params![id, user_id])
         .await?;
     Ok(())
 }

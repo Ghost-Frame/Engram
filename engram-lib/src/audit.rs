@@ -75,6 +75,7 @@ pub async fn log_mutation(
 /// Log an HTTP request to the audit trail. Used by the audit middleware.
 ///
 /// Fire-and-forget compatible -- errors are discarded by the caller.
+#[allow(clippy::too_many_arguments)]
 pub async fn log_request(
     db: &Database,
     user_id: Option<i64>,
@@ -94,12 +95,13 @@ pub async fn log_request(
     Ok(())
 }
 
-/// Query audit log entries, optionally filtered by target_type and target_id.
+/// Query audit log entries for a specific user, optionally filtered by target_type and target_id.
 pub async fn query_audit_log(
     db: &Database,
     resource_type: Option<&str>,
     resource_id: Option<&str>,
     limit: usize,
+    user_id: i64,
 ) -> Result<Vec<AuditEntry>> {
     let target_id: Option<i64> = resource_id.and_then(|r| r.parse().ok());
     let limit_i64 = limit as i64;
@@ -107,20 +109,20 @@ pub async fn query_audit_log(
     let mut rows = match (resource_type, target_id) {
         (Some(rt), Some(tid)) => db.conn.query(
             "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
-             FROM audit_log WHERE target_type = ?1 AND target_id = ?2
-             ORDER BY id DESC LIMIT ?3",
-            libsql::params![rt, tid, limit_i64],
+             FROM audit_log WHERE user_id = ?1 AND target_type = ?2 AND target_id = ?3
+             ORDER BY id DESC LIMIT ?4",
+            libsql::params![user_id, rt, tid, limit_i64],
         ).await?,
         (Some(rt), None) => db.conn.query(
             "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
-             FROM audit_log WHERE target_type = ?1
-             ORDER BY id DESC LIMIT ?2",
-            libsql::params![rt, limit_i64],
+             FROM audit_log WHERE user_id = ?1 AND target_type = ?2
+             ORDER BY id DESC LIMIT ?3",
+            libsql::params![user_id, rt, limit_i64],
         ).await?,
         _ => db.conn.query(
             "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
-             FROM audit_log ORDER BY id DESC LIMIT ?1",
-            libsql::params![limit_i64],
+             FROM audit_log WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
+            libsql::params![user_id, limit_i64],
         ).await?,
     };
 

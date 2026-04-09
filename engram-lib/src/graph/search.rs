@@ -27,6 +27,7 @@ pub async fn graph_search(
     db: &Database,
     query: &str,
     limit: usize,
+    user_id: i64,
 ) -> Result<Vec<GraphNode>> {
     let conn = db.connection();
     let pattern = format!("%{}%", query);
@@ -36,10 +37,11 @@ pub async fn graph_search(
             "SELECT id, content, category, importance, pagerank_score \
              FROM memories \
              WHERE (content LIKE ?1 OR category LIKE ?1) \
+               AND user_id = ?2 \
                AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
              ORDER BY importance DESC, COALESCE(pagerank_score, 0.0) DESC \
-             LIMIT ?2",
-            libsql::params![pattern, limit as i64],
+             LIMIT ?3",
+            libsql::params![pattern, user_id, limit as i64],
         )
         .await?;
 
@@ -72,6 +74,7 @@ pub async fn neighborhood(
     db: &Database,
     node_id: &str,
     depth: u32,
+    user_id: i64,
 ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
     let memory_id: i64 = node_id
         .trim_start_matches('m')
@@ -115,8 +118,8 @@ pub async fn neighborhood(
         let mut rows = conn
             .query(
                 "SELECT id, content, category, importance, pagerank_score \
-                 FROM memories WHERE id = ?1 AND is_forgotten = 0",
-                libsql::params![id],
+                 FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
+                libsql::params![id, user_id],
             )
             .await?;
         if let Some(row) = rows.next().await? {

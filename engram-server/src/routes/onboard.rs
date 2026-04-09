@@ -92,7 +92,7 @@ async fn onboard(
 
     // Cleanup test memory
     if let Some(id) = test_id {
-        match memory::delete(&state.db, id).await {
+        match memory::delete(&state.db, id, auth.user_id).await {
             Ok(()) => checks.push(("cleanup", true, "Test memory deleted".into())),
             Err(e) => checks.push(("cleanup", false, e.to_string())),
         }

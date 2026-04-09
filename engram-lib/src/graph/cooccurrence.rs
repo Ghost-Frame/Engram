@@ -31,14 +31,17 @@ fn row_to_entity(row: &libsql::Row) -> Result<Entity> {
 pub async fn build_cooccurrence_edges(
     db: &Database,
     _window_size: usize,
+    user_id: i64,
 ) -> Result<Vec<GraphEdge>> {
     let conn = db.connection();
 
-    // Find max count for normalization
+    // Find max count for normalization, scoped to user's entities
     let mut max_row = conn
         .query(
-            "SELECT MAX(count) FROM entity_cooccurrences",
-            libsql::params![],
+            "SELECT MAX(ec.count) FROM entity_cooccurrences ec \
+             JOIN entities ea ON ea.id = ec.entity_a_id \
+             WHERE ea.user_id = ?1",
+            libsql::params![user_id],
         )
         .await?;
     let max_count: f64 = match max_row.next().await? {
@@ -48,8 +51,12 @@ pub async fn build_cooccurrence_edges(
 
     let mut rows = conn
         .query(
-            "SELECT entity_a_id, entity_b_id, count FROM entity_cooccurrences ORDER BY count DESC",
-            libsql::params![],
+            "SELECT ec.entity_a_id, ec.entity_b_id, ec.count \
+             FROM entity_cooccurrences ec \
+             JOIN entities ea ON ea.id = ec.entity_a_id \
+             WHERE ea.user_id = ?1 \
+             ORDER BY ec.count DESC",
+            libsql::params![user_id],
         )
         .await?;
 

@@ -95,7 +95,7 @@ pub async fn detect_contradictions(
     Ok(contradictions)
 }
 
-pub async fn scan_all_contradictions(db: &Database) -> Result<Vec<Contradiction>> {
+pub async fn scan_all_contradictions(db: &Database, user_id: i64) -> Result<Vec<Contradiction>> {
     let mut contradictions = known_contradictions(db).await?;
     let mut seen = contradiction_pair_keys(&contradictions);
 
@@ -111,6 +111,7 @@ pub async fn scan_all_contradictions(db: &Database) -> Result<Vec<Contradiction>
              WHERE ml.type = 'similarity'
                AND ml.similarity >= ?1
                AND ml.similarity < ?2
+               AND ms.user_id = ?3
                AND ms.category = mt.category
                AND ms.user_id = mt.user_id
                AND COALESCE(ms.space_id, -1) = COALESCE(mt.space_id, -1)
@@ -122,7 +123,7 @@ pub async fn scan_all_contradictions(db: &Database) -> Result<Vec<Contradiction>
                AND mt.is_latest = 1
              ORDER BY ml.similarity DESC
              LIMIT 200",
-            params![DEFAULT_SCAN_THRESHOLD, MAX_SCAN_SIMILARITY],
+            params![DEFAULT_SCAN_THRESHOLD, MAX_SCAN_SIMILARITY, user_id],
         )
         .await?;
 
@@ -259,28 +260,29 @@ pub async fn resolve_contradiction(
     memory_a_id: i64,
     memory_b_id: i64,
     resolution: ContradictionResolution,
+    user_id: i64,
 ) -> Result<Option<Memory>> {
     match resolution {
         ContradictionResolution::KeepA => {
-            mark_archived(db, memory_b_id).await?;
-            insert_link(db, memory_a_id, memory_b_id, 1.0, "resolves").await?;
+            mark_archived(db, memory_b_id, user_id).await?;
+            insert_link(db, memory_a_id, memory_b_id, 1.0, "resolves", user_id).await?;
             clear_contradiction_links(db, memory_a_id, memory_b_id).await?;
             Ok(None)
         }
         ContradictionResolution::KeepB => {
-            mark_archived(db, memory_a_id).await?;
-            insert_link(db, memory_b_id, memory_a_id, 1.0, "resolves").await?;
+            mark_archived(db, memory_a_id, user_id).await?;
+            insert_link(db, memory_b_id, memory_a_id, 1.0, "resolves", user_id).await?;
             clear_contradiction_links(db, memory_a_id, memory_b_id).await?;
             Ok(None)
         }
         ContradictionResolution::KeepBoth => {
             clear_contradiction_links(db, memory_a_id, memory_b_id).await?;
-            insert_link(db, memory_a_id, memory_b_id, 0.9, "related").await?;
+            insert_link(db, memory_a_id, memory_b_id, 0.9, "related", user_id).await?;
             Ok(None)
         }
         ContradictionResolution::Merge => {
-            let mem_a = get(db, memory_a_id).await?;
-            let mem_b = get(db, memory_b_id).await?;
+            let mem_a = get(db, memory_a_id, user_id).await?;
+            let mem_b = get(db, memory_b_id, user_id).await?;
             let merged = merge_memories(&mem_a, &mem_b).await?;
 
             let stored = memory::store(
@@ -301,13 +303,13 @@ pub async fn resolve_contradiction(
             )
             .await?;
 
-            mark_archived(db, memory_a_id).await?;
-            mark_archived(db, memory_b_id).await?;
-            insert_link(db, stored.id, memory_a_id, 1.0, "resolves").await?;
-            insert_link(db, stored.id, memory_b_id, 1.0, "resolves").await?;
+            mark_archived(db, memory_a_id, user_id).await?;
+            mark_archived(db, memory_b_id, user_id).await?;
+            insert_link(db, stored.id, memory_a_id, 1.0, "resolves", user_id).await?;
+            insert_link(db, stored.id, memory_b_id, 1.0, "resolves", user_id).await?;
             clear_contradiction_links(db, memory_a_id, memory_b_id).await?;
 
-            Ok(Some(get(db, stored.id).await?))
+            Ok(Some(get(db, stored.id, user_id).await?))
         }
     }
 }

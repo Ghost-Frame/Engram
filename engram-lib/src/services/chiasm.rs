@@ -163,16 +163,16 @@ pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> 
     let id_row = rows.next().await?.ok_or_else(|| EngError::Internal("no rowid".into()))?;
     let id: i64 = id_row.get(0)?;
 
-    get_task(db, id).await
+    get_task(db, id, user_id).await
 }
 
-pub async fn get_task(db: &Database, id: i64) -> Result<Task> {
+pub async fn get_task(db: &Database, id: i64, user_id: i64) -> Result<Task> {
     let conn = &db.conn;
     let mut rows = conn.query(
         "SELECT id, title, description, status, priority, agent, project, tags, metadata,
                 user_id, due_at, completed_at, created_at, updated_at
-         FROM tasks WHERE id = ?1",
-        libsql::params![id],
+         FROM tasks WHERE id = ?1 AND user_id = ?2",
+        libsql::params![id, user_id],
     )
     .await?;
 
@@ -229,11 +229,11 @@ pub async fn list_tasks(
     Ok(results)
 }
 
-pub async fn update_task(db: &Database, id: i64, req: UpdateTaskRequest) -> Result<Task> {
+pub async fn update_task(db: &Database, id: i64, req: UpdateTaskRequest, user_id: i64) -> Result<Task> {
     let conn = &db.conn;
 
-    // Make sure the task exists first
-    get_task(db, id).await?;
+    // Make sure the task exists and belongs to this user
+    get_task(db, id, user_id).await?;
 
     let mut sets: Vec<String> = Vec::new();
     let mut params_vec: Vec<libsql::Value> = Vec::new();
@@ -299,20 +299,21 @@ pub async fn update_task(db: &Database, id: i64, req: UpdateTaskRequest) -> Resu
     idx += 1;
 
     if sets.is_empty() {
-        return get_task(db, id).await;
+        return get_task(db, id, user_id).await;
     }
 
-    let sql = format!("UPDATE tasks SET {} WHERE id = ?{}", sets.join(", "), idx);
+    let sql = format!("UPDATE tasks SET {} WHERE id = ?{} AND user_id = ?{}", sets.join(", "), idx, idx + 1);
     params_vec.push(libsql::Value::Integer(id));
+    params_vec.push(libsql::Value::Integer(user_id));
 
     conn.execute(&sql, libsql::params_from_iter(params_vec)).await?;
 
-    get_task(db, id).await
+    get_task(db, id, user_id).await
 }
 
-pub async fn delete_task(db: &Database, id: i64) -> Result<()> {
+pub async fn delete_task(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let conn = &db.conn;
-    conn.execute("DELETE FROM tasks WHERE id = ?1", libsql::params![id]).await?;
+    conn.execute("DELETE FROM tasks WHERE id = ?1 AND user_id = ?2", libsql::params![id, user_id]).await?;
     Ok(())
 }
 

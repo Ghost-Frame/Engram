@@ -60,8 +60,17 @@ pub async fn add_link(
     effect_memory_id: i64,
     strength: f64,
     order_index: i32,
+    user_id: i64,
 ) -> Result<CausalLink> {
+    // Verify the chain belongs to this user
     let conn = db.connection();
+    let mut check_rows = conn.query(
+        "SELECT id FROM causal_chains WHERE id = ?1 AND user_id = ?2",
+        params![chain_id, user_id],
+    ).await?;
+    if check_rows.next().await?.is_none() {
+        return Err(crate::EngError::NotFound(format!("causal chain {} not found", chain_id)));
+    }
     conn.execute(
         "INSERT INTO causal_links (chain_id, cause_memory_id, effect_memory_id, strength, order_index) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -83,13 +92,13 @@ pub async fn add_link(
 }
 
 /// Get a causal chain with all its links.
-pub async fn get_chain(db: &Database, chain_id: i64) -> Result<CausalChain> {
+pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<CausalChain> {
     let conn = db.connection();
 
     let mut rows = conn.query(
         "SELECT id, root_memory_id, description, confidence, user_id, created_at \
-         FROM causal_chains WHERE id = ?1",
-        params![chain_id],
+         FROM causal_chains WHERE id = ?1 AND user_id = ?2",
+        params![chain_id, user_id],
     ).await?;
 
     let row = rows.next().await?
@@ -142,7 +151,7 @@ pub async fn list_chains(db: &Database, user_id: i64, limit: usize) -> Result<Ve
 
     let mut chains = Vec::new();
     for id in ids {
-        chains.push(get_chain(db, id).await?);
+        chains.push(get_chain(db, id, user_id).await?);
     }
 
     Ok(chains)

@@ -347,8 +347,8 @@ pub async fn post_process_new_facts(
 ) -> Result<()> {
     // Get the memory created_at for date resolution
     let mut mem_rows = db.conn.query(
-        "SELECT created_at FROM memories WHERE id = ?1",
-        libsql::params![memory_id],
+        "SELECT created_at FROM memories WHERE id = ?1 AND user_id = ?2",
+        libsql::params![memory_id, user_id],
     ).await?;
 
     let created_at = match mem_rows.next().await? {
