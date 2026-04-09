@@ -779,6 +779,7 @@ dependencies = [
  "clap",
  "engram-lib",
  "libsql",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -786,6 +787,7 @@ dependencies = [
  "tower-http 0.6.8",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
