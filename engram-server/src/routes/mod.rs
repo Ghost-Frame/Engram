@@ -8,6 +8,7 @@ pub mod brain;
 pub mod broca;
 pub mod context;
 pub mod conversations;
+pub mod docs;
 pub mod episodes;
 pub mod fsrs;
 pub mod gate;

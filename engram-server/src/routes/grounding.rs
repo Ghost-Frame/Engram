@@ -172,36 +172,10 @@ async fn get_quality(
         let count = records.len();
         Ok(Json(json!({ "records": records, "count": count })))
     } else {
-        // Return all quality records up to limit
-        let mut rows = state
-            .db
-            .conn
-            .query(
-                "SELECT tool_name, COUNT(*) as total, SUM(CASE WHEN success THEN 1 ELSE 0 END) as successes, AVG(latency_ms) as avg_latency FROM tool_quality_records GROUP BY tool_name ORDER BY total DESC LIMIT ?1",
-                libsql::params![limit as i64],
-            )
+        let records = qm
+            .get_all_records(&state.db.conn, limit as i64)
             .await
-            .map_err(engram_lib::EngError::Database)?;
-
-        let mut records = Vec::new();
-        while let Some(r) = rows.next().await.map_err(engram_lib::EngError::Database)? {
-            let total: i64 = r.get(0).unwrap_or(0);
-            let successes: i64 = r.get(1).unwrap_or(0);
-            let avg_latency: f64 = r.get(2).unwrap_or(0.0);
-            let name: String = r.get::<String>(0).unwrap_or_default();
-            let score = if total > 0 {
-                successes as f64 / total as f64
-            } else {
-                1.0
-            };
-            records.push(json!({
-                "tool_name": name,
-                "total_calls": total,
-                "total_successes": successes,
-                "quality_score": score,
-                "avg_execution_ms": avg_latency,
-            }));
-        }
+            .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?;
         let count = records.len();
         Ok(Json(json!({ "records": records, "count": count })))
     }

@@ -11,6 +11,7 @@ pub async fn run(state: AppState) -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .merge(routes::health::router())
+        .merge(routes::docs::router())
         .merge(routes::memory::router())
         .merge(routes::admin::router())
         .merge(routes::tasks::router())
