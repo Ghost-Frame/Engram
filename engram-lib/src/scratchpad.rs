@@ -33,7 +33,6 @@ pub struct ScratchKV {
     pub value: Option<String>,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn upsert_entry(db: &Database, user_id: i64, session: &str, agent: &str, model: &str, key: &str, value: &str, ttl_minutes: i64) -> Result<()> {
     let ttl_str = ttl_minutes.to_string();
     db.conn.execute(

@@ -21,8 +21,9 @@ impl SearchCoordinator {
         if self.providers.is_empty() { return Vec::new(); }
         let mut all = Vec::new();
         for provider in &self.providers {
-            let results = std::panic::AssertUnwindSafe(provider.search(query, limit)).await;
-            all.extend(results);
+            match std::panic::AssertUnwindSafe(provider.search(query, limit)).await {
+                results => all.extend(results),
+            }
         }
         // Dedup by url or content prefix
         let mut seen = HashSet::new();

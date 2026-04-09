@@ -22,7 +22,7 @@ async fn pack_memories(
     Auth(auth): Auth, State(state): State<AppState>, Json(body): Json<PackBody>,
 ) -> Result<Json<Value>, AppError> {
     let context = body.context.as_deref().unwrap_or("");
-    let budget = body.token_budget.unwrap_or(4000).clamp(100, 128000);
+    let budget = body.token_budget.unwrap_or(4000).max(100).min(128000);
     let format = match body.format.as_deref() {
         Some("json") => engram_lib::pack::PackFormat::Json,
         Some("xml") => engram_lib::pack::PackFormat::Xml,
