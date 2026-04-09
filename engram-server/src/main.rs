@@ -1,17 +1,10 @@
-mod error;
-mod extractors;
-mod middleware;
-mod routes;
-mod server;
-mod state;
-
 use engram_lib::config::Config;
 use engram_lib::db::Database;
 use engram_lib::embeddings::onnx::OnnxProvider;
 use engram_lib::embeddings::EmbeddingProvider;
 use engram_lib::llm::local::{LocalModelClient, OllamaConfig};
 use engram_lib::reranker::Reranker;
-use state::AppState;
+use engram_server::state::AppState;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -80,7 +73,7 @@ async fn main() {
         eidolon_config: None,
     };
 
-    if let Err(e) = server::run(state).await {
+    if let Err(e) = engram_server::server::run(state).await {
         tracing::error!("server error: {}", e);
         std::process::exit(1);
     }
