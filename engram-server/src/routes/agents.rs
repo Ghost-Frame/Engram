@@ -275,7 +275,7 @@ fn sign_value(payload: &Value) -> Result<String, AppError> {
     let bytes = serde_json::to_vec(payload)
         .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?;
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?;
+        .map_err(|e: hmac::digest::InvalidLength| AppError(engram_lib::EngError::Internal(e.to_string())))?;
     mac.update(&bytes);
     let digest = mac.finalize().into_bytes();
     Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())

@@ -101,6 +101,7 @@ pub async fn query_audit_log(
     resource_type: Option<&str>,
     resource_id: Option<&str>,
     limit: usize,
+    _user_id: i64,
 ) -> Result<Vec<AuditEntry>> {
     let target_id: Option<i64> = resource_id.and_then(|r| r.parse().ok());
     let limit_i64 = limit as i64;

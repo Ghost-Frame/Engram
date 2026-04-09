@@ -45,7 +45,7 @@ async fn list_sessions_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let sessions = list_sessions(&state.db, auth.user_id).await?;
+    let sessions: Vec<engram_lib::sessions::SessionInfo> = list_sessions(&state.db, auth.user_id).await?;
     Ok(Json(json!({ "sessions": sessions, "count": sessions.len() })))
 }
 

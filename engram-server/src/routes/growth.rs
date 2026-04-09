@@ -42,7 +42,7 @@ async fn observations_handler(
     Query(params): Query<ObservationsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
-    let observations = list_observations(&state.db, auth.user_id, limit).await?;
+    let observations: Vec<engram_lib::intelligence::growth::GrowthObservation> = list_observations(&state.db, auth.user_id, limit).await?;
     let count = observations.len();
     Ok(Json(json!({ "observations": observations, "count": count })))
 }

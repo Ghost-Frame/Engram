@@ -9,6 +9,7 @@ pub async fn graph_search(
     db: &Database,
     query: &str,
     limit: usize,
+    _user_id: i64,
 ) -> Result<Vec<GraphNode>> {
     let conn = db.connection();
     let pattern = format!("%{}%", query);
@@ -90,6 +91,7 @@ pub async fn neighborhood(
     db: &Database,
     node_id: &str,
     depth: u32,
+    _user_id: i64,
 ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
     let conn = db.connection();
 

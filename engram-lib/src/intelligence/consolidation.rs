@@ -11,7 +11,7 @@ use tracing::info;
 /// Merges content from the candidate memories, computes new importance
 /// (max of the group), creates a consolidated memory, links the sources,
 /// and records the consolidation.
-pub async fn consolidate(db: &Database, memory_ids: &[String]) -> Result<Memory> {
+pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) -> Result<Memory> {
     let conn = db.connection();
 
     if memory_ids.is_empty() {
@@ -160,6 +160,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String]) -> Result<Memory>
 pub async fn find_consolidation_candidates(
     db: &Database,
     threshold: f32,
+    _user_id: i64,
 ) -> Result<Vec<Vec<String>>> {
     let conn = db.connection();
 

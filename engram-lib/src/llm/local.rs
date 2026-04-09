@@ -52,6 +52,28 @@ impl Default for OllamaConfig {
     }
 }
 
+impl OllamaConfig {
+    pub fn from_env() -> Self {
+        let mut cfg = Self::default();
+        if let Ok(v) = std::env::var("OLLAMA_URL") {
+            cfg.url = v;
+        }
+        if let Ok(v) = std::env::var("OLLAMA_MODEL") {
+            cfg.model = v;
+        }
+        if let Ok(v) = std::env::var("OLLAMA_TIMEOUT_BG_MS") {
+            if let Ok(n) = v.parse() { cfg.timeout_bg_ms = n; }
+        }
+        if let Ok(v) = std::env::var("OLLAMA_TIMEOUT_HOT_MS") {
+            if let Ok(n) = v.parse() { cfg.timeout_hot_ms = n; }
+        }
+        if let Ok(v) = std::env::var("OLLAMA_CONCURRENCY") {
+            if let Ok(n) = v.parse() { cfg.concurrency = n; }
+        }
+        cfg
+    }
+}
+
 /// Request priority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Priority {
