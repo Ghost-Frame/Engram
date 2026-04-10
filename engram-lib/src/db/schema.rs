@@ -418,6 +418,7 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_sf_valid ON structured_facts(valid_at) WHERE valid_at IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_sf_invalid ON structured_facts(invalid_at) WHERE invalid_at IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_sf_subject_verb ON structured_facts(subject COLLATE NOCASE, verb, user_id);
+        CREATE INDEX IF NOT EXISTS idx_facts_user_subject_predicate ON structured_facts(user_id, subject, predicate);
 
         -- Current state (per-agent key-value store)
         CREATE TABLE IF NOT EXISTS current_state (

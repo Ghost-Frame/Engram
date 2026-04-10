@@ -3,6 +3,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use engram_lib::auth::Scope;
 use engram_lib::jobs::{
     self, count_failed_jobs, list_failed_jobs, list_pending_jobs, list_running_jobs,
     purge_failed_jobs, retry_failed_job,
@@ -25,7 +26,7 @@ async fn list_jobs(
     Query(params): Query<ListJobsQuery>,
 ) -> Result<Json<Value>, AppError> {
     // Admin only
-    if auth.user_id != 1 {
+    if !auth.has_scope(&Scope::Admin) {
         return Err(AppError::from(engram_lib::EngError::Auth(
             "Admin required".into(),
         )));
@@ -99,7 +100,7 @@ async fn retry_job_handler(
     Json(body): Json<RetryBody>,
 ) -> Result<Json<Value>, AppError> {
     // Admin only
-    if auth.user_id != 1 {
+    if !auth.has_scope(&Scope::Admin) {
         return Err(AppError::from(engram_lib::EngError::Auth(
             "Admin required".into(),
         )));
@@ -126,7 +127,7 @@ async fn purge_jobs_handler(
     Json(body): Json<PurgeBody>,
 ) -> Result<Json<Value>, AppError> {
     // Admin only
-    if auth.user_id != 1 {
+    if !auth.has_scope(&Scope::Admin) {
         return Err(AppError::from(engram_lib::EngError::Auth(
             "Admin required".into(),
         )));
@@ -146,7 +147,7 @@ async fn job_stats_handler(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     // Admin only
-    if auth.user_id != 1 {
+    if !auth.has_scope(&Scope::Admin) {
         return Err(AppError::from(engram_lib::EngError::Auth(
             "Admin required".into(),
         )));

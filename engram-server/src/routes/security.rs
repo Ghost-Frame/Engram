@@ -6,6 +6,7 @@ use axum::{
 };
 use engram_lib::apikeys;
 use engram_lib::audit;
+use engram_lib::auth::Scope;
 use engram_lib::quota;
 use engram_lib::ratelimit;
 use serde::Deserialize;
@@ -57,10 +58,20 @@ async fn list_api_keys_handler(
 
 async fn delete_api_key_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    apikeys::delete_api_key(&state.db, id).await?;
+    // Admins can delete any key; regular users can only delete their own
+    if auth.has_scope(&Scope::Admin) {
+        apikeys::delete_api_key(&state.db, id).await?;
+    } else {
+        let deleted = apikeys::delete_api_key_for_user(&state.db, id, auth.user_id).await?;
+        if !deleted {
+            return Err(AppError::from(engram_lib::EngError::NotFound(
+                "API key not found or not owned by you".into(),
+            )));
+        }
+    }
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -90,11 +101,19 @@ async fn list_audit_handler(
 
 async fn rate_limit_status_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(key): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let allowed = ratelimit::check_rate_limit(&state.db, &key, 1000, 60).await?;
-    Ok(Json(json!({ "key": key, "allowed": allowed })))
+    // Admins can check any key; regular users can only check their own
+    let check_key = if auth.has_scope(&Scope::Admin) {
+        key
+    } else {
+        // Force the key to be the caller's own rate limit key
+        format!("user:{}", auth.user_id)
+    };
+    let limit = auth.key.rate_limit as i64;
+    let allowed = ratelimit::check_rate_limit(&state.db, &check_key, limit, 60).await?;
+    Ok(Json(json!({ "key": check_key, "allowed": allowed, "limit": limit })))
 }
 
 async fn get_quota_handler(
