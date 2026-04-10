@@ -67,7 +67,25 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
 
     // Channel 1: Vector ANN search
     if let Some(ref embedding) = req.embedding {
-        match vector_search(db, embedding, candidate_target, user_id).await {
+        let vector_hits = if let Some(index) = db.vector_index.as_ref() {
+            match index.search(embedding, candidate_target, user_id).await {
+                Ok(hits) => Ok(hits
+                    .into_iter()
+                    .map(|hit| super::vector::VectorHit {
+                        memory_id: hit.memory_id,
+                        rank: hit.rank,
+                    })
+                    .collect()),
+                Err(e) => {
+                    warn!("LanceDB vector search failed, falling back to libsql vectors: {}", e);
+                    vector_search(db, embedding, candidate_target, user_id).await
+                }
+            }
+        } else {
+            vector_search(db, embedding, candidate_target, user_id).await
+        };
+
+        match vector_hits {
             Ok(hits) => {
                 for hit in &hits {
                     vector_ranked.push((hit.memory_id, hit.rank as f64));
@@ -141,9 +159,9 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                 "SELECT id, created_at, decay_score, importance, is_static, source_count, \
                  version, is_latest, source, model, access_count, fsrs_stability, \
                  last_accessed_at, pagerank_score, content, category \
-                 FROM memories WHERE id IN ({})", placeholders
+                 FROM memories WHERE id IN ({}) AND user_id = ?1", placeholders
             );
-            if let Ok(mut rows) = db.conn.query(&hydrate_sql, ()).await {
+            if let Ok(mut rows) = db.conn.query(&hydrate_sql, libsql::params![user_id]).await {
                 while let Ok(Some(row)) = rows.next().await {
                     let id: i64 = row.get(0).unwrap_or(0);
                     if let Some(c) = results.get_mut(&id) {
@@ -303,7 +321,11 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
 
     // Build final SearchResult vec
     let conn = db.connection();
-    let fetch_sql = format!("SELECT {} FROM memories WHERE id = ?1", MEMORY_COLUMNS);
+    let fetch_sql = format!(
+        "SELECT {} FROM memories \
+         WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_latest = 1",
+        MEMORY_COLUMNS
+    );
     let mut final_results: Vec<SearchResult> = Vec::with_capacity(sorted.len());
 
     for c in &sorted {
@@ -314,7 +336,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
         if graph_set.contains(&c.id) { channels.push("graph".to_string()); }
 
         // Fetch full memory if needed
-        let memory = match conn.query(&fetch_sql, libsql::params![c.id]).await {
+        let memory = match conn.query(&fetch_sql, libsql::params![c.id, user_id]).await {
             Ok(mut rows) => {
                 match rows.next().await {
                     Ok(Some(row)) => match row_to_memory(&row) {

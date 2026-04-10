@@ -11,6 +11,7 @@ use crate::EngError;
 use crate::Result;
 use libsql::params;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use tracing::warn;
 use types::{
     CategoryCount, LinkedMemory, ListOptions, Memory, StoreRequest, StoreResult, TagCount,
     UpdateRequest, UserProfile, UserStats, VersionChainEntry,
@@ -265,6 +266,12 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
                 params![emb_json, new_id],
             )
             .await?;
+
+        if let Some(index) = db.vector_index.as_ref() {
+            if let Err(e) = index.insert(new_id, user_id, emb).await {
+                warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+            }
+        }
     }
 
     Ok(StoreResult {
@@ -302,10 +309,10 @@ pub async fn get(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
 }
 
 pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
-    // Build WHERE clauses dynamically using a fixed-param approach.
-    // We use a simple approach: always include the base filters, optional
-    // filters as nullable comparisons in SQL.
+    // Build WHERE clauses with parameterized values to prevent SQL injection
     let mut conditions = vec!["1=1".to_string()];
+    let mut params: Vec<libsql::Value> = Vec::new();
+    let mut param_idx = 1;
 
     if !opts.include_forgotten {
         conditions.push("is_forgotten = 0".to_string());
@@ -317,25 +324,38 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     conditions.push("is_latest = 1".to_string());
 
     if let Some(ref cat) = opts.category {
-        conditions.push(format!("category = '{}'", cat.replace('\'', "''")));
+        conditions.push(format!("category = ?{}", param_idx));
+        params.push(libsql::Value::Text(cat.clone()));
+        param_idx += 1;
     }
     if let Some(ref src) = opts.source {
-        conditions.push(format!("source = '{}'", src.replace('\'', "''")));
+        conditions.push(format!("source = ?{}", param_idx));
+        params.push(libsql::Value::Text(src.clone()));
+        param_idx += 1;
     }
     if let Some(uid) = opts.user_id {
-        conditions.push(format!("user_id = {}", uid));
+        conditions.push(format!("user_id = ?{}", param_idx));
+        params.push(libsql::Value::Integer(uid));
+        param_idx += 1;
     }
     if let Some(sid) = opts.space_id {
-        conditions.push(format!("space_id = {}", sid));
+        conditions.push(format!("space_id = ?{}", param_idx));
+        params.push(libsql::Value::Integer(sid));
+        param_idx += 1;
     }
 
+    // Add limit and offset as parameters
+    conditions.push(format!("1=1")); // placeholder for LIMIT/OFFSET which go after WHERE
     let where_clause = conditions.join(" AND ");
-    let sql = format!(
-        "SELECT {} FROM memories WHERE {} ORDER BY id DESC LIMIT {} OFFSET {}",
-        MEMORY_COLUMNS, where_clause, opts.limit, opts.offset
-    );
 
-    let mut rows = db.conn.query(&sql, ()).await?;
+    let sql = format!(
+        "SELECT {} FROM memories WHERE {} ORDER BY id DESC LIMIT ?{} OFFSET ?{}",
+        MEMORY_COLUMNS, where_clause, param_idx, param_idx + 1
+    );
+    params.push(libsql::Value::Integer(opts.limit as i64));
+    params.push(libsql::Value::Integer(opts.offset as i64));
+
+    let mut rows = db.conn.query(&sql, params).await?;
     let mut memories = Vec::new();
     while let Some(row) = rows.next().await? {
         memories.push(row_to_memory(&row)?);
@@ -362,6 +382,11 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
             "memory {} not found or already deleted",
             id
         )));
+    }
+    if let Some(index) = db.vector_index.as_ref() {
+        if let Err(e) = index.delete(id).await {
+            warn!("LanceDB vector delete failed for memory {}: {}", id, e);
+        }
     }
     Ok(())
 }
@@ -486,14 +511,23 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
                 params![emb_json, new_id],
             )
             .await?;
+
+        if let Some(index) = db.vector_index.as_ref() {
+            if let Err(e) = index.insert(new_id, user_id, emb).await {
+                warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+            }
+            if let Err(e) = index.delete(id).await {
+                warn!("LanceDB vector delete failed for superseded memory {}: {}", id, e);
+            }
+        }
     }
 
     // 7. Fetch and return the new row
     let new_sql = format!(
-        "SELECT {} FROM memories WHERE id = ?1",
+        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2",
         MEMORY_COLUMNS
     );
-    let mut new_rows = db.conn.query(&new_sql, params![new_id]).await?;
+    let mut new_rows = db.conn.query(&new_sql, params![new_id, user_id]).await?;
     if let Some(row) = new_rows.next().await? {
         row_to_memory(&row)
     } else {
@@ -506,10 +540,18 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
 // -- Additional DB operations matching TS db.ts ---
 
 pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    db.conn.execute(
+    let affected = db.conn.execute(
         "UPDATE memories SET is_forgotten = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
         params![id, user_id],
     ).await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!("memory {} not found", id)));
+    }
+    if let Some(index) = db.vector_index.as_ref() {
+        if let Err(e) = index.delete(id).await {
+            warn!("LanceDB vector delete failed for forgotten memory {}: {}", id, e);
+        }
+    }
     Ok(())
 }
 
@@ -577,6 +619,39 @@ pub async fn update_source_count(db: &Database, id: i64, source_count: i32, user
         params![source_count, id, user_id],
     ).await?;
     Ok(())
+}
+
+pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
+    let Some(index) = db.vector_index.as_ref() else {
+        return Ok(0);
+    };
+
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT id, user_id, vector_extract(embedding_vec_1024)
+             FROM memories
+             WHERE embedding_vec_1024 IS NOT NULL
+               AND is_forgotten = 0
+               AND is_latest = 1",
+            (),
+        )
+        .await?;
+
+    let mut count = 0usize;
+    while let Some(row) = rows.next().await? {
+        let memory_id: i64 = row.get(0)?;
+        let user_id: i64 = row.get(1)?;
+        let embedding_json: String = row.get(2)?;
+        let embedding: Vec<f32> = serde_json::from_str(&embedding_json)?;
+        index.insert(memory_id, user_id, &embedding).await?;
+        count += 1;
+        if count.is_multiple_of(1000) {
+            tracing::info!(count, "rebuilt LanceDB vector index rows");
+        }
+    }
+
+    Ok(count)
 }
 
 pub async fn list_all_tags(db: &Database, user_id: i64) -> Result<Vec<TagCount>> {

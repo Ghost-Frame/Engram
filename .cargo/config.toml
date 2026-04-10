@@ -1,0 +1,2 @@
+[env]
+PROTOC = { value = "scripts/protoc-vendored.sh", relative = true }
