@@ -8,10 +8,8 @@ use engram_lib::ratelimit;
 
 use crate::state::AppState;
 
-#[allow(dead_code)]
 const OPEN_PATHS: &[&str] = &["/health", "/live", "/ready", "/bootstrap"];
 
-#[allow(dead_code)]
 /// Axum middleware implementing per-user sliding-window rate limiting.
 ///
 /// Uses the DB-backed rate limiter from engram-lib. The limit (requests/minute)

@@ -17,6 +17,7 @@ use tokio::fs;
 
 use crate::error::AppError;
 use crate::state::AppState;
+use engram_lib::auth;
 use engram_lib::memory;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -72,47 +73,52 @@ async fn get_hmac_secret(data_dir: &str) -> String {
     secret
 }
 
-/// Sign a timestamp to create a cookie value
-fn sign_cookie(ts: i64, secret: &str) -> String {
+/// Sign user_id and timestamp to create a cookie value
+/// Format: {user_id}:{timestamp}.{hmac}
+fn sign_cookie(user_id: i64, ts: i64, secret: &str) -> String {
+    let payload = format!("{}:{}", user_id, ts);
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
         .expect("HMAC can take key of any size");
-    mac.update(ts.to_string().as_bytes());
+    mac.update(payload.as_bytes());
     let result = mac.finalize();
     let hex = hex::encode(result.into_bytes());
-    format!("{}.{}", ts, hex)
+    format!("{}.{}", payload, hex)
 }
 
 /// Verify a cookie value and check expiration
-fn verify_cookie(cookie: &str, secret: &str) -> bool {
-    let Some(dot_idx) = cookie.find('.') else {
-        return false;
-    };
-
-    let ts_str = &cookie[..dot_idx];
+/// Returns the user_id if valid, None otherwise
+/// Cookie format: {user_id}:{timestamp}.{hmac}
+fn verify_cookie(cookie: &str, secret: &str) -> Option<i64> {
+    let dot_idx = cookie.find('.')?;
+    let payload = &cookie[..dot_idx];
     let sig = &cookie[dot_idx + 1..];
 
-    let Ok(ts) = ts_str.parse::<i64>() else {
-        return false;
-    };
+    // Parse payload: user_id:timestamp
+    let colon_idx = payload.find(':')?;
+    let user_id: i64 = payload[..colon_idx].parse().ok()?;
+    let ts: i64 = payload[colon_idx + 1..].parse().ok()?;
 
     // Check expiration
     let now = chrono::Utc::now().timestamp();
     if now - ts > GUI_COOKIE_MAX_AGE {
-        return false;
+        return None;
     }
 
     // Verify HMAC
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
         .expect("HMAC can take key of any size");
-    mac.update(ts_str.as_bytes());
-
+    mac.update(payload.as_bytes());
     let expected = hex::encode(mac.finalize().into_bytes());
 
     // Constant-time comparison
     if expected.len() != sig.len() {
-        return false;
+        return None;
     }
-    expected.as_bytes().iter().zip(sig.as_bytes()).all(|(a, b)| a == b)
+    if !expected.as_bytes().iter().zip(sig.as_bytes()).all(|(a, b)| a == b) {
+        return None;
+    }
+
+    Some(user_id)
 }
 
 /// Extract the engram_auth cookie from headers
@@ -129,18 +135,16 @@ fn get_auth_cookie(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Check if a request is authenticated via GUI cookie
-pub async fn is_gui_authenticated(state: &AppState, headers: &HeaderMap) -> bool {
-    // If no GUI password configured, GUI auth is not available
-    if state.config.gui_password.is_none() {
-        return false;
-    }
-
-    let Some(cookie) = get_auth_cookie(headers) else {
-        return false;
-    };
-
+/// Returns the user_id if authenticated, None otherwise
+pub async fn get_gui_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
+    let cookie = get_auth_cookie(headers)?;
     let secret = get_hmac_secret(&state.config.data_dir).await;
     verify_cookie(&cookie, &secret)
+}
+
+/// Check if a request is authenticated via GUI cookie (bool convenience wrapper)
+pub async fn is_gui_authenticated(state: &AppState, headers: &HeaderMap) -> bool {
+    get_gui_user_id(state, headers).await.is_some()
 }
 
 /// Determine cookie attributes based on request protocol
@@ -160,27 +164,32 @@ fn cookie_attributes(headers: &HeaderMap) -> &'static str {
 
 #[derive(serde::Deserialize)]
 pub struct LoginForm {
-    password: String,
+    api_key: String,
 }
 
-/// POST /gui/auth - authenticate with password
+/// POST /gui/auth - authenticate with API key
 async fn gui_auth(
     State(state): State<AppState>,
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    let Some(ref expected_password) = state.config.gui_password else {
+    // GUI auth requires gui_password to be set (as a feature flag)
+    if state.config.gui_password.is_none() {
         return (StatusCode::FORBIDDEN, "GUI authentication not configured").into_response();
-    };
-
-    if form.password != *expected_password {
-        return (StatusCode::UNAUTHORIZED, "Invalid password").into_response();
     }
 
-    // Generate signed cookie
+    // Validate the API key
+    let auth_ctx = match auth::validate_key(&state.db, &form.api_key).await {
+        Ok(ctx) => ctx,
+        Err(_) => {
+            return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response();
+        }
+    };
+
+    // Generate signed cookie with user_id
     let ts = chrono::Utc::now().timestamp();
     let secret = get_hmac_secret(&state.config.data_dir).await;
-    let cookie_value = sign_cookie(ts, &secret);
+    let cookie_value = sign_cookie(auth_ctx.user_id, ts, &secret);
 
     let attrs = cookie_attributes(&headers);
     let cookie = format!(
@@ -192,7 +201,7 @@ async fn gui_auth(
         .status(StatusCode::OK)
         .header(header::SET_COOKIE, cookie)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(r#"{"ok":true}"#))
+        .body(Body::from(format!(r#"{{"ok":true,"user_id":{}}}"#, auth_ctx.user_id)))
         .unwrap()
 }
 
@@ -291,22 +300,24 @@ fn login_html() -> &'static str {
     <title>Engram Login</title>
     <style>
         body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-        .login-box { background: #16213e; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,0.3); max-width: 320px; width: 100%; }
+        .login-box { background: #16213e; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,0.3); max-width: 400px; width: 100%; }
         h1 { margin: 0 0 1.5rem; font-size: 1.5rem; text-align: center; color: #7f5af0; }
-        input { width: 100%; padding: 0.75rem; margin-bottom: 1rem; border: 1px solid #2d3a52; border-radius: 4px; background: #0f0f1e; color: #eee; box-sizing: border-box; }
+        input { width: 100%; padding: 0.75rem; margin-bottom: 1rem; border: 1px solid #2d3a52; border-radius: 4px; background: #0f0f1e; color: #eee; box-sizing: border-box; font-family: monospace; font-size: 0.9rem; }
         button { width: 100%; padding: 0.75rem; background: #7f5af0; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; }
         button:hover { background: #6b4ed1; }
         .error { color: #ff6b6b; margin-bottom: 1rem; text-align: center; display: none; }
+        .hint { color: #888; font-size: 0.8rem; text-align: center; margin-top: 1rem; }
     </style>
 </head>
 <body>
     <div class="login-box">
         <h1>Engram</h1>
-        <div class="error" id="error">Invalid password</div>
+        <div class="error" id="error">Invalid API key</div>
         <form id="login-form">
-            <input type="password" name="password" placeholder="Password" autofocus required>
+            <input type="password" name="api_key" placeholder="API Key (engram_...)" autofocus required>
             <button type="submit">Login</button>
         </form>
+        <p class="hint">Use your API key to authenticate</p>
     </div>
     <script>
         document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -414,10 +425,9 @@ async fn gui_create_memory(
     headers: HeaderMap,
     Json(body): Json<CreateMemoryBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    // Verify GUI auth
-    if state.config.gui_password.is_some() && !is_gui_authenticated(&state, &headers).await {
-        return Err(AppError::from(engram_lib::EngError::Auth("GUI auth required".into())));
-    }
+    // Get authenticated user_id from GUI session
+    let user_id = get_gui_user_id(&state, &headers).await
+        .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
 
     let content = body.content.trim();
     if content.is_empty() {
@@ -435,7 +445,7 @@ async fn gui_create_memory(
             embedding: None,
             session_id: None,
             is_static: body.is_static,
-            user_id: Some(1), // GUI defaults to user 1
+            user_id: Some(user_id),
             space_id: None,
             parent_memory_id: None,
         },
@@ -458,9 +468,8 @@ async fn gui_update_memory(
     Path(id): Path<i64>,
     Json(body): Json<UpdateMemoryBody>,
 ) -> Result<Json<Value>, AppError> {
-    if state.config.gui_password.is_some() && !is_gui_authenticated(&state, &headers).await {
-        return Err(AppError::from(engram_lib::EngError::Auth("GUI auth required".into())));
-    }
+    let user_id = get_gui_user_id(&state, &headers).await
+        .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
 
     let req = memory::types::UpdateRequest {
         content: body.content.map(|s| s.trim().to_string()),
@@ -472,7 +481,7 @@ async fn gui_update_memory(
         embedding: None,
     };
 
-    memory::update(&state.db, id, req, 1).await?;
+    memory::update(&state.db, id, req, user_id).await?;
     Ok(Json(json!({ "updated": true, "id": id })))
 }
 
@@ -481,11 +490,10 @@ async fn gui_delete_memory(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    if state.config.gui_password.is_some() && !is_gui_authenticated(&state, &headers).await {
-        return Err(AppError::from(engram_lib::EngError::Auth("GUI auth required".into())));
-    }
+    let user_id = get_gui_user_id(&state, &headers).await
+        .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
 
-    memory::delete(&state.db, id, 1).await?;
+    memory::delete(&state.db, id, user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -499,13 +507,12 @@ async fn gui_bulk_archive(
     headers: HeaderMap,
     Json(body): Json<BulkArchiveBody>,
 ) -> Result<Json<Value>, AppError> {
-    if state.config.gui_password.is_some() && !is_gui_authenticated(&state, &headers).await {
-        return Err(AppError::from(engram_lib::EngError::Auth("GUI auth required".into())));
-    }
+    let user_id = get_gui_user_id(&state, &headers).await
+        .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
 
     let mut archived = 0;
     for id in &body.ids {
-        if memory::mark_archived(&state.db, *id, 1).await.is_ok() {
+        if memory::mark_archived(&state.db, *id, user_id).await.is_ok() {
             archived += 1;
         }
     }
