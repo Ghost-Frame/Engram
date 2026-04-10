@@ -37,9 +37,12 @@ In engram-lib/Cargo.toml, add:
 - arrow-array = "51"
 - arrow-schema = "51"
 - async-trait = "0.1"
+- futures = "0.3"
 
-- [ ] Add dependencies
-- [ ] cargo check -p engram-lib
+Note: `lancedb 0.4` requires Arrow 51 and a `protoc` binary during build. This worktree pins Chrono to `0.4.38` for Arrow 51 compatibility and provides a repo-local vendored `protoc` wrapper through `.cargo/config.toml`.
+
+- [x] Add dependencies
+- [x] cargo check -p engram-lib
 
 ---
 
@@ -145,9 +148,9 @@ Create build_lance_index_from_existing(db):
 
 ## Step 10: Test and Commit
 
-- [ ] cargo check -p engram-lib
-- [ ] cargo test -p engram-lib
-- [ ] cargo clippy -p engram-lib
+- [x] cargo check -p engram-lib
+- [x] cargo test -p engram-lib
+- [x] cargo clippy -p engram-lib
 - [ ] git add -A
 - [ ] git commit -m "feat(vector): add LanceDB HNSW index for vector search"
 
@@ -155,9 +158,9 @@ Create build_lance_index_from_existing(db):
 
 ## Done When
 
-- LanceDB compiles and initializes
-- Store inserts into both
-- Search uses Lance with fallback
-- Delete removes from both
-- Tests pass
-- Commit made
+- [x] LanceDB compiles and initializes
+- [x] Store inserts into both
+- [x] Search uses Lance with fallback
+- [x] Delete removes from both
+- [x] Tests pass
+- [ ] Commit made
