@@ -119,23 +119,26 @@ pub async fn detect_contradictions(
 ///
 /// Compares all structured_facts with the same subject+predicate to find
 /// conflicting objects. Returns all detected contradictions.
-pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec<Contradiction>> {
+pub async fn scan_all_contradictions(db: &Database, user_id: i64) -> Result<Vec<Contradiction>> {
     let conn = db.connection();
     let mut contradictions = Vec::new();
 
     // Find all facts where subject+predicate match but object differs
+    // Scoped by user_id to use idx_facts_user_subject_predicate index
     let mut rows = conn
         .query(
             "SELECT sf1.memory_id, sf2.memory_id, \
                     sf1.subject, sf1.predicate, sf1.object, sf2.object, \
                     sf1.confidence, sf2.confidence \
              FROM structured_facts sf1 \
-             JOIN structured_facts sf2 ON sf1.subject = sf2.subject \
+             JOIN structured_facts sf2 ON sf1.user_id = sf2.user_id \
+               AND sf1.subject = sf2.subject \
                AND sf1.predicate = sf2.predicate \
                AND sf1.id < sf2.id \
                AND sf1.memory_id != sf2.memory_id \
+             WHERE sf1.user_id = ?1 \
              LIMIT 500",
-            (),
+            [user_id],
         )
         .await?;
 
