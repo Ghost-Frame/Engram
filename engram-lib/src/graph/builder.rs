@@ -142,7 +142,11 @@ fn parse_link_type(s: &str) -> LinkType {
     match s {
         "cite" | "similarity" | "related" => LinkType::Cite,
         "mentions" | "about" => LinkType::Mentions,
-        "contradicts" => LinkType::Contradicts,
+        "association" | "Association" => LinkType::Association,
+        "temporal" | "Temporal" => LinkType::Temporal,
+        "contradicts" | "contradiction" | "Contradiction" => LinkType::Contradicts,
+        "causal" | "causes" | "caused_by" | "Causal" => LinkType::Causal,
+        "resolves" | "Resolves" => LinkType::Resolves,
         "refines" | "updates" | "corrects" => LinkType::Refines,
         "generalizes" | "consolidates" => LinkType::Generalizes,
         "has_fact" => LinkType::HasFact,

@@ -1,6 +1,7 @@
 use super::cooccurrence::record_cooccurrence;
 use super::types::{
-    CreateEntityRequest, CreateRelationshipRequest, Entity, EntityRelationship,
+    CreateEntityRequest, CreateRelationshipRequest, Entity, EntityMemorySearchResult,
+    EntityRelationship,
 };
 use crate::db::Database;
 use crate::{EngError, Result};
@@ -88,14 +89,14 @@ async fn find_entity_by_name_type(
     }
 }
 
-pub async fn get_entity(db: &Database, id: i64) -> Result<Entity> {
+pub async fn get_entity(db: &Database, id: i64, user_id: i64) -> Result<Entity> {
     let conn = db.connection();
     let query = format!(
-        "SELECT {} FROM entities WHERE id = ?1 LIMIT 1",
+        "SELECT {} FROM entities WHERE id = ?1 AND user_id = ?2 LIMIT 1",
         ENTITY_COLUMNS
     );
 
-    let mut rows = conn.query(&query, libsql::params![id]).await?;
+    let mut rows = conn.query(&query, libsql::params![id, user_id]).await?;
 
     match rows.next().await? {
         Some(row) => row_to_entity(&row),
@@ -152,11 +153,76 @@ pub async fn find_entity_by_name(
     }
 }
 
-pub async fn delete_entity(db: &Database, id: i64) -> Result<()> {
+pub async fn delete_entity(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let conn = db.connection();
-    conn.execute("DELETE FROM entities WHERE id = ?1", libsql::params![id])
+    let affected = conn
+        .execute(
+            "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
+            libsql::params![id, user_id],
+        )
         .await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!("entity {}", id)));
+    }
     Ok(())
+}
+
+pub async fn update_entity(
+    db: &Database,
+    id: i64,
+    user_id: i64,
+    name: Option<&str>,
+    entity_type: Option<&str>,
+    description: Option<&str>,
+    metadata: Option<&str>,
+) -> Result<Entity> {
+    let mut sets = Vec::new();
+    let mut params: Vec<libsql::Value> = Vec::new();
+    let mut idx = 1;
+
+    if let Some(value) = name {
+        sets.push(format!("name = ?{}", idx));
+        params.push(value.into());
+        idx += 1;
+    }
+    if let Some(value) = entity_type {
+        sets.push(format!("entity_type = ?{}", idx));
+        params.push(value.into());
+        idx += 1;
+    }
+    if let Some(value) = description {
+        sets.push(format!("description = ?{}", idx));
+        params.push(value.into());
+        idx += 1;
+    }
+    if let Some(value) = metadata {
+        sets.push(format!("metadata = ?{}", idx));
+        params.push(value.into());
+        idx += 1;
+    }
+
+    if sets.is_empty() {
+        return get_entity(db, id, user_id).await;
+    }
+
+    let sql = format!(
+        "UPDATE entities SET {}, updated_at = datetime('now') WHERE id = ?{} AND user_id = ?{}",
+        sets.join(", "),
+        idx,
+        idx + 1
+    );
+    params.push(id.into());
+    params.push(user_id.into());
+
+    let affected = db
+        .connection()
+        .execute(&sql, libsql::params_from_iter(params))
+        .await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!("entity {}", id)));
+    }
+
+    get_entity(db, id, user_id).await
 }
 
 // -- Entity Relationships --
@@ -221,6 +287,7 @@ pub async fn create_relationship(
 pub async fn get_entity_relationships(
     db: &Database,
     entity_id: i64,
+    user_id: i64,
 ) -> Result<Vec<EntityRelationship>> {
     let conn = db.connection();
 
@@ -228,9 +295,10 @@ pub async fn get_entity_relationships(
         .query(
             "SELECT id, source_entity_id, target_entity_id, relationship_type, strength, evidence_count, created_at \
              FROM entity_relationships \
-             WHERE source_entity_id = ?1 OR target_entity_id = ?1 \
+             WHERE (source_entity_id = ?1 OR target_entity_id = ?1) \
+               AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2) \
              ORDER BY strength DESC",
-            libsql::params![entity_id],
+            libsql::params![entity_id, user_id],
         )
         .await?;
 
@@ -256,9 +324,30 @@ pub async fn link_memory_entity(
     db: &Database,
     memory_id: i64,
     entity_id: i64,
+    user_id: i64,
     salience: f64,
 ) -> Result<()> {
     let conn = db.connection();
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) \
+             FROM entities e \
+             JOIN memories m ON m.id = ?1 \
+             WHERE e.id = ?2 AND e.user_id = ?3 AND m.user_id = ?3",
+            libsql::params![memory_id, entity_id, user_id],
+        )
+        .await?;
+    let count = match rows.next().await? {
+        Some(row) => row.get::<i64>(0)?,
+        None => 0,
+    };
+    if count == 0 {
+        return Err(EngError::NotFound(format!(
+            "memory {} or entity {} not found",
+            memory_id, entity_id
+        )));
+    }
+
     conn.execute(
         "INSERT OR IGNORE INTO memory_entities (memory_id, entity_id, salience, created_at) \
          VALUES (?1, ?2, ?3, datetime('now'))",
@@ -268,14 +357,40 @@ pub async fn link_memory_entity(
     Ok(())
 }
 
+pub async fn unlink_memory_entity(
+    db: &Database,
+    memory_id: i64,
+    entity_id: i64,
+    user_id: i64,
+) -> Result<()> {
+    let affected = db
+        .connection()
+        .execute(
+            "DELETE FROM memory_entities \
+             WHERE memory_id = ?1 AND entity_id = ?2 \
+               AND EXISTS (SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?3) \
+               AND EXISTS (SELECT 1 FROM entities WHERE id = ?2 AND user_id = ?3)",
+            libsql::params![memory_id, entity_id, user_id],
+        )
+        .await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!(
+            "entity {} not linked to memory {}",
+            entity_id, memory_id
+        )));
+    }
+    Ok(())
+}
+
 /// Return all entities linked to the given memory.
-pub async fn get_memory_entities(db: &Database, memory_id: i64) -> Result<Vec<Entity>> {
+pub async fn get_memory_entities(db: &Database, memory_id: i64, user_id: i64) -> Result<Vec<Entity>> {
     let conn = db.connection();
     let query = format!(
         "SELECT e.{cols} \
          FROM entities e \
          JOIN memory_entities me ON me.entity_id = e.id \
-         WHERE me.memory_id = ?1 \
+         JOIN memories m ON m.id = me.memory_id \
+         WHERE me.memory_id = ?1 AND m.user_id = ?2 \
          ORDER BY me.salience DESC",
         cols = ENTITY_COLUMNS
             .split(", ")
@@ -284,7 +399,9 @@ pub async fn get_memory_entities(db: &Database, memory_id: i64) -> Result<Vec<En
             .join(", e.")
     );
 
-    let mut rows = conn.query(&query, libsql::params![memory_id]).await?;
+    let mut rows = conn
+        .query(&query, libsql::params![memory_id, user_id])
+        .await?;
 
     let mut entities = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -294,13 +411,17 @@ pub async fn get_memory_entities(db: &Database, memory_id: i64) -> Result<Vec<En
 }
 
 /// Return the IDs of all memories linked to the given entity.
-pub async fn get_entity_memories(db: &Database, entity_id: i64) -> Result<Vec<i64>> {
+pub async fn get_entity_memories(db: &Database, entity_id: i64, user_id: i64) -> Result<Vec<i64>> {
     let conn = db.connection();
 
     let mut rows = conn
         .query(
-            "SELECT memory_id FROM memory_entities WHERE entity_id = ?1",
-            libsql::params![entity_id],
+            "SELECT me.memory_id \
+             FROM memory_entities me \
+             JOIN memories m ON m.id = me.memory_id \
+             JOIN entities e ON e.id = me.entity_id \
+             WHERE me.entity_id = ?1 AND e.user_id = ?2 AND m.user_id = ?2",
+            libsql::params![entity_id, user_id],
         )
         .await?;
 
@@ -310,6 +431,75 @@ pub async fn get_entity_memories(db: &Database, entity_id: i64) -> Result<Vec<i6
         memory_ids.push(id);
     }
     Ok(memory_ids)
+}
+
+pub async fn search_entity_memories(
+    db: &Database,
+    entity_id: i64,
+    user_id: i64,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<EntityMemorySearchResult>> {
+    let conn = db.connection();
+    let mut rows = conn
+        .query(
+            "SELECT m.id, m.content, m.category, m.source, m.importance, m.created_at \
+             FROM memories m \
+             JOIN memory_entities me ON me.memory_id = m.id \
+             WHERE me.entity_id = ?1 AND m.user_id = ?2 AND m.is_forgotten = 0 \
+               AND m.is_archived = 0 AND m.is_latest = 1 \
+               AND m.id IN (SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?3) \
+             ORDER BY m.importance DESC, m.created_at DESC \
+             LIMIT ?4",
+            libsql::params![entity_id, user_id, query, limit],
+        )
+        .await?;
+
+    let mut results = Vec::new();
+    while let Some(row) = rows.next().await? {
+        results.push(EntityMemorySearchResult {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            category: row.get(2)?,
+            source: row.get(3)?,
+            importance: row.get(4)?,
+            created_at: row.get(5)?,
+        });
+    }
+    Ok(results)
+}
+
+pub async fn delete_relationship(
+    db: &Database,
+    entity_id: i64,
+    target_entity_id: i64,
+    user_id: i64,
+    relationship_type: Option<&str>,
+) -> Result<()> {
+    let conn = db.connection();
+    let mut params: Vec<libsql::Value> = vec![entity_id.into(), target_entity_id.into(), user_id.into()];
+    let sql = if let Some(value) = relationship_type {
+        params.push(value.into());
+        "DELETE FROM entity_relationships \
+         WHERE source_entity_id = ?1 AND target_entity_id = ?2 \
+           AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?3) \
+           AND EXISTS (SELECT 1 FROM entities WHERE id = ?2 AND user_id = ?3) \
+           AND relationship_type = ?4"
+    } else {
+        "DELETE FROM entity_relationships \
+         WHERE source_entity_id = ?1 AND target_entity_id = ?2 \
+           AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?3) \
+           AND EXISTS (SELECT 1 FROM entities WHERE id = ?2 AND user_id = ?3)"
+    };
+
+    let affected = conn.execute(sql, libsql::params_from_iter(params)).await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!(
+            "relationship {} -> {} not found",
+            entity_id, target_entity_id
+        )));
+    }
+    Ok(())
 }
 
 // -- Entity Extraction (simple heuristic) --
@@ -459,14 +649,14 @@ pub async fn extract_and_link_entities(
         };
         let entity = create_entity(db, req).await?;
         // Salience defaults to 1.0 for heuristic extraction
-        link_memory_entity(db, memory_id, entity.id, 1.0).await?;
+        link_memory_entity(db, memory_id, entity.id, user_id, 1.0).await?;
         entities.push(entity);
     }
 
     // Record pairwise co-occurrences for all entity pairs found in this memory
     for a in 0..entities.len() {
         for b in (a + 1)..entities.len() {
-            let _ = record_cooccurrence(db, entities[a].id, entities[b].id).await;
+            let _ = record_cooccurrence(db, entities[a].id, entities[b].id, user_id).await;
         }
     }
 
