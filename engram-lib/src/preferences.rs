@@ -56,11 +56,7 @@ pub async fn set_preference(
 }
 
 /// Fetch a single preference by user/key. Returns NotFound if absent.
-pub async fn get_preference(
-    db: &Database,
-    user_id: i64,
-    key: &str,
-) -> Result<UserPreference> {
+pub async fn get_preference(db: &Database, user_id: i64, key: &str) -> Result<UserPreference> {
     let sql = format!(
         "SELECT {} FROM user_preferences WHERE user_id = ?1 AND key = ?2",
         PREF_COLUMNS

@@ -143,25 +143,49 @@ mod tests {
 
     #[test]
     fn test_extension_detection() {
-        let meta = FormatMeta { extension: Some(".md".into()), mime: None };
-        assert_eq!(detect_format(b"# Hello", Some(&meta)), SupportedFormat::Markdown);
+        let meta = FormatMeta {
+            extension: Some(".md".into()),
+            mime: None,
+        };
+        assert_eq!(
+            detect_format(b"# Hello", Some(&meta)),
+            SupportedFormat::Markdown
+        );
 
-        let meta = FormatMeta { extension: Some(".csv".into()), mime: None };
+        let meta = FormatMeta {
+            extension: Some(".csv".into()),
+            mime: None,
+        };
         assert_eq!(detect_format(b"a,b,c", Some(&meta)), SupportedFormat::Csv);
 
-        let meta = FormatMeta { extension: Some(".html".into()), mime: None };
+        let meta = FormatMeta {
+            extension: Some(".html".into()),
+            mime: None,
+        };
         assert_eq!(detect_format(b"hello", Some(&meta)), SupportedFormat::Html);
 
-        let meta = FormatMeta { extension: Some(".txt".into()), mime: None };
-        assert_eq!(detect_format(b"hello", Some(&meta)), SupportedFormat::PlainText);
+        let meta = FormatMeta {
+            extension: Some(".txt".into()),
+            mime: None,
+        };
+        assert_eq!(
+            detect_format(b"hello", Some(&meta)),
+            SupportedFormat::PlainText
+        );
     }
 
     #[test]
     fn test_mime_detection() {
-        let meta = FormatMeta { extension: None, mime: Some("text/html; charset=utf-8".into()) };
+        let meta = FormatMeta {
+            extension: None,
+            mime: Some("text/html; charset=utf-8".into()),
+        };
         assert_eq!(detect_format(b"stuff", Some(&meta)), SupportedFormat::Html);
 
-        let meta = FormatMeta { extension: None, mime: Some("application/pdf".into()) };
+        let meta = FormatMeta {
+            extension: None,
+            mime: Some("application/pdf".into()),
+        };
         assert_eq!(detect_format(b"stuff", Some(&meta)), SupportedFormat::Pdf);
     }
 
@@ -178,8 +202,14 @@ mod tests {
 
     #[test]
     fn test_sniff_html() {
-        assert_eq!(detect_format(b"<!DOCTYPE html><html></html>", None), SupportedFormat::Html);
-        assert_eq!(detect_format(b"<html lang=\"en\"></html>", None), SupportedFormat::Html);
+        assert_eq!(
+            detect_format(b"<!DOCTYPE html><html></html>", None),
+            SupportedFormat::Html
+        );
+        assert_eq!(
+            detect_format(b"<html lang=\"en\"></html>", None),
+            SupportedFormat::Html
+        );
     }
 
     #[test]
@@ -202,12 +232,21 @@ mod tests {
 
     #[test]
     fn test_fallback_plaintext() {
-        assert_eq!(detect_format(b"just plain text", None), SupportedFormat::PlainText);
+        assert_eq!(
+            detect_format(b"just plain text", None),
+            SupportedFormat::PlainText
+        );
     }
 
     #[test]
     fn test_extension_priority_over_content() {
-        let meta = FormatMeta { extension: Some(".csv".into()), mime: None };
-        assert_eq!(detect_format(b"<!DOCTYPE html>", Some(&meta)), SupportedFormat::Csv);
+        let meta = FormatMeta {
+            extension: Some(".csv".into()),
+            mime: None,
+        };
+        assert_eq!(
+            detect_format(b"<!DOCTYPE html>", Some(&meta)),
+            SupportedFormat::Csv
+        );
     }
 }

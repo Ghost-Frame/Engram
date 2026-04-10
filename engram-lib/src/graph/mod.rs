@@ -1,6 +1,6 @@
 pub mod builder;
-pub mod cooccurrence;
 pub mod communities;
+pub mod cooccurrence;
 pub mod entities;
 pub mod pagerank;
 pub mod search;

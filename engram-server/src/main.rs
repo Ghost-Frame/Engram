@@ -22,17 +22,19 @@ async fn main() {
         .expect("failed to connect to database");
 
     // Initialize embedding provider (graceful degradation if unavailable)
-    let embedder: Option<Arc<dyn EmbeddingProvider>> =
-        match OnnxProvider::new(&config).await {
-            Ok(provider) => {
-                tracing::info!("ONNX embedding provider ready");
-                Some(Arc::new(provider))
-            }
-            Err(e) => {
-                tracing::warn!("ONNX embedding provider failed to initialize: {}. Vector search disabled.", e);
-                None
-            }
-        };
+    let embedder: Option<Arc<dyn EmbeddingProvider>> = match OnnxProvider::new(&config).await {
+        Ok(provider) => {
+            tracing::info!("ONNX embedding provider ready");
+            Some(Arc::new(provider))
+        }
+        Err(e) => {
+            tracing::warn!(
+                "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
+                e
+            );
+            None
+        }
+    };
 
     let reranker: Option<Arc<Reranker>> = if config.reranker_enabled {
         match Reranker::new(&config).await {
@@ -41,7 +43,10 @@ async fn main() {
                 Some(Arc::new(r))
             }
             Err(e) => {
-                tracing::warn!("reranker failed to initialize: {}. Results will not be reranked.", e);
+                tracing::warn!(
+                    "reranker failed to initialize: {}. Results will not be reranked.",
+                    e
+                );
                 None
             }
         }

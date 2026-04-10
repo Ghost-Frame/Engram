@@ -65,11 +65,7 @@ pub async fn create_episode(
     row_to_episode(&row)
 }
 
-pub async fn list_episodes(
-    db: &Database,
-    user_id: i64,
-    limit: usize,
-) -> Result<Vec<EpisodeRow>> {
+pub async fn list_episodes(db: &Database, user_id: i64, limit: usize) -> Result<Vec<EpisodeRow>> {
     let mut rows = db
         .conn
         .query(
@@ -126,11 +122,7 @@ pub async fn search_episodes_fts(
     collect_episodes(&mut rows).await
 }
 
-pub async fn get_episode_for_user(
-    db: &Database,
-    id: i64,
-    user_id: i64,
-) -> Result<EpisodeRow> {
+pub async fn get_episode_for_user(db: &Database, id: i64, user_id: i64) -> Result<EpisodeRow> {
     let mut rows = db
         .conn
         .query(
@@ -230,11 +222,7 @@ pub async fn assign_memories_to_episode(
     Ok(assigned)
 }
 
-pub async fn finalize_episode(
-    db: &Database,
-    id: i64,
-    user_id: i64,
-) -> Result<EpisodeRow> {
+pub async fn finalize_episode(db: &Database, id: i64, user_id: i64) -> Result<EpisodeRow> {
     db.conn
         .execute(
             "UPDATE episodes

@@ -38,7 +38,10 @@ pub async fn graph_search(
         let label = if content.len() > 60 {
             format!(
                 "{}...",
-                &content[..content.char_indices().nth(60).map_or(content.len(), |(i, _)| i)]
+                &content[..content
+                    .char_indices()
+                    .nth(60)
+                    .map_or(content.len(), |(i, _)| i)]
             )
         } else {
             content
@@ -145,7 +148,11 @@ pub async fn neighborhood(
                     let link_type_str: String =
                         row.get::<String>(3).unwrap_or_else(|_| "cite".to_string());
 
-                    let neighbor = if source_id == node { target_id } else { source_id };
+                    let neighbor = if source_id == node {
+                        target_id
+                    } else {
+                        source_id
+                    };
 
                     all_edges.push(GraphEdge {
                         source: format!("m{}", source_id),
@@ -184,7 +191,10 @@ pub async fn neighborhood(
             let label = if content.len() > 60 {
                 format!(
                     "{}...",
-                    &content[..content.char_indices().nth(60).map_or(content.len(), |(i, _)| i)]
+                    &content[..content
+                        .char_indices()
+                        .nth(60)
+                        .map_or(content.len(), |(i, _)| i)]
                 )
             } else {
                 content

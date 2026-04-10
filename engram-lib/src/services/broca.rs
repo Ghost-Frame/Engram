@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::{EngError, Result};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionEntry {
@@ -52,7 +52,11 @@ fn row_to_action_entry(row: &libsql::Row) -> Result<ActionEntry> {
 pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEntry> {
     let conn = &db.conn;
 
-    let metadata_str = req.metadata.as_ref().map(serde_json::to_string).transpose()?;
+    let metadata_str = req
+        .metadata
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
     let user_id = req.user_id.unwrap_or(1);
 
     conn.execute(
@@ -70,16 +74,20 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
     .await?;
 
     let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id_row = rows.next().await?.ok_or_else(|| EngError::Internal("no rowid".into()))?;
+    let id_row = rows
+        .next()
+        .await?
+        .ok_or_else(|| EngError::Internal("no rowid".into()))?;
     let id: i64 = id_row.get(0)?;
 
     // Fetch back the inserted row
-    let mut rows = conn.query(
-        "SELECT id, agent, action, summary, metadata, project, user_id, created_at
+    let mut rows = conn
+        .query(
+            "SELECT id, agent, action, summary, metadata, project, user_id, created_at
          FROM action_log WHERE id = ?1",
-        libsql::params![id],
-    )
-    .await?;
+            libsql::params![id],
+        )
+        .await?;
 
     let row = rows
         .next()
@@ -132,7 +140,9 @@ pub async fn query_actions(
     params_vec.push(libsql::Value::Integer(limit as i64));
     params_vec.push(libsql::Value::Integer(offset as i64));
 
-    let mut rows = conn.query(&sql, libsql::params_from_iter(params_vec)).await?;
+    let mut rows = conn
+        .query(&sql, libsql::params_from_iter(params_vec))
+        .await?;
     let mut results = Vec::new();
     while let Some(row) = rows.next().await? {
         results.push(row_to_action_entry(&row)?);

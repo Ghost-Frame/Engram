@@ -1,9 +1,9 @@
+use crate::db::Database;
+use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
-use crate::db::Database;
-use crate::{EngError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -36,7 +36,10 @@ impl FromStr for TaskStatus {
             "completed" => Ok(TaskStatus::Completed),
             "blocked" => Ok(TaskStatus::Blocked),
             "cancelled" => Ok(TaskStatus::Cancelled),
-            other => Err(EngError::InvalidInput(format!("unknown task status: {}", other))),
+            other => Err(EngError::InvalidInput(format!(
+                "unknown task status: {}",
+                other
+            ))),
         }
     }
 }
@@ -50,8 +53,8 @@ pub struct Task {
     pub priority: i32,
     pub agent: Option<String>,
     pub project: Option<String>,
-    pub tags: Option<String>,       // JSON array stored as TEXT
-    pub metadata: Option<String>,   // JSON object stored as TEXT
+    pub tags: Option<String>,     // JSON array stored as TEXT
+    pub metadata: Option<String>, // JSON object stored as TEXT
     pub user_id: i64,
     pub due_at: Option<String>,
     pub completed_at: Option<String>,
@@ -139,7 +142,11 @@ pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> 
     let priority = req.priority.unwrap_or(5);
     let user_id = req.user_id.unwrap_or(1);
     let tags_json = req.tags.as_ref().map(serde_json::to_string).transpose()?;
-    let metadata_json = req.metadata.as_ref().map(serde_json::to_string).transpose()?;
+    let metadata_json = req
+        .metadata
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
 
     conn.execute(
         "INSERT INTO tasks (title, description, status, priority, agent, project, tags, metadata, user_id, due_at)
@@ -160,7 +167,10 @@ pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> 
     .await?;
 
     let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id_row = rows.next().await?.ok_or_else(|| EngError::Internal("no rowid".into()))?;
+    let id_row = rows
+        .next()
+        .await?
+        .ok_or_else(|| EngError::Internal("no rowid".into()))?;
     let id: i64 = id_row.get(0)?;
 
     get_task(db, id, user_id).await
@@ -168,13 +178,14 @@ pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> 
 
 pub async fn get_task(db: &Database, id: i64, user_id: i64) -> Result<Task> {
     let conn = &db.conn;
-    let mut rows = conn.query(
-        "SELECT id, title, description, status, priority, agent, project, tags, metadata,
+    let mut rows = conn
+        .query(
+            "SELECT id, title, description, status, priority, agent, project, tags, metadata,
                 user_id, due_at, completed_at, created_at, updated_at
          FROM tasks WHERE id = ?1 AND user_id = ?2",
-        libsql::params![id, user_id],
-    )
-    .await?;
+            libsql::params![id, user_id],
+        )
+        .await?;
 
     let row = rows
         .next()
@@ -221,7 +232,9 @@ pub async fn list_tasks(
     params_vec.push(libsql::Value::Integer(limit as i64));
     params_vec.push(libsql::Value::Integer(offset as i64));
 
-    let mut rows = conn.query(&sql, libsql::params_from_iter(params_vec)).await?;
+    let mut rows = conn
+        .query(&sql, libsql::params_from_iter(params_vec))
+        .await?;
     let mut results = Vec::new();
     while let Some(row) = rows.next().await? {
         results.push(row_to_task(&row)?);
@@ -229,7 +242,12 @@ pub async fn list_tasks(
     Ok(results)
 }
 
-pub async fn update_task(db: &Database, id: i64, req: UpdateTaskRequest, user_id: i64) -> Result<Task> {
+pub async fn update_task(
+    db: &Database,
+    id: i64,
+    req: UpdateTaskRequest,
+    user_id: i64,
+) -> Result<Task> {
     let conn = &db.conn;
 
     // Make sure the task exists and belongs to this user
@@ -302,18 +320,28 @@ pub async fn update_task(db: &Database, id: i64, req: UpdateTaskRequest, user_id
         return get_task(db, id, user_id).await;
     }
 
-    let sql = format!("UPDATE tasks SET {} WHERE id = ?{} AND user_id = ?{}", sets.join(", "), idx, idx + 1);
+    let sql = format!(
+        "UPDATE tasks SET {} WHERE id = ?{} AND user_id = ?{}",
+        sets.join(", "),
+        idx,
+        idx + 1
+    );
     params_vec.push(libsql::Value::Integer(id));
     params_vec.push(libsql::Value::Integer(user_id));
 
-    conn.execute(&sql, libsql::params_from_iter(params_vec)).await?;
+    conn.execute(&sql, libsql::params_from_iter(params_vec))
+        .await?;
 
     get_task(db, id, user_id).await
 }
 
 pub async fn delete_task(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let conn = &db.conn;
-    conn.execute("DELETE FROM tasks WHERE id = ?1 AND user_id = ?2", libsql::params![id, user_id]).await?;
+    conn.execute(
+        "DELETE FROM tasks WHERE id = ?1 AND user_id = ?2",
+        libsql::params![id, user_id],
+    )
+    .await?;
     Ok(())
 }
 

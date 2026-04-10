@@ -3,9 +3,9 @@
 // ============================================================================
 
 use super::types::{
-    ContextMode, ContextOptions, ContextStrategy, LayerFlags,
-    DEFAULT_SEMANTIC_CEILING_BALANCED, DEFAULT_SEMANTIC_CEILING_BREADTH,
-    DEFAULT_SEMANTIC_CEILING_PRECISION, STATIC_BUDGET_BALANCED, STATIC_BUDGET_PRECISION,
+    ContextMode, ContextOptions, ContextStrategy, LayerFlags, DEFAULT_SEMANTIC_CEILING_BALANCED,
+    DEFAULT_SEMANTIC_CEILING_BREADTH, DEFAULT_SEMANTIC_CEILING_PRECISION, STATIC_BUDGET_BALANCED,
+    STATIC_BUDGET_PRECISION,
 };
 
 /// Applies mode preset defaults to the options. Presets only set values
@@ -187,21 +187,39 @@ mod tests {
 
     #[test]
     fn test_semantic_ceiling() {
-        assert_eq!(resolve_semantic_ceiling(&ContextStrategy::Balanced, None), DEFAULT_SEMANTIC_CEILING_BALANCED);
-        assert_eq!(resolve_semantic_ceiling(&ContextStrategy::Precision, None), DEFAULT_SEMANTIC_CEILING_PRECISION);
-        assert_eq!(resolve_semantic_ceiling(&ContextStrategy::Balanced, Some(0.5)), 0.5);
+        assert_eq!(
+            resolve_semantic_ceiling(&ContextStrategy::Balanced, None),
+            DEFAULT_SEMANTIC_CEILING_BALANCED
+        );
+        assert_eq!(
+            resolve_semantic_ceiling(&ContextStrategy::Precision, None),
+            DEFAULT_SEMANTIC_CEILING_PRECISION
+        );
+        assert_eq!(
+            resolve_semantic_ceiling(&ContextStrategy::Balanced, Some(0.5)),
+            0.5
+        );
     }
 
     #[test]
     fn test_semantic_limit() {
         assert_eq!(resolve_semantic_limit(&ContextStrategy::Balanced, None), 50);
-        assert_eq!(resolve_semantic_limit(&ContextStrategy::Precision, None), 30);
+        assert_eq!(
+            resolve_semantic_limit(&ContextStrategy::Precision, None),
+            30
+        );
         assert_eq!(resolve_semantic_limit(&ContextStrategy::Breadth, None), 80);
     }
 
     #[test]
     fn test_static_budget_fraction() {
-        assert_eq!(resolve_static_budget_fraction(&ContextStrategy::Balanced), STATIC_BUDGET_BALANCED);
-        assert_eq!(resolve_static_budget_fraction(&ContextStrategy::Precision), STATIC_BUDGET_PRECISION);
+        assert_eq!(
+            resolve_static_budget_fraction(&ContextStrategy::Balanced),
+            STATIC_BUDGET_BALANCED
+        );
+        assert_eq!(
+            resolve_static_budget_fraction(&ContextStrategy::Precision),
+            STATIC_BUDGET_PRECISION
+        );
     }
 }

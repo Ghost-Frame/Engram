@@ -31,7 +31,9 @@ async fn sync_receive(
     Json(body): Json<SyncReceiveBody>,
 ) -> Result<Json<Value>, AppError> {
     let result = kleos_lib::sync::receive_sync(&state.db, auth.user_id, body.changes).await?;
-    Ok(Json(serde_json::to_value(result).map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?))
+    Ok(Json(serde_json::to_value(result).map_err(|e| {
+        AppError(kleos_lib::EngError::Internal(e.to_string()))
+    })?))
 }
 
 async fn get_sync_changes(

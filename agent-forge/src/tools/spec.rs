@@ -16,7 +16,14 @@ pub struct SpecTaskInput {
     pub dependencies: Option<String>,
 }
 
-const VALID_TASK_TYPES: &[&str] = &["feature", "bugfix", "refactor", "enhancement", "test", "docs"];
+const VALID_TASK_TYPES: &[&str] = &[
+    "feature",
+    "bugfix",
+    "refactor",
+    "enhancement",
+    "test",
+    "docs",
+];
 
 pub fn spec_task(db: &Database, input: SpecTaskInput) -> ToolResult {
     let task_description = input

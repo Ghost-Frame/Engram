@@ -18,14 +18,21 @@ impl IntoResponse for AppError {
             EngError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             EngError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             EngError::Auth(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
+            EngError::NotImplemented(msg) => (StatusCode::NOT_IMPLEMENTED, msg.clone()),
             // Don't leak internal DB/serialization details to clients
             EngError::Database(e) => {
                 tracing::error!("Database error: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Database error".to_string(),
+                )
             }
             EngError::Serialization(e) => {
                 tracing::error!("Serialization error: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Internal error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal error".to_string(),
+                )
             }
             EngError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };

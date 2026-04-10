@@ -166,8 +166,7 @@ fn value_as_string(value: Option<&Value>) -> Option<String> {
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
 
@@ -180,7 +179,13 @@ async fn main() {
     let client = Client::new(cli.server.clone(), api_key);
 
     match &cli.command {
-        Commands::Store { content, category, importance, tags, source } => {
+        Commands::Store {
+            content,
+            category,
+            importance,
+            tags,
+            source,
+        } => {
             let tags_list: Vec<String> = tags
                 .as_deref()
                 .unwrap_or("")
@@ -238,10 +243,7 @@ async fn main() {
                             .and_then(|x| x.as_f64())
                             .map(|s| format!("{:.3}", s))
                             .unwrap_or_else(|| "?".to_string());
-                        let content = item
-                            .get("content")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("");
+                        let content = item.get("content").and_then(|x| x.as_str()).unwrap_or("");
                         println!("#{} [{}] {}", id, score, truncate(content, 100));
                     }
                 }
@@ -259,21 +261,22 @@ async fn main() {
             }
         }
 
-        Commands::Recall { id } => {
-            match client.get(&format!("/memory/{}", id)).await {
-                Ok(v) => {
-                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
-                }
-                Err(e) => eprintln!("Error: {}", e),
+        Commands::Recall { id } => match client.get(&format!("/memory/{}", id)).await {
+            Ok(v) => {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
             }
-        }
+            Err(e) => eprintln!("Error: {}", e),
+        },
 
         Commands::Guard { content: _ } => {
             println!("guard not implemented");
         }
 
         Commands::List { limit, offset } => {
-            match client.get(&format!("/list?limit={}&offset={}", limit, offset)).await {
+            match client
+                .get(&format!("/list?limit={}&offset={}", limit, offset))
+                .await
+            {
                 Ok(v) => {
                     let items = v.as_array().cloned().unwrap_or_else(|| {
                         v.get("results")
@@ -286,14 +289,8 @@ async fn main() {
                     }
                     for item in &items {
                         let id = value_as_string(item.get("id")).unwrap_or_else(|| "?".to_string());
-                        let category = item
-                            .get("category")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("?");
-                        let content = item
-                            .get("content")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("");
+                        let category = item.get("category").and_then(|x| x.as_str()).unwrap_or("?");
+                        let content = item.get("content").and_then(|x| x.as_str()).unwrap_or("");
                         println!("#{} [{}] {}", id, category, truncate(content, 100));
                     }
                 }
@@ -301,24 +298,22 @@ async fn main() {
             }
         }
 
-        Commands::Delete { id } => {
-            match client.delete(&format!("/memory/{}", id)).await {
-                Ok(_) => println!("Deleted memory #{}", id),
-                Err(e) => eprintln!("Error: {}", e),
-            }
-        }
+        Commands::Delete { id } => match client.delete(&format!("/memory/{}", id)).await {
+            Ok(_) => println!("Deleted memory #{}", id),
+            Err(e) => eprintln!("Error: {}", e),
+        },
 
-        Commands::Bootstrap { db: _ } => {
-            match client.post("/bootstrap", json!({})).await {
-                Ok(v) => {
-                    if let Some(key) = value_as_string(v.get("api_key")).or_else(|| value_as_string(v.get("key"))) {
-                        println!("{}", key);
-                    } else {
-                        println!("{}", serde_json::to_string_pretty(&v).unwrap());
-                    }
+        Commands::Bootstrap { db: _ } => match client.post("/bootstrap", json!({})).await {
+            Ok(v) => {
+                if let Some(key) =
+                    value_as_string(v.get("api_key")).or_else(|| value_as_string(v.get("key")))
+                {
+                    println!("{}", key);
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
                 }
-                Err(e) => eprintln!("Error: {}", e),
             }
-        }
+            Err(e) => eprintln!("Error: {}", e),
+        },
     }
 }

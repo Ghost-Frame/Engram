@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use chrono::{DateTime, Utc, Duration};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 const TTL_HOURS: i64 = 24;
 const FAILURE_THRESHOLD: u32 = 3;
@@ -28,19 +28,24 @@ impl Default for TacticalMemory {
 
 impl TacticalMemory {
     pub fn new() -> Self {
-        Self { entries: HashMap::new() }
+        Self {
+            entries: HashMap::new(),
+        }
     }
 
     /// Store a tactical memory entry.
     pub fn store(&mut self, key: String, value: String) {
         let now = Utc::now();
-        self.entries.insert(key.clone(), TacticalEntry {
-            key,
-            value,
-            created_at: now,
-            expires_at: now + Duration::hours(TTL_HOURS),
-            failure_count: 0,
-        });
+        self.entries.insert(
+            key.clone(),
+            TacticalEntry {
+                key,
+                value,
+                created_at: now,
+                expires_at: now + Duration::hours(TTL_HOURS),
+                failure_count: 0,
+            },
+        );
     }
 
     /// Retrieve a tactical entry (returns None if expired).
@@ -69,13 +74,15 @@ impl TacticalMemory {
     /// Purge all expired entries.
     pub fn purge_expired(&mut self) {
         let now = Utc::now();
-        self.entries.retain(|_, e| now <= e.expires_at && e.failure_count < FAILURE_THRESHOLD);
+        self.entries
+            .retain(|_, e| now <= e.expires_at && e.failure_count < FAILURE_THRESHOLD);
     }
 
     /// List all active entries.
     pub fn list_active(&self) -> Vec<&TacticalEntry> {
         let now = Utc::now();
-        self.entries.values()
+        self.entries
+            .values()
             .filter(|e| now <= e.expires_at && e.failure_count < FAILURE_THRESHOLD)
             .collect()
     }

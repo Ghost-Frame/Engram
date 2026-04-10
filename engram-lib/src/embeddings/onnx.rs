@@ -95,9 +95,10 @@ impl OnnxProvider {
     /// Embed a single text string (no chunking).
     fn embed_single(&self, text: &str) -> Result<Vec<f32>> {
         // 1. Tokenize
-        let encoding = self.tokenizer.encode(text, true).map_err(|e| {
-            EngError::Internal(format!("tokenization error: {}", e))
-        })?;
+        let encoding = self
+            .tokenizer
+            .encode(text, true)
+            .map_err(|e| EngError::Internal(format!("tokenization error: {}", e)))?;
 
         let token_ids = encoding.get_ids();
         let attention = encoding.get_attention_mask();
@@ -120,8 +121,8 @@ impl OnnxProvider {
         // Shape must be Vec<i64> or similar. Using [batch, seq_len] as [1usize, seq_len].
         let ids_tensor = Tensor::<i64>::from_array(([1usize, seq_len], input_ids))
             .map_err(|e| EngError::Internal(format!("failed to create input_ids tensor: {}", e)))?;
-        let mask_tensor = Tensor::<i64>::from_array(([1usize, seq_len], attention_mask))
-            .map_err(|e| {
+        let mask_tensor =
+            Tensor::<i64>::from_array(([1usize, seq_len], attention_mask)).map_err(|e| {
                 EngError::Internal(format!("failed to create attention_mask tensor: {}", e))
             })?;
 
@@ -141,9 +142,9 @@ impl OnnxProvider {
 
         // 5. Extract first output tensor as ArrayViewD<f32>
         let output_value = &outputs[0];
-        let tensor_view = output_value.try_extract_array::<f32>().map_err(|e| {
-            EngError::Internal(format!("failed to extract output tensor: {}", e))
-        })?;
+        let tensor_view = output_value
+            .try_extract_array::<f32>()
+            .map_err(|e| EngError::Internal(format!("failed to extract output tensor: {}", e)))?;
 
         let shape = tensor_view.shape();
 

@@ -14,8 +14,8 @@ pub fn l2_normalize(v: &mut [f32]) {
 pub fn mean_pool(hidden: &[f32], mask: &[i64], seq_len: usize, dim: usize) -> Vec<f32> {
     let mut pooled = vec![0.0f32; dim];
     let mut count: usize = 0;
-    for i in 0..seq_len {
-        if mask[i] == 0 {
+    for (i, &m) in mask.iter().enumerate().take(seq_len) {
+        if m == 0 {
             continue;
         }
         count += 1;
@@ -26,8 +26,8 @@ pub fn mean_pool(hidden: &[f32], mask: &[i64], seq_len: usize, dim: usize) -> Ve
     }
     if count > 0 {
         let c = count as f32;
-        for d in 0..dim {
-            pooled[d] /= c;
+        for item in pooled.iter_mut().take(dim) {
+            *item /= c;
         }
     }
     pooled

@@ -1,16 +1,29 @@
 // GROUNDING QUALITY - Tool quality tracking (ported from TS grounding/quality.ts)
+use super::types::{build_tool_key, parse_tool_key, ToolQualityRecord};
 use crate::Result;
 use libsql::Connection;
-use super::types::{build_tool_key, parse_tool_key, ToolQualityRecord};
 
 const DEFAULT_DEGRADATION_THRESHOLD: f64 = 0.7;
 
-pub struct ToolQualityManager { degradation_threshold: f64 }
+pub struct ToolQualityManager {
+    degradation_threshold: f64,
+}
 
 impl ToolQualityManager {
-    pub fn new(threshold: Option<f64>) -> Self { Self { degradation_threshold: threshold.unwrap_or(DEFAULT_DEGRADATION_THRESHOLD) } }
+    pub fn new(threshold: Option<f64>) -> Self {
+        Self {
+            degradation_threshold: threshold.unwrap_or(DEFAULT_DEGRADATION_THRESHOLD),
+        }
+    }
 
-    pub async fn record_execution(&self, conn: &Connection, tool_key: &str, success: bool, latency_ms: f64, _error_message: Option<&str>) -> Result<()> {
+    pub async fn record_execution(
+        &self,
+        conn: &Connection,
+        tool_key: &str,
+        success: bool,
+        latency_ms: f64,
+        _error_message: Option<&str>,
+    ) -> Result<()> {
         let parsed = parse_tool_key(tool_key);
         let normalized_key = build_tool_key(&parsed.backend, &parsed.server, &parsed.tool_name);
         conn.execute(
@@ -45,18 +58,24 @@ impl ToolQualityManager {
         let mut rows = conn.query("SELECT quality_score FROM tool_quality_records WHERE tool_key = ?1 OR tool_name = ?1 ORDER BY updated_at DESC LIMIT 1", libsql::params![tool_name.to_string()]).await?;
         match rows.next().await? {
             Some(r) => Ok(r.get(0)?),
-            None => Ok(1.0)
+            None => Ok(1.0),
         }
     }
 
     pub async fn get_degraded_tools(&self, conn: &Connection) -> Result<Vec<(String, f64)>> {
         let mut rows = conn.query("SELECT tool_name, quality_score FROM tool_quality_records WHERE quality_score < ?1 ORDER BY quality_score ASC", libsql::params![self.degradation_threshold]).await?;
         let mut tools = Vec::new();
-        while let Some(r) = rows.next().await? { tools.push((r.get::<String>(0)?, r.get::<f64>(1)?)); }
+        while let Some(r) = rows.next().await? {
+            tools.push((r.get::<String>(0)?, r.get::<f64>(1)?));
+        }
         Ok(tools)
     }
 
-    pub async fn get_all_records(&self, conn: &Connection, limit: i64) -> Result<Vec<ToolQualityRecord>> {
+    pub async fn get_all_records(
+        &self,
+        conn: &Connection,
+        limit: i64,
+    ) -> Result<Vec<ToolQualityRecord>> {
         let mut rows = conn.query(
             "SELECT tool_key, backend, server, tool_name, description_hash, total_calls, total_successes, total_failures, avg_execution_ms, llm_flagged_count, quality_score, last_execution_at
              FROM tool_quality_records
@@ -84,5 +103,7 @@ impl ToolQualityManager {
         Ok(records)
     }
 
-    pub fn adjust_tool_ranking(&self, tool_scores: &mut [(String, f64)]) { tool_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)); }
+    pub fn adjust_tool_ranking(&self, tool_scores: &mut [(String, f64)]) {
+        tool_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    }
 }

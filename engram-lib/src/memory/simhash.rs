@@ -44,8 +44,16 @@ pub fn simhash(text: &str) -> u64 {
         let h2 = fnv1a_32(&[token.as_str(), "\x00"].concat());
 
         for i in 0..32u32 {
-            if (h1 & (1 << i)) != 0 { v[i as usize] += 1; } else { v[i as usize] -= 1; }
-            if (h2 & (1 << i)) != 0 { v[32 + i as usize] += 1; } else { v[32 + i as usize] -= 1; }
+            if (h1 & (1 << i)) != 0 {
+                v[i as usize] += 1;
+            } else {
+                v[i as usize] -= 1;
+            }
+            if (h2 & (1 << i)) != 0 {
+                v[32 + i as usize] += 1;
+            } else {
+                v[32 + i as usize] -= 1;
+            }
         }
     }
 
@@ -122,7 +130,7 @@ mod tests {
     fn near_duplicate_detection_works() {
         let _ = is_near_duplicate(
             "Zan prefers dark roast coffee every morning",
-            "Zan prefers dark roast coffee each morning"
+            "Zan prefers dark roast coffee each morning",
         );
 
         assert!(!is_near_duplicate(

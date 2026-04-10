@@ -1,15 +1,15 @@
-use crate::db::Database;
-use crate::memory::types::{QuestionType, SearchRequest, SearchResult};
-use crate::memory::scoring::{
-    self, classify_question_mixed, blend_strategies,
-    question_strategy, rrf_score, DECAY_FLOOR, RERANKER_TOP_K,
-};
-use crate::Result;
-use super::vector::vector_search;
 use super::fts::fts_search;
+use super::vector::vector_search;
 use super::{row_to_memory, MEMORY_COLUMNS};
-use tracing::{info, warn};
+use crate::db::Database;
+use crate::memory::scoring::{
+    self, blend_strategies, classify_question_mixed, question_strategy, rrf_score, DECAY_FLOOR,
+    RERANKER_TOP_K,
+};
+use crate::memory::types::{QuestionType, SearchRequest, SearchResult};
+use crate::Result;
 use std::collections::{HashMap, HashSet};
+use tracing::{info, warn};
 
 const DEFAULT_LIMIT: usize = 10;
 
@@ -44,7 +44,11 @@ fn resolve_strategy(req: &SearchRequest) -> (QuestionType, crate::memory::types:
     }
     // Use mixed classification and blending
     let weights = classify_question_mixed(&req.query);
-    let dominant = *weights.iter().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
+    let dominant = *weights
+        .iter()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap()
+        .0;
     let strategy = blend_strategies(&weights);
     (dominant, strategy)
 }
@@ -77,7 +81,10 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                     })
                     .collect()),
                 Err(e) => {
-                    warn!("LanceDB vector search failed, falling back to libsql vectors: {}", e);
+                    warn!(
+                        "LanceDB vector search failed, falling back to libsql vectors: {}",
+                        e
+                    );
                     vector_search(db, embedding, candidate_target, user_id).await
                 }
             }
@@ -91,13 +98,25 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                     vector_ranked.push((hit.memory_id, hit.rank as f64));
                     results.entry(hit.memory_id).or_insert_with(|| Candidate {
                         id: hit.memory_id,
-                        content: String::new(), category: String::new(),
-                        source: None, model: None, importance: 5,
-                        created_at: String::new(), version: None, is_latest: None,
-                        is_static: false, source_count: 1, root_memory_id: None,
-                        access_count: 0, pagerank_score: 0.0, semantic_score: None,
-                        personality_signal_score: None, score: 0.0, combined_score: 0.0,
-                        decay_score: None, temporal_boost: None,
+                        content: String::new(),
+                        category: String::new(),
+                        source: None,
+                        model: None,
+                        importance: 5,
+                        created_at: String::new(),
+                        version: None,
+                        is_latest: None,
+                        is_static: false,
+                        source_count: 1,
+                        root_memory_id: None,
+                        access_count: 0,
+                        pagerank_score: 0.0,
+                        semantic_score: None,
+                        personality_signal_score: None,
+                        score: 0.0,
+                        combined_score: 0.0,
+                        decay_score: None,
+                        temporal_boost: None,
                     });
                 }
             }
@@ -107,22 +126,35 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
 
     // Channel 2: FTS5 search
     if !req.query.is_empty() {
-        if let Ok(hits) = fts_search(db, &req.query, fts_limit.max(candidate_target), user_id).await {
-                for hit in &hits {
-                    fts_ranked.push((hit.memory_id, hit.bm25_score));
-                    let entry = results.entry(hit.memory_id).or_insert_with(|| Candidate {
-                        id: hit.memory_id,
-                        content: String::new(), category: String::new(),
-                        source: None, model: None, importance: 5,
-                        created_at: String::new(), version: None, is_latest: None,
-                        is_static: false, source_count: 1, root_memory_id: None,
-                        access_count: 0, pagerank_score: 0.0, semantic_score: None,
-                        personality_signal_score: None, score: 0.0, combined_score: 0.0,
-                        decay_score: None, temporal_boost: None,
-                    });
-                    // FTS provides content we can use
-                    let _ = entry;
-                }
+        if let Ok(hits) = fts_search(db, &req.query, fts_limit.max(candidate_target), user_id).await
+        {
+            for hit in &hits {
+                fts_ranked.push((hit.memory_id, hit.bm25_score));
+                let entry = results.entry(hit.memory_id).or_insert_with(|| Candidate {
+                    id: hit.memory_id,
+                    content: String::new(),
+                    category: String::new(),
+                    source: None,
+                    model: None,
+                    importance: 5,
+                    created_at: String::new(),
+                    version: None,
+                    is_latest: None,
+                    is_static: false,
+                    source_count: 1,
+                    root_memory_id: None,
+                    access_count: 0,
+                    pagerank_score: 0.0,
+                    semantic_score: None,
+                    personality_signal_score: None,
+                    score: 0.0,
+                    combined_score: 0.0,
+                    decay_score: None,
+                    temporal_boost: None,
+                });
+                // FTS provides content we can use
+                let _ = entry;
+            }
         }
     }
 
@@ -154,12 +186,17 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     {
         let ids: Vec<i64> = results.keys().copied().collect();
         if !ids.is_empty() {
-            let placeholders: String = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+            let placeholders: String = ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
             let hydrate_sql = format!(
                 "SELECT id, created_at, decay_score, importance, is_static, source_count, \
                  version, is_latest, source, model, access_count, fsrs_stability, \
                  last_accessed_at, pagerank_score, content, category \
-                 FROM memories WHERE id IN ({}) AND user_id = ?1", placeholders
+                 FROM memories WHERE id IN ({}) AND user_id = ?1",
+                placeholders
             );
             if let Ok(mut rows) = db.conn.query(&hydrate_sql, libsql::params![user_id]).await {
                 while let Ok(Some(row)) = rows.next().await {
@@ -169,12 +206,21 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                         c.importance = row.get::<i32>(3).unwrap_or(5);
                         c.is_static = row.get::<i32>(4).unwrap_or(0) != 0;
                         c.source_count = row.get::<i32>(5).unwrap_or(1).max(c.source_count);
-                        if c.version.is_none() { c.version = row.get::<Option<i32>>(6).unwrap_or(None); }
-                        if c.is_latest.is_none() { c.is_latest = Some(row.get::<i32>(7).unwrap_or(1) != 0); }
-                        if c.source.is_none() { c.source = row.get::<Option<String>>(8).unwrap_or(None); }
-                        if c.model.is_none() { c.model = row.get::<Option<String>>(9).unwrap_or(None); }
+                        if c.version.is_none() {
+                            c.version = row.get::<Option<i32>>(6).unwrap_or(None);
+                        }
+                        if c.is_latest.is_none() {
+                            c.is_latest = Some(row.get::<i32>(7).unwrap_or(1) != 0);
+                        }
+                        if c.source.is_none() {
+                            c.source = row.get::<Option<String>>(8).unwrap_or(None);
+                        }
+                        if c.model.is_none() {
+                            c.model = row.get::<Option<String>>(9).unwrap_or(None);
+                        }
                         c.access_count = row.get::<i32>(10).unwrap_or(0);
-                        c.pagerank_score = row.get::<Option<f64>>(13).unwrap_or(None).unwrap_or(0.0);
+                        c.pagerank_score =
+                            row.get::<Option<f64>>(13).unwrap_or(None).unwrap_or(0.0);
                         if c.content.is_empty() {
                             c.content = row.get::<String>(14).unwrap_or_default();
                         }
@@ -202,29 +248,46 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
             };
             let ref_str = &c.created_at;
             let elapsed = if !ref_str.is_empty() {
-                let normalized = if ref_str.contains('Z') { ref_str.to_string() }
-                    else { format!("{}Z", ref_str.replace(' ', "T")) };
+                let normalized = if ref_str.contains('Z') {
+                    ref_str.to_string()
+                } else {
+                    format!("{}Z", ref_str.replace(' ', "T"))
+                };
                 if let Ok(dt) = normalized.parse::<chrono::DateTime<chrono::Utc>>() {
                     let ms = (chrono::Utc::now().timestamp_millis() - dt.timestamp_millis()).max(0);
                     ms as f64 / 86_400_000.0
-                } else { 0.0 }
-            } else { 0.0 };
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
             crate::fsrs::retrievability(stability as f32, elapsed as f32) as f64
         };
 
         c.decay_score = Some((c.importance as f64 * retrievability * 1000.0).round() / 1000.0);
 
-        let decay_factor = if c.is_static { 1.0 } else { DECAY_FLOOR + (1.0 - DECAY_FLOOR) * retrievability };
+        let decay_factor = if c.is_static {
+            1.0
+        } else {
+            DECAY_FLOOR + (1.0 - DECAY_FLOOR) * retrievability
+        };
         let src_boost = scoring::source_count_boost(c.source_count);
         let stat_boost = scoring::static_boost(c.is_static);
 
         let temp_boost = if let Some(ref qd) = query_date {
             if !c.created_at.is_empty() {
                 let b = scoring::temporal_proximity_boost(qd, &c.created_at);
-                if b > 1.0 { c.temporal_boost = Some((b * 1000.0).round() / 1000.0); }
+                if b > 1.0 {
+                    c.temporal_boost = Some((b * 1000.0).round() / 1000.0);
+                }
                 b
-            } else { 1.0 }
-        } else { 1.0 };
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
 
         let pr_boost = scoring::pagerank_boost(c.pagerank_score);
         let contr = scoring::contradiction_penalty(&c.content, c.is_latest.unwrap_or(true));
@@ -236,7 +299,8 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     // Relationship expansion (2-hop) -- graph RRF channel
     let mut graph_score_map: HashMap<i64, f64> = HashMap::new();
     if strategy.expand_relationships {
-        let mut top_ids: Vec<(i64, f64)> = results.iter()
+        let mut top_ids: Vec<(i64, f64)> = results
+            .iter()
             .map(|(&id, c)| (id, c.combined_score))
             .collect();
         top_ids.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -255,15 +319,23 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                 FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
                 WHERE ml.target_id = ?1 AND m.user_id = ?2";
 
-            if let Ok(mut rows) = db.conn.query(link_sql, libsql::params![*seed_id, user_id]).await {
+            if let Ok(mut rows) = db
+                .conn
+                .query(link_sql, libsql::params![*seed_id, user_id])
+                .await
+            {
                 let mut added = 0usize;
                 while let Ok(Some(row)) = rows.next().await {
-                    if added >= strategy.hop1_limit { break; }
+                    if added >= strategy.hop1_limit {
+                        break;
+                    }
                     let link_id: i64 = row.get(0).unwrap_or(0);
                     let similarity: f64 = row.get(1).unwrap_or(0.0);
                     let link_type: String = row.get(2).unwrap_or_default();
                     let is_forgotten: i32 = row.get(8).unwrap_or(0);
-                    if is_forgotten != 0 { continue; }
+                    if is_forgotten != 0 {
+                        continue;
+                    }
 
                     let tw = scoring::link_type_weight(&link_type);
                     let gs = similarity * tw * strategy.relationship_multiplier;
@@ -283,10 +355,15 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                             is_latest: Some(row.get::<i32>(7).unwrap_or(1) != 0),
                             is_static: false,
                             source_count: row.get::<i32>(10).unwrap_or(1),
-                            root_memory_id: None, access_count: 0, pagerank_score: 0.0,
-                            semantic_score: None, personality_signal_score: None,
-                            score: 0.0, combined_score: 0.0,
-                            decay_score: None, temporal_boost: None,
+                            root_memory_id: None,
+                            access_count: 0,
+                            pagerank_score: 0.0,
+                            semantic_score: None,
+                            personality_signal_score: None,
+                            score: 0.0,
+                            combined_score: 0.0,
+                            decay_score: None,
+                            temporal_boost: None,
                         });
                         added += 1;
                     }
@@ -295,8 +372,8 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
         }
 
         // Apply graph RRF scores
-        let mut graph_ranked: Vec<(i64, f64)> = graph_score_map.iter()
-            .map(|(&id, &s)| (id, s)).collect();
+        let mut graph_ranked: Vec<(i64, f64)> =
+            graph_score_map.iter().map(|(&id, &s)| (id, s)).collect();
         graph_ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         for (rank, (id, _)) in graph_ranked.iter().enumerate() {
             if let Some(c) = results.get_mut(id) {
@@ -309,13 +386,25 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
 
     // Guard NaN, sort, limit, and annotate channels
     for c in results.values_mut() {
-        if c.score.is_nan() { c.score = 0.0; }
-        if c.combined_score.is_nan() { c.combined_score = c.score; }
-        if let Some(d) = c.decay_score { if d.is_nan() { c.decay_score = Some(0.0); } }
+        if c.score.is_nan() {
+            c.score = 0.0;
+        }
+        if c.combined_score.is_nan() {
+            c.combined_score = c.score;
+        }
+        if let Some(d) = c.decay_score {
+            if d.is_nan() {
+                c.decay_score = Some(0.0);
+            }
+        }
     }
 
     let mut sorted: Vec<&Candidate> = results.values().collect();
-    sorted.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        b.combined_score
+            .partial_cmp(&a.combined_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let candidate_count = sorted.len();
     sorted.truncate(limit);
 
@@ -331,26 +420,40 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     for c in &sorted {
         // Build channel list
         let mut channels = Vec::new();
-        if vector_set.contains(&c.id) { channels.push("vector".to_string()); }
-        if fts_set.contains(&c.id) { channels.push("fts".to_string()); }
-        if graph_set.contains(&c.id) { channels.push("graph".to_string()); }
+        if vector_set.contains(&c.id) {
+            channels.push("vector".to_string());
+        }
+        if fts_set.contains(&c.id) {
+            channels.push("fts".to_string());
+        }
+        if graph_set.contains(&c.id) {
+            channels.push("graph".to_string());
+        }
 
         // Fetch full memory if needed
         let memory = match conn.query(&fetch_sql, libsql::params![c.id, user_id]).await {
-            Ok(mut rows) => {
-                match rows.next().await {
-                    Ok(Some(row)) => match row_to_memory(&row) {
-                        Ok(m) => m,
-                        Err(e) => { warn!("row_to_memory failed for {}: {}", c.id, e); continue; }
-                    },
-                    _ => continue,
-                }
+            Ok(mut rows) => match rows.next().await {
+                Ok(Some(row)) => match row_to_memory(&row) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!("row_to_memory failed for {}: {}", c.id, e);
+                        continue;
+                    }
+                },
+                _ => continue,
+            },
+            Err(e) => {
+                warn!("fetch memory {} failed: {}", c.id, e);
+                continue;
             }
-            Err(e) => { warn!("fetch memory {} failed: {}", c.id, e); continue; }
         };
 
-        let fts_s = fts_score_map.get(&c.id).map(|s| (*s * 1000.0).round() / 1000.0);
-        let graph_s = graph_score_map.get(&c.id).map(|s| (*s * 1000.0).round() / 1000.0);
+        let fts_s = fts_score_map
+            .get(&c.id)
+            .map(|s| (*s * 1000.0).round() / 1000.0);
+        let graph_s = graph_score_map
+            .get(&c.id)
+            .map(|s| (*s * 1000.0).round() / 1000.0);
 
         final_results.push(SearchResult {
             memory,
@@ -386,11 +489,16 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                 m.content, m.category, m.is_forgotten \
                 FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
                 WHERE ml.target_id = ?1 AND m.user_id = ?2";
-            if let Ok(mut rows) = conn.query(link_sql, libsql::params![result.memory.id, user_id]).await {
+            if let Ok(mut rows) = conn
+                .query(link_sql, libsql::params![result.memory.id, user_id])
+                .await
+            {
                 let mut links = Vec::new();
                 while let Ok(Some(row)) = rows.next().await {
                     let is_forgotten: i32 = row.get(5).unwrap_or(0);
-                    if is_forgotten != 0 { continue; }
+                    if is_forgotten != 0 {
+                        continue;
+                    }
                     links.push(crate::memory::types::LinkedMemory {
                         id: row.get(0).unwrap_or(0),
                         similarity: ((row.get::<f64>(1).unwrap_or(0.0)) * 1000.0).round() / 1000.0,
@@ -399,7 +507,9 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                         category: row.get(4).unwrap_or_default(),
                     });
                 }
-                if !links.is_empty() { result.linked = Some(links); }
+                if !links.is_empty() {
+                    result.linked = Some(links);
+                }
             }
 
             // Version chain
@@ -407,7 +517,10 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
             let chain_sql = "SELECT id, content, version, is_latest FROM memories \
                 WHERE (root_memory_id = ?1 OR id = ?1) AND user_id = ?2 \
                 ORDER BY version ASC";
-            if let Ok(mut rows) = conn.query(chain_sql, libsql::params![root_id, user_id]).await {
+            if let Ok(mut rows) = conn
+                .query(chain_sql, libsql::params![root_id, user_id])
+                .await
+            {
                 let mut chain = Vec::new();
                 while let Ok(Some(row)) = rows.next().await {
                     chain.push(crate::memory::types::VersionChainEntry {
@@ -417,7 +530,9 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                         is_latest: row.get::<i32>(3).unwrap_or(0) != 0,
                     });
                 }
-                if chain.len() > 1 { result.version_chain = Some(chain); }
+                if chain.len() > 1 {
+                    result.version_chain = Some(chain);
+                }
             }
         }
     }
@@ -448,7 +563,9 @@ pub async fn auto_link(
     // We use rank as a proxy for similarity since vector_top_k orders by distance
     // In a full implementation, we would compute cosine similarity directly
     for hit in &hits {
-        if hit.memory_id == memory_id { continue; }
+        if hit.memory_id == memory_id {
+            continue;
+        }
         // Approximate similarity from rank (closer rank = higher similarity)
         let approx_sim = 1.0 - (hit.rank as f64 / 50.0);
         if approx_sim >= scoring::AUTO_LINK_THRESHOLD {
@@ -462,12 +579,23 @@ pub async fn auto_link(
     let mut linked = 0usize;
     for (target_id, similarity) in &similarities {
         // Insert bidirectional links
-        let insert_sql = "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) \
+        let insert_sql =
+            "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) \
             VALUES (?1, ?2, ?3, 'similarity')";
-        let _ = db.conn.execute(insert_sql,
-            libsql::params![memory_id, *target_id, *similarity]).await;
-        let _ = db.conn.execute(insert_sql,
-            libsql::params![*target_id, memory_id, *similarity]).await;
+        let _ = db
+            .conn
+            .execute(
+                insert_sql,
+                libsql::params![memory_id, *target_id, *similarity],
+            )
+            .await;
+        let _ = db
+            .conn
+            .execute(
+                insert_sql,
+                libsql::params![*target_id, memory_id, *similarity],
+            )
+            .await;
         linked += 1;
     }
 

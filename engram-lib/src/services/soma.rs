@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::{EngError, Result};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
@@ -71,12 +71,7 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
     conn.execute(
         "INSERT OR IGNORE INTO agents (user_id, name, category, description)
          VALUES (?1, ?2, ?3, ?4)",
-        libsql::params![
-            user_id,
-            req.name.clone(),
-            req.category,
-            req.description,
-        ],
+        libsql::params![user_id, req.name.clone(), req.category, req.description,],
     )
     .await?;
 
@@ -125,7 +120,9 @@ pub async fn list_agents(
     sql.push_str(" ORDER BY created_at DESC");
     let _ = param_idx; // suppress unused warning
 
-    let mut rows = conn.query(&sql, libsql::params_from_iter(params_vec)).await?;
+    let mut rows = conn
+        .query(&sql, libsql::params_from_iter(params_vec))
+        .await?;
     let mut results = Vec::new();
     while let Some(row) = rows.next().await? {
         results.push(row_to_agent(&row)?);
@@ -135,15 +132,16 @@ pub async fn list_agents(
 
 pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
     let conn = &db.conn;
-    let mut rows = conn.query(
-        "SELECT id, user_id, name, category, description, code_hash,
+    let mut rows = conn
+        .query(
+            "SELECT id, user_id, name, category, description, code_hash,
                 trust_score, total_ops, successful_ops, failed_ops,
                 guard_allows, guard_warns, guard_blocks, is_active,
                 revoked_at, revoke_reason, last_seen_at, created_at
          FROM agents WHERE id = ?1 AND user_id = ?2",
-        libsql::params![id, user_id],
-    )
-    .await?;
+            libsql::params![id, user_id],
+        )
+        .await?;
 
     let row = rows
         .next()
@@ -155,15 +153,16 @@ pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
 
 pub async fn get_agent_by_name(db: &Database, user_id: i64, name: &str) -> Result<Agent> {
     let conn = &db.conn;
-    let mut rows = conn.query(
-        "SELECT id, user_id, name, category, description, code_hash,
+    let mut rows = conn
+        .query(
+            "SELECT id, user_id, name, category, description, code_hash,
                 trust_score, total_ops, successful_ops, failed_ops,
                 guard_allows, guard_warns, guard_blocks, is_active,
                 revoked_at, revoke_reason, last_seen_at, created_at
          FROM agents WHERE user_id = ?1 AND name = ?2",
-        libsql::params![user_id, name],
-    )
-    .await?;
+            libsql::params![user_id, name],
+        )
+        .await?;
 
     let row = rows
         .next()

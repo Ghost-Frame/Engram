@@ -1,12 +1,12 @@
-use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::sync::{RwLock, broadcast};
 use kleos_lib::config::{Config, EidolonConfig};
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::EmbeddingProvider;
 use kleos_lib::llm::local::LocalModelClient;
 use kleos_lib::reranker::Reranker;
 use kleos_lib::services::brain::BrainManager;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{broadcast, RwLock};
 
 pub struct SessionBroadcast {
     pub buffer: Vec<String>,
@@ -16,7 +16,10 @@ pub struct SessionBroadcast {
 impl SessionBroadcast {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(1024);
-        SessionBroadcast { buffer: Vec::new(), tx }
+        SessionBroadcast {
+            buffer: Vec::new(),
+            tx,
+        }
     }
 }
 

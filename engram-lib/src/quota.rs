@@ -141,18 +141,17 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
         )
         .await?;
 
-    let (memory_limit, spaces_limit): (i64, i64) =
-        if let Some(row) = quota_rows.next().await? {
-            let ml: i64 = row
-                .get(0)
-                .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-            let sl: i64 = row
-                .get(1)
-                .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-            (ml, sl)
-        } else {
-            (100_000, 10)
-        };
+    let (memory_limit, spaces_limit): (i64, i64) = if let Some(row) = quota_rows.next().await? {
+        let ml: i64 = row
+            .get(0)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?;
+        let sl: i64 = row
+            .get(1)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?;
+        (ml, sl)
+    } else {
+        (100_000, 10)
+    };
 
     let mut mem_rows = db
         .conn

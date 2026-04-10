@@ -143,34 +143,148 @@ struct EmotionMeta {
 }
 static EMOTION_KEYWORDS: LazyLock<HashMap<&'static str, EmotionMeta>> = LazyLock::new(|| {
     HashMap::from([
-        ("happy", EmotionMeta { valence: Valence::Positive, intensity: 0.6 }),
-        ("excited", EmotionMeta { valence: Valence::Positive, intensity: 0.8 }),
-        ("grateful", EmotionMeta { valence: Valence::Positive, intensity: 0.7 }),
-        ("proud", EmotionMeta { valence: Valence::Positive, intensity: 0.7 }),
-        ("relieved", EmotionMeta { valence: Valence::Positive, intensity: 0.5 }),
-        ("thrilled", EmotionMeta { valence: Valence::Positive, intensity: 0.9 }),
-        ("content", EmotionMeta { valence: Valence::Positive, intensity: 0.5 }),
-        ("sad", EmotionMeta { valence: Valence::Negative, intensity: 0.6 }),
-        ("angry", EmotionMeta { valence: Valence::Negative, intensity: 0.8 }),
-        ("frustrated", EmotionMeta { valence: Valence::Negative, intensity: 0.7 }),
-        ("anxious", EmotionMeta { valence: Valence::Negative, intensity: 0.6 }),
-        ("stressed", EmotionMeta { valence: Valence::Negative, intensity: 0.7 }),
-        ("disappointed", EmotionMeta { valence: Valence::Negative, intensity: 0.6 }),
-        ("overwhelmed", EmotionMeta { valence: Valence::Negative, intensity: 0.8 }),
-        ("lonely", EmotionMeta { valence: Valence::Negative, intensity: 0.7 }),
-        ("worried", EmotionMeta { valence: Valence::Negative, intensity: 0.5 }),
-        ("bored", EmotionMeta { valence: Valence::Negative, intensity: 0.4 }),
+        (
+            "happy",
+            EmotionMeta {
+                valence: Valence::Positive,
+                intensity: 0.6,
+            },
+        ),
+        (
+            "excited",
+            EmotionMeta {
+                valence: Valence::Positive,
+                intensity: 0.8,
+            },
+        ),
+        (
+            "grateful",
+            EmotionMeta {
+                valence: Valence::Positive,
+                intensity: 0.7,
+            },
+        ),
+        (
+            "proud",
+            EmotionMeta {
+                valence: Valence::Positive,
+                intensity: 0.7,
+            },
+        ),
+        (
+            "relieved",
+            EmotionMeta {
+                valence: Valence::Positive,
+                intensity: 0.5,
+            },
+        ),
+        (
+            "thrilled",
+            EmotionMeta {
+                valence: Valence::Positive,
+                intensity: 0.9,
+            },
+        ),
+        (
+            "content",
+            EmotionMeta {
+                valence: Valence::Positive,
+                intensity: 0.5,
+            },
+        ),
+        (
+            "sad",
+            EmotionMeta {
+                valence: Valence::Negative,
+                intensity: 0.6,
+            },
+        ),
+        (
+            "angry",
+            EmotionMeta {
+                valence: Valence::Negative,
+                intensity: 0.8,
+            },
+        ),
+        (
+            "frustrated",
+            EmotionMeta {
+                valence: Valence::Negative,
+                intensity: 0.7,
+            },
+        ),
+        (
+            "anxious",
+            EmotionMeta {
+                valence: Valence::Negative,
+                intensity: 0.6,
+            },
+        ),
+        (
+            "stressed",
+            EmotionMeta {
+                valence: Valence::Negative,
+                intensity: 0.7,
+            },
+        ),
+        (
+            "disappointed",
+            EmotionMeta {
+                valence: Valence::Negative,
+                intensity: 0.6,
+            },
+        ),
+        (
+            "overwhelmed",
+            EmotionMeta {
+                valence: Valence::Negative,
+                intensity: 0.8,
+            },
+        ),
+        (
+            "lonely",
+            EmotionMeta {
+                valence: Valence::Negative,
+                intensity: 0.7,
+            },
+        ),
+        (
+            "worried",
+            EmotionMeta {
+                valence: Valence::Negative,
+                intensity: 0.5,
+            },
+        ),
+        (
+            "bored",
+            EmotionMeta {
+                valence: Valence::Negative,
+                intensity: 0.4,
+            },
+        ),
     ])
 });
 
 static INTENSIFIERS: LazyLock<HashMap<&'static str, f64>> = LazyLock::new(|| {
     HashMap::from([
-        ("very", 1.3), ("really", 1.3), ("absolutely", 1.4), ("extremely", 1.4),
-        ("incredibly", 1.4), ("super", 1.3), ("totally", 1.3), ("deeply", 1.3),
-        ("strongly", 1.3), ("highly", 1.3),
-        ("somewhat", 0.7), ("slightly", 0.7), ("a_bit", 0.7), ("kind_of", 0.7),
+        ("very", 1.3),
+        ("really", 1.3),
+        ("absolutely", 1.4),
+        ("extremely", 1.4),
+        ("incredibly", 1.4),
+        ("super", 1.3),
+        ("totally", 1.3),
+        ("deeply", 1.3),
+        ("strongly", 1.3),
+        ("highly", 1.3),
+        ("somewhat", 0.7),
+        ("slightly", 0.7),
+        ("a_bit", 0.7),
+        ("kind_of", 0.7),
         ("sort_of", 0.7),
-        ("barely", 0.5), ("hardly", 0.5), ("mildly", 0.6),
+        ("barely", 0.5),
+        ("hardly", 0.5),
+        ("mildly", 0.6),
     ])
 });
 
@@ -186,13 +300,34 @@ macro_rules! lazy_regex {
     };
 }
 
-lazy_regex!(LIKE_PATTERN, r"(?i)\b(?:I\s+)?(?:love|like|enjoy|prefer|adore|am (?:really )?into)\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))");
-lazy_regex!(DISLIKE_PATTERN, r"(?i)\b(?:I\s+)?(?:hate|dislike|don't like|can't stand|avoid)\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))");
-lazy_regex!(FAV_PATTERN, r"(?i)\bmy favorite\s+(.+?)\s+(?:is|are)\s+(.+?)(?:\.|,|$)");
-lazy_regex!(DECISION_PATTERN, r"(?i)\b(?:I\s+)?(?:decided to|chose to|going to|switched to|opted for|picked|went with)\s+(.+?)(?:\.|,|!|$)");
-lazy_regex!(IDENTITY_PATTERN, r"(?i)\b(?:I\s+)?(?:am a|'m a|consider myself|identify as)\s+(.+?)(?:\.|,|!|$)");
-lazy_regex!(VALUE_PATTERN, r"(?i)\b(?:important to me|matters to me|I believe in|I value|I care about)\s+(.+?)(?:\.|,|!|$)");
-lazy_regex!(MOTIVATION_PATTERN, r"(?i)\b(?:I want to|my goal is|I aspire to|I'm trying to|I hope to|I aim to)\s+(.+?)(?:\.|,|!|$)");
+lazy_regex!(
+    LIKE_PATTERN,
+    r"(?i)\b(?:I\s+)?(?:love|like|enjoy|prefer|adore|am (?:really )?into)\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
+);
+lazy_regex!(
+    DISLIKE_PATTERN,
+    r"(?i)\b(?:I\s+)?(?:hate|dislike|don't like|can't stand|avoid)\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
+);
+lazy_regex!(
+    FAV_PATTERN,
+    r"(?i)\bmy favorite\s+(.+?)\s+(?:is|are)\s+(.+?)(?:\.|,|$)"
+);
+lazy_regex!(
+    DECISION_PATTERN,
+    r"(?i)\b(?:I\s+)?(?:decided to|chose to|going to|switched to|opted for|picked|went with)\s+(.+?)(?:\.|,|!|$)"
+);
+lazy_regex!(
+    IDENTITY_PATTERN,
+    r"(?i)\b(?:I\s+)?(?:am a|'m a|consider myself|identify as)\s+(.+?)(?:\.|,|!|$)"
+);
+lazy_regex!(
+    VALUE_PATTERN,
+    r"(?i)\b(?:important to me|matters to me|I believe in|I value|I care about)\s+(.+?)(?:\.|,|!|$)"
+);
+lazy_regex!(
+    MOTIVATION_PATTERN,
+    r"(?i)\b(?:I want to|my goal is|I aspire to|I'm trying to|I hope to|I aim to)\s+(.+?)(?:\.|,|!|$)"
+);
 
 // ============================================================================
 // Helper functions
@@ -235,14 +370,19 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
     for caps in LIKE_PATTERN.captures_iter(content) {
         if let Some(m) = caps.get(1) {
             let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 { continue; }
+            if subject.len() < 3 || subject.len() > 100 {
+                continue;
+            }
             signals.push(PersonalitySignal {
                 signal_type: SignalType::Preference,
                 subject: subject.clone(),
                 valence: Valence::Positive,
                 intensity: 0.6,
                 reasoning: format!("Expressed positive preference about {subject}"),
-                source_text: caps.get(0).map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
+                source_text: caps
+                    .get(0)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default(),
             });
         }
     }
@@ -251,14 +391,19 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
     for caps in DISLIKE_PATTERN.captures_iter(content) {
         if let Some(m) = caps.get(1) {
             let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 { continue; }
+            if subject.len() < 3 || subject.len() > 100 {
+                continue;
+            }
             signals.push(PersonalitySignal {
                 signal_type: SignalType::Preference,
                 subject: subject.clone(),
                 valence: Valence::Negative,
                 intensity: 0.6,
                 reasoning: format!("Expressed negative preference about {subject}"),
-                source_text: caps.get(0).map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
+                source_text: caps
+                    .get(0)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default(),
             });
         }
     }
@@ -274,7 +419,10 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
                 valence: Valence::Positive,
                 intensity: 0.8,
                 reasoning: format!("Named {val_clean} as favorite {cat_clean}"),
-                source_text: caps.get(0).map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
+                source_text: caps
+                    .get(0)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default(),
             });
         }
     }
@@ -283,14 +431,19 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
     for caps in DECISION_PATTERN.captures_iter(content) {
         if let Some(m) = caps.get(1) {
             let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 { continue; }
+            if subject.len() < 3 || subject.len() > 100 {
+                continue;
+            }
             signals.push(PersonalitySignal {
                 signal_type: SignalType::Decision,
                 subject: subject.clone(),
                 valence: Valence::Neutral,
                 intensity: 0.5,
                 reasoning: format!("Made a decision about {subject}"),
-                source_text: caps.get(0).map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
+                source_text: caps
+                    .get(0)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default(),
             });
         }
     }
@@ -299,14 +452,19 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
     for caps in IDENTITY_PATTERN.captures_iter(content) {
         if let Some(m) = caps.get(1) {
             let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 { continue; }
+            if subject.len() < 3 || subject.len() > 100 {
+                continue;
+            }
             signals.push(PersonalitySignal {
                 signal_type: SignalType::Identity,
                 subject: subject.clone(),
                 valence: Valence::Neutral,
                 intensity: 0.7,
                 reasoning: format!("Self-identified as {subject}"),
-                source_text: caps.get(0).map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
+                source_text: caps
+                    .get(0)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default(),
             });
         }
     }
@@ -348,14 +506,19 @@ pub fn extract_signals_rule_based(content: &str) -> Vec<PersonalitySignal> {
     for caps in VALUE_PATTERN.captures_iter(content) {
         if let Some(m) = caps.get(1) {
             let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 { continue; }
+            if subject.len() < 3 || subject.len() > 100 {
+                continue;
+            }
             signals.push(PersonalitySignal {
                 signal_type: SignalType::Value,
                 subject: subject.clone(),
                 valence: Valence::Positive,
                 intensity: 0.7,
                 reasoning: format!("Expressed that {subject} is important to them"),
-                source_text: caps.get(0).map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
+                source_text: caps
+                    .get(0)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default(),
             });
         }
     }
@@ -364,14 +527,19 @@ pub fn extract_signals_rule_based(content: &str) -> Vec<PersonalitySignal> {
     for caps in MOTIVATION_PATTERN.captures_iter(content) {
         if let Some(m) = caps.get(1) {
             let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 { continue; }
+            if subject.len() < 3 || subject.len() > 100 {
+                continue;
+            }
             signals.push(PersonalitySignal {
                 signal_type: SignalType::Motivation,
                 subject: subject.clone(),
                 valence: Valence::Positive,
                 intensity: 0.6,
                 reasoning: format!("Expressed aspiration toward {subject}"),
-                source_text: caps.get(0).map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
+                source_text: caps
+                    .get(0)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default(),
             });
         }
     }
@@ -385,7 +553,9 @@ pub fn extract_signals_rule_based(content: &str) -> Vec<PersonalitySignal> {
         }
 
         // Intensifier detection
-        let words: Vec<String> = sig.source_text.to_lowercase()
+        let words: Vec<String> = sig
+            .source_text
+            .to_lowercase()
             .split_whitespace()
             .map(|w| w.replace(char::is_whitespace, "_"))
             .collect();
@@ -430,20 +600,33 @@ pub fn synthesize_profile_template(input: &SynthesisInput) -> String {
 
     let mut sections = Vec::new();
     let now = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    sections.push(format!("Profile based on {} signals. Updated {}.", input.signals.len(), now));
+    sections.push(format!(
+        "Profile based on {} signals. Updated {}.",
+        input.signals.len(),
+        now
+    ));
 
     // Group by type
     let mut grouped: HashMap<&str, Vec<&SignalRow>> = HashMap::new();
     for sig in &input.signals {
-        grouped.entry(sig.signal_type.as_str()).or_default().push(sig);
+        grouped
+            .entry(sig.signal_type.as_str())
+            .or_default()
+            .push(sig);
     }
 
     // Sort each group by intensity desc, take top 5
     for sig_type in ALL_SIGNAL_TYPES {
         if let Some(group) = grouped.get_mut(sig_type.as_str()) {
-            group.sort_by(|a, b| b.intensity.partial_cmp(&a.intensity).unwrap_or(std::cmp::Ordering::Equal));
+            group.sort_by(|a, b| {
+                b.intensity
+                    .partial_cmp(&a.intensity)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             let top: Vec<_> = group.iter().take(5).collect();
-            if top.is_empty() { continue; }
+            if top.is_empty() {
+                continue;
+            }
             sections.push(format!("\n{}:", sig_type.label()));
             for sig in top {
                 let reasoning = sig.reasoning.as_deref().unwrap_or("");
@@ -462,20 +645,37 @@ pub fn synthesize_profile_template(input: &SynthesisInput) -> String {
 
     // Preferences from user_preferences table
     if !input.preferences.is_empty() {
-        let likes: Vec<_> = input.preferences.iter().filter(|p| p.preference.starts_with("likes ")).collect();
-        let dislikes: Vec<_> = input.preferences.iter().filter(|p| p.preference.starts_with("dislikes ")).collect();
+        let likes: Vec<_> = input
+            .preferences
+            .iter()
+            .filter(|p| p.preference.starts_with("likes "))
+            .collect();
+        let dislikes: Vec<_> = input
+            .preferences
+            .iter()
+            .filter(|p| p.preference.starts_with("dislikes "))
+            .collect();
         if !likes.is_empty() {
             sections.push("\nLIKES:".to_string());
             for p in likes.iter().take(10) {
                 let pref = p.preference.strip_prefix("likes ").unwrap_or(&p.preference);
-                sections.push(format!("- {} [{}] (strength: {})", pref, p.domain, p.strength));
+                sections.push(format!(
+                    "- {} [{}] (strength: {})",
+                    pref, p.domain, p.strength
+                ));
             }
         }
         if !dislikes.is_empty() {
             sections.push("\nDISLIKES:".to_string());
             for p in dislikes.iter().take(10) {
-                let pref = p.preference.strip_prefix("dislikes ").unwrap_or(&p.preference);
-                sections.push(format!("- {} [{}] (strength: {})", pref, p.domain, p.strength));
+                let pref = p
+                    .preference
+                    .strip_prefix("dislikes ")
+                    .unwrap_or(&p.preference);
+                sections.push(format!(
+                    "- {} [{}] (strength: {})",
+                    pref, p.domain, p.strength
+                ));
             }
         }
     }
@@ -507,7 +707,13 @@ pub fn synthesize_profile_rule_based(input: &SynthesisInput) -> String {
     fn tokenize(s: &str) -> Vec<String> {
         s.to_lowercase()
             .chars()
-            .map(|c| if c.is_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+            .map(|c| {
+                if c.is_alphanumeric() || c.is_whitespace() {
+                    c
+                } else {
+                    ' '
+                }
+            })
             .collect::<String>()
             .split_whitespace()
             .filter(|t| t.len() >= 3)
@@ -523,15 +729,19 @@ pub fn synthesize_profile_rule_based(input: &SynthesisInput) -> String {
 
     let mut clusters: Vec<Cluster> = Vec::new();
     for (i, sig) in input.signals.iter().enumerate() {
-        let sig_tokens: std::collections::HashSet<String> = tokenize(&sig.subject).into_iter().collect();
+        let sig_tokens: std::collections::HashSet<String> =
+            tokenize(&sig.subject).into_iter().collect();
         let mut placed = false;
         for cluster in &mut clusters {
-            let cluster_tokens: std::collections::HashSet<String> = tokenize(&cluster.label).into_iter().collect();
+            let cluster_tokens: std::collections::HashSet<String> =
+                tokenize(&cluster.label).into_iter().collect();
             let intersection = sig_tokens.intersection(&cluster_tokens).count();
             let union = sig_tokens.union(&cluster_tokens).count();
             if union > 0 && (intersection as f64 / union as f64) > 0.5 {
                 cluster.signal_indices.push(i);
-                let total: f64 = cluster.signal_indices.iter()
+                let total: f64 = cluster
+                    .signal_indices
+                    .iter()
                     .map(|&idx| input.signals[idx].intensity)
                     .sum();
                 cluster.avg_intensity = total / cluster.signal_indices.len() as f64;
@@ -552,7 +762,9 @@ pub fn synthesize_profile_rule_based(input: &SynthesisInput) -> String {
 
     sections.push(format!(
         "Personality profile based on {} signals across {} themes. Generated {}.",
-        input.signals.len(), clusters.len(), now
+        input.signals.len(),
+        clusters.len(),
+        now
     ));
 
     // 2. Top themes
@@ -560,14 +772,20 @@ pub fn synthesize_profile_rule_based(input: &SynthesisInput) -> String {
     if !top_clusters.is_empty() {
         sections.push("\nKEY THEMES:".to_string());
         for cluster in top_clusters {
-            let types: Vec<String> = cluster.signal_indices.iter()
+            let types: Vec<String> = cluster
+                .signal_indices
+                .iter()
                 .map(|&i| input.signals[i].signal_type.clone())
                 .collect::<std::collections::HashSet<_>>()
-                .into_iter().collect();
-            let valences: Vec<String> = cluster.signal_indices.iter()
+                .into_iter()
+                .collect();
+            let valences: Vec<String> = cluster
+                .signal_indices
+                .iter()
                 .map(|&i| input.signals[i].valence.clone())
                 .collect::<std::collections::HashSet<_>>()
-                .into_iter().collect();
+                .into_iter()
+                .collect();
             let count = cluster.signal_indices.len();
             let intensity = cluster.avg_intensity;
 
@@ -580,7 +798,11 @@ pub fn synthesize_profile_rule_based(input: &SynthesisInput) -> String {
                 let plural = if count > 1 { "s" } else { "" };
                 sections.push(format!(
                     "- \"{}\" ({} signal{}, intensity: {:.2}, {})",
-                    cluster.label, count, plural, intensity, valences.join("/")
+                    cluster.label,
+                    count,
+                    plural,
+                    intensity,
+                    valences.join("/")
                 ));
             }
         }
@@ -589,9 +811,13 @@ pub fn synthesize_profile_rule_based(input: &SynthesisInput) -> String {
     // 3. Contradiction flagging
     let mut contradictions = Vec::new();
     for cluster in &clusters {
-        let has_positive = cluster.signal_indices.iter()
+        let has_positive = cluster
+            .signal_indices
+            .iter()
             .any(|&i| input.signals[i].valence == "positive");
-        let has_negative = cluster.signal_indices.iter()
+        let has_negative = cluster
+            .signal_indices
+            .iter()
             .any(|&i| input.signals[i].valence == "negative");
         if has_positive && has_negative {
             contradictions.push(cluster.label.clone());
@@ -610,7 +836,10 @@ pub fn synthesize_profile_rule_based(input: &SynthesisInput) -> String {
     if !input.preferences.is_empty() {
         sections.push("\nSTATED PREFERENCES:".to_string());
         for p in input.preferences.iter().take(10) {
-            sections.push(format!("- [{}] {} (strength: {})", p.domain, p.preference, p.strength));
+            sections.push(format!(
+                "- [{}] {} (strength: {})",
+                p.domain, p.preference, p.strength
+            ));
         }
     }
 
@@ -624,16 +853,23 @@ pub fn synthesize_profile_rule_based(input: &SynthesisInput) -> String {
     }
 
     // 6. Summary
-    let top_types: Vec<String> = input.signals.iter()
+    let top_types: Vec<String> = input
+        .signals
+        .iter()
         .map(|s| s.signal_type.clone())
         .collect::<std::collections::HashSet<_>>()
-        .into_iter().collect();
+        .into_iter()
+        .collect();
     let avg_intensity = if input.signals.is_empty() {
         0.0
     } else {
         input.signals.iter().map(|s| s.intensity).sum::<f64>() / input.signals.len() as f64
     };
-    sections.push(format!("\nOverall signal types: {}. Average intensity: {:.2}.", top_types.join(", "), avg_intensity));
+    sections.push(format!(
+        "\nOverall signal types: {}. Average intensity: {:.2}.",
+        top_types.join(", "),
+        avg_intensity
+    ));
 
     sections.join("\n")
 }
@@ -697,7 +933,11 @@ pub async fn extract_personality_signals(
     if !valid_signals.is_empty() {
         // Invalidate cached profile since we have new signals
         let _ = invalidate_profile(db, user_id).await;
-        debug!(msg = "personality_extracted_fallback", memory_id, signals = valid_signals.len());
+        debug!(
+            msg = "personality_extracted_fallback",
+            memory_id,
+            signals = valid_signals.len()
+        );
     }
 
     Ok(valid_signals)
@@ -706,11 +946,14 @@ pub async fn extract_personality_signals(
 /// Synthesize a personality profile from stored signals.
 pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Result<String> {
     // Gather all personality signals
-    let mut rows = db.conn.query(
-        "SELECT signal_type, subject, valence, intensity, reasoning, source_text
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT signal_type, subject, valence, intensity, reasoning, source_text
          FROM personality_signals WHERE user_id = ?1 ORDER BY intensity DESC",
-        libsql::params![user_id],
-    ).await?;
+            libsql::params![user_id],
+        )
+        .await?;
 
     let mut signals = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -743,10 +986,13 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     }
 
     // Gather facts
-    let mut fact_rows = db.conn.query(
-        "SELECT subject, verb, object FROM structured_facts WHERE user_id = ?1 LIMIT 50",
-        libsql::params![user_id],
-    ).await?;
+    let mut fact_rows = db
+        .conn
+        .query(
+            "SELECT subject, verb, object FROM structured_facts WHERE user_id = ?1 LIMIT 50",
+            libsql::params![user_id],
+        )
+        .await?;
     let mut facts = Vec::new();
     while let Some(row) = fact_rows.next().await? {
         facts.push(FactRow {
@@ -768,7 +1014,12 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
         });
     }
 
-    let input = SynthesisInput { signals, preferences, facts, static_memories };
+    let input = SynthesisInput {
+        signals,
+        preferences,
+        facts,
+        static_memories,
+    };
     let profile = synthesize_profile_rule_based(&input);
 
     // Cache the profile
@@ -780,16 +1031,23 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
         libsql::params![user_id, profile.clone(), signal_count],
     ).await;
 
-    info!(msg = "personality_profile_synthesized", user_id, signals = signal_count);
+    info!(
+        msg = "personality_profile_synthesized",
+        user_id,
+        signals = signal_count
+    );
     Ok(profile)
 }
 
 /// Get a cached personality profile.
 pub async fn get_cached_profile(db: &Database, user_id: i64) -> Result<Option<String>> {
-    let mut rows = db.conn.query(
-        "SELECT profile FROM personality_profiles WHERE user_id = ?1 AND is_stale = 0",
-        libsql::params![user_id],
-    ).await?;
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT profile FROM personality_profiles WHERE user_id = ?1 AND is_stale = 0",
+            libsql::params![user_id],
+        )
+        .await?;
 
     match rows.next().await? {
         Some(row) => {
@@ -802,19 +1060,27 @@ pub async fn get_cached_profile(db: &Database, user_id: i64) -> Result<Option<St
 
 /// Invalidate (mark stale) the cached personality profile.
 pub async fn invalidate_profile(db: &Database, user_id: i64) -> Result<()> {
-    db.conn.execute(
-        "UPDATE personality_profiles SET is_stale = 1 WHERE user_id = ?1",
-        libsql::params![user_id],
-    ).await?;
+    db.conn
+        .execute(
+            "UPDATE personality_profiles SET is_stale = 1 WHERE user_id = ?1",
+            libsql::params![user_id],
+        )
+        .await?;
     Ok(())
 }
 
 /// Get profile for context injection. Returns profile and staleness flag.
-pub async fn get_profile_for_injection(db: &Database, user_id: i64) -> Result<Option<(String, bool)>> {
-    let mut rows = db.conn.query(
-        "SELECT profile, is_stale FROM personality_profiles WHERE user_id = ?1",
-        libsql::params![user_id],
-    ).await?;
+pub async fn get_profile_for_injection(
+    db: &Database,
+    user_id: i64,
+) -> Result<Option<(String, bool)>> {
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT profile, is_stale FROM personality_profiles WHERE user_id = ?1",
+            libsql::params![user_id],
+        )
+        .await?;
 
     match rows.next().await? {
         Some(row) => {
@@ -860,18 +1126,21 @@ pub async fn store_signal(
     user_id: i64,
     agent: Option<&str>,
 ) -> Result<StoredSignal> {
-    let mut rows = db.conn.query(
-        "INSERT INTO personality_signals (signal_type, value, evidence, user_id, agent)
+    let mut rows = db
+        .conn
+        .query(
+            "INSERT INTO personality_signals (signal_type, value, evidence, user_id, agent)
          VALUES (?1, ?2, ?3, ?4, ?5)
          RETURNING id, signal_type, value, evidence, user_id, agent, created_at",
-        libsql::params![
-            signal_type.to_string(),
-            value,
-            evidence.map(|v| v.to_string()),
-            user_id,
-            agent.map(|v| v.to_string())
-        ],
-    ).await?;
+            libsql::params![
+                signal_type.to_string(),
+                value,
+                evidence.map(|v| v.to_string()),
+                user_id,
+                agent.map(|v| v.to_string())
+            ],
+        )
+        .await?;
     let row = rows
         .next()
         .await?
@@ -888,14 +1157,17 @@ pub async fn store_signal(
 }
 
 pub async fn list_signals(db: &Database, user_id: i64, limit: usize) -> Result<Vec<StoredSignal>> {
-    let mut rows = db.conn.query(
-        "SELECT id, signal_type, value, evidence, user_id, agent, created_at
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT id, signal_type, value, evidence, user_id, agent, created_at
          FROM personality_signals
          WHERE user_id = ?1
          ORDER BY created_at DESC
          LIMIT ?2",
-        libsql::params![user_id, limit as i64],
-    ).await?;
+            libsql::params![user_id, limit as i64],
+        )
+        .await?;
     let mut signals = Vec::new();
     while let Some(row) = rows.next().await? {
         signals.push(StoredSignal {
@@ -946,12 +1218,15 @@ pub async fn update_profile(db: &Database, user_id: i64) -> Result<StoredProfile
 }
 
 async fn get_existing_profile(db: &Database, user_id: i64) -> Result<Option<StoredProfile>> {
-    let mut rows = db.conn.query(
-        "SELECT user_id, traits, last_updated_at, created_at
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT user_id, traits, last_updated_at, created_at
          FROM personality_profiles
          WHERE user_id = ?1",
-        libsql::params![user_id],
-    ).await?;
+            libsql::params![user_id],
+        )
+        .await?;
     match rows.next().await? {
         Some(row) => Ok(Some(StoredProfile {
             user_id: row.get(0)?,
@@ -989,7 +1264,9 @@ mod tests {
     fn test_extract_like() {
         let signals = extract_signals_template("I love programming and building things.");
         assert!(!signals.is_empty(), "Should extract at least one signal");
-        let pref = signals.iter().find(|s| s.signal_type == SignalType::Preference);
+        let pref = signals
+            .iter()
+            .find(|s| s.signal_type == SignalType::Preference);
         assert!(pref.is_some(), "Should find a preference signal");
         assert_eq!(pref.unwrap().valence, Valence::Positive);
     }
@@ -998,7 +1275,9 @@ mod tests {
     fn test_extract_dislike() {
         let signals = extract_signals_template("I hate waking up early.");
         assert!(!signals.is_empty(), "Should extract at least one signal");
-        let pref = signals.iter().find(|s| s.signal_type == SignalType::Preference);
+        let pref = signals
+            .iter()
+            .find(|s| s.signal_type == SignalType::Preference);
         assert!(pref.is_some(), "Should find a preference signal");
         assert_eq!(pref.unwrap().valence, Valence::Negative);
     }
@@ -1006,27 +1285,34 @@ mod tests {
     #[test]
     fn test_extract_decision() {
         let signals = extract_signals_template("I decided to quit my job.");
-        let decision = signals.iter().find(|s| s.signal_type == SignalType::Decision);
+        let decision = signals
+            .iter()
+            .find(|s| s.signal_type == SignalType::Decision);
         assert!(decision.is_some(), "Should find a decision signal");
     }
 
     #[test]
     fn test_extract_identity() {
         let signals = extract_signals_template("I am a software developer.");
-        let identity = signals.iter().find(|s| s.signal_type == SignalType::Identity);
+        let identity = signals
+            .iter()
+            .find(|s| s.signal_type == SignalType::Identity);
         assert!(identity.is_some(), "Should find an identity signal");
     }
 
     #[test]
     fn test_extract_emotion() {
         let signals = extract_signals_template("I feel really excited about this project.");
-        let emotion = signals.iter().find(|s| s.signal_type == SignalType::Emotion);
+        let emotion = signals
+            .iter()
+            .find(|s| s.signal_type == SignalType::Emotion);
         assert!(emotion.is_some(), "Should find an emotion signal");
     }
 
     #[test]
     fn test_rule_based_values() {
-        let signals = extract_signals_rule_based("I believe in open source software and community.");
+        let signals =
+            extract_signals_rule_based("I believe in open source software and community.");
         let value = signals.iter().find(|s| s.signal_type == SignalType::Value);
         assert!(value.is_some(), "Should find a value signal");
     }
@@ -1034,7 +1320,9 @@ mod tests {
     #[test]
     fn test_rule_based_motivation() {
         let signals = extract_signals_rule_based("I want to learn Rust and systems programming.");
-        let motivation = signals.iter().find(|s| s.signal_type == SignalType::Motivation);
+        let motivation = signals
+            .iter()
+            .find(|s| s.signal_type == SignalType::Motivation);
         assert!(motivation.is_some(), "Should find a motivation signal");
     }
 
@@ -1043,10 +1331,16 @@ mod tests {
         let base = extract_signals_template("I love cooking.");
         let intensified = extract_signals_rule_based("I really love cooking!");
         if let (Some(b), Some(i)) = (
-            base.iter().find(|s| s.signal_type == SignalType::Preference),
-            intensified.iter().find(|s| s.signal_type == SignalType::Preference),
+            base.iter()
+                .find(|s| s.signal_type == SignalType::Preference),
+            intensified
+                .iter()
+                .find(|s| s.signal_type == SignalType::Preference),
         ) {
-            assert!(i.intensity >= b.intensity, "Intensified signal should be >= base");
+            assert!(
+                i.intensity >= b.intensity,
+                "Intensified signal should be >= base"
+            );
         }
     }
 
@@ -1077,8 +1371,14 @@ mod tests {
             ..Default::default()
         };
         let profile = synthesize_profile_template(&input);
-        assert!(profile.contains("PREFERENCES"), "Should contain PREFERENCES section");
-        assert!(profile.contains("programming"), "Should mention programming");
+        assert!(
+            profile.contains("PREFERENCES"),
+            "Should contain PREFERENCES section"
+        );
+        assert!(
+            profile.contains("programming"),
+            "Should mention programming"
+        );
     }
 
     #[test]
@@ -1105,7 +1405,10 @@ mod tests {
             ..Default::default()
         };
         let profile = synthesize_profile_rule_based(&input);
-        assert!(profile.contains("KEY THEMES"), "Should contain KEY THEMES section");
+        assert!(
+            profile.contains("KEY THEMES"),
+            "Should contain KEY THEMES section"
+        );
         assert!(profile.contains("2 signals"), "Should mention signal count");
     }
 }

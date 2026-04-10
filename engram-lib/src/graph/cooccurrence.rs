@@ -169,7 +169,10 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
     while let Some(row) = rows.next().await? {
         let memory_id: i64 = row.get(0)?;
         let entity_id: i64 = row.get(1)?;
-        memory_entities.entry(memory_id).or_default().push(entity_id);
+        memory_entities
+            .entry(memory_id)
+            .or_default()
+            .push(entity_id);
     }
 
     // For each memory, create co-occurrence pairs from its entities
@@ -187,11 +190,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
         }
     }
 
-    info!(
-        pairs = total_pairs,
-        user_id,
-        "cooccurrences_rebuilt"
-    );
+    info!(pairs = total_pairs, user_id, "cooccurrences_rebuilt");
 
     Ok(total_pairs)
 }
@@ -264,12 +263,12 @@ mod tests {
     fn test_weight_calculation() {
         // Weight = ln(count).max(0.1).min(1.0)
         let count = 3i64;
-        let weight = (count as f32).ln().max(0.1).min(1.0);
+        let weight = (count as f32).ln().clamp(0.1, 1.0);
         assert!(weight > 0.1);
         assert!(weight <= 1.0);
 
         let count_1 = 1i64;
-        let weight_1 = (count_1 as f32).ln().max(0.1).min(1.0);
+        let weight_1 = (count_1 as f32).ln().clamp(0.1, 1.0);
         assert_eq!(weight_1, 0.1); // ln(1) = 0, clamped to 0.1
     }
 }

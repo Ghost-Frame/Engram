@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::Result;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
@@ -18,16 +18,22 @@ pub struct AuditEntry {
 
 fn row_to_entry(row: &libsql::Row) -> Result<AuditEntry> {
     Ok(AuditEntry {
-        id: row.get(0).map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        id: row
+            .get(0)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
         user_id: row.get(1).ok(),
         agent_id: row.get(2).ok(),
-        action: row.get(3).map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        action: row
+            .get(3)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
         target_type: row.get(4).ok(),
         target_id: row.get(5).ok(),
         details: row.get(6).ok(),
         ip: row.get(7).ok(),
         request_id: row.get(8).ok(),
-        created_at: row.get(9).map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        created_at: row
+            .get(9)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
     })
 }
 
@@ -45,7 +51,11 @@ pub async fn log_mutation(
     after: Option<serde_json::Value>,
 ) -> Result<AuditEntry> {
     let target_id: Option<i64> = resource_id.parse().ok();
-    let target_type: Option<&str> = if resource_type.is_empty() { None } else { Some(resource_type) };
+    let target_type: Option<&str> = if resource_type.is_empty() {
+        None
+    } else {
+        Some(resource_type)
+    };
 
     let details: Option<String> = {
         let mut d = serde_json::Map::new();
@@ -58,7 +68,11 @@ pub async fn log_mutation(
         if let Some(a) = after {
             d.insert("after".into(), a);
         }
-        if d.is_empty() { None } else { Some(serde_json::Value::Object(d).to_string()) }
+        if d.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(d).to_string())
+        }
     };
 
     let mut rows = db.conn.query(
@@ -68,7 +82,10 @@ pub async fn log_mutation(
         libsql::params![operation, target_type, target_id, details],
     ).await?;
 
-    let row = rows.next().await?.ok_or_else(|| crate::EngError::Internal("audit insert returned no row".into()))?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| crate::EngError::Internal("audit insert returned no row".into()))?;
     row_to_entry(&row)
 }
 

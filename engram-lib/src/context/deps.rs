@@ -75,8 +75,15 @@ pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memo
     Ok(memories)
 }
 
-pub async fn get_memory_without_embedding(db: &Database, id: i64, user_id: i64) -> Result<Option<Memory>> {
-    let sql = format!("SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2", MEMORY_COLUMNS);
+pub async fn get_memory_without_embedding(
+    db: &Database,
+    id: i64,
+    user_id: i64,
+) -> Result<Option<Memory>> {
+    let sql = format!(
+        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2",
+        MEMORY_COLUMNS
+    );
     let mut rows = db.conn.query(&sql, libsql::params![id, user_id]).await?;
     match rows.next().await? {
         Some(row) => Ok(Some(row_to_memory(&row)?)),
@@ -90,7 +97,10 @@ pub async fn get_version_chain(
     user_id: i64,
 ) -> Result<Vec<VersionChainEntry>> {
     let sql = "SELECT id, content, category, version, is_latest, created_at                FROM memories                WHERE (root_memory_id = ?1 OR id = ?1) AND user_id = ?2                ORDER BY version ASC";
-    let mut rows = db.conn.query(sql, libsql::params![root_id, user_id]).await?;
+    let mut rows = db
+        .conn
+        .query(sql, libsql::params![root_id, user_id])
+        .await?;
     let mut chain = Vec::new();
     while let Some(row) = rows.next().await? {
         chain.push(VersionChainEntry {
@@ -122,11 +132,7 @@ pub async fn get_episode_summary(
     }
 }
 
-pub async fn get_links(
-    db: &Database,
-    mem_id: i64,
-    user_id: i64,
-) -> Result<Vec<LinkedMemory>> {
+pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<LinkedMemory>> {
     let sql = "SELECT m.id, m.content, m.category, ml.weight, m.is_forgotten, m.model, m.source          FROM memory_links ml          JOIN memories m ON (m.id = CASE WHEN ml.source_id = ?1 THEN ml.target_id ELSE ml.source_id END)          WHERE (ml.source_id = ?1 OR ml.target_id = ?1)            AND m.user_id = ?2 AND m.is_latest = 1          ORDER BY ml.weight DESC LIMIT 10";
     let mut rows = db.conn.query(sql, libsql::params![mem_id, user_id]).await?;
     let mut linked = Vec::new();
@@ -144,16 +150,15 @@ pub async fn get_links(
     Ok(linked)
 }
 
-pub async fn get_recent_dynamic(
-    db: &Database,
-    user_id: i64,
-    limit: usize,
-) -> Result<Vec<Memory>> {
+pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Result<Vec<Memory>> {
     let sql = format!(
         "SELECT {} FROM memories          WHERE user_id = ?1 AND is_static = 0 AND is_forgotten = 0 AND is_latest = 1          ORDER BY created_at DESC LIMIT ?2",
         MEMORY_COLUMNS,
     );
-    let mut rows = db.conn.query(&sql, libsql::params![user_id, limit as i64]).await?;
+    let mut rows = db
+        .conn
+        .query(&sql, libsql::params![user_id, limit as i64])
+        .await?;
     let mut memories = Vec::new();
     while let Some(row) = rows.next().await? {
         memories.push(row_to_memory(&row)?);
@@ -189,10 +194,7 @@ pub async fn get_user_preferences(db: &Database, user_id: i64) -> Result<Vec<Pre
     Ok(prefs)
 }
 
-pub async fn get_structured_facts(
-    db: &Database,
-    mem_ids: &[i64],
-) -> Result<Vec<StructuredFact>> {
+pub async fn get_structured_facts(db: &Database, mem_ids: &[i64]) -> Result<Vec<StructuredFact>> {
     if mem_ids.is_empty() {
         return Ok(vec![]);
     }
@@ -219,11 +221,17 @@ pub async fn get_structured_facts(
     Ok(facts)
 }
 
-pub async fn track_access(db: &Database, ids: &[i64]) {
+pub async fn track_access(db: &Database, ids: &[i64], user_id: i64) {
     for &id in ids {
-        let _ = db.conn.execute(
-            "UPDATE memories SET access_count = access_count + 1,              last_accessed_at = CURRENT_TIMESTAMP,              updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
-            libsql::params![id],
-        ).await;
+        if let Err(e) = db
+            .conn
+            .execute(
+                "UPDATE memories SET access_count = access_count + 1, last_accessed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2",
+                libsql::params![id, user_id],
+            )
+            .await
+        {
+            tracing::warn!("Failed to track access for memory {}: {}", id, e);
+        }
     }
 }

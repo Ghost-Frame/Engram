@@ -18,14 +18,14 @@ use crate::embeddings::EmbeddingProvider;
 use crate::llm::local::LocalModelClient;
 use crate::memory::search::hybrid_search;
 use crate::memory::types::SearchRequest;
-use crate::{personality, scratchpad};
 use crate::Result;
+use crate::{personality, scratchpad};
 
-pub use types::*;
 use budget::{estimate_tokens, truncate_to_token_budget};
 use deps::*;
 use modes::*;
 use scoring::cosine_similarity;
+pub use types::*;
 
 // ---------------------------------------------------------------------------
 // Attribution helper
@@ -69,28 +69,61 @@ pub fn assemble_context_string(
         parts.push(s.content.clone());
     }
 
-    let static_blocks: Vec<_> = blocks.iter().filter(|b| b.source == ContextBlockSource::Static).collect();
-    let semantic_blocks: Vec<_> = blocks.iter().filter(|b| b.source == ContextBlockSource::Semantic).collect();
-    let evolution_blocks: Vec<_> = blocks.iter().filter(|b| b.source == ContextBlockSource::Evolution).collect();
-    let episode_blocks: Vec<_> = blocks.iter().filter(|b| b.source == ContextBlockSource::Episode).collect();
-    let linked_blocks: Vec<_> = blocks.iter().filter(|b| b.source == ContextBlockSource::Linked).collect();
-    let recent_blocks: Vec<_> = blocks.iter().filter(|b| b.source == ContextBlockSource::Recent).collect();
-    let inference_blocks: Vec<_> = blocks.iter().filter(|b| b.source == ContextBlockSource::Inference).collect();
+    let static_blocks: Vec<_> = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Static)
+        .collect();
+    let semantic_blocks: Vec<_> = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Semantic)
+        .collect();
+    let evolution_blocks: Vec<_> = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Evolution)
+        .collect();
+    let episode_blocks: Vec<_> = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Episode)
+        .collect();
+    let linked_blocks: Vec<_> = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Linked)
+        .collect();
+    let recent_blocks: Vec<_> = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Recent)
+        .collect();
+    let inference_blocks: Vec<_> = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Inference)
+        .collect();
 
     if !static_blocks.is_empty() {
-        let lines: Vec<String> = static_blocks.iter()
+        let lines: Vec<String> = static_blocks
+            .iter()
             .map(|b| format!("- {}{}", b.content, build_attribution(b)))
             .collect();
         parts.push(format!("## Permanent Facts\n{}", lines.join("\n")));
     }
 
     if !semantic_blocks.is_empty() {
-        let fact_blocks: Vec<_> = semantic_blocks.iter().filter(|b| b.category == "fact").collect();
-        let non_fact_blocks: Vec<_> = semantic_blocks.iter().filter(|b| b.category != "fact").collect();
+        let fact_blocks: Vec<_> = semantic_blocks
+            .iter()
+            .filter(|b| b.category == "fact")
+            .collect();
+        let non_fact_blocks: Vec<_> = semantic_blocks
+            .iter()
+            .filter(|b| b.category != "fact")
+            .collect();
 
         let mut lines: Vec<String> = Vec::new();
         for b in &non_fact_blocks {
-            lines.push(format!("- [{}] {}{}", b.category, b.content, build_attribution(b)));
+            lines.push(format!(
+                "- [{}] {}{}",
+                b.category,
+                b.content,
+                build_attribution(b)
+            ));
         }
 
         if !fact_blocks.is_empty() {
@@ -118,26 +151,46 @@ pub fn assemble_context_string(
 
     if !evolution_blocks.is_empty() {
         let lines: Vec<String> = evolution_blocks.iter().map(|b| b.content.clone()).collect();
-        parts.push(format!("## Preference/Fact Evolution\n{}", lines.join("\n\n")));
+        parts.push(format!(
+            "## Preference/Fact Evolution\n{}",
+            lines.join("\n\n")
+        ));
     }
 
     if !episode_blocks.is_empty() {
-        let lines: Vec<String> = episode_blocks.iter()
-            .map(|b| format!("- [{}] {}{}", b.created_at.as_deref().unwrap_or(""), b.content, build_attribution(b)))
+        let lines: Vec<String> = episode_blocks
+            .iter()
+            .map(|b| {
+                format!(
+                    "- [{}] {}{}",
+                    b.created_at.as_deref().unwrap_or(""),
+                    b.content,
+                    build_attribution(b)
+                )
+            })
             .collect();
         parts.push(format!("## Episode Context\n{}", lines.join("\n")));
     }
 
     if !linked_blocks.is_empty() {
-        let lines: Vec<String> = linked_blocks.iter()
+        let lines: Vec<String> = linked_blocks
+            .iter()
             .map(|b| format!("- {}{}", b.content, build_attribution(b)))
             .collect();
         parts.push(format!("## Related Context\n{}", lines.join("\n")));
     }
 
     if !recent_blocks.is_empty() {
-        let lines: Vec<String> = recent_blocks.iter()
-            .map(|b| format!("- [{}] {}{}", b.created_at.as_deref().unwrap_or(""), b.content, build_attribution(b)))
+        let lines: Vec<String> = recent_blocks
+            .iter()
+            .map(|b| {
+                format!(
+                    "- [{}] {}{}",
+                    b.created_at.as_deref().unwrap_or(""),
+                    b.content,
+                    build_attribution(b)
+                )
+            })
             .collect();
         parts.push(format!("## Recent Activity\n{}", lines.join("\n")));
     }
@@ -217,7 +270,10 @@ fn build_working_memory_block(rows: &[scratchpad::ScratchEntry]) -> Option<Strin
         total_len += line.len() + 1;
         lines.push(line);
     }
-    Some(format!("<working-memory>\n{}\n</working-memory>", lines.join("\n")))
+    Some(format!(
+        "<working-memory>\n{}\n</working-memory>",
+        lines.join("\n")
+    ))
 }
 
 /// Format a relative age string for a scratchpad entry timestamp.
@@ -268,7 +324,8 @@ pub async fn assemble_context(
     apply_context_mode(&mut opts);
 
     // --- Resolve parameters ---
-    let raw_budget = opts.max_tokens
+    let raw_budget = opts
+        .max_tokens
         .or(opts.token_budget)
         .or(opts.budget)
         .unwrap_or(DEFAULT_TOKEN_BUDGET);
@@ -281,14 +338,8 @@ pub async fn assemble_context(
     let source_filter = opts.source.clone();
 
     let flags = resolve_layer_flags(&opts, depth);
-    let semantic_ceiling = resolve_semantic_ceiling(
-        &context_strategy,
-        opts.semantic_ceiling,
-    );
-    let semantic_limit = resolve_semantic_limit(
-        &context_strategy,
-        opts.semantic_limit,
-    );
+    let semantic_ceiling = resolve_semantic_ceiling(&context_strategy, opts.semantic_ceiling);
+    let semantic_limit = resolve_semantic_limit(&context_strategy, opts.semantic_limit);
     let min_relev = opts.min_relevance.unwrap_or(DEFAULT_MIN_RELEVANCE);
 
     let truncate = |content: &str| truncate_to_token_budget(content, max_memory_tokens);
@@ -425,7 +476,12 @@ pub async fn assemble_context(
 
         // Recency boost: last 48h get +10%
         let mut score = raw_score;
-        if let Ok(created) = r.memory.created_at.replace(' ', "T").parse::<chrono::DateTime<chrono::Utc>>() {
+        if let Ok(created) = r
+            .memory
+            .created_at
+            .replace(' ', "T")
+            .parse::<chrono::DateTime<chrono::Utc>>()
+        {
             let age_ms = now_ms - created.timestamp_millis();
             if age_ms < RECENCY_BOOST_MS {
                 score *= 1.10;
@@ -433,8 +489,12 @@ pub async fn assemble_context(
         }
 
         // Check if this is a fact with a parent
-        let mem_detail = get_memory_without_embedding(db, r.memory.id, user_id).await.ok().flatten();
-        let parent_id = mem_detail.as_ref()
+        let mem_detail = get_memory_without_embedding(db, r.memory.id, user_id)
+            .await
+            .ok()
+            .flatten();
+        let parent_id = mem_detail
+            .as_ref()
             .filter(|m| m.is_fact)
             .and_then(|m| m.parent_memory_id);
 
@@ -457,15 +517,18 @@ pub async fn assemble_context(
         }
     }
 
-    timing.semantic_ms = Some(t0.elapsed().as_millis() as u64
-        - timing.embed_ms.unwrap_or(0)
-        - timing.static_ms.unwrap_or(0)
-        - timing.search_ms.unwrap_or(0));
+    timing.semantic_ms = Some(
+        t0.elapsed().as_millis() as u64
+            - timing.embed_ms.unwrap_or(0)
+            - timing.static_ms.unwrap_or(0)
+            - timing.search_ms.unwrap_or(0),
+    );
 
     // ---- Phase 2.5a: Version chain evolution ----
     let t_evolution = Instant::now();
     if depth >= 2 && used_tokens < (token_budget as f64 * 0.72) as usize {
-        let semantic_for_evo: Vec<_> = blocks.iter()
+        let semantic_for_evo: Vec<_> = blocks
+            .iter()
             .filter(|b| b.source == ContextBlockSource::Semantic)
             .take(8)
             .map(|b| b.id)
@@ -474,21 +537,37 @@ pub async fn assemble_context(
             if used_tokens >= (token_budget as f64 * 0.72) as usize {
                 break;
             }
-            let mem = get_memory_without_embedding(db, sid, user_id).await.ok().flatten();
+            let mem = get_memory_without_embedding(db, sid, user_id)
+                .await
+                .ok()
+                .flatten();
             let mem = match mem {
                 Some(m) => m,
                 None => continue,
             };
             let root_id = mem.root_memory_id.unwrap_or(mem.id);
-            let chain = get_version_chain(db, root_id, user_id).await.unwrap_or_default();
+            let chain = get_version_chain(db, root_id, user_id)
+                .await
+                .unwrap_or_default();
             if chain.len() < 2 {
                 continue;
             }
-            let evolution_lines: Vec<String> = chain.iter().map(|c| {
-                let date = if c.created_at.len() >= 10 { &c.created_at[..10] } else { "?" };
-                format!("v{} ({}): {}", c.version, date, c.content)
-            }).collect();
-            let evolution_text = format!("[Evolution of memory #{}]\n{}", root_id, evolution_lines.join("\n"));
+            let evolution_lines: Vec<String> = chain
+                .iter()
+                .map(|c| {
+                    let date = if c.created_at.len() >= 10 {
+                        &c.created_at[..10]
+                    } else {
+                        "?"
+                    };
+                    format!("v{} ({}): {}", c.version, date, c.content)
+                })
+                .collect();
+            let evolution_text = format!(
+                "[Evolution of memory #{}]\n{}",
+                root_id,
+                evolution_lines.join("\n")
+            );
             let truncated = truncate(&evolution_text);
             let tokens = estimate_tokens(&truncated);
             if used_tokens + tokens > (token_budget as f64 * 0.75) as usize {
@@ -518,13 +597,17 @@ pub async fn assemble_context(
     let t_episodes = Instant::now();
     let mut seen_episode_ids: HashSet<i64> = HashSet::new();
     if flags.include_episodes && used_tokens < (token_budget as f64 * 0.75) as usize {
-        let semantic_for_ep: Vec<i64> = blocks.iter()
+        let semantic_for_ep: Vec<i64> = blocks
+            .iter()
             .filter(|b| b.source == ContextBlockSource::Semantic)
             .take(5)
             .map(|b| b.id)
             .collect();
         for sid in semantic_for_ep {
-            let mem = get_memory_without_embedding(db, sid, user_id).await.ok().flatten();
+            let mem = get_memory_without_embedding(db, sid, user_id)
+                .await
+                .ok()
+                .flatten();
             let ep_id = match mem.and_then(|m| m.episode_id) {
                 Some(id) => id,
                 None => continue,
@@ -562,10 +645,12 @@ pub async fn assemble_context(
 
     // ---- Phase 3: Linked memories (graph expansion) ----
     let t_linked = Instant::now();
-    if flags.include_linked && context_strategy != ContextStrategy::Precision
+    if flags.include_linked
+        && context_strategy != ContextStrategy::Precision
         && used_tokens < (token_budget as f64 * 0.85) as usize
     {
-        let semantic_ids: Vec<i64> = blocks.iter()
+        let semantic_ids: Vec<i64> = blocks
+            .iter()
             .filter(|b| b.source == ContextBlockSource::Semantic)
             .take(5)
             .map(|b| b.id)
@@ -722,7 +807,9 @@ pub async fn assemble_context(
     // Working memory
     if flags.include_working_memory {
         let session_filter: Option<&str> = opts.session.as_deref().filter(|s| !s.is_empty());
-        if let Ok(scratch_rows) = scratchpad::list_entries(db, user_id, None, None, session_filter).await {
+        if let Ok(scratch_rows) =
+            scratchpad::list_entries(db, user_id, None, None, session_filter).await
+        {
             if let Some(wm) = build_working_memory_block(&scratch_rows) {
                 supplementary.push(SupplementarySection {
                     label: "working_memory".to_string(),
@@ -736,13 +823,16 @@ pub async fn assemble_context(
     if flags.include_current_state {
         if let Ok(state_rows) = get_current_state(db, user_id).await {
             if !state_rows.is_empty() {
-                let state_lines: Vec<String> = state_rows.iter().map(|s| {
-                    if s.updated_count > 1 {
-                        format!("- {}: {} (updated {}x)", s.key, s.value, s.updated_count)
-                    } else {
-                        format!("- {}: {}", s.key, s.value)
-                    }
-                }).collect();
+                let state_lines: Vec<String> = state_rows
+                    .iter()
+                    .map(|s| {
+                        if s.updated_count > 1 {
+                            format!("- {}: {} (updated {}x)", s.key, s.value, s.updated_count)
+                        } else {
+                            format!("- {}: {}", s.key, s.value)
+                        }
+                    })
+                    .collect();
                 supplementary.push(SupplementarySection {
                     label: "current_state".to_string(),
                     content: format!("## Current State\n{}", state_lines.join("\n")),
@@ -753,7 +843,9 @@ pub async fn assemble_context(
 
     // Personality profile
     if flags.include_personality {
-        if let Ok(Some((profile, _is_stale))) = personality::get_profile_for_injection(db, user_id).await {
+        if let Ok(Some((profile, _is_stale))) =
+            personality::get_profile_for_injection(db, user_id).await
+        {
             let tokens = estimate_tokens(&profile);
             if tokens <= (token_budget as f64 * 0.10) as usize {
                 supplementary.push(SupplementarySection {
@@ -770,7 +862,8 @@ pub async fn assemble_context(
     if flags.include_preferences {
         if let Ok(pref_rows) = get_user_preferences(db, user_id).await {
             if !pref_rows.is_empty() {
-                let pref_lines: Vec<String> = pref_rows.iter()
+                let pref_lines: Vec<String> = pref_rows
+                    .iter()
                     .map(|p| format!("- [{}] {}", p.domain, p.preference))
                     .collect();
                 supplementary.push(SupplementarySection {
@@ -791,19 +884,31 @@ pub async fn assemble_context(
                     let stale_ms: i64 = 90 * 24 * 60 * 60 * 1000;
                     let year_ms: f64 = 365.0 * 24.0 * 60.0 * 60.0 * 1000.0;
 
-                    let mut scored: Vec<(&StructuredFact, f64, bool)> = sf_rows.iter().map(|sf| {
-                        let freshness = parse_freshness(sf.valid_at.as_deref(), sf.date_approx.as_deref(), now, year_ms);
-                        let is_stale = sf.valid_at.as_ref().is_some_and(|va| {
-                            parse_date_ms(va).map(|ms| now - ms > stale_ms).unwrap_or(false)
-                        });
-                        (sf, freshness, is_stale)
-                    }).collect();
+                    let mut scored: Vec<(&StructuredFact, f64, bool)> = sf_rows
+                        .iter()
+                        .map(|sf| {
+                            let freshness = parse_freshness(
+                                sf.valid_at.as_deref(),
+                                sf.date_approx.as_deref(),
+                                now,
+                                year_ms,
+                            );
+                            let is_stale = sf.valid_at.as_ref().is_some_and(|va| {
+                                parse_date_ms(va)
+                                    .map(|ms| now - ms > stale_ms)
+                                    .unwrap_or(false)
+                            });
+                            (sf, freshness, is_stale)
+                        })
+                        .collect();
 
-                    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    scored
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-                    let sf_lines: Vec<String> = scored.iter().map(|(sf, _, is_stale)| {
-                        format_structured_fact(sf, *is_stale)
-                    }).collect();
+                    let sf_lines: Vec<String> = scored
+                        .iter()
+                        .map(|(sf, _, is_stale)| format_structured_fact(sf, *is_stale))
+                        .collect();
 
                     supplementary.push(SupplementarySection {
                         label: "structured_facts".to_string(),
@@ -818,31 +923,55 @@ pub async fn assemble_context(
     timing.assembly_ms = Some(t_assembly.elapsed().as_millis() as u64);
     timing.total_ms = Some(t0.elapsed().as_millis() as u64);
 
-    // Defer access tracking
+    // Defer access tracking (scoped to user_id)
     let block_ids: Vec<i64> = blocks.iter().filter(|b| b.id > 0).map(|b| b.id).collect();
-    track_access(db, &block_ids).await;
+    track_access(db, &block_ids, user_id).await;
 
     // Build breakdown
     let breakdown = ContextBreakdown {
-        static_count: blocks.iter().filter(|b| b.source == ContextBlockSource::Static).count(),
-        semantic: blocks.iter().filter(|b| b.source == ContextBlockSource::Semantic).count(),
-        evolution: blocks.iter().filter(|b| b.source == ContextBlockSource::Evolution).count(),
-        episode: blocks.iter().filter(|b| b.source == ContextBlockSource::Episode).count(),
-        linked: blocks.iter().filter(|b| b.source == ContextBlockSource::Linked).count(),
-        recent: blocks.iter().filter(|b| b.source == ContextBlockSource::Recent).count(),
-        inference: blocks.iter().filter(|b| b.source == ContextBlockSource::Inference).count(),
+        static_count: blocks
+            .iter()
+            .filter(|b| b.source == ContextBlockSource::Static)
+            .count(),
+        semantic: blocks
+            .iter()
+            .filter(|b| b.source == ContextBlockSource::Semantic)
+            .count(),
+        evolution: blocks
+            .iter()
+            .filter(|b| b.source == ContextBlockSource::Evolution)
+            .count(),
+        episode: blocks
+            .iter()
+            .filter(|b| b.source == ContextBlockSource::Episode)
+            .count(),
+        linked: blocks
+            .iter()
+            .filter(|b| b.source == ContextBlockSource::Linked)
+            .count(),
+        recent: blocks
+            .iter()
+            .filter(|b| b.source == ContextBlockSource::Recent)
+            .count(),
+        inference: blocks
+            .iter()
+            .filter(|b| b.source == ContextBlockSource::Inference)
+            .count(),
         personality: if personality_block_tokens > 0 { 1 } else { 0 },
     };
 
-    let block_summaries: Vec<ContextBlockSummary> = blocks.iter().map(|b| ContextBlockSummary {
-        id: b.id,
-        category: b.category.clone(),
-        source: b.source,
-        model: b.model.clone(),
-        origin: b.origin.clone(),
-        score: (b.score * 100.0).round() / 100.0,
-        tokens: b.tokens,
-    }).collect();
+    let block_summaries: Vec<ContextBlockSummary> = blocks
+        .iter()
+        .map(|b| ContextBlockSummary {
+            id: b.id,
+            category: b.category.clone(),
+            source: b.source,
+            model: b.model.clone(),
+            origin: b.origin.clone(),
+            score: (b.score * 100.0).round() / 100.0,
+            tokens: b.tokens,
+        })
+        .collect();
 
     let utilization = if token_budget > 0 {
         (used_tokens as f64 / token_budget as f64 * 100.0).round() / 100.0
@@ -872,20 +1001,36 @@ fn parse_date_ms(s: &str) -> Option<i64> {
     } else {
         format!("{}Z", s.replace(" ", "T"))
     };
-    normalized.parse::<chrono::DateTime<chrono::Utc>>().ok().map(|dt| dt.timestamp_millis())
+    normalized
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .ok()
+        .map(|dt| dt.timestamp_millis())
 }
 
-fn parse_freshness(valid_at: Option<&str>, date_approx: Option<&str>, now: i64, year_ms: f64) -> f64 {
+fn parse_freshness(
+    valid_at: Option<&str>,
+    date_approx: Option<&str>,
+    now: i64,
+    year_ms: f64,
+) -> f64 {
     if let Some(va) = valid_at {
         if let Some(ms) = parse_date_ms(va) {
             let age = now - ms;
-            return if age < 0 { 1.0 } else { (1.0 - age as f64 / year_ms).max(0.1) };
+            return if age < 0 {
+                1.0
+            } else {
+                (1.0 - age as f64 / year_ms).max(0.1)
+            };
         }
     }
     if let Some(da) = date_approx {
         if let Some(ms) = parse_date_ms(da) {
             let age = now - ms;
-            return if age < 0 { 1.0 } else { (1.0 - age as f64 / year_ms).max(0.1) };
+            return if age < 0 {
+                1.0
+            } else {
+                (1.0 - age as f64 / year_ms).max(0.1)
+            };
         }
     }
     0.5

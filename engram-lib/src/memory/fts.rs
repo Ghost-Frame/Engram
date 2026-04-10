@@ -15,7 +15,13 @@ fn sanitize_fts_query(query: &str) -> String {
     // Remove FTS5 operators and special chars, keep alphanumeric and spaces
     let sanitized: String = query
         .chars()
-        .map(|c| if c.is_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() || c.is_whitespace() {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect();
     // Split into tokens, filter short ones, join with spaces (implicit AND)
     sanitized

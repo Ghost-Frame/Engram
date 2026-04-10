@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
-use crate::{EngError, Result};
 use crate::memory::{self, types::StoreRequest};
 use crate::services::axon::{publish_event, PublishEventRequest};
 use crate::services::soma::{get_agent_by_name, heartbeat, register_agent, RegisterAgentRequest};
+use crate::{EngError, Result};
 
 // -- Types --
 
@@ -38,7 +38,9 @@ pub fn validate_activity_report(report: &ActivityReport) -> Result<()> {
         ));
     }
     if report.summary.is_empty() {
-        return Err(EngError::InvalidInput("summary cannot be empty".to_string()));
+        return Err(EngError::InvalidInput(
+            "summary cannot be empty".to_string(),
+        ));
     }
     if report.summary.len() > 10000 {
         return Err(EngError::InvalidInput(
@@ -80,11 +82,7 @@ fn action_to_category(action: &str) -> &'static str {
 
 // -- Core function --
 
-pub async fn process_activity(
-    db: &Database,
-    report: &ActivityReport,
-    user_id: i64,
-) -> Result<i64> {
+pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i64) -> Result<i64> {
     validate_activity_report(report)?;
 
     // Build memory content -- include project if provided
@@ -122,12 +120,17 @@ pub async fn process_activity(
     let agent_id = match get_agent_by_name(db, user_id, &report.agent).await {
         Ok(a) => a.id,
         Err(crate::EngError::NotFound(_)) => {
-            register_agent(db, RegisterAgentRequest {
-                user_id: Some(user_id),
-                name: report.agent.clone(),
-                category: Some("cli".to_string()),
-                description: None,
-            }).await?.id
+            register_agent(
+                db,
+                RegisterAgentRequest {
+                    user_id: Some(user_id),
+                    name: report.agent.clone(),
+                    category: Some("cli".to_string()),
+                    description: None,
+                },
+            )
+            .await?
+            .id
         }
         Err(e) => return Err(e),
     };
@@ -282,7 +285,11 @@ mod tests {
             details: None,
         };
         let result = process_activity(&db, &report, 1).await;
-        assert!(result.is_ok(), "process_activity should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "process_activity should succeed: {:?}",
+            result.err()
+        );
         assert!(result.unwrap() > 0, "should return a positive memory ID");
     }
 }

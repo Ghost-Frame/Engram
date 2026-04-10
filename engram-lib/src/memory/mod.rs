@@ -142,7 +142,9 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
     // 1. Validate content
     let content = req.content.trim().to_string();
     if content.is_empty() {
-        return Err(EngError::InvalidInput("content cannot be empty".to_string()));
+        return Err(EngError::InvalidInput(
+            "content cannot be empty".to_string(),
+        ));
     }
     if content.len() > MAX_CONTENT_SIZE {
         return Err(EngError::InvalidInput(format!(
@@ -178,11 +180,55 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
     // 4. Normalize tags
     let tags_json = normalize_tags(&req.tags);
 
+    // === BEGIN TRANSACTION for atomicity ===
+    db.conn.execute("BEGIN IMMEDIATE", ()).await?;
+
+    let result = store_transactional(db, &content, &req, user_id, importance, tags_json).await;
+
+    match result {
+        Ok(new_id) => {
+            db.conn.execute("COMMIT", ()).await?;
+
+            // LanceDB insert is outside transaction (external system, best-effort)
+            if let Some(ref emb) = req.embedding {
+                if let Some(index) = db.vector_index.as_ref() {
+                    if let Err(e) = index.insert(new_id, user_id, emb).await {
+                        warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+                    }
+                }
+            }
+
+            Ok(StoreResult {
+                id: new_id,
+                created: true,
+                duplicate_of: None,
+            })
+        }
+        Err(e) => {
+            let _ = db.conn.execute("ROLLBACK", ()).await;
+            Err(e)
+        }
+    }
+}
+
+/// Internal transactional helper for store - returns new_id
+async fn store_transactional(
+    db: &Database,
+    content: &str,
+    req: &StoreRequest,
+    user_id: i64,
+    importance: i32,
+    tags_json: Option<String>,
+) -> Result<i64> {
     // 5. Determine versioning fields if parent_memory_id is set
     let (version, root_memory_id) = if let Some(parent_id) = req.parent_memory_id {
-        // Fetch parent to get its version and root
-        let parent_sql = "SELECT version, root_memory_id FROM memories WHERE id = ?1".to_string();
-        let mut parent_rows = db.conn.query(&parent_sql, params![parent_id]).await?;
+        // Fetch parent to get its version and root - MUST verify user_id ownership
+        let parent_sql =
+            "SELECT version, root_memory_id FROM memories WHERE id = ?1 AND user_id = ?2";
+        let mut parent_rows = db
+            .conn
+            .query(parent_sql, params![parent_id, user_id])
+            .await?;
         if let Some(parent_row) = parent_rows.next().await? {
             let parent_version: i32 = parent_row.get(0)?;
             let parent_root: Option<i64> = parent_row.get(1)?;
@@ -191,7 +237,7 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
             (parent_version + 1, Some(root))
         } else {
             return Err(EngError::NotFound(format!(
-                "parent memory {} not found",
+                "parent memory {} not found or not owned by user",
                 parent_id
             )));
         }
@@ -199,12 +245,12 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
         (1, None)
     };
 
-    // 6. Mark parent as not latest if versioning
+    // 6. Mark parent as not latest if versioning - scoped to user_id for safety
     if let Some(parent_id) = req.parent_memory_id {
         db.conn
             .execute(
-                "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1",
-                params![parent_id],
+                "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+                params![parent_id, user_id],
             )
             .await?;
     }
@@ -231,9 +277,9 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
             insert_sql,
             params![
                 content,
-                req.category,
-                req.source,
-                req.session_id,
+                req.category.clone(),
+                req.source.clone(),
+                req.session_id.clone(),
                 importance,
                 version,
                 req.parent_memory_id,
@@ -247,14 +293,13 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
         .await?;
 
     // 8. Get the inserted row id
-    let mut id_rows = db
-        .conn
-        .query("SELECT last_insert_rowid()", ())
-        .await?;
+    let mut id_rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
     let new_id: i64 = if let Some(row) = id_rows.next().await? {
         row.get(0)?
     } else {
-        return Err(EngError::Internal("failed to get last insert id".to_string()));
+        return Err(EngError::Internal(
+            "failed to get last insert id".to_string(),
+        ));
     };
 
     // 9. If embedding provided, UPDATE embedding_vec_1024 with JSON array
@@ -266,19 +311,9 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
                 params![emb_json, new_id],
             )
             .await?;
-
-        if let Some(index) = db.vector_index.as_ref() {
-            if let Err(e) = index.insert(new_id, user_id, emb).await {
-                warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
-            }
-        }
     }
 
-    Ok(StoreResult {
-        id: new_id,
-        created: true,
-        duplicate_of: None,
-    })
+    Ok(new_id)
 }
 
 pub async fn get(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
@@ -345,12 +380,15 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     }
 
     // Add limit and offset as parameters
-    conditions.push(format!("1=1")); // placeholder for LIMIT/OFFSET which go after WHERE
+    conditions.push("1=1".to_string()); // placeholder for LIMIT/OFFSET which go after WHERE
     let where_clause = conditions.join(" AND ");
 
     let sql = format!(
         "SELECT {} FROM memories WHERE {} ORDER BY id DESC LIMIT ?{} OFFSET ?{}",
-        MEMORY_COLUMNS, where_clause, param_idx, param_idx + 1
+        MEMORY_COLUMNS,
+        where_clause,
+        param_idx,
+        param_idx + 1
     );
     params.push(libsql::Value::Integer(opts.limit as i64));
     params.push(libsql::Value::Integer(opts.offset as i64));
@@ -392,7 +430,7 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
 }
 
 pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) -> Result<Memory> {
-    // 1. Get the existing memory, scoped to user_id
+    // 1. Get the existing memory, scoped to user_id (outside transaction - read only)
     let sql = format!(
         "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
         MEMORY_COLUMNS
@@ -404,15 +442,7 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
         return Err(EngError::NotFound(format!("memory {} not found", id)));
     };
 
-    // 2. Mark old as not latest
-    db.conn
-        .execute(
-            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-            params![id, user_id],
-        )
-        .await?;
-
-    // 3. Compute new field values (fallback to old values)
+    // 2. Compute new field values (fallback to old values)
     let new_content = req
         .content
         .as_deref()
@@ -420,7 +450,9 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
         .unwrap_or_else(|| old.content.clone());
 
     if new_content.is_empty() {
-        return Err(EngError::InvalidInput("content cannot be empty".to_string()));
+        return Err(EngError::InvalidInput(
+            "content cannot be empty".to_string(),
+        ));
     }
     if new_content.len() > MAX_CONTENT_SIZE {
         return Err(EngError::InvalidInput(format!(
@@ -445,7 +477,92 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
     let new_root_memory_id = old.root_memory_id.unwrap_or(old.id);
     let new_version = old.version + 1;
 
-    // 4. INSERT new row
+    // === BEGIN TRANSACTION for atomicity ===
+    db.conn.execute("BEGIN IMMEDIATE", ()).await?;
+
+    let txn_result = update_transactional(
+        db,
+        id,
+        user_id,
+        &old,
+        &new_content,
+        &new_category,
+        new_importance,
+        new_is_static,
+        &new_status,
+        new_tags_json,
+        new_root_memory_id,
+        new_version,
+        req.embedding.as_ref(),
+    )
+    .await;
+
+    match txn_result {
+        Ok(new_id) => {
+            db.conn.execute("COMMIT", ()).await?;
+
+            // LanceDB operations outside transaction (external system, best-effort)
+            if let Some(ref emb) = req.embedding {
+                if let Some(index) = db.vector_index.as_ref() {
+                    if let Err(e) = index.insert(new_id, user_id, emb).await {
+                        warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+                    }
+                    if let Err(e) = index.delete(id).await {
+                        warn!(
+                            "LanceDB vector delete failed for superseded memory {}: {}",
+                            id, e
+                        );
+                    }
+                }
+            }
+
+            // Fetch and return the new row
+            let new_sql = format!(
+                "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2",
+                MEMORY_COLUMNS
+            );
+            let mut new_rows = db.conn.query(&new_sql, params![new_id, user_id]).await?;
+            if let Some(row) = new_rows.next().await? {
+                row_to_memory(&row)
+            } else {
+                Err(EngError::Internal(
+                    "failed to fetch newly created memory version".to_string(),
+                ))
+            }
+        }
+        Err(e) => {
+            let _ = db.conn.execute("ROLLBACK", ()).await;
+            Err(e)
+        }
+    }
+}
+
+/// Internal transactional helper for update - returns new_id
+#[allow(clippy::too_many_arguments)]
+async fn update_transactional(
+    db: &Database,
+    old_id: i64,
+    user_id: i64,
+    old: &Memory,
+    new_content: &str,
+    new_category: &str,
+    new_importance: i32,
+    new_is_static: i32,
+    new_status: &str,
+    new_tags_json: Option<String>,
+    new_root_memory_id: i64,
+    new_version: i32,
+    embedding: Option<&Vec<f32>>,
+) -> Result<i64> {
+    // Mark old as not latest
+    db.conn
+        .execute(
+            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+            params![old_id, user_id],
+        )
+        .await?;
+
+    // INSERT new row
     let insert_sql = "INSERT INTO memories (
         content, category, source, session_id, importance,
         version, is_latest, parent_memory_id, root_memory_id,
@@ -492,7 +609,7 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
         )
         .await?;
 
-    // 5. Get new row id
+    // Get new row id
     let mut id_rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
     let new_id: i64 = if let Some(row) = id_rows.next().await? {
         row.get(0)?
@@ -502,8 +619,8 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
         ));
     };
 
-    // 6. If embedding provided, UPDATE the vector column
-    if let Some(ref emb) = req.embedding {
+    // If embedding provided, UPDATE the vector column
+    if let Some(emb) = embedding {
         let emb_json = embedding_to_json(emb);
         db.conn
             .execute(
@@ -511,30 +628,9 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
                 params![emb_json, new_id],
             )
             .await?;
-
-        if let Some(index) = db.vector_index.as_ref() {
-            if let Err(e) = index.insert(new_id, user_id, emb).await {
-                warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
-            }
-            if let Err(e) = index.delete(id).await {
-                warn!("LanceDB vector delete failed for superseded memory {}: {}", id, e);
-            }
-        }
     }
 
-    // 7. Fetch and return the new row
-    let new_sql = format!(
-        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2",
-        MEMORY_COLUMNS
-    );
-    let mut new_rows = db.conn.query(&new_sql, params![new_id, user_id]).await?;
-    if let Some(row) = new_rows.next().await? {
-        row_to_memory(&row)
-    } else {
-        Err(EngError::Internal(
-            "failed to fetch newly created memory version".to_string(),
-        ))
-    }
+    Ok(new_id)
 }
 
 // -- Additional DB operations matching TS db.ts ---
@@ -549,37 +645,64 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
     }
     if let Some(index) = db.vector_index.as_ref() {
         if let Err(e) = index.delete(id).await {
-            warn!("LanceDB vector delete failed for forgotten memory {}: {}", id, e);
+            warn!(
+                "LanceDB vector delete failed for forgotten memory {}: {}",
+                id, e
+            );
         }
     }
     Ok(())
 }
 
 pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    db.conn.execute(
-        "UPDATE memories SET is_archived = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-        params![id, user_id],
-    ).await?;
+    let affected = db
+        .conn
+        .execute(
+            "UPDATE memories SET is_archived = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+        )
+        .await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!("memory {} not found", id)));
+    }
     Ok(())
 }
 
 pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    db.conn.execute(
-        "UPDATE memories SET is_archived = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-        params![id, user_id],
-    ).await?;
+    let affected = db
+        .conn
+        .execute(
+            "UPDATE memories SET is_archived = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+        )
+        .await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!("memory {} not found", id)));
+    }
     Ok(())
 }
 
-pub async fn update_forget_reason(db: &Database, id: i64, reason: &str, user_id: i64) -> Result<()> {
-    db.conn.execute(
-        "UPDATE memories SET forget_reason = ?1 WHERE id = ?2 AND user_id = ?3",
-        params![reason.to_string(), id, user_id],
-    ).await?;
+pub async fn update_forget_reason(
+    db: &Database,
+    id: i64,
+    reason: &str,
+    user_id: i64,
+) -> Result<()> {
+    db.conn
+        .execute(
+            "UPDATE memories SET forget_reason = ?1 WHERE id = ?2 AND user_id = ?3",
+            params![reason.to_string(), id, user_id],
+        )
+        .await?;
     Ok(())
 }
 
-pub async fn adjust_importance(db: &Database, memory_id: i64, user_id: i64, delta: i32) -> Result<()> {
+pub async fn adjust_importance(
+    db: &Database,
+    memory_id: i64,
+    user_id: i64,
+    delta: i32,
+) -> Result<()> {
     if delta > 0 {
         db.conn.execute(
             "UPDATE memories SET importance = MIN(importance + ?1, 10) WHERE id = ?2 AND user_id = ?3",
@@ -594,16 +717,28 @@ pub async fn adjust_importance(db: &Database, memory_id: i64, user_id: i64, delt
     Ok(())
 }
 
-pub async fn insert_link(db: &Database, source_id: i64, target_id: i64, similarity: f64, link_type: &str, user_id: i64) -> Result<()> {
+pub async fn insert_link(
+    db: &Database,
+    source_id: i64,
+    target_id: i64,
+    similarity: f64,
+    link_type: &str,
+    user_id: i64,
+) -> Result<()> {
     // Validate both memories belong to this user before inserting the link
-    let count_sql = "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0";
-    let mut rows = db.conn.query(count_sql, params![source_id, target_id, user_id]).await?;
+    let count_sql =
+        "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0";
+    let mut rows = db
+        .conn
+        .query(count_sql, params![source_id, target_id, user_id])
+        .await?;
     if let Some(row) = rows.next().await? {
         let count: i64 = row.get(0)?;
         if count < 2 {
-            return Err(EngError::NotFound(
-                format!("one or both memories ({}, {}) do not belong to user {}", source_id, target_id, user_id)
-            ));
+            return Err(EngError::NotFound(format!(
+                "one or both memories ({}, {}) do not belong to user {}",
+                source_id, target_id, user_id
+            )));
         }
     }
     db.conn.execute(
@@ -613,7 +748,12 @@ pub async fn insert_link(db: &Database, source_id: i64, target_id: i64, similari
     Ok(())
 }
 
-pub async fn update_source_count(db: &Database, id: i64, source_count: i32, user_id: i64) -> Result<()> {
+pub async fn update_source_count(
+    db: &Database,
+    id: i64,
+    source_count: i32,
+    user_id: i64,
+) -> Result<()> {
     db.conn.execute(
         "UPDATE memories SET source_count = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
         params![source_count, id, user_id],
@@ -754,7 +894,11 @@ pub async fn update_memory_tags(
     Ok(())
 }
 
-pub async fn get_links_for(db: &Database, memory_id: i64, user_id: i64) -> Result<Vec<LinkedMemory>> {
+pub async fn get_links_for(
+    db: &Database,
+    memory_id: i64,
+    user_id: i64,
+) -> Result<Vec<LinkedMemory>> {
     let mut rows = db
         .conn
         .query(
@@ -871,7 +1015,11 @@ pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile
         });
     }
 
-    let top_tags = list_all_tags(db, user_id).await?.into_iter().take(10).collect();
+    let top_tags = list_all_tags(db, user_id)
+        .await?
+        .into_iter()
+        .take(10)
+        .collect();
     let personality_traits = personality::get_profile(db, user_id)
         .await
         .map(|profile| profile.traits)
@@ -913,13 +1061,24 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
         user_id,
     )
     .await?;
-    let conversations =
-        count_user_rows(db, "SELECT COUNT(*) FROM conversations WHERE user_id = ?1", user_id)
-            .await?;
-    let episodes = count_user_rows(db, "SELECT COUNT(*) FROM episodes WHERE user_id = ?1", user_id)
-        .await?;
-    let entities = count_user_rows(db, "SELECT COUNT(*) FROM entities WHERE user_id = ?1", user_id)
-        .await?;
+    let conversations = count_user_rows(
+        db,
+        "SELECT COUNT(*) FROM conversations WHERE user_id = ?1",
+        user_id,
+    )
+    .await?;
+    let episodes = count_user_rows(
+        db,
+        "SELECT COUNT(*) FROM episodes WHERE user_id = ?1",
+        user_id,
+    )
+    .await?;
+    let entities = count_user_rows(
+        db,
+        "SELECT COUNT(*) FROM entities WHERE user_id = ?1",
+        user_id,
+    )
+    .await?;
     let skills = count_user_rows(
         db,
         "SELECT COUNT(*) FROM skill_records WHERE user_id = ?1",

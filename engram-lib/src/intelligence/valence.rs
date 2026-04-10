@@ -21,25 +21,105 @@ struct EmotionPattern {
 static EMOTION_PATTERNS: LazyLock<Vec<EmotionPattern>> = LazyLock::new(|| {
     vec![
         ep(r"\b(furious|enraged|livid|outraged)\b", "anger", -0.9, 0.9),
-        ep(r"\b(angry|pissed|mad|frustrated|annoyed|irritated)\b", "anger", -0.7, 0.7),
+        ep(
+            r"\b(angry|pissed|mad|frustrated|annoyed|irritated)\b",
+            "anger",
+            -0.7,
+            0.7,
+        ),
         ep(r"\b(terrified|panicked|horrified)\b", "fear", -0.8, 0.9),
-        ep(r"\b(anxious|worried|nervous|stressed|afraid|scared)\b", "fear", -0.6, 0.6),
-        ep(r"\b(devastated|heartbroken|grief|mourning)\b", "sadness", -0.9, 0.3),
-        ep(r"\b(sad|disappointed|depressed|miserable|upset|bummed)\b", "sadness", -0.6, 0.3),
-        ep(r"\b(bored|tired|exhausted|drained|burned out|burnt out)\b", "fatigue", -0.3, 0.1),
-        ep(r"\b(confused|lost|stuck|puzzled|stumped)\b", "confusion", -0.3, 0.4),
-        ep(r"\b(crashed|broken|failed|down|error|bug|issue|problem)\b", "frustration", -0.5, 0.6),
-        ep(r"\b(hate|worst|terrible|awful|horrible|garbage|trash)\b", "disgust", -0.8, 0.5),
+        ep(
+            r"\b(anxious|worried|nervous|stressed|afraid|scared)\b",
+            "fear",
+            -0.6,
+            0.6,
+        ),
+        ep(
+            r"\b(devastated|heartbroken|grief|mourning)\b",
+            "sadness",
+            -0.9,
+            0.3,
+        ),
+        ep(
+            r"\b(sad|disappointed|depressed|miserable|upset|bummed)\b",
+            "sadness",
+            -0.6,
+            0.3,
+        ),
+        ep(
+            r"\b(bored|tired|exhausted|drained|burned out|burnt out)\b",
+            "fatigue",
+            -0.3,
+            0.1,
+        ),
+        ep(
+            r"\b(confused|lost|stuck|puzzled|stumped)\b",
+            "confusion",
+            -0.3,
+            0.4,
+        ),
+        ep(
+            r"\b(crashed|broken|failed|down|error|bug|issue|problem)\b",
+            "frustration",
+            -0.5,
+            0.6,
+        ),
+        ep(
+            r"\b(hate|worst|terrible|awful|horrible|garbage|trash)\b",
+            "disgust",
+            -0.8,
+            0.5,
+        ),
         ep(r"\b(ecstatic|thrilled|elated|overjoyed)\b", "joy", 0.9, 0.9),
-        ep(r"\b(excited|pumped|stoked|hyped|amazing|incredible)\b", "excitement", 0.8, 0.8),
-        ep(r"\b(happy|glad|pleased|delighted|great|awesome|fantastic)\b", "joy", 0.7, 0.6),
-        ep(r"\b(proud|accomplished|nailed|crushed it|killed it)\b", "pride", 0.7, 0.6),
-        ep(r"\b(satisfied|content|good|nice|fine|pleasant|comfortable)\b", "satisfaction", 0.4, 0.3),
-        ep(r"\b(calm|relaxed|peaceful|serene|chill)\b", "calm", 0.3, 0.1),
+        ep(
+            r"\b(excited|pumped|stoked|hyped|amazing|incredible)\b",
+            "excitement",
+            0.8,
+            0.8,
+        ),
+        ep(
+            r"\b(happy|glad|pleased|delighted|great|awesome|fantastic)\b",
+            "joy",
+            0.7,
+            0.6,
+        ),
+        ep(
+            r"\b(proud|accomplished|nailed|crushed it|killed it)\b",
+            "pride",
+            0.7,
+            0.6,
+        ),
+        ep(
+            r"\b(satisfied|content|good|nice|fine|pleasant|comfortable)\b",
+            "satisfaction",
+            0.4,
+            0.3,
+        ),
+        ep(
+            r"\b(calm|relaxed|peaceful|serene|chill)\b",
+            "calm",
+            0.3,
+            0.1,
+        ),
         ep(r"\b(grateful|thankful|appreciate)\b", "gratitude", 0.6, 0.3),
-        ep(r"\b(curious|interested|intrigued|fascinated)\b", "curiosity", 0.4, 0.5),
-        ep(r"\b(fixed|resolved|working|deployed|shipped|launched|completed|done|finished)\b", "accomplishment", 0.5, 0.5),
-        ep(r"\b(love|perfect|beautiful|elegant|clean|brilliant)\b", "admiration", 0.7, 0.4),
+        ep(
+            r"\b(curious|interested|intrigued|fascinated)\b",
+            "curiosity",
+            0.4,
+            0.5,
+        ),
+        ep(
+            r"\b(fixed|resolved|working|deployed|shipped|launched|completed|done|finished)\b",
+            "accomplishment",
+            0.5,
+            0.5,
+        ),
+        ep(
+            r"\b(love|perfect|beautiful|elegant|clean|brilliant)\b",
+            "admiration",
+            0.7,
+            0.4,
+        ),
         ep(r"\b(surprised|unexpected|wow|whoa)\b", "surprise", 0.0, 0.7),
     ]
 });
@@ -47,7 +127,9 @@ static EMOTION_PATTERNS: LazyLock<Vec<EmotionPattern>> = LazyLock::new(|| {
 fn ep(pattern: &str, emotion: &'static str, valence: f64, arousal: f64) -> EmotionPattern {
     EmotionPattern {
         regex: Regex::new(&format!("(?i){}", pattern)).expect("invalid emotion regex"),
-        emotion, valence, arousal,
+        emotion,
+        valence,
+        arousal,
     }
 }
 
@@ -56,17 +138,35 @@ pub fn analyze_valence(content: &str) -> ValenceResult {
     for pat in EMOTION_PATTERNS.iter() {
         if pat.regex.is_match(content) {
             matches.push(EmotionMatch {
-                emotion: pat.emotion.to_string(), valence: pat.valence, arousal: pat.arousal,
+                emotion: pat.emotion.to_string(),
+                valence: pat.valence,
+                arousal: pat.arousal,
             });
         }
     }
     if matches.is_empty() {
-        return ValenceResult { valence: 0.0, arousal: 0.0, dominant_emotion: "neutral".into(), all_emotions: vec![] };
+        return ValenceResult {
+            valence: 0.0,
+            arousal: 0.0,
+            dominant_emotion: "neutral".into(),
+            all_emotions: vec![],
+        };
     }
     let total_weight: f64 = matches.iter().map(|m| m.valence.abs()).sum();
-    let avg_valence = matches.iter().map(|m| m.valence * m.valence.abs()).sum::<f64>() / total_weight;
-    let avg_arousal = matches.iter().map(|m| m.arousal * m.valence.abs()).sum::<f64>() / total_weight;
-    let dominant = matches.iter().max_by(|a, b| a.valence.abs().partial_cmp(&b.valence.abs()).unwrap()).unwrap();
+    let avg_valence = matches
+        .iter()
+        .map(|m| m.valence * m.valence.abs())
+        .sum::<f64>()
+        / total_weight;
+    let avg_arousal = matches
+        .iter()
+        .map(|m| m.arousal * m.valence.abs())
+        .sum::<f64>()
+        / total_weight;
+    let dominant = matches
+        .iter()
+        .max_by(|a, b| a.valence.abs().partial_cmp(&b.valence.abs()).unwrap())
+        .unwrap();
     ValenceResult {
         valence: (avg_valence * 100.0).round() / 100.0,
         arousal: (avg_arousal * 100.0).round() / 100.0,
@@ -86,7 +186,12 @@ pub async fn store_valence(db: &Database, memory_id: i64, content: &str) -> Resu
     Ok(result)
 }
 
-pub async fn query_by_emotion(db: &Database, emotion: &str, user_id: i64, limit: i64) -> Result<Vec<EmotionMemory>> {
+pub async fn query_by_emotion(
+    db: &Database,
+    emotion: &str,
+    user_id: i64,
+    limit: i64,
+) -> Result<Vec<EmotionMemory>> {
     let mut rows = db.conn.query(
         "SELECT id, content, category, importance, valence, arousal, dominant_emotion, created_at          FROM memories          WHERE user_id = ?1 AND dominant_emotion = ?2 AND is_forgotten = 0 AND is_archived = 0          ORDER BY ABS(valence) DESC, created_at DESC LIMIT ?3",
         params![user_id, emotion, limit],
@@ -94,7 +199,10 @@ pub async fn query_by_emotion(db: &Database, emotion: &str, user_id: i64, limit:
     let mut results = Vec::new();
     while let Some(row) = rows.next().await? {
         results.push(EmotionMemory {
-            id: row.get(0)?, content: row.get(1)?, category: row.get(2)?, importance: row.get(3)?,
+            id: row.get(0)?,
+            content: row.get(1)?,
+            category: row.get(2)?,
+            importance: row.get(3)?,
             valence: row.get::<Option<f64>>(4)?.unwrap_or(0.0),
             arousal: row.get::<Option<f64>>(5)?.unwrap_or(0.0),
             dominant_emotion: row.get::<Option<String>>(6)?.unwrap_or_default(),
@@ -112,7 +220,8 @@ pub async fn get_emotional_profile(db: &Database, user_id: i64) -> Result<Emotio
     let mut emotions = Vec::new();
     while let Some(row) = rows.next().await? {
         emotions.push(EmotionStat {
-            dominant_emotion: row.get(0)?, count: row.get(1)?,
+            dominant_emotion: row.get(0)?,
+            count: row.get(1)?,
             avg_valence: row.get::<Option<f64>>(2)?.unwrap_or(0.0),
             avg_arousal: row.get::<Option<f64>>(3)?.unwrap_or(0.0),
         });
@@ -130,7 +239,13 @@ pub async fn get_emotional_profile(db: &Database, user_id: i64) -> Result<Emotio
             neutral_count: row.get::<Option<i64>>(4)?.unwrap_or(0),
         }
     } else {
-        OverallEmotionStats { avg_valence: 0.0, avg_arousal: 0.0, positive_count: 0, negative_count: 0, neutral_count: 0 }
+        OverallEmotionStats {
+            avg_valence: 0.0,
+            avg_arousal: 0.0,
+            positive_count: 0,
+            negative_count: 0,
+            neutral_count: 0,
+        }
     };
     Ok(EmotionalProfile { emotions, overall })
 }

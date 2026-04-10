@@ -68,9 +68,13 @@ fn try_paragraph_or_sentence(window: &str, threshold: usize, default_end: usize)
 /// Split a parsed document into chunks with configurable size, overlap,
 /// and structure-aware boundary detection.
 pub fn chunk_document(doc: &ParsedDocument, options: Option<&ChunkerOptions>) -> Vec<Chunk> {
-    let max_size = options.and_then(|o| o.max_chunk_size).unwrap_or(DEFAULT_MAX_CHUNK_SIZE);
+    let max_size = options
+        .and_then(|o| o.max_chunk_size)
+        .unwrap_or(DEFAULT_MAX_CHUNK_SIZE);
     let overlap = options.and_then(|o| o.overlap).unwrap_or(DEFAULT_OVERLAP);
-    let respect_structure = options.and_then(|o| o.respect_structure).unwrap_or(DEFAULT_RESPECT_STRUCTURE);
+    let respect_structure = options
+        .and_then(|o| o.respect_structure)
+        .unwrap_or(DEFAULT_RESPECT_STRUCTURE);
 
     let text = doc.text.trim();
     if text.is_empty() {

@@ -1,12 +1,12 @@
-pub mod search;
-pub mod types;
-pub mod registry;
 pub mod analyzer;
-pub mod evolver;
-pub mod patch;
-pub mod dashboard;
 pub mod cloud;
 pub mod conversation_formatter;
+pub mod dashboard;
+pub mod evolver;
+pub mod patch;
+pub mod registry;
+pub mod search;
+pub mod types;
 
 use crate::db::Database;
 use crate::{EngError, Result};
@@ -140,10 +140,12 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
 
     // Determine version and root
     let (version, root_skill_id) = if let Some(parent_id) = req.parent_skill_id {
-        let mut rows = conn.query(
-            "SELECT version, root_skill_id FROM skill_records WHERE id = ?1",
-            params![parent_id],
-        ).await?;
+        let mut rows = conn
+            .query(
+                "SELECT version, root_skill_id FROM skill_records WHERE id = ?1",
+                params![parent_id],
+            )
+            .await?;
         if let Some(row) = rows.next().await? {
             let pv: i32 = row.get(0)?;
             let pr: Option<i64> = row.get(1)?;
@@ -159,12 +161,24 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
         "INSERT INTO skill_records (name, agent, description, code, language, version, \
          parent_skill_id, root_skill_id, user_id) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![req.name, req.agent, req.description, req.code, language, version,
-                req.parent_skill_id, root_skill_id, user_id],
-    ).await?;
+        params![
+            req.name,
+            req.agent,
+            req.description,
+            req.code,
+            language,
+            version,
+            req.parent_skill_id,
+            root_skill_id,
+            user_id
+        ],
+    )
+    .await?;
 
     let mut id_rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = if let Some(row) = id_rows.next().await? { row.get(0)? } else {
+    let id: i64 = if let Some(row) = id_rows.next().await? {
+        row.get(0)?
+    } else {
         return Err(EngError::Internal("failed to get skill id".into()));
     };
 
@@ -173,7 +187,8 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
         conn.execute(
             "INSERT OR IGNORE INTO skill_lineage_parents (skill_id, parent_id) VALUES (?1, ?2)",
             params![id, parent_id],
-        ).await?;
+        )
+        .await?;
     }
 
     // Insert tags
@@ -182,7 +197,8 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
             conn.execute(
                 "INSERT OR IGNORE INTO skill_tags (skill_id, tag) VALUES (?1, ?2)",
                 params![id, tag.as_str()],
-            ).await?;
+            )
+            .await?;
         }
     }
 
@@ -201,15 +217,25 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
 
 pub async fn get_skill(db: &Database, id: i64, user_id: i64) -> Result<Skill> {
     let conn = db.connection();
-    let sql = format!("SELECT {} FROM skill_records WHERE id = ?1 AND user_id = ?2", SKILL_COLUMNS);
+    let sql = format!(
+        "SELECT {} FROM skill_records WHERE id = ?1 AND user_id = ?2",
+        SKILL_COLUMNS
+    );
     let mut rows = conn.query(&sql, params![id, user_id]).await?;
-    rows.next().await?
+    rows.next()
+        .await?
         .map(|row| row_to_skill(&row))
         .transpose()?
         .ok_or_else(|| EngError::NotFound(format!("skill {} not found", id)))
 }
 
-pub async fn list_skills(db: &Database, user_id: i64, agent: Option<&str>, limit: usize, offset: usize) -> Result<Vec<Skill>> {
+pub async fn list_skills(
+    db: &Database,
+    user_id: i64,
+    agent: Option<&str>,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<Skill>> {
     let conn = db.connection();
     let (sql, has_agent) = if agent.is_some() {
         (format!(
@@ -224,9 +250,14 @@ pub async fn list_skills(db: &Database, user_id: i64, agent: Option<&str>, limit
     };
 
     let mut rows = if has_agent {
-        conn.query(&sql, params![user_id, agent.unwrap_or(""), limit as i64, offset as i64]).await?
+        conn.query(
+            &sql,
+            params![user_id, agent.unwrap_or(""), limit as i64, offset as i64],
+        )
+        .await?
     } else {
-        conn.query(&sql, params![user_id, limit as i64, offset as i64]).await?
+        conn.query(&sql, params![user_id, limit as i64, offset as i64])
+            .await?
     };
 
     let mut skills = Vec::new();
@@ -236,7 +267,12 @@ pub async fn list_skills(db: &Database, user_id: i64, agent: Option<&str>, limit
     Ok(skills)
 }
 
-pub async fn update_skill(db: &Database, id: i64, req: UpdateSkillRequest, user_id: i64) -> Result<Skill> {
+pub async fn update_skill(
+    db: &Database,
+    id: i64,
+    req: UpdateSkillRequest,
+    user_id: i64,
+) -> Result<Skill> {
     let conn = db.connection();
     // Verify ownership
     get_skill(db, id, user_id).await?;
@@ -262,7 +298,12 @@ pub async fn update_skill(db: &Database, id: i64, req: UpdateSkillRequest, user_
 
 pub async fn delete_skill(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let conn = db.connection();
-    let affected = conn.execute("DELETE FROM skill_records WHERE id = ?1 AND user_id = ?2", params![id, user_id]).await?;
+    let affected = conn
+        .execute(
+            "DELETE FROM skill_records WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+        )
+        .await?;
     if affected == 0 {
         return Err(EngError::NotFound(format!("skill {} not found", id)));
     }
@@ -293,13 +334,15 @@ pub async fn record_execution(
             "UPDATE skill_records SET success_count = success_count + 1, \
              execution_count = execution_count + 1, updated_at = datetime('now') WHERE id = ?1",
             params![skill_id],
-        ).await?;
+        )
+        .await?;
     } else {
         conn.execute(
             "UPDATE skill_records SET failure_count = failure_count + 1, \
              execution_count = execution_count + 1, updated_at = datetime('now') WHERE id = ?1",
             params![skill_id],
-        ).await?;
+        )
+        .await?;
     }
 
     // Update avg_duration_ms
@@ -309,21 +352,28 @@ pub async fn record_execution(
              COALESCE((avg_duration_ms * (execution_count - 1) + ?1) / execution_count, ?1), \
              updated_at = datetime('now') WHERE id = ?2",
             params![dur, skill_id],
-        ).await?;
+        )
+        .await?;
     }
 
     Ok(())
 }
 
 /// Get execution history for a skill.
-pub async fn get_executions(db: &Database, skill_id: i64, limit: usize) -> Result<Vec<ExecutionRecord>> {
+pub async fn get_executions(
+    db: &Database,
+    skill_id: i64,
+    limit: usize,
+) -> Result<Vec<ExecutionRecord>> {
     let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT id, skill_id, success, duration_ms, error_type, error_message, \
+    let mut rows = conn
+        .query(
+            "SELECT id, skill_id, success, duration_ms, error_type, error_message, \
          input_hash, output_hash, metadata, created_at \
          FROM execution_analyses WHERE skill_id = ?1 ORDER BY id DESC LIMIT ?2",
-        params![skill_id, limit as i64],
-    ).await?;
+            params![skill_id, limit as i64],
+        )
+        .await?;
 
     let mut records = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -345,7 +395,13 @@ pub async fn get_executions(db: &Database, skill_id: i64, limit: usize) -> Resul
 
 // -- Judgments --
 
-pub async fn add_judgment(db: &Database, skill_id: i64, judge_agent: &str, score: f64, rationale: Option<&str>) -> Result<SkillJudgment> {
+pub async fn add_judgment(
+    db: &Database,
+    skill_id: i64,
+    judge_agent: &str,
+    score: f64,
+    rationale: Option<&str>,
+) -> Result<SkillJudgment> {
     let conn = db.connection();
     conn.execute(
         "INSERT INTO skill_judgments (skill_id, judge_agent, score, rationale) VALUES (?1, ?2, ?3, ?4)",
@@ -353,7 +409,11 @@ pub async fn add_judgment(db: &Database, skill_id: i64, judge_agent: &str, score
     ).await?;
 
     let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = if let Some(row) = rows.next().await? { row.get(0)? } else { 0 };
+    let id: i64 = if let Some(row) = rows.next().await? {
+        row.get(0)?
+    } else {
+        0
+    };
 
     // Update trust_score as weighted average of all judgments
     conn.execute(
@@ -361,7 +421,8 @@ pub async fn add_judgment(db: &Database, skill_id: i64, judge_agent: &str, score
          (SELECT AVG(score) FROM skill_judgments WHERE skill_id = ?1), \
          updated_at = datetime('now') WHERE id = ?1",
         params![skill_id],
-    ).await?;
+    )
+    .await?;
 
     Ok(SkillJudgment {
         id,
@@ -375,11 +436,13 @@ pub async fn add_judgment(db: &Database, skill_id: i64, judge_agent: &str, score
 
 pub async fn get_judgments(db: &Database, skill_id: i64) -> Result<Vec<SkillJudgment>> {
     let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT id, skill_id, judge_agent, score, rationale, created_at \
+    let mut rows = conn
+        .query(
+            "SELECT id, skill_id, judge_agent, score, rationale, created_at \
          FROM skill_judgments WHERE skill_id = ?1 ORDER BY id DESC",
-        params![skill_id],
-    ).await?;
+            params![skill_id],
+        )
+        .await?;
 
     let mut judgments = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -397,24 +460,34 @@ pub async fn get_judgments(db: &Database, skill_id: i64) -> Result<Vec<SkillJudg
 
 // -- Tool quality --
 
-pub async fn record_tool_quality(db: &Database, tool_name: &str, agent: &str, success: bool, latency_ms: Option<f64>, error_type: Option<&str>) -> Result<()> {
+pub async fn record_tool_quality(
+    db: &Database,
+    tool_name: &str,
+    agent: &str,
+    success: bool,
+    latency_ms: Option<f64>,
+    error_type: Option<&str>,
+) -> Result<()> {
     let conn = db.connection();
     conn.execute(
         "INSERT INTO tool_quality_records (tool_name, agent, success, latency_ms, error_type) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![tool_name, agent, success as i32, latency_ms, error_type],
-    ).await?;
+    )
+    .await?;
     Ok(())
 }
 
 pub async fn get_tool_quality(db: &Database, tool_name: &str) -> Result<serde_json::Value> {
     let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT COUNT(*) as total, SUM(CASE WHEN success THEN 1 ELSE 0 END) as successes, \
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) as total, SUM(CASE WHEN success THEN 1 ELSE 0 END) as successes, \
          AVG(latency_ms) as avg_latency \
          FROM tool_quality_records WHERE tool_name = ?1",
-        params![tool_name],
-    ).await?;
+            params![tool_name],
+        )
+        .await?;
 
     if let Some(row) = rows.next().await? {
         let total: i64 = row.get(0)?;
@@ -436,10 +509,12 @@ pub async fn get_tool_quality(db: &Database, tool_name: &str) -> Result<serde_js
 
 pub async fn get_skill_tags(db: &Database, skill_id: i64) -> Result<Vec<String>> {
     let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT tag FROM skill_tags WHERE skill_id = ?1",
-        params![skill_id],
-    ).await?;
+    let mut rows = conn
+        .query(
+            "SELECT tag FROM skill_tags WHERE skill_id = ?1",
+            params![skill_id],
+        )
+        .await?;
     let mut tags = Vec::new();
     while let Some(row) = rows.next().await? {
         tags.push(row.get::<String>(0)?);
@@ -451,10 +526,12 @@ pub async fn get_skill_tags(db: &Database, skill_id: i64) -> Result<Vec<String>>
 
 pub async fn get_tool_deps(db: &Database, skill_id: i64) -> Result<Vec<String>> {
     let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT tool_name FROM skill_tool_deps WHERE skill_id = ?1",
-        params![skill_id],
-    ).await?;
+    let mut rows = conn
+        .query(
+            "SELECT tool_name FROM skill_tool_deps WHERE skill_id = ?1",
+            params![skill_id],
+        )
+        .await?;
     let mut deps = Vec::new();
     while let Some(row) = rows.next().await? {
         deps.push(row.get::<String>(0)?);
@@ -471,10 +548,12 @@ pub fn check_tool_safety(required_tools: &[String], available_tools: &[String]) 
 
 pub async fn get_lineage(db: &Database, skill_id: i64) -> Result<Vec<i64>> {
     let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT parent_id FROM skill_lineage_parents WHERE skill_id = ?1",
-        params![skill_id],
-    ).await?;
+    let mut rows = conn
+        .query(
+            "SELECT parent_id FROM skill_lineage_parents WHERE skill_id = ?1",
+            params![skill_id],
+        )
+        .await?;
     let mut parents = Vec::new();
     while let Some(row) = rows.next().await? {
         parents.push(row.get::<i64>(0)?);

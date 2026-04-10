@@ -27,12 +27,14 @@ pub async fn generate_digest(db: &Database, user_id: i64, period: &str) -> Resul
     };
 
     // Fetch recent memories in the period
-    let mut rows = conn.query(
-        "SELECT id, content, category, importance FROM memories \
+    let mut rows = conn
+        .query(
+            "SELECT id, content, category, importance FROM memories \
          WHERE user_id = ?1 AND is_forgotten = 0 AND created_at >= datetime('now', ?2) \
          ORDER BY importance DESC LIMIT 50",
-        params![user_id, interval],
-    ).await?;
+            params![user_id, interval],
+        )
+        .await?;
 
     let mut summaries: Vec<String> = Vec::new();
     let mut count = 0i32;
@@ -41,25 +43,42 @@ pub async fn generate_digest(db: &Database, user_id: i64, period: &str) -> Resul
         let category: String = row.get(2)?;
         let importance: i32 = row.get(3)?;
         // Take first 100 chars as summary line
-        let truncated = if content.len() > 100 { &content[..100] } else { &content };
-        summaries.push(format!("[{}] (importance:{}) {}", category, importance, truncated));
+        let truncated = if content.len() > 100 {
+            &content[..100]
+        } else {
+            &content
+        };
+        summaries.push(format!(
+            "[{}] (importance:{}) {}",
+            category, importance, truncated
+        ));
         count += 1;
     }
 
     let digest_content = if summaries.is_empty() {
         format!("No activity during this {} period.", period)
     } else {
-        format!("{} period summary ({} memories):\n{}", period, count, summaries.join("\n"))
+        format!(
+            "{} period summary ({} memories):\n{}",
+            period,
+            count,
+            summaries.join("\n")
+        )
     };
 
     conn.execute(
         "INSERT INTO digests (period, content, memory_count, user_id, started_at, ended_at) \
          VALUES (?1, ?2, ?3, ?4, datetime('now', ?5), datetime('now'))",
         params![period, digest_content.clone(), count, user_id, interval],
-    ).await?;
+    )
+    .await?;
 
     let mut id_rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = if let Some(row) = id_rows.next().await? { row.get(0)? } else { 0 };
+    let id: i64 = if let Some(row) = id_rows.next().await? {
+        row.get(0)?
+    } else {
+        0
+    };
 
     Ok(Digest {
         id,
@@ -76,11 +95,13 @@ pub async fn generate_digest(db: &Database, user_id: i64, period: &str) -> Resul
 /// List existing digests.
 pub async fn list_digests(db: &Database, user_id: i64, limit: usize) -> Result<Vec<Digest>> {
     let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT id, period, content, memory_count, user_id, started_at, ended_at, created_at \
+    let mut rows = conn
+        .query(
+            "SELECT id, period, content, memory_count, user_id, started_at, ended_at, created_at \
          FROM digests WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
-        params![user_id, limit as i64],
-    ).await?;
+            params![user_id, limit as i64],
+        )
+        .await?;
 
     let mut results = Vec::new();
     while let Some(row) = rows.next().await? {

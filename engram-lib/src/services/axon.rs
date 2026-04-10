@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::{EngError, Result};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
@@ -49,7 +49,9 @@ fn row_to_event(row: &libsql::Row) -> Result<Event> {
 pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Event> {
     let conn = &db.conn;
 
-    let payload = req.payload.unwrap_or(serde_json::Value::Object(Default::default()));
+    let payload = req
+        .payload
+        .unwrap_or(serde_json::Value::Object(Default::default()));
     let payload_str = serde_json::to_string(&payload)?;
     let user_id = req.user_id.unwrap_or(1);
 
@@ -68,7 +70,10 @@ pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Ev
     .await?;
 
     let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id_row = rows.next().await?.ok_or_else(|| EngError::Internal("no rowid".into()))?;
+    let id_row = rows
+        .next()
+        .await?
+        .ok_or_else(|| EngError::Internal("no rowid".into()))?;
     let id: i64 = id_row.get(0)?;
 
     get_event(db, id, user_id).await
@@ -76,12 +81,13 @@ pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Ev
 
 pub async fn get_event(db: &Database, id: i64, user_id: i64) -> Result<Event> {
     let conn = &db.conn;
-    let mut rows = conn.query(
-        "SELECT id, channel, payload, action, source, agent, user_id, created_at
+    let mut rows = conn
+        .query(
+            "SELECT id, channel, payload, action, source, agent, user_id, created_at
          FROM events WHERE id = ?1 AND user_id = ?2",
-        libsql::params![id, user_id],
-    )
-    .await?;
+            libsql::params![id, user_id],
+        )
+        .await?;
 
     let row = rows
         .next()
@@ -134,7 +140,9 @@ pub async fn query_events(
     params_vec.push(libsql::Value::Integer(limit as i64));
     params_vec.push(libsql::Value::Integer(offset as i64));
 
-    let mut rows = conn.query(&sql, libsql::params_from_iter(params_vec)).await?;
+    let mut rows = conn
+        .query(&sql, libsql::params_from_iter(params_vec))
+        .await?;
     let mut results = Vec::new();
     while let Some(row) = rows.next().await? {
         results.push(row_to_event(&row)?);
@@ -145,7 +153,10 @@ pub async fn query_events(
 pub async fn list_channels(db: &Database, user_id: i64) -> Result<Vec<String>> {
     let conn = &db.conn;
     let mut rows = conn
-        .query("SELECT DISTINCT channel FROM events WHERE user_id = ?1 ORDER BY channel ASC", libsql::params![user_id])
+        .query(
+            "SELECT DISTINCT channel FROM events WHERE user_id = ?1 ORDER BY channel ASC",
+            libsql::params![user_id],
+        )
         .await?;
     let mut results = Vec::new();
     while let Some(row) = rows.next().await? {

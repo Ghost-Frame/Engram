@@ -23,20 +23,25 @@ async fn ensure_file(path: &Path, url: &str) -> Result<()> {
 
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            EngError::Internal(format!("failed to create model dir {}: {}", parent.display(), e))
+            EngError::Internal(format!(
+                "failed to create model dir {}: {}",
+                parent.display(),
+                e
+            ))
         })?;
     }
 
     info!(url = url, dest = %path.display(), "downloading model file");
 
-    let response = reqwest::get(url).await.map_err(|e| {
-        EngError::Internal(format!("failed to download {}: {}", url, e))
-    })?;
+    let response = reqwest::get(url)
+        .await
+        .map_err(|e| EngError::Internal(format!("failed to download {}: {}", url, e)))?;
 
     if !response.status().is_success() {
         return Err(EngError::Internal(format!(
             "download failed with status {}: {}",
-            response.status(), url
+            response.status(),
+            url
         )));
     }
 
@@ -52,7 +57,9 @@ async fn ensure_file(path: &Path, url: &str) -> Result<()> {
     tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
         EngError::Internal(format!(
             "failed to rename {} -> {}: {}",
-            tmp_path.display(), path.display(), e
+            tmp_path.display(),
+            path.display(),
+            e
         ))
     })?;
 
@@ -64,7 +71,10 @@ async fn ensure_file(path: &Path, url: &str) -> Result<()> {
 
 /// Ensure all bge-m3 embedding model files are present in `model_dir`.
 /// Downloads from HuggingFace if missing.
-pub async fn ensure_embedding_model(model_dir: &Path, onnx_file: &str) -> Result<(PathBuf, PathBuf)> {
+pub async fn ensure_embedding_model(
+    model_dir: &Path,
+    onnx_file: &str,
+) -> Result<(PathBuf, PathBuf)> {
     let tokenizer_path = model_dir.join("tokenizer.json");
     let model_path = model_dir.join(onnx_file);
 

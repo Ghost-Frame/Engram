@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::{EngError, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{info, warn};
 
@@ -21,7 +21,13 @@ pub struct StepDef {
 
 // Valid step types
 const VALID_STEP_TYPES: &[&str] = &[
-    "action", "decision", "parallel", "wait", "webhook", "llm", "transform",
+    "action",
+    "decision",
+    "parallel",
+    "wait",
+    "webhook",
+    "llm",
+    "transform",
 ];
 
 // ---------------------------------------------------------------------------
@@ -292,9 +298,8 @@ pub async fn add_log(
     message: &str,
     data: Option<serde_json::Value>,
 ) -> Result<()> {
-    let data_str = serde_json::to_string(
-        &data.unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
-    )?;
+    let data_str =
+        serde_json::to_string(&data.unwrap_or(serde_json::Value::Object(serde_json::Map::new())))?;
     db.conn
         .execute(
             "INSERT INTO loom_run_logs (run_id, step_id, level, message, data)
@@ -408,7 +413,9 @@ pub async fn create_workflow(db: &Database, req: CreateWorkflowRequest) -> Resul
         info!("created workflow '{}' id={}", wf.name, wf.id);
         Ok(wf)
     } else {
-        Err(EngError::Internal("failed to fetch created workflow".into()))
+        Err(EngError::Internal(
+            "failed to fetch created workflow".into(),
+        ))
     }
 }
 
@@ -523,7 +530,10 @@ pub async fn update_workflow(
         (Some(n), Some(d), Some(s)) => {
             let steps_json = serde_json::to_string(s)?;
             db.conn
-                .execute(&sql, libsql::params![n.clone(), d.clone(), steps_json, id, user_id])
+                .execute(
+                    &sql,
+                    libsql::params![n.clone(), d.clone(), steps_json, id, user_id],
+                )
                 .await?;
         }
         (Some(n), Some(d), None) => {
@@ -708,50 +718,54 @@ pub async fn list_runs(
     let mut runs = Vec::new();
 
     let mut rows = match (workflow_id, status) {
-        (Some(wid), Some(st)) => db
-            .conn
-            .query(
-                "SELECT id, workflow_id, status, input, output, error, user_id,
+        (Some(wid), Some(st)) => {
+            db.conn
+                .query(
+                    "SELECT id, workflow_id, status, input, output, error, user_id,
                         started_at, completed_at, created_at, updated_at
                  FROM loom_runs
                  WHERE user_id = ?1 AND workflow_id = ?2 AND status = ?3
                  ORDER BY id DESC LIMIT ?4",
-                libsql::params![user_id, wid, st, limit as i64],
-            )
-            .await?,
-        (Some(wid), None) => db
-            .conn
-            .query(
-                "SELECT id, workflow_id, status, input, output, error, user_id,
+                    libsql::params![user_id, wid, st, limit as i64],
+                )
+                .await?
+        }
+        (Some(wid), None) => {
+            db.conn
+                .query(
+                    "SELECT id, workflow_id, status, input, output, error, user_id,
                         started_at, completed_at, created_at, updated_at
                  FROM loom_runs
                  WHERE user_id = ?1 AND workflow_id = ?2
                  ORDER BY id DESC LIMIT ?3",
-                libsql::params![user_id, wid, limit as i64],
-            )
-            .await?,
-        (None, Some(st)) => db
-            .conn
-            .query(
-                "SELECT id, workflow_id, status, input, output, error, user_id,
+                    libsql::params![user_id, wid, limit as i64],
+                )
+                .await?
+        }
+        (None, Some(st)) => {
+            db.conn
+                .query(
+                    "SELECT id, workflow_id, status, input, output, error, user_id,
                         started_at, completed_at, created_at, updated_at
                  FROM loom_runs
                  WHERE user_id = ?1 AND status = ?2
                  ORDER BY id DESC LIMIT ?3",
-                libsql::params![user_id, st, limit as i64],
-            )
-            .await?,
-        (None, None) => db
-            .conn
-            .query(
-                "SELECT id, workflow_id, status, input, output, error, user_id,
+                    libsql::params![user_id, st, limit as i64],
+                )
+                .await?
+        }
+        (None, None) => {
+            db.conn
+                .query(
+                    "SELECT id, workflow_id, status, input, output, error, user_id,
                         started_at, completed_at, created_at, updated_at
                  FROM loom_runs
                  WHERE user_id = ?1
                  ORDER BY id DESC LIMIT ?2",
-                libsql::params![user_id, limit as i64],
-            )
-            .await?,
+                    libsql::params![user_id, limit as i64],
+                )
+                .await?
+        }
     };
 
     while let Some(row) = rows.next().await? {
@@ -840,7 +854,12 @@ pub async fn get_step(db: &Database, id: i64) -> Result<Step> {
     }
 }
 
-pub async fn complete_step(db: &Database, step_id: i64, output: serde_json::Value, user_id: i64) -> Result<()> {
+pub async fn complete_step(
+    db: &Database,
+    step_id: i64,
+    output: serde_json::Value,
+    user_id: i64,
+) -> Result<()> {
     let step = get_step(db, step_id).await?;
     // Verify run ownership
     get_run(db, step.run_id, user_id).await?;
@@ -1049,8 +1068,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
         }
 
         // Check if all dependencies are completed
-        let deps: Vec<String> = serde_json::from_value(step.depends_on.clone())
-            .unwrap_or_default();
+        let deps: Vec<String> = serde_json::from_value(step.depends_on.clone()).unwrap_or_default();
 
         let deps_met = deps.iter().all(|dep_name| {
             step_map
@@ -1120,7 +1138,14 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
         match ready.step_type.as_str() {
             "transform" => {
                 // Execute inline
-                execute_transform_step(db, ready.id, &ready.config, &ready.merged_input, run.user_id).await?;
+                execute_transform_step(
+                    db,
+                    ready.id,
+                    &ready.config,
+                    &ready.merged_input,
+                    run.user_id,
+                )
+                .await?;
             }
             // webhook and llm: leave as running -- Phase 2 will add HTTP executors
             "webhook" | "llm" => {

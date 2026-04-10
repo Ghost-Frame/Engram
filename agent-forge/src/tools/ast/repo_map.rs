@@ -117,7 +117,10 @@ fn extract_symbols(parsed: &crate::treesitter::parser::ParsedFile, symbols: &mut
 
         // Extract function/class/struct definitions
         let symbol_kind = match kind {
-            "function_item" | "function_definition" | "function_declaration" | "method_definition" => Some("fn"),
+            "function_item"
+            | "function_definition"
+            | "function_declaration"
+            | "method_definition" => Some("fn"),
             "struct_item" | "class_definition" | "class_declaration" => Some("struct"),
             "impl_item" => Some("impl"),
             "trait_item" | "interface_declaration" => Some("trait"),

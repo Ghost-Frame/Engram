@@ -1,8 +1,8 @@
+use crate::db::Database;
+use crate::Result;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use crate::db::Database;
-use crate::Result;
 use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

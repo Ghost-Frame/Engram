@@ -7,9 +7,7 @@
 
 use crate::db::Database;
 use crate::intelligence::llm::{call_llm, is_llm_available, repair_and_parse_json, LlmOptions};
-use crate::intelligence::types::{
-    DecompositionResult, DecompositionTier, DecompositionWithTier,
-};
+use crate::intelligence::types::{DecompositionResult, DecompositionTier, DecompositionWithTier};
 use crate::Result;
 use serde::Deserialize;
 use tracing::{info, warn};
@@ -38,15 +36,31 @@ const MAX_FACTS: usize = 10;
 
 /// Filler phrases to strip from sentence starts.
 const FILLER_PREFIXES: &[&str] = &[
-    "so ", "well ", "basically ", "actually ", "honestly ",
-    "like ", "i mean ", "you know ", "anyway ",
+    "so ",
+    "well ",
+    "basically ",
+    "actually ",
+    "honestly ",
+    "like ",
+    "i mean ",
+    "you know ",
+    "anyway ",
 ];
 
 /// Meta-sentences to skip entirely.
 const META_STOPLIST: &[&str] = &[
-    "let me explain", "as i mentioned", "in summary", "to summarize",
-    "as we discussed", "like i said", "to be clear", "for context",
-    "moving on", "on another note", "by the way", "speaking of which",
+    "let me explain",
+    "as i mentioned",
+    "in summary",
+    "to summarize",
+    "as we discussed",
+    "like i said",
+    "to be clear",
+    "for context",
+    "moving on",
+    "on another note",
+    "by the way",
+    "speaking of which",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -342,7 +356,9 @@ fn strip_filler(s: &str) -> String {
     let lower = s.to_lowercase();
     for filler in FILLER_PREFIXES {
         if lower.starts_with(filler) {
-            return s[filler.len()..].trim_start_matches(|c: char| c == ',' || c.is_whitespace()).to_string();
+            return s[filler.len()..]
+                .trim_start_matches(|c: char| c == ',' || c.is_whitespace())
+                .to_string();
         }
     }
     s.to_string()

@@ -88,9 +88,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) ->
     .await?;
 
     // Get the ID of the newly inserted memory
-    let mut id_row = conn
-        .query("SELECT last_insert_rowid()", ())
-        .await?;
+    let mut id_row = conn.query("SELECT last_insert_rowid()", ()).await?;
     let new_id: i64 = if let Some(row) = id_row.next().await? {
         row.get(0)?
     } else {
@@ -111,8 +109,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) ->
 
     // Record consolidation
     let source_ids_json =
-        serde_json::to_string(&sources.iter().map(|s| s.0).collect::<Vec<_>>())
-            .unwrap_or_default();
+        serde_json::to_string(&sources.iter().map(|s| s.0).collect::<Vec<_>>()).unwrap_or_default();
 
     conn.execute(
         "INSERT INTO consolidations (source_ids, result_memory_id, strategy, confidence, user_id) \
@@ -121,11 +118,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) ->
     )
     .await?;
 
-    info!(
-        summary_id = new_id,
-        sources = sources.len(),
-        "consolidated"
-    );
+    info!(summary_id = new_id, sources = sources.len(), "consolidated");
 
     // Fetch and return the new memory
     let mut result_rows = conn
@@ -225,17 +218,11 @@ pub async fn find_consolidation_candidates(
     let keys: Vec<i64> = parent.keys().copied().collect();
     for id in keys {
         let root = find(&mut parent, id);
-        clusters
-            .entry(root)
-            .or_default()
-            .push(id.to_string());
+        clusters.entry(root).or_default().push(id.to_string());
     }
 
     // Only return clusters with 2+ members
-    let result: Vec<Vec<String>> = clusters
-        .into_values()
-        .filter(|c| c.len() >= 2)
-        .collect();
+    let result: Vec<Vec<String>> = clusters.into_values().filter(|c| c.len() >= 2).collect();
 
     Ok(result)
 }
@@ -254,11 +241,7 @@ pub struct SweepResult {
 
 /// Run an automatic consolidation sweep: find candidate groups above the
 /// given similarity threshold and consolidate each group.
-pub async fn sweep(
-    db: &Database,
-    user_id: i64,
-    threshold: f64,
-) -> Result<SweepResult> {
+pub async fn sweep(db: &Database, user_id: i64, threshold: f64) -> Result<SweepResult> {
     let groups = find_consolidation_candidates(db, threshold as f32, user_id).await?;
     let pairs_found = groups.len() as i64;
     let mut consolidated = 0i64;
@@ -373,8 +356,8 @@ mod tests {
         let mut parent = std::collections::HashMap::new();
 
         fn find(parent: &mut std::collections::HashMap<i64, i64>, x: i64) -> i64 {
-            if !parent.contains_key(&x) {
-                parent.insert(x, x);
+            if let std::collections::hash_map::Entry::Vacant(e) = parent.entry(x) {
+                e.insert(x);
                 return x;
             }
             let mut root = x;

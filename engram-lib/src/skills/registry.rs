@@ -1,16 +1,21 @@
-use std::path::{Path, PathBuf};
-use regex::Regex;
 use super::types::SkillMeta;
+use regex::Regex;
+use std::path::{Path, PathBuf};
 
 /// Parse YAML frontmatter from SKILL.md content.
 pub fn parse_skill_md(raw: &str) -> SkillMeta {
     let mut meta = SkillMeta::default();
     if !raw.starts_with("---") {
         let re = Regex::new(r"(?m)^#\s+(.+)$").unwrap();
-        if let Some(caps) = re.captures(raw) { meta.name = caps[1].trim().to_string(); }
+        if let Some(caps) = re.captures(raw) {
+            meta.name = caps[1].trim().to_string();
+        }
         return meta;
     }
-    let end_idx = match raw[3..].find("\n---") { Some(i) => i + 3, None => return meta };
+    let end_idx = match raw[3..].find("\n---") {
+        Some(i) => i + 3,
+        None => return meta,
+    };
     let frontmatter = &raw[4..end_idx];
     let kv_re = Regex::new(r"(?m)^(\w+)\s*:\s*(.+)$").unwrap();
     for caps in kv_re.captures_iter(frontmatter) {
@@ -23,7 +28,13 @@ pub fn parse_skill_md(raw: &str) -> SkillMeta {
             "category" => meta.category = Some(val),
             "tags" => {
                 let inner = val.trim_start_matches('[').trim_end_matches(']');
-                meta.tags = Some(inner.split(',').map(|t| t.trim().trim_matches('"').to_string()).filter(|t| !t.is_empty()).collect());
+                meta.tags = Some(
+                    inner
+                        .split(',')
+                        .map(|t| t.trim().trim_matches('"').to_string())
+                        .filter(|t| !t.is_empty())
+                        .collect(),
+                );
             }
             _ => {}
         }
@@ -31,13 +42,18 @@ pub fn parse_skill_md(raw: &str) -> SkillMeta {
     if meta.name.is_empty() {
         let body = &raw[end_idx + 4..];
         let re = Regex::new(r"(?m)^#\s+(.+)$").unwrap();
-        if let Some(caps) = re.captures(body) { meta.name = caps[1].trim().to_string(); }
+        if let Some(caps) = re.captures(body) {
+            meta.name = caps[1].trim().to_string();
+        }
     }
     meta
 }
 
 pub fn read_skill_id(skill_dir: &Path) -> Option<String> {
-    std::fs::read_to_string(skill_dir.join(".skill_id")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::fs::read_to_string(skill_dir.join(".skill_id"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 pub fn write_skill_id(skill_dir: &Path, id: &str) -> std::io::Result<()> {
@@ -54,13 +70,24 @@ pub struct DiscoveredSkill {
 
 fn walk_skill_dirs(dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    let entries = match std::fs::read_dir(dir) { Ok(e) => e, Err(_) => return found };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return found,
+    };
     for entry in entries.flatten() {
         let name_str = entry.file_name().to_string_lossy().to_string();
-        if name_str.starts_with('.') || name_str == "node_modules" { continue; }
+        if name_str.starts_with('.') || name_str == "node_modules" {
+            continue;
+        }
         let full = entry.path();
-        if !full.is_dir() { continue; }
-        if full.join("SKILL.md").exists() { found.push(full); } else { found.extend(walk_skill_dirs(&full)); }
+        if !full.is_dir() {
+            continue;
+        }
+        if full.join("SKILL.md").exists() {
+            found.push(full);
+        } else {
+            found.extend(walk_skill_dirs(&full));
+        }
     }
     found
 }
@@ -70,18 +97,33 @@ pub fn discover_skills(dirs: &[&str]) -> Vec<DiscoveredSkill> {
     for dir in dirs {
         let abs = std::fs::canonicalize(dir).unwrap_or_else(|_| PathBuf::from(dir));
         for skill_dir in walk_skill_dirs(&abs) {
-            let content = match std::fs::read_to_string(skill_dir.join("SKILL.md")) { Ok(c) => c, Err(_) => continue };
+            let content = match std::fs::read_to_string(skill_dir.join("SKILL.md")) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
             let meta = parse_skill_md(&content);
-            if meta.name.is_empty() { continue; }
+            if meta.name.is_empty() {
+                continue;
+            }
             let skill_id = read_skill_id(&skill_dir).unwrap_or_else(|| {
-                let safe: String = meta.name.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+                let safe: String = meta
+                    .name
+                    .to_lowercase()
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                    .collect();
                 let safe = &safe[..safe.len().min(40)];
                 let hex = &uuid::Uuid::new_v4().to_string().replace('-', "")[..8];
                 let id = format!("{}__imp_{}", safe, hex);
                 let _ = write_skill_id(&skill_dir, &id);
                 id
             });
-            found.push(DiscoveredSkill { skill_id, path: skill_dir, content, meta });
+            found.push(DiscoveredSkill {
+                skill_id,
+                path: skill_dir,
+                content,
+                meta,
+            });
         }
     }
     found
@@ -103,5 +145,7 @@ mod tests {
         assert_eq!(m.name, "My Skill");
     }
     #[test]
-    fn test_parse_empty() { assert!(parse_skill_md("").name.is_empty()); }
+    fn test_parse_empty() {
+        assert!(parse_skill_md("").name.is_empty());
+    }
 }

@@ -65,7 +65,11 @@ fn strip_tags(html: &str) -> String {
 
             let tag_content = &lower[i + 1..tag_end];
             let is_closing = tag_content.starts_with('/');
-            let tag_name_src = if is_closing { &tag_content[1..] } else { tag_content };
+            let tag_name_src = if is_closing {
+                &tag_content[1..]
+            } else {
+                tag_content
+            };
             let tag_name = tag_name_src
                 .split(|c: char| c.is_whitespace() || c == '/')
                 .next()
@@ -89,8 +93,19 @@ fn strip_tags(html: &str) -> String {
             // Block-level tags get a newline
             if matches!(
                 tag_name,
-                "p" | "div" | "br" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
-                    | "li" | "tr" | "blockquote" | "section" | "article"
+                "p" | "div"
+                    | "br"
+                    | "h1"
+                    | "h2"
+                    | "h3"
+                    | "h4"
+                    | "h5"
+                    | "h6"
+                    | "li"
+                    | "tr"
+                    | "blockquote"
+                    | "section"
+                    | "article"
             ) {
                 output.push('\n');
             }

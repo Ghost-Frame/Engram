@@ -65,5 +65,8 @@ fn default_stability(access_count: i32, source_count: i32) -> f32 {
     let base = initial_stability(Rating::Good);
     let access_bonus = f32::min(access_count as f32 * 0.3, 3.0);
     let source_bonus = f32::min((source_count - 1) as f32 * 0.2, 1.0);
-    f32::max(FSRS_MIN_STABILITY, base * (1.0 + access_bonus + source_bonus))
+    f32::max(
+        FSRS_MIN_STABILITY,
+        base * (1.0 + access_bonus + source_bonus),
+    )
 }

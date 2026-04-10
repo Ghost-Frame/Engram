@@ -61,7 +61,9 @@ pub async fn create_entity(db: &Database, req: CreateEntityRequest) -> Result<En
     // Fetch the row that was just upserted
     let entity = find_entity_by_name_type(db, &req.name, &entity_type, user_id)
         .await?
-        .ok_or_else(|| EngError::Internal("entity upsert succeeded but fetch returned nothing".to_string()))?;
+        .ok_or_else(|| {
+            EngError::Internal("entity upsert succeeded but fetch returned nothing".to_string())
+        })?;
 
     Ok(entity)
 }
@@ -383,7 +385,11 @@ pub async fn unlink_memory_entity(
 }
 
 /// Return all entities linked to the given memory.
-pub async fn get_memory_entities(db: &Database, memory_id: i64, user_id: i64) -> Result<Vec<Entity>> {
+pub async fn get_memory_entities(
+    db: &Database,
+    memory_id: i64,
+    user_id: i64,
+) -> Result<Vec<Entity>> {
     let conn = db.connection();
     let query = format!(
         "SELECT e.{cols} \
@@ -477,7 +483,8 @@ pub async fn delete_relationship(
     relationship_type: Option<&str>,
 ) -> Result<()> {
     let conn = db.connection();
-    let mut params: Vec<libsql::Value> = vec![entity_id.into(), target_entity_id.into(), user_id.into()];
+    let mut params: Vec<libsql::Value> =
+        vec![entity_id.into(), target_entity_id.into(), user_id.into()];
     let sql = if let Some(value) = relationship_type {
         params.push(value.into());
         "DELETE FROM entity_relationships \
@@ -615,12 +622,34 @@ fn is_capitalized(word: &str) -> bool {
 /// word contains at least one alphabetic character.
 fn is_all_caps(word: &str) -> bool {
     let has_alpha = word.chars().any(|c| c.is_alphabetic());
-    has_alpha && word.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_uppercase())
+    has_alpha
+        && word
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .all(|c| c.is_uppercase())
 }
 
 /// Strip common leading/trailing punctuation from a word slice without allocating.
 fn strip_punctuation(s: &str) -> &str {
-    let punct = |c: char| matches!(c, '.' | ',' | '!' | '?' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}' | '\'' | '"' | '`');
+    let punct = |c: char| {
+        matches!(
+            c,
+            '.' | ','
+                | '!'
+                | '?'
+                | ';'
+                | ':'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '\''
+                | '"'
+                | '`'
+        )
+    };
     s.trim_matches(punct)
 }
 

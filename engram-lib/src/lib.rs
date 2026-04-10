@@ -63,6 +63,9 @@ pub enum EngError {
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
 }
 
 pub type Result<T> = std::result::Result<T, EngError>;

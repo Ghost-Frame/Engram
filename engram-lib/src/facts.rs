@@ -43,8 +43,7 @@ pub struct CurrentState {
 const FACT_COLUMNS: &str =
     "id, memory_id, subject, predicate, object, confidence, user_id, created_at";
 
-const STATE_COLUMNS: &str =
-    "id, agent, key, value, user_id, created_at, updated_at";
+const STATE_COLUMNS: &str = "id, agent, key, value, user_id, created_at, updated_at";
 
 // -- Helpers ---
 
@@ -157,10 +156,7 @@ pub async fn list_facts(
 pub async fn delete_fact(db: &Database, id: i64) -> Result<()> {
     let affected = db
         .conn
-        .execute(
-            "DELETE FROM structured_facts WHERE id = ?1",
-            params![id],
-        )
+        .execute("DELETE FROM structured_facts WHERE id = ?1", params![id])
         .await?;
 
     if affected == 0 {
@@ -207,10 +203,7 @@ pub async fn get_state(
         "SELECT {} FROM current_state WHERE agent = ?1 AND key = ?2 AND user_id = ?3",
         STATE_COLUMNS
     );
-    let mut rows = db
-        .conn
-        .query(&sql, params![agent, key, user_id])
-        .await?;
+    let mut rows = db.conn.query(&sql, params![agent, key, user_id]).await?;
 
     if let Some(row) = rows.next().await? {
         row_to_state(&row)
@@ -223,11 +216,7 @@ pub async fn get_state(
 }
 
 /// List all state entries for the given agent and user.
-pub async fn list_state(
-    db: &Database,
-    agent: &str,
-    user_id: i64,
-) -> Result<Vec<CurrentState>> {
+pub async fn list_state(db: &Database, agent: &str, user_id: i64) -> Result<Vec<CurrentState>> {
     let sql = format!(
         "SELECT {} FROM current_state WHERE agent = ?1 AND user_id = ?2 ORDER BY key ASC",
         STATE_COLUMNS

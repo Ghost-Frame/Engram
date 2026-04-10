@@ -1,6 +1,6 @@
 use rusqlite::{Connection, Result as SqliteResult};
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 pub struct Database {
     conn: Connection,
