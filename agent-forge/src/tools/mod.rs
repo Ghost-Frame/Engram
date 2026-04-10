@@ -1,3 +1,4 @@
+pub mod ast;
 pub mod hypothesis;
 pub mod session;
 pub mod spec;

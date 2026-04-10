@@ -45,6 +45,7 @@ enum Commands {
     SessionDiff,
     Think,
     DeclareUnknowns,
+    RepoMap,
 }
 
 fn expand_path(path: &str) -> PathBuf {
@@ -163,6 +164,13 @@ fn main() {
         }
         Commands::ConsiderApproaches => {
             Ok(Output::error("Not yet implemented"))
+        }
+        Commands::RepoMap => {
+            read_input(&cli.input)
+                .map_err(|e| e.to_string())
+                .and_then(|input| {
+                    tools::ast::repo_map::repo_map(&db, input).map_err(|e| e.to_string())
+                })
         }
     };
 
