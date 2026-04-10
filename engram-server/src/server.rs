@@ -9,7 +9,8 @@ use crate::state::AppState;
 /// Build the Axum router with all routes and middleware applied.
 /// Exposed as a public function so integration tests can build an in-process app.
 pub fn build_router(state: AppState) -> Router {
-    Router::new()
+    // API routes that require bearer token auth
+    let api_routes = Router::new()
         .merge(routes::health::router())
         .merge(routes::docs::router())
         .merge(routes::memory::router())
@@ -33,6 +34,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::context::router())
         .merge(routes::inbox::router())
         .merge(routes::ingestion::router())
+        .merge(routes::jobs::router())
         .merge(routes::pack::router())
         .merge(routes::projects::router())
         .merge(routes::prompts::router())
@@ -49,7 +51,16 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::search::router())
         .merge(routes::onboard::router())
         .merge(routes::portability::router())
-        .layer(axum_mw::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(axum_mw::from_fn_with_state(state.clone(), auth_middleware));
+
+    // GUI routes handle their own cookie-based auth
+    let gui_routes = routes::gui::router();
+
+    Router::new()
+        .merge(api_routes)
+        .merge(gui_routes)
+        // GUI SPA middleware intercepts HTML requests to SPA routes before API handlers
+        .layer(axum_mw::from_fn_with_state(state.clone(), routes::gui::gui_spa_middleware))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

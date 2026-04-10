@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod admin;
 pub mod agents;
+pub mod gui;
 pub mod artifacts;
 pub mod auth_keys;
 pub mod axon;
@@ -18,6 +19,7 @@ pub mod growth;
 pub mod health;
 pub mod inbox;
 pub mod ingestion;
+pub mod jobs;
 pub mod intelligence;
 pub mod loom;
 pub mod memory;

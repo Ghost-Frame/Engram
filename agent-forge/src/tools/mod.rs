@@ -5,7 +5,6 @@ pub mod spec;
 pub mod think;
 pub mod verify;
 
-use crate::db::Database;
 use crate::json_io::Output;
 
 pub type ToolResult = Result<Output, ToolError>;

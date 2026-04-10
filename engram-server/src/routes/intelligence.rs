@@ -34,7 +34,8 @@ use crate::{error::AppError, extractors::Auth, state::AppState};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        // Consolidation
+        // Consolidation (with root-level alias for parity with original engram)
+        .route("/consolidate", post(consolidate_handler))
         .route("/intelligence/consolidate", post(consolidate_handler))
         .route(
             "/intelligence/consolidation-candidates",
@@ -44,7 +45,9 @@ pub fn router() -> Router<AppState> {
             "/intelligence/consolidations",
             get(list_consolidations_handler),
         )
-        // Contradiction
+        // Contradiction (with root-level alias for parity)
+        .route("/contradictions/{memory_id}", get(contradictions_handler))
+        .route("/contradictions", post(scan_contradictions_handler))
         .route(
             "/intelligence/contradictions/{memory_id}",
             get(contradictions_handler),
@@ -64,13 +67,17 @@ pub fn router() -> Router<AppState> {
             post(detect_temporal_handler),
         )
         .route("/intelligence/temporal/patterns", get(list_temporal_handler))
-        // Digests
+        // Digests (with root-level alias for parity)
+        .route("/digests/generate", post(generate_digest_handler))
+        .route("/digests", get(list_digests_handler))
         .route(
             "/intelligence/digests/generate",
             post(generate_digest_handler),
         )
         .route("/intelligence/digests", get(list_digests_handler))
-        // Reflections
+        // Reflections (with root-level alias for parity)
+        .route("/reflections", post(create_reflection_handler).get(list_reflections_handler))
+        .route("/reflect", post(create_reflection_handler))
         .route(
             "/intelligence/reflections",
             post(create_reflection_handler).get(list_reflections_handler),

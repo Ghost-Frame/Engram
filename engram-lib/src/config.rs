@@ -24,6 +24,9 @@ pub struct Config {
     pub embedding_chunk_max_chunks: usize,
     pub reranker_enabled: bool,
     pub reranker_top_k: usize,
+    pub data_dir: String,
+    pub gui_password: Option<String>,
+    pub gui_build_dir: Option<String>,
 }
 
 impl Default for Config {
@@ -44,6 +47,9 @@ impl Default for Config {
             embedding_chunk_max_chunks: 6,
             reranker_enabled: true,
             reranker_top_k: 12,
+            data_dir: "./data".to_string(),
+            gui_password: None,
+            gui_build_dir: None,
         }
     }
 }
@@ -101,6 +107,15 @@ impl Config {
         }
         if let Ok(v) = std::env::var("ENGRAM_RERANKER_TOP_K") {
             if let Ok(n) = v.parse() { config.reranker_top_k = n; }
+        }
+        if let Ok(v) = std::env::var("ENGRAM_DATA_DIR") {
+            config.data_dir = v;
+        }
+        if let Ok(v) = std::env::var("ENGRAM_GUI_PASSWORD") {
+            config.gui_password = Some(v);
+        }
+        if let Ok(v) = std::env::var("ENGRAM_GUI_BUILD_DIR") {
+            config.gui_build_dir = Some(v);
         }
         config
     }

@@ -10,6 +10,7 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::auth::{create_key, AuthContext, Scope};
+use engram_lib::graph::{communities, cooccurrence};
 
 fn require_admin(auth: &AuthContext) -> Result<(), AppError> {
     if !auth.has_scope(&Scope::Admin) {
@@ -67,6 +68,9 @@ pub fn router() -> Router<AppState> {
         .route("/backup", get(backup_handler))
         .route("/backup/verify", post(backup_verify_handler))
         .route("/checkpoint", post(checkpoint_handler))
+        // Graph operations
+        .route("/admin/detect-communities", post(detect_communities_handler))
+        .route("/admin/rebuild-cooccurrences", post(rebuild_cooccurrences_handler))
 }
 
 // ---------------------------------------------------------------------------
@@ -649,3 +653,26 @@ async fn reset_user(
     }
     Ok(Json(json!({ "deleted_rows": total, "user_id": uid })))
 }
+
+// ---------------------------------------------------------------------------
+// Communities + Cooccurrences
+// ---------------------------------------------------------------------------
+
+async fn detect_communities_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let result = communities::detect_communities(&state.db, auth.user_id, 100).await?;
+    to_json(result)
+}
+
+async fn rebuild_cooccurrences_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let pairs = cooccurrence::rebuild_cooccurrences(&state.db, auth.user_id).await?;
+    Ok(Json(json!({ "rebuilt_pairs": pairs })))
+}
+

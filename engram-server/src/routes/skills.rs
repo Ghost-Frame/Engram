@@ -24,6 +24,9 @@ pub fn router() -> Router<AppState> {
         // CRUD
         .route("/skills", post(create_skill_handler).get(list_skills_handler))
         .route("/skills/search", post(search_skills_handler))
+        .route("/skills/sync", post(sync_skills_handler))
+        .route("/skills/execute", post(execute_skills_handler))
+        .route("/skills/upload", post(upload_skill_handler))
         .route("/skills/{id}", get(get_skill_handler).delete(delete_skill_handler))
         .route("/skills/{id}/update", post(update_skill_handler))
         // Execution
@@ -340,4 +343,181 @@ async fn cloud_upload_handler(
     let tags = body.tags.unwrap_or_default();
     let result = cloud::upload_skill_to_cloud(&body.name, &body.description, &body.content, &body.category, &tags).await?;
     Ok(Json(json!({ "uploaded": true, "id": result })))
+}
+
+// ---------------------------------------------------------------------------
+// Sync, Execute, Upload handlers (parity with original engram)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct SyncSkillsBody {
+    dirs: Option<Vec<String>>,
+}
+
+/// Sync skills from filesystem directories.
+/// Note: In the Rust version, skills are primarily stored in the database.
+/// This endpoint scans specified directories for skill files and imports them.
+async fn sync_skills_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<SyncSkillsBody>,
+) -> Result<Json<Value>, AppError> {
+    let dirs = body.dirs.unwrap_or_default();
+    if dirs.is_empty() {
+        return Ok(Json(json!({
+            "synced": 0,
+            "message": "No directories specified. Provide dirs array to sync from."
+        })));
+    }
+
+    let mut synced = 0;
+    let mut errors = Vec::new();
+
+    for dir in &dirs {
+        let path = std::path::Path::new(dir);
+        if !path.exists() || !path.is_dir() {
+            errors.push(format!("Directory not found: {}", dir));
+            continue;
+        }
+
+        // Scan for .md files (skill format)
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.extension().map(|e| e == "md").unwrap_or(false) {
+                    if let Ok(content) = std::fs::read_to_string(&entry_path) {
+                        let name = entry_path.file_stem()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+
+                        // Create or update skill
+                        let req = skills::CreateSkillRequest {
+                            name: name.clone(),
+                            description: Some(format!("Imported from {}", dir)),
+                            code: content,
+                            language: Some("markdown".to_string()),
+                            agent: "system".to_string(),
+                            parent_skill_id: None,
+                            metadata: None,
+                            user_id: Some(auth.user_id),
+                            tags: Some(vec!["imported".to_string()]),
+                            tool_deps: None,
+                        };
+
+                        if skills::create_skill(&state.db, req).await.is_ok() {
+                            synced += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Json(json!({
+        "synced": synced,
+        "dirs_scanned": dirs.len(),
+        "errors": errors,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ExecuteSkillsBody {
+    task: String,
+    skill_dirs: Option<Vec<String>>,
+    search_scope: Option<String>,
+}
+
+/// Execute a task using relevant skills as context.
+/// This requires an LLM to be configured.
+async fn execute_skills_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<ExecuteSkillsBody>,
+) -> Result<Json<Value>, AppError> {
+    let task = body.task.trim();
+    if task.is_empty() {
+        return Err(AppError::from(engram_lib::EngError::InvalidInput("task is required".into())));
+    }
+
+    // Check if LLM is available
+    let Some(ref llm) = state.llm else {
+        return Err(AppError::from(engram_lib::EngError::Internal("No LLM configured".into())));
+    };
+
+    // Search for relevant skills
+    let search_results = search_skills(&state.db, task, auth.user_id, 5).await?;
+    let skill_names: Vec<String> = search_results.iter().map(|r| r.name.clone()).collect();
+
+    // Build context from top skills
+    let mut skill_context = String::new();
+    for result in search_results.iter().take(3) {
+        if let Ok(skill) = skills::get_skill(&state.db, result.id, auth.user_id).await {
+            skill_context.push_str(&format!("<skill name=\"{}\">\n{}\n</skill>\n\n", skill.name, skill.code));
+        }
+    }
+
+    // Build system prompt
+    let system = if skill_context.is_empty() {
+        "You are a skilled assistant.".to_string()
+    } else {
+        format!("You are a skilled assistant. Use the following skills as guidance:\n\n{}", skill_context)
+    };
+
+    // Call LLM
+    let response = llm.call(&system, task, None).await
+        .map_err(|e| AppError::from(engram_lib::EngError::Internal(e.to_string())))?;
+
+    Ok(Json(json!({
+        "response": response,
+        "skills_used": skill_names,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct UploadSkillBody {
+    skill_dir: String,
+    visibility: Option<String>,
+    origin: Option<String>,
+    tags: Option<Vec<String>>,
+}
+
+/// Upload a skill from a local directory to the cloud.
+async fn upload_skill_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<UploadSkillBody>,
+) -> Result<Json<Value>, AppError> {
+    let skill_dir = body.skill_dir.trim();
+    if skill_dir.is_empty() {
+        return Err(AppError::from(engram_lib::EngError::InvalidInput("skill_dir is required".into())));
+    }
+
+    // Try to find skill by path/name
+    let path = std::path::Path::new(skill_dir);
+    let name = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+
+    // Search for matching skill in DB
+    let skills_list = skills::list_skills(&state.db, auth.user_id, None, 100, 0).await?;
+    let skill = skills_list.into_iter().find(|s| s.name == name);
+
+    let Some(skill) = skill else {
+        return Err(AppError::from(engram_lib::EngError::NotFound(
+            format!("No skill found matching: {}. Run /skills/sync first.", skill_dir)
+        )));
+    };
+
+    // Upload to cloud
+    let tags = body.tags.unwrap_or_default();
+    let description = skill.description.as_deref().unwrap_or("");
+    let category = &skill.language;
+    let result = cloud::upload_skill_to_cloud(&skill.name, description, &skill.code, category, &tags).await?;
+
+    Ok(Json(json!({
+        "uploaded": true,
+        "skill_id": skill.id,
+        "cloud_id": result,
+    })))
 }
