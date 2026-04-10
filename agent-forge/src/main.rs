@@ -4,6 +4,7 @@ use std::path::PathBuf;
 mod db;
 mod json_io;
 mod tools;
+mod treesitter;
 
 use db::Database;
 use json_io::{read_input, write_output, Output};
