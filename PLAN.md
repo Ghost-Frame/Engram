@@ -97,6 +97,18 @@ pub struct TenantConfig {
 - `engram-lib/src/tenant/loader.rs` -- lazy load, LRU eviction
 - `engram-lib/src/tenant/id.rs` -- `tenant_id_from_user` helper with safe fallback hashing
 - `engram-cli/src/bin/engram-migrate.rs` -- monolithic-to-sharded migration tool
+- `engram-cli/src/migrate/mod.rs` -- migration tool library code (shared with bin)
+- `engram-cli/src/migrate/libsql_reader.rs` -- libsql read side
+- `engram-cli/src/migrate/rusqlite_writer.rs` -- rusqlite + LanceDB write side
+- `engram-cli/src/migrate/verify.rs` -- post-migration verification
+
+## Cargo Dependency Policy
+
+- `engram-lib`: rusqlite only, no libsql
+- `engram-server`: no libsql
+- `engram-cli`: BOTH libsql (for migration) and rusqlite (via engram-lib). This is the only crate that links both.
+
+This is enforced by a workspace check in Phase 4's final commit.
 
 ## Files to Modify
 
@@ -143,23 +155,89 @@ Keep user_id only in `system/registry.db` and `system/audit.db`.
 
 ## Migration Tool (engram-migrate)
 
-Algorithm:
-1. Open old monolithic DB read-only.
-2. Scan `SELECT DISTINCT user_id FROM memories` to find tenants.
-3. For each user_id:
-   a. Compute `tenant_id`.
-   b. Create `data_dir/tenants/<tenant_id>/` and empty schema.
-   c. `ATTACH DATABASE` old DB, `INSERT INTO tenant.memories SELECT ... WHERE user_id = ?` for each table.
-   d. Drop `user_id` column from tenant tables (SQLite: recreate table without the column, copy data).
-   e. Rebuild HNSW index from memory embeddings.
-   f. Insert registry row.
-4. Verify row counts per tenant match expected.
-5. Rename old DB to `<name>.pre-shard-backup`.
+This tool is the single bridge from the old world (libsql, monolithic, user_id-filtered) to the new world (rusqlite, sharded, per-tenant). It is the ONLY place libsql is still used after Phase 4 lands.
 
-Modes:
-- `--dry-run`: report what would happen, write nothing.
-- `--reverse`: consolidate shards back into a monolithic DB (for rollback).
-- `--verify`: after migration, run a verification pass comparing checksums.
+### Why two drivers in one binary
+
+Phase 4 drops libsql from `engram-lib` and `engram-server`, but existing deployments have libsql-format databases containing the `memories_vec_1024_idx` virtual table from prior schema versions. Vanilla rusqlite cannot open a schema that references libsql-specific virtual tables without errors. The migration tool uses:
+
+- **libsql crate** to READ the old monolithic database
+- **rusqlite crate** to WRITE the new per-tenant shards
+- **lancedb crate** to build per-tenant HNSW indexes from embeddings
+
+`engram-cli/Cargo.toml` keeps libsql as a dependency. After a release or two, once users have migrated, a cleanup commit can remove libsql entirely.
+
+### Binary Location
+
+```
+engram-cli/src/bin/engram-migrate.rs
+```
+
+### Algorithm
+
+1. **Lock**: write `<data_dir>/.migration-in-progress` lockfile. Fail fast if it already exists.
+2. **Read old DB**: open `engram.db` via libsql (read-only). Verify schema version and report it.
+3. **Enumerate tenants**: `SELECT DISTINCT user_id FROM memories` (and other tables that might have user_id-only rows such as associations or structured_facts that reference memories not yet created).
+4. **For each user_id**:
+   a. Compute `tenant_id` via `tenant_id_from_user`.
+   b. `mkdir -p data_dir/tenants/<tenant_id>/{hnsw,blobs}`.
+   c. Create a fresh `engram.db` in that directory via rusqlite with the NEW schema (no `user_id` column, no `memories_vec_1024_idx` virtual table, includes Phase 3 `memory_pagerank` tables).
+   d. Stream rows from libsql per table, insert via rusqlite inside a single transaction per table. Drop the `user_id` column at copy time by simply not selecting it.
+   e. For each memory with an embedding, decode the embedding (was stored by libsql as BLOB or as libsql vector type) to `Vec<f32>` and insert into a fresh LanceDB index at `data_dir/tenants/<tenant_id>/hnsw/memories.lance`.
+   f. Insert a row into `data_dir/system/registry.db` with status=active, schema_version=current.
+   g. Write an audit entry `tenant.created_via_migration`.
+5. **Verify**: for each tenant, compare `SELECT COUNT(*)` from the old DB (filtered by user_id) with the new shard's `SELECT COUNT(*)`. Mismatch aborts and rolls back that tenant.
+6. **Global tables**: any rows not associated with a user_id (schema meta, global caches) go into `data_dir/system/` tables, not tenants.
+7. **Swap**: rename old `engram.db` to `engram.db.pre-shard-backup`. Do NOT delete.
+8. **Unlock**: remove `.migration-in-progress` lockfile.
+9. **Summary**: print tenant count, row counts, time taken, disk used.
+
+### Modes
+
+- `engram-migrate --data-dir <dir> --dry-run`
+  - Reports distinct user_id count, per-tenant row counts, estimated disk use. Writes nothing.
+- `engram-migrate --data-dir <dir>`
+  - Full migration. Requires server to be stopped.
+- `engram-migrate --data-dir <dir> --verify`
+  - After a successful migration, reruns counts and checksums as a sanity pass.
+- `engram-migrate --data-dir <dir> --reverse`
+  - Consolidates `data_dir/tenants/*` back into a single rusqlite `engram.db` at the root. Rolls back the sharding transformation. Note: the rollback target is vanilla SQLite, NOT libsql, because we are not regressing drivers. Rollback does not restore libsql-specific virtual tables.
+
+### Embedding Conversion
+
+Check how embeddings are currently stored in libsql. Two cases:
+
+- **Case A: TEXT/JSON**: `serde_json::from_str::<Vec<f32>>(&text)?`. Easy.
+- **Case B: libsql vector BLOB**: libsql stores vectors in a typed BLOB. Use libsql's typed getter: `row.get::<Vec<f32>>(col)?`, or if that is not exposed, read the raw BLOB and decode with the libsql vector format. Document the format clearly.
+
+The decoded `Vec<f32>` goes into LanceDB AND is stored in the new rusqlite DB as a plain BLOB (just `bincode` serialized `Vec<f32>`) so rebuilds remain possible.
+
+### Schema Drift Handling
+
+Old deployments may have different schema versions. The tool must:
+
+1. Read `schema_migrations` or equivalent from the old DB to determine version.
+2. Apply any forward migrations that are idempotent to bring the old data to a canonical pre-migration state BEFORE sharding (e.g. if an old version is missing a column the tool expects).
+3. Refuse to run on unknown or unsupported versions with a clear error.
+
+Add a `MIGRATION_SUPPORTED_VERSIONS: &[u32]` constant in the tool source. Update it as new schema versions ship.
+
+### Partial Failure Recovery
+
+If the tool crashes mid-run:
+- Source DB is untouched (we only rename at the final step).
+- `.migration-in-progress` lockfile remains -- user must investigate before rerunning.
+- Any partially-created tenant directories can be deleted by the user after investigation, OR the tool can accept `--resume` to skip tenants whose registry row already exists and whose row counts match.
+
+### Self-Host Case
+
+Single-user deployments still run the tool. They get one tenant shard at `data_dir/tenants/<user_id>/`. Overhead is a handful of files. This preserves the self-hosting story.
+
+### Operational Notes
+
+- **Server must be stopped**: migration is NOT online. The tool refuses to run if it detects the WAL is active or if a pid lock is held.
+- **Document downtime**: README updates and release notes must call out the required downtime window.
+- **Backup first**: the tool refuses to run unless `--i-have-a-backup` is passed OR the source DB is under 100MB (in which case it creates its own backup automatically).
 
 ## Background Jobs Per Tenant
 
@@ -260,10 +338,19 @@ Not trivially reversible. Mitigations:
 7. Port remaining handlers in waves (memory, intelligence, ingestion, export, admin).
 8. Drop `user_id` from remaining tables.
 9. Update background jobs.
-10. Write `engram-migrate` tool.
-11. Run migration on a staging snapshot.
-12. Load test 1000 tenants.
-13. Security test cross-tenant isolation.
+10. Write `engram-migrate` tool:
+    a. libsql reader that enumerates user_ids and streams rows.
+    b. rusqlite writer that creates shards with the new schema.
+    c. LanceDB index builder from embeddings.
+    d. Registry writer.
+    e. Verification pass.
+    f. Dry-run mode.
+    g. Reverse mode (shards to monolithic vanilla SQLite).
+    h. Lockfile + resume support.
+11. Test migration on a fixture libsql DB at each supported schema version.
+12. Run migration on a staging snapshot of real data.
+13. Load test 1000 tenants.
+14. Security test cross-tenant isolation.
 
 ## Verification
 
@@ -279,6 +366,14 @@ Not trivially reversible. Mitigations:
 - [ ] Quota enforcement blocks writes past limit
 - [ ] Audit log captures tenant lifecycle events
 - [ ] Backup tooling handles the new layout
+- [ ] `engram-migrate --dry-run` runs cleanly on a libsql fixture
+- [ ] `engram-migrate` successfully converts a libsql fixture with vector virtual tables
+- [ ] Row counts verified per tenant after migration
+- [ ] LanceDB indexes built from libsql embeddings produce correct nearest-neighbor results
+- [ ] `engram-migrate --reverse` consolidates shards back to vanilla SQLite
+- [ ] `engram-migrate --resume` picks up after a partial failure
+- [ ] Lockfile prevents concurrent runs
+- [ ] libsql is ONLY referenced from the engram-cli crate, not engram-lib or engram-server
 
 ## Commit Message Style
 
