@@ -414,31 +414,6 @@ async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>
 }
 
 // ---------------------------------------------------------------------------
-// Export -- user-scoped
-// ---------------------------------------------------------------------------
-
-pub async fn export_user_data(db: &Database, user_id: i64) -> Result<ExportData> {
-    let sql_memories = format!(
-        "SELECT id, content, category, source, importance, user_id, space_id, created_at \
-         FROM memories WHERE is_forgotten = 0 AND user_id = {}",
-        user_id
-    );
-    let memories = export_table(db, &sql_memories).await?;
-    let sql_conv = format!(
-        "SELECT * FROM conversations WHERE user_id = {}",
-        user_id
-    );
-    let conversations = export_table(db, &sql_conv).await?;
-    let sql_keys = format!(
-        "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active, created_at \
-         FROM api_keys WHERE user_id = {}",
-        user_id
-    );
-    let api_keys = export_table(db, &sql_keys).await?;
-    Ok(ExportData { users: vec![], memories, conversations, api_keys })
-}
-
-// ---------------------------------------------------------------------------
 // Re-embed: clear embeddings so they get regenerated
 // ---------------------------------------------------------------------------
 

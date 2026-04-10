@@ -62,7 +62,7 @@ pub fn router() -> Router<AppState> {
         .route("/tenants/provision", post(provision_tenant))
         .route("/tenants/deprovision", post(deprovision_tenant))
         // Data management
-        .route("/export", get(export_handler))
+        .route("/admin/export", get(export_handler))
         .route("/reset", post(reset_user))
         .route("/backup", get(backup_handler))
         .route("/backup/verify", post(backup_verify_handler))
