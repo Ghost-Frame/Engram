@@ -42,11 +42,36 @@ pub async fn compact(db: &Database) -> Result<CompactResult> {
 // GC -- garbage collection of forgotten/expired data
 // ---------------------------------------------------------------------------
 
-pub async fn gc(db: &Database) -> Result<GcResult> {
-    let forgotten = db.conn.execute("DELETE FROM memories WHERE is_forgotten = 1", ()).await? as i64;
-    let expired = db.conn.execute("DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')", ()).await? as i64;
-    let orphaned = 0i64; // Embedding cleanup is handled separately
-    let old_audit = db.conn.execute("DELETE FROM audit_log WHERE created_at < datetime('now', '-90 days')", ()).await? as i64;
+pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
+    let forgotten = match user_id {
+        Some(uid) => db.conn.execute(
+            "DELETE FROM memories WHERE is_forgotten = 1 AND user_id = ?1",
+            libsql::params![uid],
+        ).await? as i64,
+        None => db.conn.execute(
+            "DELETE FROM memories WHERE is_forgotten = 1",
+            (),
+        ).await? as i64,
+    };
+    let expired = match user_id {
+        Some(uid) => db.conn.execute(
+            "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now') AND user_id = ?1",
+            libsql::params![uid],
+        ).await? as i64,
+        None => db.conn.execute(
+            "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+            (),
+        ).await? as i64,
+    };
+    let orphaned = 0i64;
+    let old_audit = if user_id.is_none() {
+        db.conn.execute(
+            "DELETE FROM audit_log WHERE created_at < datetime('now', '-90 days')",
+            (),
+        ).await? as i64
+    } else {
+        0
+    };
     let total = forgotten + expired + orphaned + old_audit;
     Ok(GcResult {
         total_cleaned: total,
@@ -314,6 +339,144 @@ async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>
         }
     }
     Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Export -- user-scoped
+// ---------------------------------------------------------------------------
+
+pub async fn export_user_data(db: &Database, user_id: i64) -> Result<ExportData> {
+    let sql_memories = format!(
+        "SELECT id, content, category, source, importance, user_id, space_id, created_at \
+         FROM memories WHERE is_forgotten = 0 AND user_id = {}",
+        user_id
+    );
+    let memories = export_table(db, &sql_memories).await?;
+    let sql_conv = format!(
+        "SELECT * FROM conversations WHERE user_id = {}",
+        user_id
+    );
+    let conversations = export_table(db, &sql_conv).await?;
+    let sql_keys = format!(
+        "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active, created_at \
+         FROM api_keys WHERE user_id = {}",
+        user_id
+    );
+    let api_keys = export_table(db, &sql_keys).await?;
+    Ok(ExportData { users: vec![], memories, conversations, api_keys })
+}
+
+// ---------------------------------------------------------------------------
+// Re-embed: clear embeddings so they get regenerated
+// ---------------------------------------------------------------------------
+
+pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
+    let affected = match user_id {
+        Some(uid) => db.conn.execute(
+            "UPDATE memories SET embedding = NULL WHERE user_id = ?1 AND is_forgotten = 0",
+            libsql::params![uid],
+        ).await?,
+        None => db.conn.execute(
+            "UPDATE memories SET embedding = NULL WHERE is_forgotten = 0",
+            (),
+        ).await?,
+    };
+    Ok(affected as i64)
+}
+
+// ---------------------------------------------------------------------------
+// Backfill: fetch memories without structured facts
+// ---------------------------------------------------------------------------
+
+pub async fn get_memories_without_facts(db: &Database, limit: i64) -> Result<Vec<(i64, String, i64)>> {
+    let mut rows = db.conn.query(
+        "SELECT m.id, m.content, m.user_id FROM memories m \
+         WHERE m.is_forgotten = 0 \
+         AND NOT EXISTS (SELECT 1 FROM structured_facts f WHERE f.memory_id = m.id) \
+         LIMIT ?1",
+        libsql::params![limit],
+    ).await?;
+    let mut result = Vec::new();
+    while let Some(row) = rows.next().await? {
+        result.push((
+            row.get(0).unwrap_or(0),
+            row.get(1).unwrap_or_default(),
+            row.get(2).unwrap_or(0),
+        ));
+    }
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Rebuild FTS index
+// ---------------------------------------------------------------------------
+
+pub async fn rebuild_fts(db: &Database) -> Result<i64> {
+    db.conn.execute(
+        "INSERT INTO memories_fts(memories_fts) VALUES('rebuild')",
+        (),
+    ).await?;
+    let mut rows = db.conn.query("SELECT COUNT(*) FROM memories_fts", ()).await?;
+    match rows.next().await? {
+        Some(row) => Ok(row.get(0).unwrap_or(0)),
+        None => Ok(0),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scale report
+// ---------------------------------------------------------------------------
+
+pub async fn scale_report(db: &Database) -> Result<serde_json::Value> {
+    let tables = &[
+        "memories", "conversations", "messages", "episodes", "entities",
+        "structured_facts", "skills", "events", "action_log", "tasks", "agents",
+        "api_keys", "audit_log", "webhooks", "user_preferences",
+    ];
+    let mut counts = serde_json::Map::new();
+    for table in tables {
+        let sql = format!("SELECT COUNT(*) FROM {}", table);
+        match db.conn.query(&sql, ()).await {
+            Ok(mut rows) => {
+                let count: i64 = match rows.next().await {
+                    Ok(Some(row)) => row.get(0).unwrap_or(0),
+                    _ => 0,
+                };
+                counts.insert(table.to_string(), serde_json::json!(count));
+            }
+            Err(_) => {
+                counts.insert(table.to_string(), serde_json::json!("table not found"));
+            }
+        }
+    }
+    let mut rows = db.conn.query(
+        "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+        (),
+    ).await?;
+    let db_size: i64 = match rows.next().await? {
+        Some(row) => row.get(0).unwrap_or(0),
+        None => 0,
+    };
+    Ok(serde_json::json!({ "table_counts": counts, "database_size_bytes": db_size }))
+}
+
+// ---------------------------------------------------------------------------
+// Cold storage stats
+// ---------------------------------------------------------------------------
+
+pub async fn cold_storage_stats(db: &Database, days: i64) -> Result<serde_json::Value> {
+    let threshold = format!("-{} days", days);
+    let mut rows = db.conn.query(
+        "SELECT COUNT(*) FROM memories \
+         WHERE is_forgotten = 0 AND is_archived = 0 \
+         AND created_at < datetime('now', ?1)",
+        libsql::params![threshold],
+    ).await?;
+    let eligible: i64 = match rows.next().await? {
+        Some(row) => row.get(0).unwrap_or(0),
+        None => 0,
+    };
+    Ok(serde_json::json!({ "eligible_count": eligible, "threshold_days": days }))
 }
 
 // ---------------------------------------------------------------------------
