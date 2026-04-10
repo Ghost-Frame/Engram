@@ -109,6 +109,7 @@ pub(crate) fn row_to_memory(row: &libsql::Row) -> Result<Memory> {
         dominant_emotion: row.get::<Option<String>>(44)?,
         created_at: row.get::<String>(45)?,
         updated_at: row.get::<String>(46)?,
+        is_superseded: row.get::<i32>(47).map(|v| v != 0)?,
     })
 }
 
@@ -121,7 +122,7 @@ pub(crate) const MEMORY_COLUMNS: &str = "id, content, category, source, session_
     episode_id, decay_score, confidence, sync_id, status, user_id, space_id, \
     fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, \
     fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
-    valence, arousal, dominant_emotion, created_at, updated_at";
+    valence, arousal, dominant_emotion, created_at, updated_at, is_superseded";
 
 // -- Public CRUD functions ---
 

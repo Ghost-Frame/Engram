@@ -33,6 +33,15 @@ impl Database {
         Ok(Self { db, conn })
     }
 
+    /// In-memory database for tests. No pragmas, just schema.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn connect_memory() -> Result<Self> {
+        let db = Builder::new_local(":memory:").build().await?;
+        let conn = db.connect()?;
+        migrations::run_migrations(&conn).await?;
+        Ok(Self { db, conn })
+    }
+
     pub fn connection(&self) -> &Connection {
         &self.conn
     }
