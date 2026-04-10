@@ -1,8 +1,12 @@
 pub mod consolidation;
 pub mod contradiction;
+pub mod correction;
 pub mod decomposition;
+pub mod duplicates;
 pub mod temporal;
 pub mod digests;
+pub mod feedback;
+pub mod health;
 pub mod reflections;
 pub mod sentiment;
 pub mod causal;

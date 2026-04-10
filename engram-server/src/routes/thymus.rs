@@ -71,20 +71,20 @@ async fn create_rubric_handler(
 
 async fn get_rubric_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let rubric = get_rubric(&state.db, id).await?;
+    let rubric = get_rubric(&state.db, id, auth.user_id).await?;
     Ok(Json(json!(rubric)))
 }
 
 async fn update_rubric_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
     Json(body): Json<UpdateRubricRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let rubric = update_rubric(&state.db, id, body).await?;
+    let rubric = update_rubric(&state.db, id, body, auth.user_id).await?;
     Ok(Json(json!(rubric)))
 }
 
@@ -140,10 +140,10 @@ async fn list_evaluations_handler(
 
 async fn get_evaluation_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let evaluation = get_evaluation(&state.db, id).await?;
+    let evaluation = get_evaluation(&state.db, id, auth.user_id).await?;
     Ok(Json(json!(evaluation)))
 }
 

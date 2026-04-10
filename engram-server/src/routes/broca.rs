@@ -76,7 +76,7 @@ async fn log_action_handler(
 
 async fn list_actions_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(params): Query<QueryActionsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100);
@@ -87,7 +87,7 @@ async fn list_actions_handler(
     let project = params.project.as_deref().or(params.service.as_deref());
     let action = params.action.as_deref();
 
-    let mut entries = query_actions(&state.db, agent, project, action, limit, offset).await?;
+    let mut entries = query_actions(&state.db, agent, project, action, limit, offset, auth.user_id).await?;
 
     // Apply since filter in-memory if provided
     if let Some(ref since) = params.since {
@@ -99,23 +99,23 @@ async fn list_actions_handler(
 
 async fn get_action_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let entry = get_action(&state.db, id).await?;
+    let entry = get_action(&state.db, id, auth.user_id).await?;
     Ok(Json(json!(entry)))
 }
 
 async fn get_feed_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(params): Query<QueryActionsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100);
     let offset = params.offset.unwrap_or(0);
     let agent = params.agent.as_deref();
 
-    let mut entries = query_actions(&state.db, agent, None, None, limit, offset).await?;
+    let mut entries = query_actions(&state.db, agent, None, None, limit, offset, auth.user_id).await?;
 
     if let Some(ref since) = params.since {
         entries.retain(|e| e.created_at.as_str() >= since.as_str());

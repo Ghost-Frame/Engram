@@ -96,16 +96,17 @@ pub async fn query_actions(
     action: Option<&str>,
     limit: usize,
     offset: usize,
+    user_id: i64,
 ) -> Result<Vec<ActionEntry>> {
     let conn = &db.conn;
 
     let mut sql = String::from(
         "SELECT id, agent, action, summary, metadata, project, user_id, created_at
-         FROM action_log WHERE 1=1",
+         FROM action_log WHERE user_id = ?1",
     );
 
-    let mut param_idx = 1usize;
-    let mut params_vec: Vec<libsql::Value> = Vec::new();
+    let mut param_idx = 2usize;
+    let mut params_vec: Vec<libsql::Value> = vec![libsql::Value::Integer(user_id)];
 
     if let Some(a) = agent {
         sql.push_str(&format!(" AND agent = ?{}", param_idx));
@@ -139,14 +140,14 @@ pub async fn query_actions(
     Ok(results)
 }
 
-pub async fn get_action(db: &Database, id: i64) -> Result<ActionEntry> {
+pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEntry> {
     let conn = &db.conn;
     let mut rows = conn
         .query(
             "SELECT id, agent, action, summary, metadata, project, user_id, created_at
              FROM action_log
-             WHERE id = ?1",
-            libsql::params![id],
+             WHERE id = ?1 AND user_id = ?2",
+            libsql::params![id, user_id],
         )
         .await?;
 

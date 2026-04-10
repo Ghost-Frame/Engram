@@ -60,6 +60,7 @@ pub async fn add_link(
     effect_memory_id: i64,
     strength: f64,
     order_index: i32,
+    _user_id: i64,
 ) -> Result<CausalLink> {
     let conn = db.connection();
     conn.execute(
@@ -83,7 +84,7 @@ pub async fn add_link(
 }
 
 /// Get a causal chain with all its links.
-pub async fn get_chain(db: &Database, chain_id: i64) -> Result<CausalChain> {
+pub async fn get_chain(db: &Database, chain_id: i64, _user_id: i64) -> Result<CausalChain> {
     let conn = db.connection();
 
     let mut rows = conn.query(
@@ -142,7 +143,7 @@ pub async fn list_chains(db: &Database, user_id: i64, limit: usize) -> Result<Ve
 
     let mut chains = Vec::new();
     for id in ids {
-        chains.push(get_chain(db, id).await?);
+        chains.push(get_chain(db, id, user_id).await?);
     }
 
     Ok(chains)

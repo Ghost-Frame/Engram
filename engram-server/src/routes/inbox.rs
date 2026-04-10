@@ -49,7 +49,7 @@ async fn reject(
 ) -> Result<Json<Value>, AppError> {
     engram_lib::inbox::reject_memory(&state.db, id, auth.user_id).await?;
     if let Some(reason) = &body.reason {
-        let _ = engram_lib::inbox::set_forget_reason(&state.db, id, reason).await;
+        let _ = engram_lib::inbox::set_forget_reason(&state.db, id, reason, auth.user_id).await;
     }
     Ok(Json(json!({ "rejected": true, "id": id })))
 }
@@ -63,12 +63,12 @@ struct EditBody {
 }
 
 async fn edit(
-    Auth(_auth): Auth, State(state): State<AppState>, Path(id): Path<i64>, Json(body): Json<EditBody>,
+    Auth(auth): Auth, State(state): State<AppState>, Path(id): Path<i64>, Json(body): Json<EditBody>,
 ) -> Result<Json<Value>, AppError> {
     engram_lib::inbox::edit_and_approve(
         &state.db, id,
         body.content.as_deref(), body.category.as_deref(),
-        body.importance, body.tags.as_deref(),
+        body.importance, body.tags.as_deref(), auth.user_id,
     ).await?;
     Ok(Json(json!({ "approved": true, "edited": true, "id": id })))
 }

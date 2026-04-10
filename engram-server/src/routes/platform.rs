@@ -1,6 +1,6 @@
 use axum::{
     extract::{Query, State},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -9,13 +9,29 @@ use serde_json::{json, Value};
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/sync/changes", get(get_sync_changes))
+    Router::new()
+        .route("/sync/changes", get(get_sync_changes))
+        .route("/sync/receive", post(sync_receive))
 }
 
 #[derive(Debug, Deserialize)]
 struct SyncQuery {
     since: Option<String>,
     limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct SyncReceiveBody {
+    changes: Vec<engram_lib::sync::SyncReceiveChange>,
+}
+
+async fn sync_receive(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<SyncReceiveBody>,
+) -> Result<Json<Value>, AppError> {
+    let result = engram_lib::sync::receive_sync(&state.db, auth.user_id, body.changes).await?;
+    Ok(Json(serde_json::to_value(result).map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?))
 }
 
 async fn get_sync_changes(

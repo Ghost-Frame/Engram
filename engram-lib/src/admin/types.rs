@@ -2,6 +2,20 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize)]
+pub struct UserExport {
+    pub version: String,
+    pub exported_at: String,
+    pub user_id: i64,
+    pub memories: Vec<serde_json::Value>,
+    pub conversations: Vec<serde_json::Value>,
+    pub episodes: Vec<serde_json::Value>,
+    pub entities: Vec<serde_json::Value>,
+    pub facts: Vec<serde_json::Value>,
+    pub preferences: Vec<serde_json::Value>,
+    pub skills: Vec<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactResult {
     pub size_before: i64,

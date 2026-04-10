@@ -1,13 +1,18 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
+use engram_lib::facts::list_facts;
 use engram_lib::graph::{
     builder::build_graph_data,
     communities::{detect_communities, get_community_members, get_community_stats},
     cooccurrence::{get_cooccurring_entities, rebuild_cooccurrences},
+    entities::{
+        delete_relationship, link_memory_entity, search_entity_memories, unlink_memory_entity,
+        update_entity,
+    },
     pagerank::update_pagerank_scores,
     search::{graph_search, neighborhood},
     types::{CreateEntityRequest, CreateRelationshipRequest, GraphBuildOptions},
@@ -25,17 +30,38 @@ pub fn router() -> Router<AppState> {
     Router::new()
         // Entity CRUD
         .route("/entities", post(create_entity_handler).get(list_entities_handler))
-        .route("/entities/{id}", get(get_entity_handler).delete(delete_entity_handler))
-        .route("/entities/{id}/relationships", get(entity_relationships_handler))
-        .route("/entities/{id}/memories", get(entity_memories_handler))
+        .route(
+            "/entities/{id}",
+            get(get_entity_handler)
+                .put(update_entity_handler)
+                .delete(delete_entity_handler),
+        )
+        .route(
+            "/entities/{id}/relationships",
+            get(entity_relationships_handler).delete(delete_relationship_handler),
+        )
+        .route(
+            "/entities/{id}/memories",
+            get(entity_memories_handler),
+        )
+        .route("/entities/{id}/search", post(entity_search_handler))
+        .route(
+            "/entities/{id}/memories/{mid}",
+            put(link_entity_memory_handler).delete(unlink_entity_memory_handler),
+        )
         .route("/entities/{id}/cooccurrences", get(entity_cooccurrences_handler))
         // Relationships
         .route("/entity-relationships", post(create_relationship_handler))
         // Graph operations
+        .route("/graph", get(graph_handler))
+        .route("/graph/raw", get(graph_raw_handler))
+        .route("/graph/view", get(graph_view_handler))
         .route("/graph/build", post(build_graph_handler))
         .route("/graph/search", post(graph_search_handler))
         .route("/graph/neighborhood/{id}", get(neighborhood_handler))
         // Communities
+        .route("/communities", get(communities_handler))
+        .route("/communities/{id}", get(community_detail_handler))
         .route("/graph/communities", post(detect_communities_handler))
         .route("/graph/communities/{id}/members", get(community_members_handler))
         .route("/graph/communities/stats", get(community_stats_handler))
@@ -45,6 +71,7 @@ pub fn router() -> Router<AppState> {
         .route("/graph/cooccurrences/rebuild", post(rebuild_cooccurrences_handler))
         // Memory entity extraction
         .route("/memory/{id}/entities", get(memory_entities_handler))
+        .route("/facts", get(facts_handler))
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +144,39 @@ struct ListQuery {
     pub offset: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateEntityBody {
+    pub name: Option<String>,
+    pub entity_type: Option<String>,
+    pub description: Option<String>,
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EntitySearchBody {
+    pub query: String,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelationshipQuery {
+    #[serde(rename = "type")]
+    pub relationship_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteRelationshipBody {
+    pub target_entity_id: i64,
+    #[serde(rename = "type")]
+    pub relationship_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FactsQuery {
+    pub limit: Option<usize>,
+    pub memory_id: Option<i64>,
+}
+
 async fn list_entities_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -157,7 +217,7 @@ async fn list_entities_handler(
 
 async fn get_entity_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
@@ -165,8 +225,8 @@ async fn get_entity_handler(
         .query(
             "SELECT id, name, entity_type, description, aliases, user_id, space_id, \
              confidence, occurrence_count, first_seen_at, last_seen_at, created_at \
-             FROM entities WHERE id = ?1",
-            libsql::params![id],
+             FROM entities WHERE id = ?1 AND user_id = ?2",
+            libsql::params![id, auth.user_id],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
@@ -186,16 +246,45 @@ async fn get_entity_handler(
 }
 
 // ---------------------------------------------------------------------------
+// PUT /entities/{id}
+// ---------------------------------------------------------------------------
+
+async fn update_entity_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+    Json(body): Json<UpdateEntityBody>,
+) -> Result<Json<Value>, AppError> {
+    let metadata = body
+        .metadata
+        .as_ref()
+        .and_then(|value| serde_json::to_string(value).ok());
+    let entity = update_entity(
+        &state.db,
+        id,
+        auth.user_id,
+        body.name.as_deref(),
+        body.entity_type.as_deref(),
+        body.description.as_deref(),
+        metadata.as_deref(),
+    )
+    .await
+    .map_err(AppError)?;
+
+    Ok(Json(json!(entity)))
+}
+
+// ---------------------------------------------------------------------------
 // DELETE /entities/{id}
 // ---------------------------------------------------------------------------
 
 async fn delete_entity_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
-    conn.execute("DELETE FROM entities WHERE id = ?1", libsql::params![id])
+    conn.execute("DELETE FROM entities WHERE id = ?1 AND user_id = ?2", libsql::params![id, auth.user_id])
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     Ok(Json(json!({ "deleted": true, "id": id })))
@@ -207,20 +296,35 @@ async fn delete_entity_handler(
 
 async fn entity_relationships_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
+    Query(params): Query<RelationshipQuery>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
-    let mut rows = conn
-        .query(
-            "SELECT id, source_entity_id, target_entity_id, relationship_type, \
-             strength, evidence_count, created_at \
-             FROM entity_relationships \
-             WHERE source_entity_id = ?1 OR target_entity_id = ?1",
-            libsql::params![id],
+    let mut rows = if let Some(relationship_type) = params.relationship_type {
+        conn.query(
+            "SELECT er.id, er.source_entity_id, er.target_entity_id, er.relationship_type, \
+             er.strength, er.evidence_count, er.created_at \
+             FROM entity_relationships er \
+             WHERE (er.source_entity_id = ?1 OR er.target_entity_id = ?1) \
+               AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2) \
+               AND er.relationship_type = ?3",
+            libsql::params![id, auth.user_id, relationship_type],
         )
         .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
+    } else {
+        conn.query(
+            "SELECT er.id, er.source_entity_id, er.target_entity_id, er.relationship_type, \
+             er.strength, er.evidence_count, er.created_at \
+             FROM entity_relationships er \
+             WHERE (er.source_entity_id = ?1 OR er.target_entity_id = ?1) \
+             AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2)",
+            libsql::params![id, auth.user_id],
+        )
+        .await
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
+    };
 
     let mut relationships: Vec<Value> = Vec::new();
     while let Some(row) = rows
@@ -235,19 +339,49 @@ async fn entity_relationships_handler(
 }
 
 // ---------------------------------------------------------------------------
+// DELETE /entities/{id}/relationships
+// ---------------------------------------------------------------------------
+
+async fn delete_relationship_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+    Json(body): Json<DeleteRelationshipBody>,
+) -> Result<Json<Value>, AppError> {
+    delete_relationship(
+        &state.db,
+        id,
+        body.target_entity_id,
+        auth.user_id,
+        body.relationship_type.as_deref(),
+    )
+    .await
+    .map_err(AppError)?;
+
+    Ok(Json(json!({
+        "deleted": true,
+        "source_entity_id": id,
+        "target_entity_id": body.target_entity_id,
+        "relationship_type": body.relationship_type,
+    })))
+}
+
+// ---------------------------------------------------------------------------
 // GET /entities/{id}/memories
 // ---------------------------------------------------------------------------
 
 async fn entity_memories_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
     let mut rows = conn
         .query(
-            "SELECT memory_id FROM memory_entities WHERE entity_id = ?1",
-            libsql::params![id],
+            "SELECT me.memory_id FROM memory_entities me \
+             JOIN entities e ON e.id = me.entity_id \
+             WHERE me.entity_id = ?1 AND e.user_id = ?2",
+            libsql::params![id, auth.user_id],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
@@ -268,15 +402,95 @@ async fn entity_memories_handler(
 }
 
 // ---------------------------------------------------------------------------
+// POST /entities/{id}/search
+// ---------------------------------------------------------------------------
+
+async fn entity_search_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+    Json(body): Json<EntitySearchBody>,
+) -> Result<Json<Value>, AppError> {
+    let memories = search_entity_memories(
+        &state.db,
+        id,
+        auth.user_id,
+        &body.query,
+        body.limit.unwrap_or(20),
+    )
+    .await
+    .map_err(AppError)?;
+
+    Ok(Json(json!({ "memories": memories })))
+}
+
+// ---------------------------------------------------------------------------
+// PUT /entities/{id}/memories/{mid}
+// ---------------------------------------------------------------------------
+
+async fn link_entity_memory_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path((entity_id, memory_id)): Path<(i64, i64)>,
+) -> Result<Json<Value>, AppError> {
+    link_memory_entity(&state.db, memory_id, entity_id, auth.user_id, 1.0)
+        .await
+        .map_err(AppError)?;
+    Ok(Json(json!({
+        "linked": true,
+        "entity_id": entity_id,
+        "memory_id": memory_id,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /entities/{id}/memories/{mid}
+// ---------------------------------------------------------------------------
+
+async fn unlink_entity_memory_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path((entity_id, memory_id)): Path<(i64, i64)>,
+) -> Result<Json<Value>, AppError> {
+    unlink_memory_entity(&state.db, memory_id, entity_id, auth.user_id)
+        .await
+        .map_err(AppError)?;
+    Ok(Json(json!({
+        "deleted": true,
+        "entity_id": entity_id,
+        "memory_id": memory_id,
+    })))
+}
+
+// ---------------------------------------------------------------------------
 // POST /entity-relationships
 // ---------------------------------------------------------------------------
 
 async fn create_relationship_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(req): Json<CreateRelationshipRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let conn = state.db.connection();
+    // Verify both entities belong to the authenticated user
+    let mut check = conn
+        .query(
+            "SELECT COUNT(*) FROM entities WHERE id IN (?1, ?2) AND user_id = ?3",
+            libsql::params![req.source_entity_id, req.target_entity_id, auth.user_id],
+        )
+        .await
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
+    let count: i64 = check
+        .next()
+        .await
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
+        .and_then(|r| r.get::<i64>(0).ok())
+        .unwrap_or(0);
+    if count < 2 {
+        return Err(AppError(engram_lib::EngError::NotFound(
+            "one or both entities not found".into(),
+        )));
+    }
     let rel_type = req.relationship_type.as_deref().unwrap_or("related");
     let strength = req.strength.unwrap_or(1.0);
 
@@ -313,6 +527,65 @@ async fn create_relationship_handler(
 }
 
 // ---------------------------------------------------------------------------
+// GET /graph
+// ---------------------------------------------------------------------------
+
+async fn graph_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<ListQuery>,
+) -> Result<Json<Value>, AppError> {
+    let opts = GraphBuildOptions {
+        user_id: auth.user_id,
+        limit: Some(params.limit.unwrap_or(500) as usize),
+    };
+    let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
+    Ok(Json(json!(result)))
+}
+
+// ---------------------------------------------------------------------------
+// GET /graph/raw
+// ---------------------------------------------------------------------------
+
+async fn graph_raw_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<ListQuery>,
+) -> Result<Json<Value>, AppError> {
+    let opts = GraphBuildOptions {
+        user_id: auth.user_id,
+        limit: Some(params.limit.unwrap_or(500) as usize),
+    };
+    let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
+    Ok(Json(json!({
+        "nodes": result.nodes,
+        "edges": result.edges,
+        "raw": true,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// GET /graph/view
+// ---------------------------------------------------------------------------
+
+async fn graph_view_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<ListQuery>,
+) -> Result<Json<Value>, AppError> {
+    let opts = GraphBuildOptions {
+        user_id: auth.user_id,
+        limit: Some(params.limit.unwrap_or(500) as usize),
+    };
+    let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
+    Ok(Json(json!({
+        "nodes": result.nodes,
+        "edges": result.edges,
+        "view": "force",
+    })))
+}
+
+// ---------------------------------------------------------------------------
 // POST /graph/build
 // ---------------------------------------------------------------------------
 
@@ -338,11 +611,11 @@ struct GraphSearchBody {
 
 async fn graph_search_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(body): Json<GraphSearchBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.unwrap_or(20);
-    let nodes = graph_search(&state.db, &body.query, limit).await?;
+    let nodes = graph_search(&state.db, &body.query, limit, auth.user_id).await?;
     Ok(Json(json!({ "nodes": nodes })))
 }
 
@@ -357,12 +630,12 @@ struct NeighborhoodQuery {
 
 async fn neighborhood_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<String>,
     Query(params): Query<NeighborhoodQuery>,
 ) -> Result<Json<Value>, AppError> {
     let depth = params.depth.unwrap_or(2);
-    let (nodes, edges) = neighborhood(&state.db, &id, depth).await?;
+    let (nodes, edges) = neighborhood(&state.db, &id, depth, auth.user_id).await?;
     Ok(Json(json!({ "nodes": nodes, "edges": edges })))
 }
 
@@ -372,7 +645,7 @@ async fn neighborhood_handler(
 
 async fn memory_entities_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
@@ -381,8 +654,9 @@ async fn memory_entities_handler(
             "SELECT e.id, e.name, e.entity_type, me.salience \
              FROM memory_entities me \
              JOIN entities e ON e.id = me.entity_id \
-             WHERE me.memory_id = ?1",
-            libsql::params![id],
+             JOIN memories m ON m.id = me.memory_id \
+             WHERE me.memory_id = ?1 AND m.user_id = ?2",
+            libsql::params![id, auth.user_id],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
@@ -414,6 +688,43 @@ async fn memory_entities_handler(
     }
 
     Ok(Json(json!({ "entities": entities })))
+}
+
+// ---------------------------------------------------------------------------
+// GET /communities
+// ---------------------------------------------------------------------------
+
+async fn communities_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let stats = get_community_stats(&state.db, auth.user_id)
+        .await
+        .map_err(AppError)?;
+    Ok(Json(json!({ "communities": stats })))
+}
+
+// ---------------------------------------------------------------------------
+// GET /communities/{id}
+// ---------------------------------------------------------------------------
+
+async fn community_detail_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let stats = get_community_stats(&state.db, auth.user_id)
+        .await
+        .map_err(AppError)?;
+    let members = get_community_members(&state.db, id, auth.user_id, 50)
+        .await
+        .map_err(AppError)?;
+    let community = stats.into_iter().find(|item| item.community_id == id);
+
+    Ok(Json(json!({
+        "community": community,
+        "members": members,
+    })))
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +804,26 @@ async fn entity_cooccurrences_handler(
     let entities = get_cooccurring_entities(&state.db, id, auth.user_id, limit)
         .await.map_err(AppError)?;
     Ok(Json(json!({ "cooccurrences": entities })))
+}
+
+// ---------------------------------------------------------------------------
+// GET /facts
+// ---------------------------------------------------------------------------
+
+async fn facts_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<FactsQuery>,
+) -> Result<Json<Value>, AppError> {
+    let facts = list_facts(
+        &state.db,
+        auth.user_id,
+        params.memory_id,
+        params.limit.unwrap_or(50),
+    )
+    .await
+    .map_err(AppError)?;
+    Ok(Json(json!({ "facts": facts })))
 }
 
 // ---------------------------------------------------------------------------

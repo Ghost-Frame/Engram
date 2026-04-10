@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use engram_lib::memory::{
@@ -23,8 +23,19 @@ pub fn router() -> Router<AppState> {
         .route("/memories/search", post(search_memories))
         .route("/recall", post(recall))
         .route("/list", get(list_memories))
+        .route("/tags", get(list_tags))
+        .route("/tags/search", post(search_tags))
+        .route("/profile", get(profile_handler))
+        .route("/profile/synthesize", post(synthesize_profile))
+        .route("/me/stats", get(user_stats))
+        .route("/links/{id}", get(get_links))
+        .route("/versions/{id}", get(version_chain_handler))
         .route("/memory/{id}", get(get_memory).delete(delete_memory))
         .route("/memory/{id}/update", post(update_memory))
+        .route("/memory/{id}/tags", put(update_tags))
+        .route("/memory/{id}/forget", post(forget_memory))
+        .route("/memory/{id}/archive", post(archive_memory))
+        .route("/memory/{id}/unarchive", post(unarchive_memory))
 }
 
 fn parse_tags(tags: &Option<String>) -> Vec<String> {
@@ -84,7 +95,7 @@ async fn store_memory(
             "distance": Value::Null,
         }))));
     }
-    let mem = memory::get(&state.db, result.id).await?;
+    let mem = memory::get(&state.db, result.id, auth.user_id).await?;
     Ok((StatusCode::CREATED, Json(json!({
         "stored": true, "id": result.id, "created_at": mem.created_at,
         "importance": mem.importance, "embedded": embedded,
@@ -300,6 +311,23 @@ struct ListQuery {
     pub include_archived: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SearchTagsBody {
+    pub tags: Vec<String>,
+    pub match_all: Option<bool>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateTagsBody {
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ForgetBody {
+    pub reason: Option<String>,
+}
+
 async fn list_memories(
     State(state): State<AppState>, Auth(auth): Auth,
     Query(params): Query<ListQuery>,
@@ -317,23 +345,175 @@ async fn list_memories(
 }
 
 async fn get_memory(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let mem = memory::get(&state.db, id).await?;
+    let mem = memory::get(&state.db, id, auth.user_id).await?;
     Ok(Json(memory_to_json(&mem)))
 }
 
 async fn delete_memory(
-    State(state): State<AppState>, Auth(_auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    memory::delete(&state.db, id).await?;
+    memory::delete(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
 async fn update_memory(
-    State(state): State<AppState>, Auth(_auth): Auth,
+    State(state): State<AppState>, Auth(auth): Auth,
     Path(id): Path<i64>, Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let updated = memory::update(&state.db, id, req).await?;
+    let updated = memory::update(&state.db, id, req, auth.user_id).await?;
     Ok(Json(memory_to_json(&updated)))
+}
+
+async fn list_tags(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let tags = memory::list_all_tags(&state.db, auth.user_id).await?;
+    Ok(Json(json!({ "tags": tags })))
+}
+
+async fn search_tags(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<SearchTagsBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.tags.is_empty() {
+        return Err(AppError(engram_lib::EngError::InvalidInput(
+            "tags must not be empty".to_string(),
+        )));
+    }
+
+    let memories = memory::search_by_tags(
+        &state.db,
+        auth.user_id,
+        &body.tags,
+        body.match_all.unwrap_or(false),
+        body.limit.unwrap_or(50),
+    )
+    .await?;
+    let results: Vec<Value> = memories.iter().map(memory_to_json).collect();
+    Ok(Json(json!({ "results": results })))
+}
+
+async fn update_tags(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+    Json(body): Json<UpdateTagsBody>,
+) -> Result<Json<Value>, AppError> {
+    memory::update_memory_tags(&state.db, id, auth.user_id, &body.tags).await?;
+    let updated = memory::get(&state.db, id, auth.user_id).await?;
+    Ok(Json(memory_to_json(&updated)))
+}
+
+async fn profile_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let profile = memory::get_user_profile(&state.db, auth.user_id).await?;
+    Ok(Json(json!(profile)))
+}
+
+async fn synthesize_profile(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    state
+        .db
+        .conn
+        .execute(
+            "DELETE FROM personality_signals WHERE user_id = ?1 AND memory_id IS NOT NULL",
+            libsql::params![auth.user_id],
+        )
+        .await
+        .map_err(engram_lib::EngError::Database)?;
+
+    let memories = memory::list(
+        &state.db,
+        ListOptions {
+            limit: 200,
+            offset: 0,
+            category: None,
+            source: None,
+            user_id: Some(auth.user_id),
+            space_id: None,
+            include_forgotten: false,
+            include_archived: true,
+        },
+    )
+    .await?;
+
+    for mem in &memories {
+        let _ = engram_lib::personality::extract_personality_signals(
+            &state.db,
+            &mem.content,
+            mem.id,
+            auth.user_id,
+        )
+        .await?;
+    }
+
+    let _ = engram_lib::personality::synthesize_personality_profile(&state.db, auth.user_id).await?;
+    let profile = memory::get_user_profile(&state.db, auth.user_id).await?;
+    Ok(Json(json!(profile)))
+}
+
+async fn user_stats(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let stats = memory::get_user_stats(&state.db, auth.user_id).await?;
+    Ok(Json(json!(stats)))
+}
+
+async fn forget_memory(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+    body: Option<Json<ForgetBody>>,
+) -> Result<Json<Value>, AppError> {
+    memory::mark_forgotten(&state.db, id, auth.user_id).await?;
+    if let Some(reason) = body.and_then(|Json(body)| body.reason) {
+        memory::update_forget_reason(&state.db, id, &reason, auth.user_id).await?;
+    }
+    Ok(Json(json!({ "id": id, "status": "forgotten" })))
+}
+
+async fn archive_memory(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    memory::mark_archived(&state.db, id, auth.user_id).await?;
+    Ok(Json(json!({ "id": id, "status": "archived" })))
+}
+
+async fn unarchive_memory(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    memory::mark_unarchived(&state.db, id, auth.user_id).await?;
+    Ok(Json(json!({ "id": id, "status": "active" })))
+}
+
+async fn get_links(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let _ = memory::get(&state.db, id, auth.user_id).await?;
+    let links = memory::get_links_for(&state.db, id, auth.user_id).await?;
+    Ok(Json(json!({ "links": links })))
+}
+
+async fn version_chain_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let versions = memory::get_version_chain(&state.db, id, auth.user_id).await?;
+    Ok(Json(json!({ "versions": versions })))
 }
