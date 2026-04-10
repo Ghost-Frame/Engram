@@ -1,441 +1,295 @@
-# Task: LanceDB HNSW Vector Search
+# Task: Per-Tenant Database Sharding
 
-**Branch:** feat/scale-lance
-**Effort:** 12 hours
-**Model:** Opus (complex integration)
+**Branch:** feat/scale-shard
+**Phase:** 5
+**Effort:** ~43 hours
+**Model:** Opus (largest scope, highest risk, requires invariants)
+**Depends on:** Phase 1-2 and Phase 4 (connection pool). Will rebase onto Phase 4 once that lands.
+
+---
+
+## Why (Critical Context)
+
+Current "multi-tenant" is logical only. Every row has a `user_id`, every query has `WHERE user_id = ?`. The previous attempt added user_id filters but did not physically isolate data. Master was explicit: this was NOT done correctly. Physical sharding is required.
+
+Problems with logical-only isolation:
+1. Blast radius: a bad query or runaway migration touches every tenant.
+2. Noisy neighbor: one tenant with 10M memories slows another with 10K.
+3. Backup granularity: cannot restore one tenant without restoring everyone.
+4. GDPR: cannot cleanly delete a tenant's data.
+5. Horizontal scale: cannot move a hot tenant to a bigger box independently.
+6. HNSW filtering: Phase 2 HNSW over-fetches and post-filters by user_id. Per-tenant index removes this entirely.
 
 ## Goal
 
-Replace brute-force vector_top_k with LanceDB HNSW index.
-Target: 500ms -> 5ms at 1M memories.
+One SQLite file plus one LanceDB index per tenant. A `TenantRegistry` maps `user_id -> handles`. Every request resolves a tenant handle before touching data. The `user_id` column is removed from per-tenant tables entirely so that missed query rewrites fail loudly.
 
-## Architecture
+## Full Spec
 
-SQLite remains source of truth. LanceDB stores only: memory_id, user_id, embedding vector.
+See `~/Documents/specs/2026-04-10-engram-scalability-phase3-5.md` section "Phase 5".
 
-Store: SQLite first, then LanceDB
-Search: LanceDB for top-k ids, SQLite for full records
-Delete: Both
+## Layout
 
-## Files
+```
+data_dir/
+  tenants/
+    <tenant_id>/
+      engram.db
+      engram.db-wal
+      engram.db-shm
+      hnsw/memories.lance
+      blobs/
+  system/
+    registry.db
+    audit.db
+```
 
-- Create: engram-lib/src/vector/mod.rs
-- Create: engram-lib/src/vector/lance.rs
-- Modify: engram-lib/Cargo.toml
-- Modify: engram-lib/src/lib.rs
-- Modify: engram-lib/src/config.rs
-- Modify: engram-lib/src/db/mod.rs
-- Modify: engram-lib/src/memory/mod.rs
-- Modify: engram-lib/src/memory/search.rs
+`<tenant_id>` is the raw `user_id` if alphanumeric+dash+underscore and <= 64 chars, otherwise `t_<sha256_prefix>`.
 
----
+## Tenant Registry Schema
 
-## Step 1: Add Dependencies
+```sql
+CREATE TABLE tenants (
+    tenant_id TEXT PRIMARY KEY,
+    user_id TEXT UNIQUE NOT NULL,
+    created_at INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    data_path TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    quota_bytes INTEGER,
+    quota_memories INTEGER,
+    last_access INTEGER NOT NULL
+);
+CREATE INDEX idx_tenants_user_id ON tenants(user_id);
+CREATE INDEX idx_tenants_last_access ON tenants(last_access);
+```
 
-In engram-lib/Cargo.toml, add:
-- lancedb = "0.4"
-- arrow-array = "51"
-- arrow-schema = "51"
-- async-trait = "0.1"
-- futures = "0.3"
-
-Note: `lancedb 0.4` requires Arrow 51 and a `protoc` binary during build. This worktree pins Chrono to `0.4.38` for Arrow 51 compatibility and provides a repo-local vendored `protoc` wrapper through `.cargo/config.toml`.
-
-- [x] Add dependencies
-- [x] cargo check -p engram-lib
-
----
-
-## Step 2: Create Vector Module
-
-Create engram-lib/src/vector/mod.rs with:
-- VectorHit struct (memory_id, distance, rank)
-- VectorIndex trait (insert, search, delete, count)
-- pub use lance::LanceIndex
-
-Add pub mod vector; to lib.rs
-
----
-
-## Step 3: Implement LanceIndex
-
-Create engram-lib/src/vector/lance.rs:
-
-LanceIndex struct:
-- db: lancedb::Connection
-- table: RwLock<Option<lancedb::Table>>
-- dimensions: usize
-
-Methods:
-- open(path, dimensions) - connect to lance, open or create table
-- ensure_table() - create table with schema if not exists
-- insert() - add record with id, user_id, vector
-- search() - vector_search with user_id filter
-- delete() - delete by id
-- count() - count_rows
-
-Schema: id (i64), user_id (i64), vector (FixedSizeList f32 x 1024)
-
-Use arrow-array for RecordBatch construction.
-Use futures::TryStreamExt for collecting search results.
-
----
-
-## Step 4: Update Config
-
-Add to Config struct:
-- lance_index_path: Option<String>
-- vector_dimensions: usize (default 1024)
-- use_lance_index: bool (default true)
-
-Env vars:
-- ENGRAM_LANCE_INDEX_PATH
-- ENGRAM_VECTOR_DIMENSIONS
-- ENGRAM_USE_LANCE_INDEX
-
----
-
-## Step 5: Update Database Struct
-
-Add field: vector_index: Option<Arc<dyn VectorIndex>>
-
-In connect(), if use_lance_index is true:
-- Compute lance_path (config or data_dir/lance)
-- Open LanceIndex
-- Store as Some(Arc::new(idx))
-- On error, warn and use None (graceful degradation)
-
----
-
-## Step 6: Update Store Flow
-
-In memory/mod.rs store():
-After SQLite insert and embedding generation:
-- If vector_index exists and embedding exists
-- Call index.insert(memory_id, user_id, embedding)
-- Log warning on error, do not fail
-
----
-
-## Step 7: Update Search Flow
-
-In memory/search.rs hybrid_search():
-Replace vector_search call with:
-- If vector_index exists, use index.search()
-- On error or if index is None, fallback to vector_search()
-- Convert hits to expected format
-
----
-
-## Step 8: Update Delete Flow
-
-In memory delete/mark_forgotten:
-- If vector_index exists
-- Call index.delete(memory_id)
-- Log warning on error
-
----
-
-## Step 9: Migration Function
-
-Create build_lance_index_from_existing(db):
-- Query all memories with embeddings
-- For each, insert into vector_index
-- Log progress every 1000
-- Return count
-
----
-
-## Step 10: Test and Commit
-
-- [x] cargo check -p engram-lib
-- [x] cargo test -p engram-lib
-- [x] cargo clippy -p engram-lib
-- [ ] git add -A
-- [ ] git commit -m "feat(vector): add LanceDB HNSW index for vector search"
-
----
-
-## Done When
-
-- [x] LanceDB compiles and initializes
-- [x] Store inserts into both
-- [x] Search uses Lance with fallback
-- [x] Delete removes from both
-- [x] Tests pass
-- [ ] Commit made
-
----
-
-# Task: Parallel Reranker with Session Pool
-
-**Branch:** feat/scale-reranker
-**Effort:** 6 hours
-**Model:** Sonnet
-
-## Goal
-
-Replace single Mutex<Session> with pool of N sessions for parallel ONNX inference.
-Target: 1.1s -> 150ms for reranking 12 results.
-
-## Files
-
-- Create: `engram-lib/src/reranker/pool.rs`
-- Modify: `engram-lib/src/reranker/mod.rs`
-- Modify: `engram-lib/src/config.rs`
-
----
-
-## Step 1: Create Session Pool
-
-Create `engram-lib/src/reranker/pool.rs`:
+## Types
 
 ```rust
-use crate::{EngError, Result};
-use ort::session::Session;
-use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore, OwnedSemaphorePermit};
-
-pub struct SessionPool {
-    sessions: Vec<Arc<Mutex<Session>>>,
-    semaphore: Arc<Semaphore>,
+pub struct TenantHandle {
+    pub tenant_id: String,
+    pub user_id: String,
+    pub db: Arc<Database>,              // phase 4 pooled Database
+    pub vector_index: Arc<dyn VectorIndex>,
+    pub created_at: SystemTime,
+    pub last_access: Mutex<Instant>,
 }
 
-pub struct PooledSession {
-    session: Arc<Mutex<Session>>,
-    _permit: OwnedSemaphorePermit,
+pub struct TenantRegistry {
+    registry_db: Arc<Database>,
+    data_root: PathBuf,
+    handles: RwLock<HashMap<String, Arc<TenantHandle>>>,
+    config: TenantConfig,
 }
 
-impl SessionPool {
-    pub fn new(sessions: Vec<Session>) -> Self {
-        let count = sessions.len();
-        Self {
-            sessions: sessions.into_iter().map(|s| Arc::new(Mutex::new(s))).collect(),
-            semaphore: Arc::new(Semaphore::new(count)),
-        }
-    }
-
-    pub async fn acquire(&self) -> Result<PooledSession> {
-        let permit = self.semaphore.clone().acquire_owned().await
-            .map_err(|e| EngError::Internal(format!("semaphore closed: {}", e)))?;
-
-        // Return first available session
-        for session in &self.sessions {
-            if let Ok(_) = session.try_lock() {
-                return Ok(PooledSession {
-                    session: session.clone(),
-                    _permit: permit,
-                });
-            }
-        }
-
-        // All busy, wait on first
-        Ok(PooledSession {
-            session: self.sessions[0].clone(),
-            _permit: permit,
-        })
-    }
-
-    pub fn size(&self) -> usize {
-        self.sessions.len()
-    }
-}
-
-impl PooledSession {
-    pub async fn lock(&self) -> tokio::sync::MutexGuard<Session> {
-        self.session.lock().await
-    }
+pub struct TenantConfig {
+    pub max_resident: usize,      // default 512
+    pub idle_timeout: Duration,   // default 15min
+    pub preload_on_start: bool,   // default false
 }
 ```
 
-- [ ] Create the file
-- [ ] Add `mod pool; pub use pool::{SessionPool, PooledSession};` to mod.rs
+## Files to Create
 
----
+- `engram-lib/src/tenant/mod.rs` -- registry, handle, config types
+- `engram-lib/src/tenant/registry_db.rs` -- system/registry.db access
+- `engram-lib/src/tenant/loader.rs` -- lazy load, LRU eviction
+- `engram-lib/src/tenant/id.rs` -- `tenant_id_from_user` helper with safe fallback hashing
+- `engram-cli/src/bin/engram-migrate.rs` -- monolithic-to-sharded migration tool
 
-## Step 2: Update Config
+## Files to Modify
 
-In `engram-lib/src/config.rs`:
+- `engram-server/src/state.rs` -- `AppState` holds `Arc<TenantRegistry>` instead of `Arc<Database>`
+- Every HTTP handler under `engram-server/src/routes/` -- resolve tenant from auth before any db call
+- Every per-tenant table definition in `engram-lib/src/db/schema.rs` -- drop `user_id` column
+- Every per-tenant SQL query -- drop `WHERE user_id = ?` clause
+- `engram-lib/src/jobs/*` -- iterate tenants via registry, cap concurrency
+- `engram-server/src/routes/admin/*` -- add tenant lifecycle endpoints, use registry
 
-- [ ] Add field to Config struct:
+## Request Path Rewrite
+
+Before:
 ```rust
-pub reranker_pool_size: usize,
+let user_id = extract_user_id(&req)?;
+let memories = memory::list(&state.db, &user_id).await?;
 ```
 
-- [ ] Add to from_env():
+After:
 ```rust
-reranker_pool_size: std::env::var("ENGRAM_RERANKER_POOL_SIZE")
-    .ok()
-    .and_then(|v| v.parse().ok())
-    .unwrap_or(4),
+let user_id = extract_user_id(&req)?;
+let tenant = state.tenants.get_or_create(&user_id).await?;
+let memories = memory::list(&tenant.db).await?;
 ```
 
----
+Every per-tenant query loses its `user_id` filter because the database only contains one tenant.
 
-## Step 3: Update Reranker Struct
+## Lazy Loading and Eviction
 
-In `engram-lib/src/reranker/mod.rs`:
+Loading 10K tenants at startup is wasteful. Lazy-load on first request. LRU evicts idle handles after `idle_timeout`. Eviction closes reader/writer pools and drops the LanceDB handle. Next request reloads.
 
-- [ ] Change struct:
+## Tables That Lose user_id
+
+- memories
+- structured_facts
+- associations
+- episodes
+- memory_pagerank (Phase 3)
+- inferences
+- events (if per-tenant)
+- every other per-row table
+
+Keep user_id only in `system/registry.db` and `system/audit.db`.
+
+## Migration Tool (engram-migrate)
+
+Algorithm:
+1. Open old monolithic DB read-only.
+2. Scan `SELECT DISTINCT user_id FROM memories` to find tenants.
+3. For each user_id:
+   a. Compute `tenant_id`.
+   b. Create `data_dir/tenants/<tenant_id>/` and empty schema.
+   c. `ATTACH DATABASE` old DB, `INSERT INTO tenant.memories SELECT ... WHERE user_id = ?` for each table.
+   d. Drop `user_id` column from tenant tables (SQLite: recreate table without the column, copy data).
+   e. Rebuild HNSW index from memory embeddings.
+   f. Insert registry row.
+4. Verify row counts per tenant match expected.
+5. Rename old DB to `<name>.pre-shard-backup`.
+
+Modes:
+- `--dry-run`: report what would happen, write nothing.
+- `--reverse`: consolidate shards back into a monolithic DB (for rollback).
+- `--verify`: after migration, run a verification pass comparing checksums.
+
+## Background Jobs Per Tenant
+
 ```rust
-pub struct Reranker {
-    pool: SessionPool,
-    tokenizer: Arc<Tokenizer>,  // Arc for sharing
-    max_seq: usize,
-    top_k: usize,
-}
-```
-
-- [ ] Remove unsafe impl Send/Sync (pool handles this)
-
-- [ ] Update new() to create pool of sessions:
-```rust
-pub async fn new(config: &Config) -> Result<Self> {
-    let model_dir = config.model_dir("granite-reranker");
-    let (tokenizer_path, model_path) = ensure_reranker_model(&model_dir).await?;
-
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)
-        .map_err(|e| EngError::Internal(format!("tokenizer: {}", e)))?;
-
-    let mut sessions = Vec::with_capacity(config.reranker_pool_size);
-    for i in 0..config.reranker_pool_size {
-        let session = Session::builder()
-            .map_err(|e| EngError::Internal(format!("ort builder: {}", e)))?
-            .with_intra_threads(2)
-            .map_err(|e| EngError::Internal(format!("ort threads: {}", e)))?
-            .commit_from_file(&model_path)
-            .map_err(|e| EngError::Internal(format!("model load: {}", e)))?;
-        sessions.push(session);
-        tracing::debug!(session = i, "reranker session created");
+async fn run_pagerank_for_all_dirty(&self) -> Result<()> {
+    let dirty = self.registry.list_dirty().await?;
+    let semaphore = Arc::new(Semaphore::new(2));
+    let mut handles = Vec::new();
+    for tenant in dirty {
+        let sem = semaphore.clone();
+        let registry = self.registry.clone();
+        handles.push(tokio::spawn(async move {
+            let _permit = sem.acquire().await?;
+            let handle = registry.get(&tenant.user_id).await?;
+            refresh_pagerank(&handle).await
+        }));
     }
-
-    info!(
-        model = %model_path.display(),
-        pool_size = config.reranker_pool_size,
-        top_k = config.reranker_top_k,
-        "reranker pool initialized"
-    );
-
-    Ok(Self {
-        pool: SessionPool::new(sessions),
-        tokenizer: Arc::new(tokenizer),
-        max_seq: 512,
-        top_k: config.reranker_top_k,
-    })
-}
-```
-
----
-
-## Step 4: Extract Scoring Function
-
-- [ ] Create standalone function that takes session as param:
-```rust
-fn score_pair_inner(
-    session: &mut Session,
-    tokenizer: &Tokenizer,
-    query: &str,
-    document: &str,
-    max_seq: usize,
-) -> Result<f32> {
-    // Move existing score_pair logic here
-    // Use session directly instead of self.session.lock()
-}
-```
-
----
-
-## Step 5: Rewrite rerank_results for Concurrency
-
-- [ ] Replace the sequential loop with parallel execution:
-```rust
-pub async fn rerank_results(
-    &self,
-    query: &str,
-    results: &mut Vec<crate::memory::types::SearchResult>,
-) -> Result<()> {
-    if results.is_empty() {
-        return Ok(());
-    }
-
-    let k = self.top_k.min(results.len());
-    let start = std::time::Instant::now();
-
-    // Collect data for parallel tasks
-    let tasks: Vec<_> = (0..k).map(|i| {
-        let doc = results[i].memory.content.clone();
-        let q = query.to_string();
-        let tokenizer = self.tokenizer.clone();
-        let max_seq = self.max_seq;
-        
-        // Must acquire session outside spawn_blocking
-        let pool = &self.pool;
-        async move {
-            let pooled = pool.acquire().await?;
-            tokio::task::spawn_blocking(move || {
-                // Block on async lock inside spawn_blocking
-                let rt = tokio::runtime::Handle::current();
-                rt.block_on(async {
-                    let mut session = pooled.lock().await;
-                    score_pair_inner(&mut session, &tokenizer, &q, &doc, max_seq)
-                })
-            }).await.map_err(|e| EngError::Internal(format!("join: {}", e)))?
-        }
-    }).collect();
-
-    let scores: Vec<Result<f32>> = futures::future::join_all(tasks).await;
-
-    for (i, score_result) in scores.into_iter().enumerate() {
-        match score_result {
-            Ok(ce_score) => {
-                results[i].score = ce_score as f64 * 0.7 + results[i].score * 0.3;
-            }
-            Err(e) => {
-                tracing::warn!(idx = i, err = %e, "rerank score failed");
-            }
-        }
-    }
-
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-
-    let elapsed = start.elapsed();
-    tracing::info!(elapsed_ms = elapsed.as_millis(), k = k, "rerank complete");
-
+    for h in handles { h.await??; }
     Ok(())
 }
 ```
 
----
+Cap concurrency so one bad tenant does not starve others.
 
-## Step 6: Add futures dependency if needed
+## Admin Endpoints
 
-- [ ] Check if futures is in Cargo.toml, add if missing:
-```toml
-futures = "0.3"
+- `GET  /admin/tenants` -- list
+- `POST /admin/tenants` -- create
+- `GET  /admin/tenants/:id` -- detail and stats
+- `DELETE /admin/tenants/:id` -- delete with audit entry
+- `POST /admin/tenants/:id/suspend`
+- `POST /admin/tenants/:id/resume`
+
+All go through the registry, never through a tenant handle.
+
+## Quota Enforcement
+
+On write paths, check `quota_bytes` and `quota_memories` from the registry row. Return 402 or 429 on violation. Sample-based checks acceptable if per-write checks become hot.
+
+## Audit Log
+
+`system/audit.db` logs:
+- tenant.create
+- tenant.delete
+- tenant.suspend
+- tenant.quota_exceeded
+- admin.cross_tenant_access
+
+## Metrics
+
+- `tenants_resident`
+- `tenants_total`
+- `tenant_load_ms` (histogram)
+- `tenant_evictions_total`
+- `tenant_quota_exceeded_total`
+
+## HNSW Simplification (Bonus)
+
+Phase 2 HNSW over-fetched and post-filtered because the index was shared. Per-tenant shards remove this:
+- Delete the post-filter pass in `memory/search.rs`.
+- Drop the over-fetch multiplier.
+- Each tenant has its own dedicated LanceDB index with exact results.
+
+## Tests
+
+- Unit: registry create/get/delete, `tenant_id_from_user` with adversarial inputs (emoji, slashes, traversal attempts, extreme length).
+- Unit: eviction LRU correctness.
+- Integration: create 10 tenants, verify physical isolation (one cannot see another's data even if handler bug).
+- Migration: run `engram-migrate --dry-run` and `engram-migrate` on a fixture monolithic DB, verify row counts and schemas.
+- Load: 1000 tenants lazy-loaded, verify memory stays below budget, verify evictions happen on idle.
+- Deletion: delete tenant, verify files removed and audit entry present.
+- Recovery: kill server mid-write to a tenant DB, restart, verify WAL recovers.
+- Security: craft token for user A, send request with user B in path, verify rejection.
+
+## Rollback
+
+Not trivially reversible. Mitigations:
+- Keep `.pre-shard-backup` monolithic DB for at least one release.
+- `engram-migrate --reverse` consolidates shards back.
+- Feature flag `tenant_sharding_enabled` lets new installs opt in while existing runs stay monolithic until migration is scheduled.
+
+## Risks
+
+- **Handler coverage**: a single missed query that references `user_id` fails because the column is gone. Good (fails loudly). Bad if it takes down production. Mitigation: staged rollout, feature flag, and comprehensive grep for `user_id` in SQL strings.
+- **File descriptor exhaustion**: 10K tenants = 10K SQLite files potentially open. OS `ulimit -n` matters. Mitigation: `max_resident` cap plus eviction.
+- **WAL file buildup per shard**: eviction must checkpoint before closing.
+- **Backup tooling**: existing backup scripts assume one DB. Rewrite to walk `tenants/` directory or provide `engram-backup` helper.
+- **Cross-tenant search**: if ever needed, requires federation. Document as known tradeoff.
+
+## Implementation Order
+
+1. Tenant types and registry (no handlers use them yet).
+2. `tenant_id_from_user` with full test coverage.
+3. Lazy loader and eviction.
+4. Registry DB schema and admin endpoints.
+5. Port one handler end-to-end to the registry as a proof of concept.
+6. Drop `user_id` column from the first ported table.
+7. Port remaining handlers in waves (memory, intelligence, ingestion, export, admin).
+8. Drop `user_id` from remaining tables.
+9. Update background jobs.
+10. Write `engram-migrate` tool.
+11. Run migration on a staging snapshot.
+12. Load test 1000 tenants.
+13. Security test cross-tenant isolation.
+
+## Verification
+
+- [ ] Every request resolves a tenant handle before touching data
+- [ ] `user_id` column removed from every per-tenant table
+- [ ] Cross-tenant request returns 404 or 403, never wrong data
+- [ ] `engram-migrate` converts a monolithic DB to sharded layout
+- [ ] `engram-migrate --dry-run` reports correctly without writing
+- [ ] 1000-tenant load test stays within memory budget
+- [ ] Per-tenant HNSW index works without post-filtering
+- [ ] Tenant delete removes all files AND writes audit entry
+- [ ] Admin endpoints for tenant lifecycle work
+- [ ] Quota enforcement blocks writes past limit
+- [ ] Audit log captures tenant lifecycle events
+- [ ] Backup tooling handles the new layout
+
+## Commit Message Style
+
+```
+feat(tenant): phase 5 physical per-tenant sharding
+
+Introduce TenantRegistry with lazy loading and LRU eviction. Each
+tenant gets its own SQLite file and LanceDB index under
+data_dir/tenants/<id>/. Removes user_id columns from per-tenant
+tables so missed query rewrites fail loudly. Adds engram-migrate
+tool for monolithic-to-sharded conversion.
 ```
 
----
-
-## Step 7: Test
-
-- [ ] Run: `cargo test -p engram-lib`
-- [ ] Run: `cargo clippy -p engram-lib`
-- [ ] Manual benchmark if possible (time reranking)
-
----
-
-## Step 8: Commit
-
-- [ ] `git add -A`
-- [ ] `git commit -m "feat(reranker): add session pool for parallel inference"`
-
----
-
-## Done When
-
-- Pool struct created and working
-- Config accepts ENGRAM_RERANKER_POOL_SIZE
-- rerank_results runs in parallel
-- Tests pass
-- Clippy clean
-- Commit made
+No em dashes. Use -- or rewrite.
