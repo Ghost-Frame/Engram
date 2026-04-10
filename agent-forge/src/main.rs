@@ -1,5 +1,6 @@
 mod db;
 mod json_io;
+mod tools;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
