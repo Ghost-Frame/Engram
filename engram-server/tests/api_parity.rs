@@ -33,6 +33,9 @@ struct TestApp {
 
 impl TestApp {
     async fn new() -> Self {
+        // Ensure auth is enabled regardless of dev environment
+        std::env::set_var("ENGRAM_OPEN_ACCESS", "0");
+
         let db = Database::connect_memory()
             .await
             .expect("in-memory db");
