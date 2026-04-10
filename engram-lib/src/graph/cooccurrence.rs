@@ -12,6 +12,7 @@ use tracing::info;
 pub async fn build_cooccurrence_edges(
     db: &Database,
     window_size: usize,
+    user_id: i64,
 ) -> Result<Vec<GraphEdge>> {
     let conn = db.connection();
 
@@ -21,10 +22,10 @@ pub async fn build_cooccurrence_edges(
             "SELECT m.id, me.entity_id \
              FROM memories m \
              JOIN memory_entities me ON me.memory_id = m.id \
-             WHERE m.is_forgotten = 0 AND m.is_archived = 0 AND m.is_latest = 1 \
+             WHERE m.user_id = ?1 AND m.is_forgotten = 0 AND m.is_archived = 0 AND m.is_latest = 1 \
              ORDER BY m.created_at DESC \
              LIMIT 2000",
-            (),
+            libsql::params![user_id],
         )
         .await?;
 
@@ -81,12 +82,13 @@ pub async fn build_cooccurrence_edges(
     for (&(entity_a, entity_b), &count) in &pair_counts {
         // Upsert into entity_cooccurrences table
         conn.execute(
-            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count) \
-             VALUES (?1, ?2, ?3) \
+            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count, user_id) \
+             VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET \
                count = count + ?3, \
+               user_id = excluded.user_id, \
                last_seen_at = datetime('now')",
-            libsql::params![entity_a, entity_b, count],
+            libsql::params![entity_a, entity_b, count, user_id],
         )
         .await?;
 
@@ -112,7 +114,12 @@ pub async fn build_cooccurrence_edges(
 /// Record a pairwise co-occurrence between two entities.
 /// The pair is stored in canonical order (smaller id first) so that
 /// (A, B) and (B, A) map to the same row.
-pub async fn record_cooccurrence(db: &Database, entity_a: i64, entity_b: i64) -> Result<()> {
+pub async fn record_cooccurrence(
+    db: &Database,
+    entity_a: i64,
+    entity_b: i64,
+    user_id: i64,
+) -> Result<()> {
     let (lo, hi) = if entity_a <= entity_b {
         (entity_a, entity_b)
     } else {
@@ -120,10 +127,13 @@ pub async fn record_cooccurrence(db: &Database, entity_a: i64, entity_b: i64) ->
     };
     db.connection()
         .execute(
-            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count) \
-             VALUES (?1, ?2, 1) \
-             ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET count = count + 1",
-            libsql::params![lo, hi],
+            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count, user_id) \
+             VALUES (?1, ?2, 1, ?3) \
+             ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET \
+               count = count + 1, \
+               user_id = excluded.user_id, \
+               last_seen_at = datetime('now')",
+            libsql::params![lo, hi, user_id],
         )
         .await?;
     Ok(())
@@ -171,7 +181,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
 
         for i in 0..sorted.len() {
             for j in (i + 1)..sorted.len() {
-                record_cooccurrence(db, sorted[i], sorted[j]).await?;
+                record_cooccurrence(db, sorted[i], sorted[j], user_id).await?;
                 total_pairs += 1;
             }
         }
@@ -208,6 +218,7 @@ pub async fn get_cooccurring_entities(
              END \
              WHERE (co.entity_a_id = ?1 OR co.entity_b_id = ?1) \
                AND e.user_id = ?2 \
+               AND co.user_id = ?2 \
              ORDER BY co.count DESC \
              LIMIT ?3",
             libsql::params![entity_id, user_id, limit as i64],

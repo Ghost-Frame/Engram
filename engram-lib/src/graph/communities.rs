@@ -60,7 +60,10 @@ pub async fn detect_communities(db: &Database, user_id: i64, max_iterations: u32
     let m: f64 = adj.iter().flat_map(|(k, vs)| vs.iter().filter(move |(v, _)| **v > *k).map(|(_, w)| w)).sum();
     if m == 0.0 {
         for (idx, &id) in memory_ids.iter().enumerate() {
-            conn.execute("UPDATE memories SET community_id = ?1 WHERE id = ?2", libsql::params![idx as i64, id]).await?;
+            conn.execute(
+                "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
+                libsql::params![idx as i64, id, user_id],
+            ).await?;
         }
         return Ok(CommunitiesResult { communities: memory_ids.len(), memories: memory_ids.len() });
     }
@@ -104,7 +107,10 @@ pub async fn detect_communities(db: &Database, user_id: i64, max_iterations: u32
     }
     for (&node_id, &comm) in &community {
         let cid = label_map.get(&comm).copied().unwrap_or(0);
-        conn.execute("UPDATE memories SET community_id = ?1 WHERE id = ?2", libsql::params![cid, node_id]).await?;
+        conn.execute(
+            "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
+            libsql::params![cid, node_id, user_id],
+        ).await?;
     }
 
     let num_communities = label_map.len();

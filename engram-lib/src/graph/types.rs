@@ -9,6 +9,10 @@ pub enum LinkType {
     Refines,
     Generalizes,
     HasFact,
+    Association,
+    Temporal,
+    Causal,
+    Resolves,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +69,16 @@ pub struct EntityRelationship {
     pub relationship_type: String,
     pub strength: f64,
     pub evidence_count: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityMemorySearchResult {
+    pub id: i64,
+    pub content: String,
+    pub category: String,
+    pub source: String,
+    pub importance: i32,
     pub created_at: String,
 }
 
