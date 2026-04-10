@@ -46,6 +46,7 @@ enum Commands {
     Think,
     DeclareUnknowns,
     RepoMap,
+    SearchCode,
 }
 
 fn expand_path(path: &str) -> PathBuf {
@@ -170,6 +171,13 @@ fn main() {
                 .map_err(|e| e.to_string())
                 .and_then(|input| {
                     tools::ast::repo_map::repo_map(&db, input).map_err(|e| e.to_string())
+                })
+        }
+        Commands::SearchCode => {
+            read_input(&cli.input)
+                .map_err(|e| e.to_string())
+                .and_then(|input| {
+                    tools::ast::search::search_code(&db, input).map_err(|e| e.to_string())
                 })
         }
     };
