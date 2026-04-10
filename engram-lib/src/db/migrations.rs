@@ -1,5 +1,5 @@
 use crate::Result;
-use libsql::{Builder, Connection};
+use libsql::Connection;
 
 const MIGRATION_CREATE_SCHEMA: i64 = 1;
 
@@ -45,6 +45,7 @@ pub async fn migrate_from_typescript(conn: &Connection, _source_path: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libsql::Builder;
 
     #[tokio::test]
     async fn test_migrations_idempotent() -> Result<()> {
