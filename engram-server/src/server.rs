@@ -3,6 +3,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::middleware::auth::auth_middleware;
+use crate::middleware::rate_limit::rate_limit_middleware;
 use crate::routes;
 use crate::state::AppState;
 
@@ -51,6 +52,8 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::search::router())
         .merge(routes::onboard::router())
         .merge(routes::portability::router())
+        // Rate limit runs after auth (inner layer), then auth sets context (outer layer)
+        .layer(axum_mw::from_fn_with_state(state.clone(), rate_limit_middleware))
         .layer(axum_mw::from_fn_with_state(state.clone(), auth_middleware));
 
     // GUI routes handle their own cookie-based auth

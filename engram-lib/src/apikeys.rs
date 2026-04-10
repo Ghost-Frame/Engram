@@ -150,7 +150,7 @@ pub async fn list_api_keys(db: &Database, user_id: i64) -> Result<Vec<ApiKey>> {
     Ok(keys)
 }
 
-/// Delete an API key by id.
+/// Delete an API key by id (no ownership check -- admin use only).
 pub async fn delete_api_key(db: &Database, id: i64) -> Result<()> {
     db.conn
         .execute(
@@ -159,4 +159,17 @@ pub async fn delete_api_key(db: &Database, id: i64) -> Result<()> {
         )
         .await?;
     Ok(())
+}
+
+/// Delete an API key by id, but only if it belongs to the specified user.
+/// Returns true if the key was deleted, false if not found or not owned.
+pub async fn delete_api_key_for_user(db: &Database, id: i64, user_id: i64) -> Result<bool> {
+    let rows_affected = db
+        .conn
+        .execute(
+            "DELETE FROM api_keys WHERE id = ?1 AND user_id = ?2",
+            libsql::params![id, user_id],
+        )
+        .await?;
+    Ok(rows_affected > 0)
 }
