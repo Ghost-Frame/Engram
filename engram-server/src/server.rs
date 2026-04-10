@@ -48,6 +48,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::grounding::router())
         .merge(routes::search::router())
         .merge(routes::onboard::router())
+        .merge(routes::portability::router())
         .layer(axum_mw::from_fn_with_state(state.clone(), auth_middleware))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
