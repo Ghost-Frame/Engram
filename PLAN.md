@@ -1,46 +1,166 @@
-# Task: Composite Index for Contradiction Detection
+# Task: LanceDB HNSW Vector Search
 
-**Branch:** feat/scale-index
-**Effort:** 1 hour
-**Model:** Haiku (trivial)
+**Branch:** feat/scale-lance
+**Effort:** 12 hours
+**Model:** Opus (complex integration)
 
 ## Goal
 
-Add composite index on structured_facts(user_id, subject, predicate) to fix O(n^2) contradiction scan.
+Replace brute-force vector_top_k with LanceDB HNSW index.
+Target: 500ms -> 5ms at 1M memories.
 
-## File
+## Architecture
 
-- Modify: `engram-lib/src/db/schema.rs`
+SQLite remains source of truth. LanceDB stores only: memory_id, user_id, embedding vector.
 
-## Steps
+Store: SQLite first, then LanceDB
+Search: LanceDB for top-k ids, SQLite for full records
+Delete: Both
 
-- [ ] 1. Find the structured_facts indexes section (around line 410-420)
+## Files
 
-- [ ] 2. Add new index after existing ones:
-```sql
-CREATE INDEX IF NOT EXISTS idx_facts_user_subject_predicate
-  ON structured_facts(user_id, subject, predicate);
-```
+- Create: engram-lib/src/vector/mod.rs
+- Create: engram-lib/src/vector/lance.rs
+- Modify: engram-lib/Cargo.toml
+- Modify: engram-lib/src/lib.rs
+- Modify: engram-lib/src/config.rs
+- Modify: engram-lib/src/db/mod.rs
+- Modify: engram-lib/src/memory/mod.rs
+- Modify: engram-lib/src/memory/search.rs
 
-- [ ] 3. Run: `cargo test -p engram-lib`
+---
 
-- [ ] 4. Verify with EXPLAIN QUERY PLAN (manual check):
-```sql
-EXPLAIN QUERY PLAN
-SELECT sf1.memory_id, sf2.memory_id
-FROM structured_facts sf1
-JOIN structured_facts sf2
-  ON sf1.subject = sf2.subject
-  AND sf1.predicate = sf2.predicate
-  AND sf1.id < sf2.id
-WHERE sf1.user_id = 1;
-```
-Should show: SEARCH ... USING INDEX idx_facts_user_subject_predicate
+## Step 1: Add Dependencies
 
-- [ ] 5. Commit: `feat(db): add composite index for contradiction detection`
+In engram-lib/Cargo.toml, add:
+- lancedb = "0.4"
+- arrow-array = "51"
+- arrow-schema = "51"
+- async-trait = "0.1"
+- futures = "0.3"
+
+Note: `lancedb 0.4` requires Arrow 51 and a `protoc` binary during build. This worktree pins Chrono to `0.4.38` for Arrow 51 compatibility and provides a repo-local vendored `protoc` wrapper through `.cargo/config.toml`.
+
+- [x] Add dependencies
+- [x] cargo check -p engram-lib
+
+---
+
+## Step 2: Create Vector Module
+
+Create engram-lib/src/vector/mod.rs with:
+- VectorHit struct (memory_id, distance, rank)
+- VectorIndex trait (insert, search, delete, count)
+- pub use lance::LanceIndex
+
+Add pub mod vector; to lib.rs
+
+---
+
+## Step 3: Implement LanceIndex
+
+Create engram-lib/src/vector/lance.rs:
+
+LanceIndex struct:
+- db: lancedb::Connection
+- table: RwLock<Option<lancedb::Table>>
+- dimensions: usize
+
+Methods:
+- open(path, dimensions) - connect to lance, open or create table
+- ensure_table() - create table with schema if not exists
+- insert() - add record with id, user_id, vector
+- search() - vector_search with user_id filter
+- delete() - delete by id
+- count() - count_rows
+
+Schema: id (i64), user_id (i64), vector (FixedSizeList f32 x 1024)
+
+Use arrow-array for RecordBatch construction.
+Use futures::TryStreamExt for collecting search results.
+
+---
+
+## Step 4: Update Config
+
+Add to Config struct:
+- lance_index_path: Option<String>
+- vector_dimensions: usize (default 1024)
+- use_lance_index: bool (default true)
+
+Env vars:
+- ENGRAM_LANCE_INDEX_PATH
+- ENGRAM_VECTOR_DIMENSIONS
+- ENGRAM_USE_LANCE_INDEX
+
+---
+
+## Step 5: Update Database Struct
+
+Add field: vector_index: Option<Arc<dyn VectorIndex>>
+
+In connect(), if use_lance_index is true:
+- Compute lance_path (config or data_dir/lance)
+- Open LanceIndex
+- Store as Some(Arc::new(idx))
+- On error, warn and use None (graceful degradation)
+
+---
+
+## Step 6: Update Store Flow
+
+In memory/mod.rs store():
+After SQLite insert and embedding generation:
+- If vector_index exists and embedding exists
+- Call index.insert(memory_id, user_id, embedding)
+- Log warning on error, do not fail
+
+---
+
+## Step 7: Update Search Flow
+
+In memory/search.rs hybrid_search():
+Replace vector_search call with:
+- If vector_index exists, use index.search()
+- On error or if index is None, fallback to vector_search()
+- Convert hits to expected format
+
+---
+
+## Step 8: Update Delete Flow
+
+In memory delete/mark_forgotten:
+- If vector_index exists
+- Call index.delete(memory_id)
+- Log warning on error
+
+---
+
+## Step 9: Migration Function
+
+Create build_lance_index_from_existing(db):
+- Query all memories with embeddings
+- For each, insert into vector_index
+- Log progress every 1000
+- Return count
+
+---
+
+## Step 10: Test and Commit
+
+- [x] cargo check -p engram-lib
+- [x] cargo test -p engram-lib
+- [x] cargo clippy -p engram-lib
+- [ ] git add -A
+- [ ] git commit -m "feat(vector): add LanceDB HNSW index for vector search"
+
+---
 
 ## Done When
 
-- Index exists in schema
-- Tests pass
-- Commit made
+- [x] LanceDB compiles and initializes
+- [x] Store inserts into both
+- [x] Search uses Lance with fallback
+- [x] Delete removes from both
+- [x] Tests pass
+- [ ] Commit made

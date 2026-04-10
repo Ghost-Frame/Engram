@@ -25,6 +25,9 @@ pub struct Config {
     pub reranker_enabled: bool,
     pub reranker_top_k: usize,
     pub data_dir: String,
+    pub lance_index_path: Option<String>,
+    pub vector_dimensions: usize,
+    pub use_lance_index: bool,
     pub gui_password: Option<String>,
     pub gui_build_dir: Option<String>,
 }
@@ -48,6 +51,9 @@ impl Default for Config {
             reranker_enabled: true,
             reranker_top_k: 12,
             data_dir: "./data".to_string(),
+            lance_index_path: None,
+            vector_dimensions: 1024,
+            use_lance_index: true,
             gui_password: None,
             gui_build_dir: None,
         }
@@ -110,6 +116,15 @@ impl Config {
         }
         if let Ok(v) = std::env::var("ENGRAM_DATA_DIR") {
             config.data_dir = v;
+        }
+        if let Ok(v) = std::env::var("ENGRAM_LANCE_INDEX_PATH") {
+            config.lance_index_path = Some(v);
+        }
+        if let Ok(v) = std::env::var("ENGRAM_VECTOR_DIMENSIONS") {
+            if let Ok(n) = v.parse() { config.vector_dimensions = n; }
+        }
+        if let Ok(v) = std::env::var("ENGRAM_USE_LANCE_INDEX") {
+            config.use_lance_index = v != "0" && !v.eq_ignore_ascii_case("false");
         }
         if let Ok(v) = std::env::var("ENGRAM_GUI_PASSWORD") {
             config.gui_password = Some(v);

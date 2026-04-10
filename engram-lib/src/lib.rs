@@ -39,6 +39,7 @@ pub mod services;
 pub mod sessions;
 pub mod skills;
 pub mod sync;
+pub mod vector;
 pub mod webhooks;
 
 use thiserror::Error;

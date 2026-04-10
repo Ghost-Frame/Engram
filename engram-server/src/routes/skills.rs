@@ -424,7 +424,9 @@ async fn sync_skills_handler(
 #[derive(Debug, Deserialize)]
 struct ExecuteSkillsBody {
     task: String,
+    #[allow(dead_code)]
     skill_dirs: Option<Vec<String>>,
+    #[allow(dead_code)]
     search_scope: Option<String>,
 }
 
@@ -477,7 +479,9 @@ async fn execute_skills_handler(
 #[derive(Debug, Deserialize)]
 struct UploadSkillBody {
     skill_dir: String,
+    #[allow(dead_code)]
     visibility: Option<String>,
+    #[allow(dead_code)]
     origin: Option<String>,
     tags: Option<Vec<String>>,
 }
