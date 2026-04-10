@@ -6,12 +6,21 @@ use axum::{
 };
 use engram_lib::intelligence::{
     causal::{add_link, create_chain, get_chain, list_chains},
-    consolidation::{consolidate, find_consolidation_candidates, list_consolidations},
+    consolidation::{consolidate, find_consolidation_candidates, list_consolidations, sweep},
     contradiction::{detect_contradictions, scan_all_contradictions},
+    correction::correct_memory,
     decomposition::decompose,
     digests::{generate_digest, list_digests},
+    duplicates::{deduplicate, find_duplicates},
+    extraction::fast_extract_facts,
+    feedback::{self, FeedbackRequest},
+    health::memory_health,
+    predictive::predictive_recall,
+    reconsolidation::{reconsolidate_memory, run_reconsolidation_sweep},
     reflections::{create_reflection, list_reflections},
-    temporal::{detect_patterns, list_patterns, store_pattern},
+    sentiment,
+    temporal::{detect_patterns, list_patterns, store_pattern, time_travel},
+    valence::{analyze_valence, get_emotional_profile, store_valence},
 };
 use engram_lib::memory;
 use serde::Deserialize;
@@ -73,6 +82,67 @@ pub fn router() -> Router<AppState> {
         )
         .route("/intelligence/causal/chains/{id}", get(get_chain_handler))
         .route("/intelligence/causal/links", post(add_link_handler))
+        // -- NEW: Sentiment
+        .route(
+            "/intelligence/sentiment/analyze",
+            post(sentiment_analyze_handler),
+        )
+        .route(
+            "/intelligence/sentiment/history",
+            get(sentiment_history_handler),
+        )
+        // -- NEW: Valence
+        .route(
+            "/intelligence/valence/score",
+            post(valence_score_handler),
+        )
+        .route(
+            "/intelligence/valence/{memory_id}",
+            get(valence_get_handler),
+        )
+        .route(
+            "/intelligence/valence/profile",
+            get(valence_profile_handler),
+        )
+        // -- NEW: Predictive
+        .route(
+            "/intelligence/predictive/recall",
+            post(predictive_recall_handler),
+        )
+        .route(
+            "/intelligence/predictive/patterns",
+            get(predictive_patterns_handler),
+        )
+        // -- NEW: Reconsolidation
+        .route(
+            "/intelligence/reconsolidate/{memory_id}",
+            post(reconsolidate_handler),
+        )
+        .route(
+            "/intelligence/reconsolidation/candidates",
+            get(reconsolidation_candidates_handler),
+        )
+        // -- NEW: Extraction
+        .route(
+            "/intelligence/extract",
+            post(extract_handler),
+        )
+        // -- NEW: Time travel
+        .route("/timetravel", post(time_travel_handler))
+        // -- NEW: Sweep
+        .route("/sweep", post(sweep_handler))
+        // -- NEW: Correct
+        .route("/correct", post(correct_handler))
+        // -- NEW: Memory health
+        .route("/memory-health", get(memory_health_handler))
+        // -- NEW: Feedback
+        .route("/feedback", post(feedback_handler))
+        .route("/feedback/stats", get(feedback_stats_handler))
+        // -- NEW: Duplicates
+        .route("/duplicates", get(duplicates_handler))
+        .route("/deduplicate", post(deduplicate_handler))
+        // -- NEW: Dream
+        .route("/intelligence/dream", post(dream_handler))
 }
 
 // ---------------------------------------------------------------------------
@@ -330,4 +400,426 @@ async fn add_link_handler(
     )
     .await?;
     Ok((StatusCode::CREATED, Json(json!(link))))
+}
+
+// ---------------------------------------------------------------------------
+// Sentiment
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct SentimentAnalyzeBody {
+    pub content: Option<String>,
+    pub memory_id: Option<i64>,
+}
+
+async fn sentiment_analyze_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<SentimentAnalyzeBody>,
+) -> Result<Json<Value>, AppError> {
+    let text = if let Some(ref content) = body.content {
+        content.clone()
+    } else if let Some(memory_id) = body.memory_id {
+        let mem = memory::get(&state.db, memory_id, auth.user_id).await?;
+        mem.content
+    } else {
+        return Err(AppError::from(engram_lib::EngError::InvalidInput(
+            "provide either 'content' or 'memory_id'".to_string(),
+        )));
+    };
+
+    let score = sentiment::score_text(&text);
+    let (sum, count) = sentiment::score_text_sum(&text);
+    let label = if score > 1.0 {
+        "positive"
+    } else if score < -1.0 {
+        "negative"
+    } else {
+        "neutral"
+    };
+
+    Ok(Json(json!({
+        "score": score,
+        "label": label,
+        "sum": sum,
+        "word_count": count,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct SentimentHistoryQuery {
+    pub limit: Option<i64>,
+    pub since: Option<String>,
+}
+
+async fn sentiment_history_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<SentimentHistoryQuery>,
+) -> Result<Json<Value>, AppError> {
+    let limit = params.limit.unwrap_or(20).min(100);
+    let since = params
+        .since
+        .as_deref()
+        .unwrap_or("1970-01-01");
+
+    let mut rows = state
+        .db
+        .conn
+        .query(
+            "SELECT id, content, created_at FROM memories \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND created_at >= ?2 \
+             ORDER BY created_at DESC LIMIT ?3",
+            libsql::params![auth.user_id, since.to_string(), limit],
+        )
+        .await
+        .map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?;
+
+    let mut history = Vec::new();
+    while let Some(row) = rows.next().await.map_err(|e| AppError::from(engram_lib::EngError::Database(e)))? {
+        let id: i64 = row.get(0).map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?;
+        let content: String = row.get(1).map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?;
+        let created_at: String = row.get(2).map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?;
+        let score = sentiment::score_text(&content);
+        history.push(json!({
+            "memory_id": id,
+            "score": score,
+            "created_at": created_at,
+        }));
+    }
+
+    Ok(Json(json!({ "history": history })))
+}
+
+// ---------------------------------------------------------------------------
+// Valence
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct ValenceScoreBody {
+    pub memory_id: Option<i64>,
+    pub content: Option<String>,
+}
+
+async fn valence_score_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<ValenceScoreBody>,
+) -> Result<Json<Value>, AppError> {
+    if let Some(memory_id) = body.memory_id {
+        let mem = memory::get(&state.db, memory_id, auth.user_id).await?;
+        let result = store_valence(&state.db, memory_id, &mem.content).await?;
+        Ok(Json(json!(result)))
+    } else if let Some(ref content) = body.content {
+        let result = analyze_valence(content);
+        Ok(Json(json!(result)))
+    } else {
+        Err(AppError::from(engram_lib::EngError::InvalidInput(
+            "provide either 'memory_id' or 'content'".to_string(),
+        )))
+    }
+}
+
+async fn valence_get_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(memory_id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let mem = memory::get(&state.db, memory_id, auth.user_id).await?;
+    Ok(Json(json!({
+        "memory_id": memory_id,
+        "valence": mem.valence,
+        "arousal": mem.arousal,
+        "dominant_emotion": mem.dominant_emotion,
+    })))
+}
+
+async fn valence_profile_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let profile = get_emotional_profile(&state.db, auth.user_id).await?;
+    Ok(Json(json!(profile)))
+}
+
+// ---------------------------------------------------------------------------
+// Predictive
+// ---------------------------------------------------------------------------
+
+async fn predictive_recall_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let context = predictive_recall(&state.db, auth.user_id).await?;
+    Ok(Json(json!(context)))
+}
+
+async fn predictive_patterns_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<LimitQuery>,
+) -> Result<Json<Value>, AppError> {
+    // Return temporal patterns that drive predictions
+    let limit = params.limit.unwrap_or(20);
+    let patterns = list_patterns(&state.db, auth.user_id, limit).await?;
+    Ok(Json(json!({ "patterns": patterns })))
+}
+
+// ---------------------------------------------------------------------------
+// Reconsolidation
+// ---------------------------------------------------------------------------
+
+async fn reconsolidate_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(memory_id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let result = reconsolidate_memory(&state.db, memory_id, auth.user_id).await?;
+    Ok(Json(json!(result)))
+}
+
+#[derive(Debug, Deserialize)]
+struct ReconsolidationCandidatesQuery {
+    pub limit: Option<usize>,
+}
+
+async fn reconsolidation_candidates_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<ReconsolidationCandidatesQuery>,
+) -> Result<Json<Value>, AppError> {
+    let batch_size = params.limit.unwrap_or(20).min(100);
+    let results = run_reconsolidation_sweep(&state.db, auth.user_id, batch_size).await?;
+    Ok(Json(json!({ "results": results, "count": results.len() })))
+}
+
+// ---------------------------------------------------------------------------
+// Extraction
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct ExtractBody {
+    pub content: Option<String>,
+    pub memory_id: Option<i64>,
+}
+
+async fn extract_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<ExtractBody>,
+) -> Result<Json<Value>, AppError> {
+    let (content, memory_id) = if let Some(mid) = body.memory_id {
+        let mem = memory::get(&state.db, mid, auth.user_id).await?;
+        (mem.content, mid)
+    } else if let Some(ref c) = body.content {
+        // Store as temp memory so extraction has a memory_id to reference
+        let result = memory::store(
+            &state.db,
+            engram_lib::memory::types::StoreRequest {
+                content: c.clone(),
+                category: "general".to_string(),
+                source: "extraction".to_string(),
+                importance: 5,
+                tags: None,
+                embedding: None,
+                session_id: None,
+                is_static: None,
+                user_id: Some(auth.user_id),
+                space_id: None,
+                parent_memory_id: None,
+            },
+        )
+        .await?;
+        (c.clone(), result.id)
+    } else {
+        return Err(AppError::from(engram_lib::EngError::InvalidInput(
+            "provide either 'content' or 'memory_id'".to_string(),
+        )));
+    };
+
+    let stats =
+        fast_extract_facts(&state.db, &content, memory_id, auth.user_id, None).await?;
+    Ok(Json(json!({
+        "memory_id": memory_id,
+        "facts": stats.facts,
+        "preferences": stats.preferences,
+        "state_updates": stats.state_updates,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Time Travel
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct TimeTravelBody {
+    pub query: Option<String>,
+    pub timestamp: String,
+    pub limit: Option<i64>,
+}
+
+async fn time_travel_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<TimeTravelBody>,
+) -> Result<Json<Value>, AppError> {
+    let limit = body.limit.unwrap_or(20).min(100);
+    let results = time_travel(
+        &state.db,
+        auth.user_id,
+        body.query.as_deref(),
+        &body.timestamp,
+        limit,
+    )
+    .await?;
+    Ok(Json(json!({
+        "results": results,
+        "timestamp": body.timestamp,
+        "count": results.len(),
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Sweep
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct SweepBody {
+    pub threshold: Option<f64>,
+}
+
+async fn sweep_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<SweepBody>,
+) -> Result<Json<Value>, AppError> {
+    let threshold = body.threshold.unwrap_or(0.85);
+    let result = sweep(&state.db, auth.user_id, threshold).await?;
+    Ok(Json(json!(result)))
+}
+
+// ---------------------------------------------------------------------------
+// Correct
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct CorrectBody {
+    pub memory_id: i64,
+    pub content: String,
+    pub reason: Option<String>,
+}
+
+async fn correct_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<CorrectBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let corrected = correct_memory(
+        &state.db,
+        auth.user_id,
+        body.memory_id,
+        &body.content,
+        body.reason.as_deref(),
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(json!(corrected))))
+}
+
+// ---------------------------------------------------------------------------
+// Memory Health
+// ---------------------------------------------------------------------------
+
+async fn memory_health_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let report = memory_health(&state.db, auth.user_id).await?;
+    Ok(Json(json!(report)))
+}
+
+// ---------------------------------------------------------------------------
+// Feedback
+// ---------------------------------------------------------------------------
+
+async fn feedback_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<FeedbackRequest>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    feedback::record_feedback(&state.db, auth.user_id, &body).await?;
+    Ok((StatusCode::CREATED, Json(json!({ "ok": true }))))
+}
+
+async fn feedback_stats_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let stats = feedback::feedback_stats(&state.db, auth.user_id).await?;
+    Ok(Json(json!(stats)))
+}
+
+// ---------------------------------------------------------------------------
+// Duplicates
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct DuplicatesQuery {
+    pub threshold: Option<f64>,
+    pub limit: Option<i64>,
+}
+
+async fn duplicates_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<DuplicatesQuery>,
+) -> Result<Json<Value>, AppError> {
+    let threshold = params.threshold.unwrap_or(0.9);
+    let limit = params.limit.unwrap_or(50).min(200);
+    let pairs = find_duplicates(&state.db, auth.user_id, threshold, limit).await?;
+    Ok(Json(json!({ "duplicates": pairs, "count": pairs.len() })))
+}
+
+#[derive(Debug, Deserialize)]
+struct DeduplicateBody {
+    pub threshold: Option<f64>,
+    pub dry_run: Option<bool>,
+}
+
+async fn deduplicate_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<DeduplicateBody>,
+) -> Result<Json<Value>, AppError> {
+    let threshold = body.threshold.unwrap_or(0.9);
+    let dry_run = body.dry_run.unwrap_or(true);
+    let result = deduplicate(&state.db, auth.user_id, threshold, dry_run).await?;
+    Ok(Json(json!(result)))
+}
+
+// ---------------------------------------------------------------------------
+// Dream (Eidolon integration -- graceful degradation)
+// ---------------------------------------------------------------------------
+
+async fn dream_handler(
+    State(state): State<AppState>,
+    Auth(_auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    if let Some(ref brain) = state.brain {
+        // Brain manager is available -- invoke dream cycle
+        match brain.dream_cycle().await {
+            Ok(result) => Ok(Json(json!({
+                "status": "completed",
+                "result": format!("{:?}", result),
+            }))),
+            Err(e) => Ok(Json(json!({
+                "status": "error",
+                "error": format!("{}", e),
+            }))),
+        }
+    } else {
+        Ok(Json(json!({
+            "status": "unavailable",
+            "message": "Neural backend (Brain/Eidolon) is not configured",
+        })))
+    }
 }
