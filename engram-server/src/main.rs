@@ -17,7 +17,7 @@ async fn main() {
         .init();
 
     let config = Config::from_env();
-    let db = Database::connect(&config.db_path)
+    let db = Database::connect_with_config(&config)
         .await
         .expect("failed to connect to database");
 
