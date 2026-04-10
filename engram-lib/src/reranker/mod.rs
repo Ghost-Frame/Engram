@@ -1,5 +1,5 @@
 mod pool;
-pub use pool::{PooledSession, SessionPool};
+pub use pool::SessionPool;
 
 use crate::config::Config;
 use crate::embeddings::download::ensure_reranker_model;
@@ -88,10 +88,9 @@ impl Reranker {
                 let pool = &self.pool;
 
                 async move {
-                    let pooled = pool.acquire().await?;
+                    let mut pooled = pool.acquire().await?;
                     tokio::task::spawn_blocking(move || {
-                        let mut session = pooled.lock();
-                        score_pair_inner(&mut session, &tokenizer, &q, &doc, max_seq)
+                        score_pair_inner(pooled.session_mut(), &tokenizer, &q, &doc, max_seq)
                     })
                     .await
                     .map_err(|e| EngError::Internal(format!("spawn_blocking join: {}", e)))?
@@ -161,12 +160,14 @@ fn score_pair_inner(
 
     let ids_tensor = Tensor::<i64>::from_array(([1usize, max_seq], input_ids))
         .map_err(|e| EngError::Internal(format!("failed to create input_ids tensor: {}", e)))?;
-    let mask_tensor = Tensor::<i64>::from_array(([1usize, max_seq], attention_mask)).map_err(
-        |e| EngError::Internal(format!("failed to create attention_mask tensor: {}", e)),
-    )?;
-    let type_ids_tensor = Tensor::<i64>::from_array(([1usize, max_seq], token_type_ids)).map_err(
-        |e| EngError::Internal(format!("failed to create token_type_ids tensor: {}", e)),
-    )?;
+    let mask_tensor =
+        Tensor::<i64>::from_array(([1usize, max_seq], attention_mask)).map_err(|e| {
+            EngError::Internal(format!("failed to create attention_mask tensor: {}", e))
+        })?;
+    let type_ids_tensor =
+        Tensor::<i64>::from_array(([1usize, max_seq], token_type_ids)).map_err(|e| {
+            EngError::Internal(format!("failed to create token_type_ids tensor: {}", e))
+        })?;
 
     let outputs = session
         .run(ort::inputs![
