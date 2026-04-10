@@ -138,7 +138,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) ->
              episode_id, decay_score, confidence, sync_id, status, user_id, space_id, \
              fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, \
              fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
-             valence, arousal, dominant_emotion, created_at, updated_at \
+             valence, arousal, dominant_emotion, created_at, updated_at, is_superseded \
              FROM memories WHERE id = ?1",
             libsql::params![new_id],
         )
@@ -160,7 +160,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) ->
 pub async fn find_consolidation_candidates(
     db: &Database,
     threshold: f32,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Vec<Vec<String>>> {
     let conn = db.connection();
 
@@ -172,13 +172,14 @@ pub async fn find_consolidation_candidates(
              JOIN memories ms ON ms.id = ml.source_id \
              JOIN memories mt ON mt.id = ml.target_id \
              WHERE ml.similarity >= ?1 \
+               AND ms.user_id = ?2 AND mt.user_id = ?2 \
                AND ml.type IN ('similarity', 'related', 'cite') \
                AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                AND ms.is_latest = 1 AND mt.is_latest = 1 \
                AND ms.is_archived = 0 AND mt.is_archived = 0 \
              ORDER BY ml.similarity DESC \
              LIMIT 200",
-            libsql::params![threshold as f64],
+            libsql::params![threshold as f64, user_id],
         )
         .await?;
 
@@ -243,6 +244,41 @@ pub async fn find_consolidation_candidates(
 pub struct ConsolidationRecord {
     pub id: i64,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SweepResult {
+    pub pairs_found: i64,
+    pub consolidated: i64,
+}
+
+/// Run an automatic consolidation sweep: find candidate groups above the
+/// given similarity threshold and consolidate each group.
+pub async fn sweep(
+    db: &Database,
+    user_id: i64,
+    threshold: f64,
+) -> Result<SweepResult> {
+    let groups = find_consolidation_candidates(db, threshold as f32, user_id).await?;
+    let pairs_found = groups.len() as i64;
+    let mut consolidated = 0i64;
+
+    for group in &groups {
+        if group.len() < 2 {
+            continue;
+        }
+        match consolidate(db, group, user_id).await {
+            Ok(_) => consolidated += 1,
+            Err(e) => {
+                tracing::warn!(error = %e, "sweep_consolidation_failed");
+            }
+        }
+    }
+
+    Ok(SweepResult {
+        pairs_found,
+        consolidated,
+    })
 }
 
 /// List recent consolidation records.
@@ -326,6 +362,7 @@ fn row_to_memory(row: &libsql::Row) -> crate::Result<Memory> {
         dominant_emotion: row.get(44)?,
         created_at: row.get(45)?,
         updated_at: row.get(46)?,
+        is_superseded: row.get::<i64>(47).map(|v| v != 0)?,
     })
 }
 
