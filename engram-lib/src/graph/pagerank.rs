@@ -111,8 +111,10 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
     let conn = db.connection();
     for (&id, &rank) in &result.scores {
         let normalized = rank / max_rank;
-        conn.execute("UPDATE memories SET pagerank_score = ?1 WHERE id = ?2",
-            libsql::params![normalized, id]).await?;
+        conn.execute(
+            "UPDATE memories SET pagerank_score = ?1 WHERE id = ?2 AND user_id = ?3",
+            libsql::params![normalized, id, user_id],
+        ).await?;
     }
 
     info!(user_id, memories = result.scores.len(), iterations = result.iterations,
