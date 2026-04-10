@@ -1,16 +1,10 @@
-mod error;
-mod extractors;
-mod middleware;
-mod routes;
-mod server;
-mod state;
-
 use kleos_lib::config::Config;
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::onnx::OnnxProvider;
 use kleos_lib::embeddings::EmbeddingProvider;
+use kleos_lib::llm::local::{LocalModelClient, OllamaConfig};
 use kleos_lib::reranker::Reranker;
-use state::AppState;
+use kleos_server::state::AppState;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -55,15 +49,31 @@ async fn main() {
         None
     };
 
+    // Initialize local LLM client (graceful degradation if unavailable)
+    let llm: Option<Arc<LocalModelClient>> = {
+        let config = OllamaConfig::from_env();
+        let client = LocalModelClient::new(config);
+        if client.probe().await {
+            tracing::info!("local LLM client ready");
+            Some(Arc::new(client))
+        } else {
+            tracing::warn!("local LLM unavailable. LLM-dependent features disabled.");
+            None
+        }
+    };
+
     let state = AppState {
         db: Arc::new(db),
         config: Arc::new(config),
         embedder,
         reranker,
         brain: None,
+        llm,
+        sessions: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        eidolon_config: None,
     };
 
-    if let Err(e) = server::run(state).await {
+    if let Err(e) = kleos_server::server::run(state).await {
         tracing::error!("server error: {}", e);
         std::process::exit(1);
     }

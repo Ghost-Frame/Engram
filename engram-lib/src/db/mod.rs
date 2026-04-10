@@ -25,10 +25,23 @@ impl Database {
         conn.execute("PRAGMA temp_store = MEMORY", ()).await?;
         conn.execute("PRAGMA mmap_size = 268435456", ()).await?; // 256MB
 
-        // Create all tables
-        schema::create_tables(&conn).await?;
+        // Run schema migrations (idempotent)
+        migrations::run_migrations(&conn).await?;
 
         info!("database connected: {}", db_path);
+
+        Ok(Self { db, conn })
+    }
+
+    /// Connect to an in-memory database for testing.
+    /// Skips WAL and mmap PRAGMAs that are invalid for in-memory databases.
+    pub async fn connect_memory() -> Result<Self> {
+        let db = Builder::new_local(":memory:").build().await?;
+        let conn = db.connect()?;
+
+        conn.execute("PRAGMA foreign_keys = ON", ()).await?;
+
+        migrations::run_migrations(&conn).await?;
 
         Ok(Self { db, conn })
     }

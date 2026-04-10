@@ -72,15 +72,15 @@ pub async fn reject_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
     Ok(())
 }
 
-pub async fn set_forget_reason(db: &Database, id: i64, reason: &str) -> Result<()> {
+pub async fn set_forget_reason(db: &Database, id: i64, reason: &str, user_id: i64) -> Result<()> {
     db.conn.execute(
-        "UPDATE memories SET forget_reason = ?1 WHERE id = ?2",
-        libsql::params![reason.to_string(), id],
+        "UPDATE memories SET forget_reason = ?1 WHERE id = ?2 AND user_id = ?3",
+        libsql::params![reason.to_string(), id, user_id],
     ).await?;
     Ok(())
 }
 
-pub async fn edit_and_approve(db: &Database, id: i64, content: Option<&str>, category: Option<&str>, importance: Option<i64>, tags: Option<&str>) -> Result<()> {
+pub async fn edit_and_approve(db: &Database, id: i64, content: Option<&str>, category: Option<&str>, importance: Option<i64>, tags: Option<&str>, user_id: i64) -> Result<()> {
     let mut sets = vec!["status = 'approved'".to_string(), "updated_at = datetime('now')".to_string()];
     let mut vals: Vec<libsql::Value> = Vec::new();
     let mut idx = 1;
@@ -97,7 +97,8 @@ pub async fn edit_and_approve(db: &Database, id: i64, content: Option<&str>, cat
         sets.push(format!("tags = ?{}", idx)); vals.push(t.to_string().into()); idx += 1;
     }
     vals.push(id.into());
-    let sql = format!("UPDATE memories SET {} WHERE id = ?{}", sets.join(", "), idx);
+    vals.push(user_id.into());
+    let sql = format!("UPDATE memories SET {} WHERE id = ?{} AND user_id = ?{}", sets.join(", "), idx, idx + 1);
     db.conn.execute(&sql, vals).await?;
     Ok(())
 }

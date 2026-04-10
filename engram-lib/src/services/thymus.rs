@@ -295,16 +295,16 @@ pub async fn create_rubric(db: &Database, req: CreateRubricRequest) -> Result<Ru
         .ok_or_else(|| EngError::Internal("no rowid".into()))?;
     let id: i64 = id_row.get(0)?;
 
-    get_rubric(db, id).await
+    get_rubric(db, id, user_id).await
 }
 
-pub async fn get_rubric(db: &Database, id: i64) -> Result<Rubric> {
+pub async fn get_rubric(db: &Database, id: i64, user_id: i64) -> Result<Rubric> {
     let conn = &db.conn;
     let mut rows = conn
         .query(
             "SELECT id, name, description, criteria, user_id, created_at, updated_at
-             FROM rubrics WHERE id = ?1",
-            libsql::params![id],
+             FROM rubrics WHERE id = ?1 AND user_id = ?2",
+            libsql::params![id, user_id],
         )
         .await?;
 
@@ -333,11 +333,11 @@ pub async fn list_rubrics(db: &Database, user_id: i64) -> Result<Vec<Rubric>> {
     Ok(results)
 }
 
-pub async fn update_rubric(db: &Database, id: i64, req: UpdateRubricRequest) -> Result<Rubric> {
+pub async fn update_rubric(db: &Database, id: i64, req: UpdateRubricRequest, user_id: i64) -> Result<Rubric> {
     let conn = &db.conn;
 
-    // Verify it exists
-    get_rubric(db, id).await?;
+    // Verify ownership
+    get_rubric(db, id, user_id).await?;
 
     let mut sets: Vec<String> = Vec::new();
     let mut params_vec: Vec<libsql::Value> = Vec::new();
@@ -363,15 +363,16 @@ pub async fn update_rubric(db: &Database, id: i64, req: UpdateRubricRequest) -> 
     sets.push("updated_at = datetime('now')".to_string());
 
     if sets.is_empty() {
-        return get_rubric(db, id).await;
+        return get_rubric(db, id, user_id).await;
     }
 
-    let sql = format!("UPDATE rubrics SET {} WHERE id = ?{}", sets.join(", "), idx);
+    let sql = format!("UPDATE rubrics SET {} WHERE id = ?{} AND user_id = ?{}", sets.join(", "), idx, idx + 1);
     params_vec.push(libsql::Value::Integer(id));
+    params_vec.push(libsql::Value::Integer(user_id));
 
     conn.execute(&sql, libsql::params_from_iter(params_vec)).await?;
 
-    get_rubric(db, id).await
+    get_rubric(db, id, user_id).await
 }
 
 pub async fn delete_rubric(db: &Database, id: i64, user_id: i64) -> Result<bool> {
@@ -460,7 +461,7 @@ pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation>
     let user_id = req.user_id.unwrap_or(1);
 
     // Fetch rubric to get criteria
-    let rubric = get_rubric(db, req.rubric_id).await?;
+    let rubric = get_rubric(db, req.rubric_id, user_id).await?;
 
     // Compute weighted overall score
     let overall_score = compute_weighted_score(&rubric.criteria, &req.scores)?;
@@ -496,17 +497,17 @@ pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation>
         .ok_or_else(|| EngError::Internal("no rowid".into()))?;
     let id: i64 = id_row.get(0)?;
 
-    get_evaluation(db, id).await
+    get_evaluation(db, id, user_id).await
 }
 
-pub async fn get_evaluation(db: &Database, id: i64) -> Result<Evaluation> {
+pub async fn get_evaluation(db: &Database, id: i64, user_id: i64) -> Result<Evaluation> {
     let conn = &db.conn;
     let mut rows = conn
         .query(
             "SELECT id, rubric_id, agent, subject, input, output, scores, overall_score,
                     notes, evaluator, user_id, created_at
-             FROM evaluations WHERE id = ?1",
-            libsql::params![id],
+             FROM evaluations WHERE id = ?1 AND user_id = ?2",
+            libsql::params![id, user_id],
         )
         .await?;
 

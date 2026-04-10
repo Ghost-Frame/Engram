@@ -46,8 +46,8 @@ pub async fn compress_weekly(db: &Database, user_id: i64) -> Result<Vec<Compress
         let mut contents: Vec<(String, i32)> = Vec::new();
         for &id in memory_ids.iter().take(50) {
             let mut mrows = conn.query(
-                "SELECT content, importance FROM memories WHERE id = ?1",
-                params![id],
+                "SELECT content, importance FROM memories WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
             ).await?;
             if let Some(row) = mrows.next().await? {
                 let content: String = row.get(0)?;

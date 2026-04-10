@@ -456,6 +456,75 @@ pub async fn backfill_fact_validity(db: &Database, user_id: Option<i64>) -> Resu
 }
 
 // ============================================================================
+// TIME TRAVEL -- query memories as they existed at a given timestamp
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeTravelResult {
+    pub id: i64,
+    pub content: String,
+    pub category: String,
+    pub importance: i32,
+    pub created_at: String,
+}
+
+/// Retrieve memories as they existed at or before a given timestamp.
+/// Optionally filter by content substring.
+pub async fn time_travel(
+    db: &Database,
+    user_id: i64,
+    query: Option<&str>,
+    timestamp: &str,
+    limit: i64,
+) -> Result<Vec<TimeTravelResult>> {
+    let results = if let Some(q) = query {
+        let pattern = format!("%{}%", q);
+        let mut rows = db.conn.query(
+            "SELECT id, content, category, importance, created_at \
+             FROM memories \
+             WHERE user_id = ?1 AND created_at <= ?2 AND is_forgotten = 0 \
+               AND content LIKE ?3 \
+             ORDER BY created_at DESC LIMIT ?4",
+            libsql::params![user_id, timestamp.to_string(), pattern, limit],
+        ).await?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(TimeTravelResult {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                category: row.get(2)?,
+                importance: row.get(3)?,
+                created_at: row.get(4)?,
+            });
+        }
+        out
+    } else {
+        let mut rows = db.conn.query(
+            "SELECT id, content, category, importance, created_at \
+             FROM memories \
+             WHERE user_id = ?1 AND created_at <= ?2 AND is_forgotten = 0 \
+             ORDER BY created_at DESC LIMIT ?3",
+            libsql::params![user_id, timestamp.to_string(), limit],
+        ).await?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(TimeTravelResult {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                category: row.get(2)?,
+                importance: row.get(3)?,
+                created_at: row.get(4)?,
+            });
+        }
+        out
+    };
+
+    Ok(results)
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
