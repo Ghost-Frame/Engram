@@ -2,6 +2,7 @@
 
 pub mod types;
 
+use chrono::Utc;
 use crate::db::Database;
 use crate::Result;
 use self::types::*;
@@ -313,6 +314,77 @@ pub async fn list_state(db: &Database) -> Result<Vec<StateRow>> {
 // ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
+
+pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport> {
+    let memories = export_table_user(db,
+        "SELECT id, content, category, source, importance, tags, \
+         created_at, updated_at, space_id, is_archived \
+         FROM memories WHERE user_id = ?1 AND is_forgotten = 0 \
+         ORDER BY created_at DESC",
+        user_id,
+    ).await?;
+    let conversations = export_table_user(db,
+        "SELECT id, session_id, agent, model, title, message_count, created_at, updated_at \
+         FROM conversations WHERE user_id = ?1 ORDER BY created_at DESC",
+        user_id,
+    ).await?;
+    let episodes = export_table_user(db,
+        "SELECT id, title, summary, session_id, status, created_at, updated_at \
+         FROM episodes WHERE user_id = ?1 ORDER BY created_at DESC",
+        user_id,
+    ).await?;
+    let entities = export_table_user(db,
+        "SELECT id, name, entity_type, description, metadata, created_at \
+         FROM entities WHERE user_id = ?1 ORDER BY name",
+        user_id,
+    ).await?;
+    let facts = export_table_user(db,
+        "SELECT f.id, f.memory_id, f.content, f.fact_type, f.confidence, f.created_at \
+         FROM facts f JOIN memories m ON f.memory_id = m.id \
+         WHERE m.user_id = ?1 ORDER BY f.created_at DESC",
+        user_id,
+    ).await?;
+    let preferences = export_table_user(db,
+        "SELECT id, key, value, created_at, updated_at \
+         FROM user_preferences WHERE user_id = ?1 ORDER BY key",
+        user_id,
+    ).await?;
+    let skills = export_table_user(db,
+        "SELECT id, name, description, content, language, tags, created_at \
+         FROM skills WHERE user_id = ?1 ORDER BY name",
+        user_id,
+    ).await?;
+    Ok(UserExport {
+        version: "1.0".to_string(),
+        exported_at: Utc::now().to_rfc3339(),
+        user_id,
+        memories,
+        conversations,
+        episodes,
+        entities,
+        facts,
+        preferences,
+        skills,
+    })
+}
+
+async fn export_table_user(db: &Database, sql: &str, user_id: i64) -> Result<Vec<serde_json::Value>> {
+    let mut rows = db.conn.query(sql, libsql::params![user_id]).await?;
+    let mut result = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let mut obj = serde_json::Map::new();
+        for i in 0..20 {
+            match row.get::<String>(i) {
+                Ok(val) => { obj.insert(format!("col_{}", i), serde_json::Value::String(val)); }
+                Err(_) => break,
+            }
+        }
+        if !obj.is_empty() {
+            result.push(serde_json::Value::Object(obj));
+        }
+    }
+    Ok(result)
+}
 
 pub async fn export_data(db: &Database) -> Result<ExportData> {
     let users = export_table(db, "SELECT * FROM users").await?;
