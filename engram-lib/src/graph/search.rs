@@ -9,7 +9,7 @@ pub async fn graph_search(
     db: &Database,
     query: &str,
     limit: usize,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Vec<GraphNode>> {
     let conn = db.connection();
     let pattern = format!("%{}%", query);
@@ -18,11 +18,11 @@ pub async fn graph_search(
         .query(
             "SELECT id, content, category, importance, pagerank_score \
              FROM memories \
-             WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-               AND content LIKE ?1 \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+               AND content LIKE ?2 \
              ORDER BY importance DESC \
-             LIMIT ?2",
-            libsql::params![pattern.clone(), limit as i64],
+             LIMIT ?3",
+            libsql::params![user_id, pattern.clone(), limit as i64],
         )
         .await?;
 
@@ -59,10 +59,10 @@ pub async fn graph_search(
         .query(
             "SELECT id, name, entity_type \
              FROM entities \
-             WHERE name LIKE ?1 OR aliases LIKE ?1 OR description LIKE ?1 \
+             WHERE user_id = ?1 AND (name LIKE ?2 OR aliases LIKE ?2 OR description LIKE ?2) \
              ORDER BY occurrence_count DESC \
-             LIMIT ?2",
-            libsql::params![pattern, limit as i64],
+             LIMIT ?3",
+            libsql::params![user_id, pattern, limit as i64],
         )
         .await?;
 
@@ -91,7 +91,7 @@ pub async fn neighborhood(
     db: &Database,
     node_id: &str,
     depth: u32,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
     let conn = db.connection();
 
@@ -131,8 +131,10 @@ pub async fn neighborhood(
                     .query(
                         "SELECT source_id, target_id, similarity, type \
                          FROM memory_links \
-                         WHERE source_id = ?1 OR target_id = ?1",
-                        libsql::params![node],
+                         WHERE (source_id = ?1 OR target_id = ?1) \
+                           AND EXISTS (SELECT 1 FROM memories WHERE id = source_id AND user_id = ?2) \
+                           AND EXISTS (SELECT 1 FROM memories WHERE id = target_id AND user_id = ?2)",
+                        libsql::params![node, user_id],
                     )
                     .await?;
 
@@ -168,8 +170,8 @@ pub async fn neighborhood(
         let mut rows = conn
             .query(
                 "SELECT id, content, importance, pagerank_score \
-                 FROM memories WHERE id = ?1",
-                libsql::params![id],
+                 FROM memories WHERE id = ?1 AND user_id = ?2",
+                libsql::params![id, user_id],
             )
             .await?;
 
@@ -217,7 +219,11 @@ fn parse_link_type(s: &str) -> LinkType {
     match s {
         "cite" | "similarity" | "related" => LinkType::Cite,
         "mentions" | "about" => LinkType::Mentions,
-        "contradicts" => LinkType::Contradicts,
+        "association" | "Association" => LinkType::Association,
+        "temporal" | "Temporal" => LinkType::Temporal,
+        "contradicts" | "contradiction" | "Contradiction" => LinkType::Contradicts,
+        "causal" | "causes" | "caused_by" | "Causal" => LinkType::Causal,
+        "resolves" | "Resolves" => LinkType::Resolves,
         "refines" | "updates" | "corrects" => LinkType::Refines,
         "generalizes" | "consolidates" => LinkType::Generalizes,
         "has_fact" => LinkType::HasFact,
