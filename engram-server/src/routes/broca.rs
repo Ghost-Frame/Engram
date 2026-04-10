@@ -14,7 +14,10 @@ use engram_lib::services::broca::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/broca/actions", post(log_action_handler).get(list_actions_handler))
+        .route(
+            "/broca/actions",
+            post(log_action_handler).get(list_actions_handler),
+        )
         .route("/broca/actions/{id}", get(get_action_handler))
         .route("/broca/feed", get(get_feed_handler))
         .route("/broca/stats", get(get_stats))
@@ -87,7 +90,16 @@ async fn list_actions_handler(
     let project = params.project.as_deref().or(params.service.as_deref());
     let action = params.action.as_deref();
 
-    let mut entries = query_actions(&state.db, agent, project, action, limit, offset, auth.user_id).await?;
+    let mut entries = query_actions(
+        &state.db,
+        agent,
+        project,
+        action,
+        limit,
+        offset,
+        auth.user_id,
+    )
+    .await?;
 
     // Apply since filter in-memory if provided
     if let Some(ref since) = params.since {
@@ -115,7 +127,8 @@ async fn get_feed_handler(
     let offset = params.offset.unwrap_or(0);
     let agent = params.agent.as_deref();
 
-    let mut entries = query_actions(&state.db, agent, None, None, limit, offset, auth.user_id).await?;
+    let mut entries =
+        query_actions(&state.db, agent, None, None, limit, offset, auth.user_id).await?;
 
     if let Some(ref since) = params.since {
         entries.retain(|e| e.created_at.as_str() >= since.as_str());

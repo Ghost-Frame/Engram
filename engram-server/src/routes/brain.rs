@@ -7,8 +7,8 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::services::brain::{
-    get_memory_for_absorb, verify_memory_ownership, AbsorbRequest, BrainQueryOptions,
-    DecayRequest, FeedbackRequest,
+    get_memory_for_absorb, verify_memory_ownership, AbsorbRequest, BrainQueryOptions, DecayRequest,
+    FeedbackRequest,
 };
 
 pub fn router() -> Router<AppState> {
@@ -50,7 +50,9 @@ async fn query_handler(
     require_brain(&state).await?;
     let brain = state.brain.as_ref().unwrap();
     let embedder = state.embedder.as_ref().ok_or_else(|| {
-        AppError(engram_lib::EngError::Internal("no embedder configured".into()))
+        AppError(engram_lib::EngError::Internal(
+            "no embedder configured".into(),
+        ))
     })?;
     let result = brain.query(embedder.as_ref(), &body.query, &body).await?;
     Ok(Json(json!({ "ok": true, "result": result })))
@@ -64,7 +66,9 @@ async fn absorb_handler(
     require_brain(&state).await?;
     let brain = state.brain.as_ref().unwrap();
     let embedder = state.embedder.as_ref().ok_or_else(|| {
-        AppError(engram_lib::EngError::Internal("no embedder configured".into()))
+        AppError(engram_lib::EngError::Internal(
+            "no embedder configured".into(),
+        ))
     })?;
     let memory = get_memory_for_absorb(&state.db, body.id, auth.user_id).await?;
     brain.absorb(embedder.as_ref(), memory).await?;

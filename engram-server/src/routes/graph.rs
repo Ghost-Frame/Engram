@@ -29,7 +29,10 @@ use crate::{error::AppError, extractors::Auth, state::AppState};
 pub fn router() -> Router<AppState> {
     Router::new()
         // Entity CRUD
-        .route("/entities", post(create_entity_handler).get(list_entities_handler))
+        .route(
+            "/entities",
+            post(create_entity_handler).get(list_entities_handler),
+        )
         .route(
             "/entities/{id}",
             get(get_entity_handler)
@@ -40,16 +43,16 @@ pub fn router() -> Router<AppState> {
             "/entities/{id}/relationships",
             get(entity_relationships_handler).delete(delete_relationship_handler),
         )
-        .route(
-            "/entities/{id}/memories",
-            get(entity_memories_handler),
-        )
+        .route("/entities/{id}/memories", get(entity_memories_handler))
         .route("/entities/{id}/search", post(entity_search_handler))
         .route(
             "/entities/{id}/memories/{mid}",
             put(link_entity_memory_handler).delete(unlink_entity_memory_handler),
         )
-        .route("/entities/{id}/cooccurrences", get(entity_cooccurrences_handler))
+        .route(
+            "/entities/{id}/cooccurrences",
+            get(entity_cooccurrences_handler),
+        )
         // Relationships
         .route("/entity-relationships", post(create_relationship_handler))
         // Graph operations
@@ -63,12 +66,18 @@ pub fn router() -> Router<AppState> {
         .route("/communities", get(communities_handler))
         .route("/communities/{id}", get(community_detail_handler))
         .route("/graph/communities", post(detect_communities_handler))
-        .route("/graph/communities/{id}/members", get(community_members_handler))
+        .route(
+            "/graph/communities/{id}/members",
+            get(community_members_handler),
+        )
         .route("/graph/communities/stats", get(community_stats_handler))
         // PageRank
         .route("/graph/pagerank", post(pagerank_handler))
         // Cooccurrence
-        .route("/graph/cooccurrences/rebuild", post(rebuild_cooccurrences_handler))
+        .route(
+            "/graph/cooccurrences/rebuild",
+            post(rebuild_cooccurrences_handler),
+        )
         // Memory entity extraction
         .route("/memory/{id}/entities", get(memory_entities_handler))
         .route("/facts", get(facts_handler))
@@ -284,9 +293,12 @@ async fn delete_entity_handler(
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
-    conn.execute("DELETE FROM entities WHERE id = ?1 AND user_id = ?2", libsql::params![id, auth.user_id])
-        .await
-        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
+    conn.execute(
+        "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
+        libsql::params![id, auth.user_id],
+    )
+    .await
+    .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -498,7 +510,12 @@ async fn create_relationship_handler(
         "INSERT INTO entity_relationships \
          (source_entity_id, target_entity_id, relationship_type, strength) \
          VALUES (?1, ?2, ?3, ?4)",
-        libsql::params![req.source_entity_id, req.target_entity_id, rel_type.to_string(), strength],
+        libsql::params![
+            req.source_entity_id,
+            req.target_entity_id,
+            rel_type.to_string(),
+            strength
+        ],
     )
     .await
     .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
@@ -735,7 +752,9 @@ async fn detect_communities_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let result = detect_communities(&state.db, auth.user_id, 25).await.map_err(AppError)?;
+    let result = detect_communities(&state.db, auth.user_id, 25)
+        .await
+        .map_err(AppError)?;
     Ok(Json(json!(result)))
 }
 
@@ -750,7 +769,9 @@ async fn community_members_handler(
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(50) as usize;
-    let members = get_community_members(&state.db, id, auth.user_id, limit).await.map_err(AppError)?;
+    let members = get_community_members(&state.db, id, auth.user_id, limit)
+        .await
+        .map_err(AppError)?;
     Ok(Json(json!({ "members": members })))
 }
 
@@ -762,7 +783,9 @@ async fn community_stats_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_community_stats(&state.db, auth.user_id).await.map_err(AppError)?;
+    let stats = get_community_stats(&state.db, auth.user_id)
+        .await
+        .map_err(AppError)?;
     Ok(Json(json!({ "stats": stats })))
 }
 
@@ -774,7 +797,9 @@ async fn pagerank_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let result = update_pagerank_scores(&state.db, auth.user_id).await.map_err(AppError)?;
+    let result = update_pagerank_scores(&state.db, auth.user_id)
+        .await
+        .map_err(AppError)?;
     Ok(Json(json!(result)))
 }
 
@@ -786,7 +811,9 @@ async fn rebuild_cooccurrences_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let count = rebuild_cooccurrences(&state.db, auth.user_id).await.map_err(AppError)?;
+    let count = rebuild_cooccurrences(&state.db, auth.user_id)
+        .await
+        .map_err(AppError)?;
     Ok(Json(json!({ "rebuilt": count })))
 }
 
@@ -802,7 +829,8 @@ async fn entity_cooccurrences_handler(
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20) as usize;
     let entities = get_cooccurring_entities(&state.db, id, auth.user_id, limit)
-        .await.map_err(AppError)?;
+        .await
+        .map_err(AppError)?;
     Ok(Json(json!({ "cooccurrences": entities })))
 }
 

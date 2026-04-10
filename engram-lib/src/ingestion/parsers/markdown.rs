@@ -9,9 +9,8 @@ use std::collections::HashMap;
 /// Parse markdown text into a single parsed document.
 pub fn parse(input: &str) -> Result<Vec<ParsedDocument>> {
     // Extract title from first heading
-    let title = find_first_heading(input).unwrap_or_else(|| {
-        input.chars().take(60).collect::<String>()
-    });
+    let title =
+        find_first_heading(input).unwrap_or_else(|| input.chars().take(60).collect::<String>());
 
     Ok(vec![ParsedDocument {
         title,

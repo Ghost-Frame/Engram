@@ -11,9 +11,7 @@ pub mod types;
 use crate::db::Database;
 use crate::Result;
 use std::time::Instant;
-use types::{
-    Chunk, FormatMeta, IngestOptions, IngestResult, IngestStatus, ProcessOptions,
-};
+use types::{Chunk, FormatMeta, IngestOptions, IngestResult, IngestStatus, ProcessOptions};
 use uuid::Uuid;
 
 pub use chunker::chunk_document;
@@ -64,18 +62,16 @@ pub async fn ingest(
 
     for doc in &docs {
         // Chunk the document
-        let doc_chunks: Vec<Chunk> = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            chunk_document(doc, chunker_opts)
-        })) {
-            Ok(chunks) => chunks,
-            Err(_) => {
-                errors.push(format!(
-                    "Document \"{}\": chunking error",
-                    doc.title
-                ));
-                continue;
-            }
-        };
+        let doc_chunks: Vec<Chunk> =
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                chunk_document(doc, chunker_opts)
+            })) {
+                Ok(chunks) => chunks,
+                Err(_) => {
+                    errors.push(format!("Document \"{}\": chunking error", doc.title));
+                    continue;
+                }
+            };
 
         total_chunks += doc_chunks.len();
 
@@ -95,7 +91,7 @@ pub async fn ingest(
             let result = processors::process_chunks(
                 db,
                 options.mode,
-                &[chunk.clone()],
+                std::slice::from_ref(chunk),
                 &process_options,
             )
             .await;
@@ -137,9 +133,7 @@ pub async fn ingest_binary(
     let job_id = format!("ingest_{}", &Uuid::new_v4().to_string()[..8]);
 
     // Detect format
-    let format = options
-        .format
-        .unwrap_or_else(|| detect_format(input, meta));
+    let format = options.format.unwrap_or_else(|| detect_format(input, meta));
 
     // For text formats, convert and delegate
     if parsers::is_text_format(format) {
@@ -189,7 +183,7 @@ pub async fn ingest_binary(
             let result = processors::process_chunks(
                 db,
                 options.mode,
-                &[chunk.clone()],
+                std::slice::from_ref(chunk),
                 &process_options,
             )
             .await;

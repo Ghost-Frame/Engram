@@ -2,9 +2,9 @@
 //!
 //! Ports: prompts/routes.ts (logic)
 
-use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::Result;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptResult {
@@ -22,7 +22,13 @@ pub struct HeaderResult {
     pub prior_models: Vec<String>,
 }
 
-pub async fn generate_prompt(db: &Database, format: &str, token_budget: usize, _context: &str, user_id: i64) -> Result<PromptResult> {
+pub async fn generate_prompt(
+    db: &Database,
+    format: &str,
+    token_budget: usize,
+    _context: &str,
+    user_id: i64,
+) -> Result<PromptResult> {
     let mut candidates: Vec<(i64, String, String, f64)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -32,9 +38,16 @@ pub async fn generate_prompt(db: &Database, format: &str, token_budget: usize, _
         libsql::params![user_id],
     ).await?;
     while let Some(row) = rows.next().await? {
-        let id: i64 = row.get(0).map_err(|e| crate::EngError::Internal(e.to_string()))?;
+        let id: i64 = row
+            .get(0)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?;
         if seen.insert(id) {
-            candidates.push((id, row.get::<String>(1).unwrap_or_default(), row.get::<String>(2).unwrap_or_default(), 100.0));
+            candidates.push((
+                id,
+                row.get::<String>(1).unwrap_or_default(),
+                row.get::<String>(2).unwrap_or_default(),
+                100.0,
+            ));
         }
     }
 
@@ -44,10 +57,17 @@ pub async fn generate_prompt(db: &Database, format: &str, token_budget: usize, _
         libsql::params![user_id],
     ).await?;
     while let Some(row) = rows.next().await? {
-        let id: i64 = row.get(0).map_err(|e| crate::EngError::Internal(e.to_string()))?;
+        let id: i64 = row
+            .get(0)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?;
         if seen.insert(id) {
             let ds: f64 = row.get(4).unwrap_or(5.0);
-            candidates.push((id, row.get::<String>(1).unwrap_or_default(), row.get::<String>(2).unwrap_or_default(), ds * 2.0));
+            candidates.push((
+                id,
+                row.get::<String>(1).unwrap_or_default(),
+                row.get::<String>(2).unwrap_or_default(),
+                ds * 2.0,
+            ));
         }
     }
 
@@ -57,7 +77,9 @@ pub async fn generate_prompt(db: &Database, format: &str, token_budget: usize, _
     let mut tokens_used = 0;
     for (_id, content, category, _score) in &candidates {
         let t = content.len() / 4 + 5;
-        if tokens_used + t > token_budget { continue; }
+        if tokens_used + t > token_budget {
+            continue;
+        }
         packed.push(format!("[{}] {}", category, content));
         tokens_used += t;
     }
@@ -72,10 +94,22 @@ pub async fn generate_prompt(db: &Database, format: &str, token_budget: usize, _
         _ => memory_block,
     };
 
-    Ok(PromptResult { prompt, format: format.to_string(), memories_included: count, tokens_estimated: tokens_used })
+    Ok(PromptResult {
+        prompt,
+        format: format.to_string(),
+        memories_included: count,
+        tokens_estimated: tokens_used,
+    })
 }
 
-pub async fn generate_header(db: &Database, actor_model: &str, actor_role: &str, _context: &str, limit: usize, user_id: i64) -> Result<HeaderResult> {
+pub async fn generate_header(
+    db: &Database,
+    actor_model: &str,
+    actor_role: &str,
+    _context: &str,
+    limit: usize,
+    user_id: i64,
+) -> Result<HeaderResult> {
     let mut rows = db.conn.query(
         "SELECT id, content, category, source, model, created_at, importance FROM memories WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 AND user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
         libsql::params![user_id, (limit * 3) as i64],
@@ -111,13 +145,20 @@ pub async fn generate_header(db: &Database, actor_model: &str, actor_role: &str,
         format!("prior_models: [{}]", prior_list.join(", ")),
         String::new(),
         "## Attribution Rule".to_string(),
-        format!("You are {}. Memories in Engram tagged with a different model were NOT created by you.", actor_model),
+        format!(
+            "You are {}. Memories in Engram tagged with a different model were NOT created by you.",
+            actor_model
+        ),
     ];
     if !prior_work.is_empty() {
         lines.push(String::new());
         lines.push("## Recent Work by Other Models".to_string());
         for pw in prior_work.iter().take(5) {
-            lines.push(format!("- [{}] {}", pw["model"].as_str().unwrap_or("?"), pw["summary"].as_str().unwrap_or("")));
+            lines.push(format!(
+                "- [{}] {}",
+                pw["model"].as_str().unwrap_or("?"),
+                pw["summary"].as_str().unwrap_or("")
+            ));
         }
     }
 

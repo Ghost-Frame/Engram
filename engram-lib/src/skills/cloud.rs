@@ -18,14 +18,15 @@ pub struct CloudSearchResult {
 }
 
 /// Stub: Search skills in the cloud registry.
-pub async fn search_skills_cloud(
-    query: &str,
-    limit: usize,
-) -> Result<Vec<CloudSearchResult>> {
-    let Some(api_key) = std::env::var("OPENSPACE_API_KEY").ok().filter(|v| !v.trim().is_empty()) else {
+pub async fn search_skills_cloud(query: &str, limit: usize) -> Result<Vec<CloudSearchResult>> {
+    let Some(api_key) = std::env::var("OPENSPACE_API_KEY")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    else {
         return Ok(vec![]);
     };
-    let base_url = std::env::var("OPENSPACE_API_URL").unwrap_or_else(|_| DEFAULT_OPENSPACE_API_URL.to_string());
+    let base_url = std::env::var("OPENSPACE_API_URL")
+        .unwrap_or_else(|_| DEFAULT_OPENSPACE_API_URL.to_string());
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
         .build()
@@ -46,10 +47,7 @@ pub async fn search_skills_cloud(
     }
 
     let payload: serde_json::Value = response.json().await.unwrap_or_else(|_| json!([]));
-    let results = payload
-        .get("results")
-        .cloned()
-        .unwrap_or(payload);
+    let results = payload.get("results").cloned().unwrap_or(payload);
     Ok(serde_json::from_value(results).unwrap_or_default())
 }
 
@@ -63,7 +61,8 @@ pub async fn upload_skill_to_cloud(
 ) -> Result<String> {
     let api_key = std::env::var("OPENSPACE_API_KEY")
         .map_err(|_| crate::EngError::InvalidInput("OPENSPACE_API_KEY not configured".into()))?;
-    let base_url = std::env::var("OPENSPACE_API_URL").unwrap_or_else(|_| DEFAULT_OPENSPACE_API_URL.to_string());
+    let base_url = std::env::var("OPENSPACE_API_URL")
+        .unwrap_or_else(|_| DEFAULT_OPENSPACE_API_URL.to_string());
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(TIMEOUT_SECS + 5))
         .build()
@@ -88,8 +87,7 @@ pub async fn upload_skill_to_cloud(
         let body = response.text().await.unwrap_or_default();
         return Err(crate::EngError::Internal(format!(
             "cloud upload failed ({}): {}",
-            status,
-            body
+            status, body
         )));
     }
 

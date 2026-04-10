@@ -31,7 +31,10 @@ pub fn router() -> Router<AppState> {
         .route("/thymus/evaluate", post(evaluate_handler))
         .route("/thymus/evaluations", get(list_evaluations_handler))
         .route("/thymus/evaluations/{id}", get(get_evaluation_handler))
-        .route("/thymus/metrics", post(record_metric_handler).get(get_metrics_handler))
+        .route(
+            "/thymus/metrics",
+            post(record_metric_handler).get(get_metrics_handler),
+        )
         .route("/thymus/metrics/summary", get(get_metric_summary_handler))
         .route(
             "/thymus/session-quality",

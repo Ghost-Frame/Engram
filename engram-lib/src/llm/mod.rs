@@ -21,7 +21,11 @@ pub fn repair_and_parse_json(raw: &str) -> Option<serde_json::Value> {
         (Some(b), None) => (b, '}'),
         (None, Some(k)) => (k, ']'),
         (Some(b), Some(k)) => {
-            if b <= k { (b, '}') } else { (k, ']') }
+            if b <= k {
+                (b, '}')
+            } else {
+                (k, ']')
+            }
         }
     };
 
@@ -65,7 +69,9 @@ pub fn repair_and_parse_json(raw: &str) -> Option<serde_json::Value> {
             in_string = !in_string;
             continue;
         }
-        if in_string { continue; }
+        if in_string {
+            continue;
+        }
         match bytes[i] {
             b'{' => braces += 1,
             b'}' => braces -= 1,
@@ -74,8 +80,14 @@ pub fn repair_and_parse_json(raw: &str) -> Option<serde_json::Value> {
             _ => {}
         }
     }
-    while brackets > 0 { s.push(']'); brackets -= 1; }
-    while braces > 0 { s.push('}'); braces -= 1; }
+    while brackets > 0 {
+        s.push(']');
+        brackets -= 1;
+    }
+    while braces > 0 {
+        s.push('}');
+        braces -= 1;
+    }
 
     // 7. Fix trailing commas again
     s = fix_trailing_commas(&s);

@@ -25,11 +25,7 @@ pub struct FeedbackStats {
 }
 
 /// Record user feedback on a memory and adjust its importance accordingly.
-pub async fn record_feedback(
-    db: &Database,
-    user_id: i64,
-    req: &FeedbackRequest,
-) -> Result<()> {
+pub async fn record_feedback(db: &Database, user_id: i64, req: &FeedbackRequest) -> Result<()> {
     // Validate rating
     if !VALID_RATINGS.contains(&req.rating.as_str()) {
         return Err(crate::EngError::InvalidInput(format!(

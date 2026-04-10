@@ -62,8 +62,7 @@ pub async fn call_llm(
 ) -> Result<String, String> {
     let opts = opts.unwrap_or_default();
     let url = llm_url();
-    let model =
-        std::env::var("ENGRAM_LLM_MODEL").unwrap_or_else(|_| "llama3.2:3b".to_string());
+    let model = std::env::var("ENGRAM_LLM_MODEL").unwrap_or_else(|_| "llama3.2:3b".to_string());
 
     let body = OllamaRequest {
         model,
@@ -119,7 +118,9 @@ pub fn repair_and_parse_json<T: serde::de::DeserializeOwned>(raw: &str) -> Optio
         let after_first = if let Some(pos) = trimmed.find('\n') {
             &trimmed[pos + 1..]
         } else {
-            trimmed.trim_start_matches("```json").trim_start_matches("```")
+            trimmed
+                .trim_start_matches("```json")
+                .trim_start_matches("```")
         };
         after_first.trim_end_matches("```").trim()
     } else {
@@ -140,7 +141,10 @@ pub fn repair_and_parse_json<T: serde::de::DeserializeOwned>(raw: &str) -> Optio
         }
     }
 
-    debug!("failed to parse JSON from LLM response: {}", &trimmed[..trimmed.len().min(200)]);
+    debug!(
+        "failed to parse JSON from LLM response: {}",
+        &trimmed[..trimmed.len().min(200)]
+    );
     None
 }
 

@@ -36,9 +36,7 @@ impl TestApp {
         // Ensure auth is enabled regardless of dev environment
         std::env::set_var("ENGRAM_OPEN_ACCESS", "0");
 
-        let db = Database::connect_memory()
-            .await
-            .expect("in-memory db");
+        let db = Database::connect_memory().await.expect("in-memory db");
         let config = Config::default();
         let state = AppState {
             db: Arc::new(db),
@@ -382,7 +380,11 @@ async fn store_empty_content_returns_400() {
     let (status, _body) = app
         .post("/store", json!({ "content": "", "category": "test" }))
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "empty content should be 400");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "empty content should be 400"
+    );
 }
 
 #[tokio::test]
@@ -406,7 +408,10 @@ async fn store_whitespace_only_returns_400() {
 async fn get_memory_by_id_returns_correct_id() {
     let app = TestApp::new().await;
     let (_s, stored) = app
-        .post("/store", json!({ "content": "get test", "category": "test" }))
+        .post(
+            "/store",
+            json!({ "content": "get test", "category": "test" }),
+        )
         .await;
     let id = stored["id"].as_i64().unwrap();
 
@@ -430,7 +435,10 @@ async fn get_nonexistent_memory_returns_404() {
 async fn delete_memory_returns_deleted_true() {
     let app = TestApp::new().await;
     let (_s, stored) = app
-        .post("/store", json!({ "content": "delete test", "category": "test" }))
+        .post(
+            "/store",
+            json!({ "content": "delete test", "category": "test" }),
+        )
         .await;
     let id = stored["id"].as_i64().unwrap();
 
@@ -446,7 +454,10 @@ async fn delete_memory_returns_deleted_true() {
 async fn update_memory_returns_updated_memory() {
     let app = TestApp::new().await;
     let (_s, stored) = app
-        .post("/store", json!({ "content": "original content", "category": "test" }))
+        .post(
+            "/store",
+            json!({ "content": "original content", "category": "test" }),
+        )
         .await;
     let id = stored["id"].as_i64().unwrap();
 
@@ -472,20 +483,23 @@ async fn update_memory_returns_updated_memory() {
 #[tokio::test]
 async fn list_memories_returns_results_array() {
     let app = TestApp::new().await;
-    app.post("/store", json!({ "content": "list test 1", "category": "test" }))
-        .await;
-    app.post("/store", json!({ "content": "list test 2", "category": "test" }))
-        .await;
+    app.post(
+        "/store",
+        json!({ "content": "list test 1", "category": "test" }),
+    )
+    .await;
+    app.post(
+        "/store",
+        json!({ "content": "list test 2", "category": "test" }),
+    )
+    .await;
 
     let (status, body) = app.get("/list").await;
     assert!(
         status == StatusCode::OK || status == StatusCode::CREATED,
         "expected 2xx"
     );
-    assert!(
-        body["results"].is_array(),
-        "results should be an array"
-    );
+    assert!(body["results"].is_array(), "results should be an array");
 }
 
 #[tokio::test]
@@ -507,23 +521,37 @@ async fn tags_endpoints_list_search_and_update() {
 
     let (tags_status, tags_body) = app.get("/tags").await;
     assert!(tags_status.is_success(), "GET /tags should succeed");
-    let tags = tags_body["tags"].as_array().expect("tags should be an array");
+    let tags = tags_body["tags"]
+        .as_array()
+        .expect("tags should be an array");
     assert!(
-        tags.iter().any(|tag| tag["tag"] == "rust" && tag["count"] == 2),
+        tags.iter()
+            .any(|tag| tag["tag"] == "rust" && tag["count"] == 2),
         "expected rust tag count in {tags_body}"
     );
 
     let (search_status, search_body) = app
         .post("/tags/search", json!({ "tags": ["rust"], "limit": 10 }))
         .await;
-    assert!(search_status.is_success(), "POST /tags/search should succeed");
-    let results = search_body["results"].as_array().expect("results should be an array");
+    assert!(
+        search_status.is_success(),
+        "POST /tags/search should succeed"
+    );
+    let results = search_body["results"]
+        .as_array()
+        .expect("results should be an array");
     assert_eq!(results.len(), 2, "expected both rust-tagged memories");
 
     let (update_status, update_body) = app
-        .put(&format!("/memory/{id}/tags"), json!({ "tags": ["updated", "fresh"] }))
+        .put(
+            &format!("/memory/{id}/tags"),
+            json!({ "tags": ["updated", "fresh"] }),
+        )
         .await;
-    assert!(update_status.is_success(), "PUT /memory/{{id}}/tags should succeed");
+    assert!(
+        update_status.is_success(),
+        "PUT /memory/{{id}}/tags should succeed"
+    );
     assert_eq!(update_body["tags"], json!(["updated", "fresh"]));
 }
 
@@ -540,9 +568,15 @@ async fn profile_endpoint_returns_combined_profile_shape() {
     assert!(status.is_success(), "GET /profile should succeed");
     assert!(body.get("user_id").and_then(|v| v.as_i64()).is_some());
     assert!(body.get("memory_count").and_then(|v| v.as_i64()).is_some());
-    assert!(body["top_categories"].is_array(), "top_categories should be an array");
+    assert!(
+        body["top_categories"].is_array(),
+        "top_categories should be an array"
+    );
     assert!(body["top_tags"].is_array(), "top_tags should be an array");
-    assert!(body.get("personality_traits").is_some(), "missing personality_traits");
+    assert!(
+        body.get("personality_traits").is_some(),
+        "missing personality_traits"
+    );
 }
 
 #[tokio::test]
@@ -558,7 +592,10 @@ async fn profile_synthesize_returns_summary() {
     .await;
 
     let (status, body) = app.post("/profile/synthesize", json!({})).await;
-    assert!(status.is_success(), "POST /profile/synthesize should succeed");
+    assert!(
+        status.is_success(),
+        "POST /profile/synthesize should succeed"
+    );
     assert!(
         body["personality_summary"].as_str().is_some(),
         "expected synthesized personality summary, got {body}"
@@ -568,46 +605,68 @@ async fn profile_synthesize_returns_summary() {
 #[tokio::test]
 async fn user_stats_endpoint_returns_user_scoped_counts() {
     let app = TestApp::new().await;
-    app.post("/store", json!({ "content": "stats memory", "category": "metrics" }))
-        .await;
+    app.post(
+        "/store",
+        json!({ "content": "stats memory", "category": "metrics" }),
+    )
+    .await;
 
     let (status, body) = app.get("/me/stats").await;
     assert!(status.is_success(), "GET /me/stats should succeed");
     assert!(body["memories"].as_i64().unwrap_or(0) >= 1);
-    assert!(body["categories"].is_object(), "categories should be an object");
+    assert!(
+        body["categories"].is_object(),
+        "categories should be an object"
+    );
 }
 
 #[tokio::test]
 async fn archive_unarchive_and_forget_endpoints_work() {
     let app = TestApp::new().await;
     let (_status, stored) = app
-        .post("/store", json!({ "content": "lifecycle memory", "category": "ops" }))
+        .post(
+            "/store",
+            json!({ "content": "lifecycle memory", "category": "ops" }),
+        )
         .await;
     let id = stored["id"].as_i64().unwrap();
 
-    let (archive_status, archive_body) = app.post(&format!("/memory/{id}/archive"), json!({})).await;
+    let (archive_status, archive_body) =
+        app.post(&format!("/memory/{id}/archive"), json!({})).await;
     assert!(archive_status.is_success(), "archive should succeed");
     assert_eq!(archive_body["status"], "archived");
 
-    let (unarchive_status, unarchive_body) = app.post(&format!("/memory/{id}/unarchive"), json!({})).await;
+    let (unarchive_status, unarchive_body) = app
+        .post(&format!("/memory/{id}/unarchive"), json!({}))
+        .await;
     assert!(unarchive_status.is_success(), "unarchive should succeed");
     assert_eq!(unarchive_body["status"], "active");
 
     let (forget_status, forget_body) = app
-        .post(&format!("/memory/{id}/forget"), json!({ "reason": "cleanup" }))
+        .post(
+            &format!("/memory/{id}/forget"),
+            json!({ "reason": "cleanup" }),
+        )
         .await;
     assert!(forget_status.is_success(), "forget should succeed");
     assert_eq!(forget_body["status"], "forgotten");
 
     let (read_status, _read_body) = app.get(&format!("/memory/{id}")).await;
-    assert_eq!(read_status, StatusCode::NOT_FOUND, "forgotten memory should not be readable");
+    assert_eq!(
+        read_status,
+        StatusCode::NOT_FOUND,
+        "forgotten memory should not be readable"
+    );
 }
 
 #[tokio::test]
 async fn links_and_versions_endpoints_return_arrays() {
     let app = TestApp::new().await;
     let (_status, stored) = app
-        .post("/store", json!({ "content": "version root", "category": "test" }))
+        .post(
+            "/store",
+            json!({ "content": "version root", "category": "test" }),
+        )
         .await;
     let id = stored["id"].as_i64().unwrap();
 
@@ -621,13 +680,24 @@ async fn links_and_versions_endpoints_return_arrays() {
     let latest_id = updated["id"].as_i64().unwrap();
 
     let (links_status, links_body) = app.get(&format!("/links/{latest_id}")).await;
-    assert!(links_status.is_success(), "GET /links/{{id}} should succeed");
+    assert!(
+        links_status.is_success(),
+        "GET /links/{{id}} should succeed"
+    );
     assert!(links_body["links"].is_array(), "links should be an array");
 
     let (versions_status, versions_body) = app.get(&format!("/versions/{latest_id}")).await;
-    assert!(versions_status.is_success(), "GET /versions/{{id}} should succeed");
-    let versions = versions_body["versions"].as_array().expect("versions should be an array");
-    assert!(versions.len() >= 2, "expected version chain, got {versions_body}");
+    assert!(
+        versions_status.is_success(),
+        "GET /versions/{{id}} should succeed"
+    );
+    let versions = versions_body["versions"]
+        .as_array()
+        .expect("versions should be an array");
+    assert!(
+        versions.len() >= 2,
+        "expected version chain, got {versions_body}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -681,9 +751,7 @@ async fn recall_returns_memories_array() {
     )
     .await;
 
-    let (status, body) = app
-        .post("/recall", json!({ "query": "recall test" }))
-        .await;
+    let (status, body) = app.post("/recall", json!({ "query": "recall test" })).await;
     assert!(
         status == StatusCode::OK || status == StatusCode::CREATED,
         "expected 2xx"
@@ -860,10 +928,7 @@ async fn scratchpad_put_stores_entries_and_returns_session() {
     assert_eq!(body["session"], session, "should echo back session");
     // NOTE: TS expects stored === true and count >= 2
     // Rust returns stored as a count (number) and ttl_minutes instead of count
-    assert!(
-        body.get("stored").is_some(),
-        "should have stored field"
-    );
+    assert!(body.get("stored").is_some(), "should have stored field");
 }
 
 #[tokio::test]
@@ -880,9 +945,7 @@ async fn scratchpad_get_returns_entries_array() {
     )
     .await;
 
-    let (status, body) = app
-        .get(&format!("/scratch?session={session}"))
-        .await;
+    let (status, body) = app.get(&format!("/scratch?session={session}")).await;
     assert!(
         status == StatusCode::OK || status == StatusCode::CREATED,
         "expected 2xx"
@@ -948,9 +1011,7 @@ async fn scratchpad_delete_session_removes_all_entries() {
     );
     assert_eq!(body["deleted"], true);
 
-    let (_, listed) = app
-        .get(&format!("/scratch?session={session}"))
-        .await;
+    let (_, listed) = app.get(&format!("/scratch?session={session}")).await;
     assert_eq!(
         listed["count"].as_i64().unwrap_or(0),
         0,
@@ -1126,9 +1187,7 @@ async fn multi_tenant_user_b_cannot_read_user_a_memory() {
     let user2_key = create_user2_key(&app).await;
 
     // User 2 tries to read user 1's memory
-    let (status, _body) = app
-        .get_as(&format!("/memory/{id}"), &user2_key)
-        .await;
+    let (status, _body) = app.get_as(&format!("/memory/{id}"), &user2_key).await;
     // Should be 404 (not found for this user) or 401
     assert!(
         status == StatusCode::NOT_FOUND || status == StatusCode::UNAUTHORIZED,
@@ -1153,9 +1212,7 @@ async fn multi_tenant_user_b_cannot_delete_user_a_memory() {
     let user2_key = create_user2_key(&app).await;
 
     // User 2 tries to delete user 1's memory
-    let (del_status, _) = app
-        .delete_as(&format!("/memory/{id}"), &user2_key)
-        .await;
+    let (del_status, _) = app.delete_as(&format!("/memory/{id}"), &user2_key).await;
     // Should fail (404 since delete_memory doesn't scope by user, but the memory won't be "found" in practice)
     // After the attempted delete, verify user 1 can still read it
     let (read_status, read_body) = app.get(&format!("/memory/{id}")).await;
@@ -1208,8 +1265,11 @@ async fn multi_tenant_list_is_scoped_to_user() {
     let app = TestApp::new().await;
 
     // User 1 stores a memory
-    app.post("/store", json!({ "content": "user1 only memory", "category": "test" }))
-        .await;
+    app.post(
+        "/store",
+        json!({ "content": "user1 only memory", "category": "test" }),
+    )
+    .await;
 
     // Create key for user 2
     let user2_key = create_user2_key(&app).await;

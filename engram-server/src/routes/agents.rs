@@ -46,12 +46,12 @@ async fn register_agent(
     }
 
     // Check for duplicate
-    let existing =
-        agents::get_agent_by_name(&state.db.conn, &body.name, auth.user_id).await?;
+    let existing = agents::get_agent_by_name(&state.db.conn, &body.name, auth.user_id).await?;
     if existing.is_some() {
-        return Err(AppError(engram_lib::EngError::InvalidInput(
-            format!("Agent '{}' already registered", body.name),
-        )));
+        return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+            "Agent '{}' already registered",
+            body.name
+        ))));
     }
 
     let result = agents::insert_agent(
@@ -182,7 +182,9 @@ async fn link_key(
         .ok_or_else(|| AppError(engram_lib::EngError::NotFound("Agent not found".into())))?;
 
     agents::link_key_to_agent(&state.db.conn, agent.id, body.key_id, auth.user_id).await?;
-    Ok(Json(json!({ "linked": true, "agent_id": id, "key_id": body.key_id })))
+    Ok(Json(
+        json!({ "linked": true, "agent_id": id, "key_id": body.key_id }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,21 +216,25 @@ struct VerifyBody {
     pub tool_manifest: Option<Value>,
 }
 
-async fn verify(
-    Json(body): Json<VerifyBody>,
-) -> Result<Json<Value>, AppError> {
+async fn verify(Json(body): Json<VerifyBody>) -> Result<Json<Value>, AppError> {
     if let Some(passport) = body.passport {
         let result = verify_signed_value(&passport)?;
         return Ok(Json(json!({ "type": "passport", "valid": result })));
     }
     if body.execution.is_some() {
-        return Ok(Json(json!({ "type": "execution", "valid": false, "error": "verification not implemented" })));
+        return Ok(Json(
+            json!({ "type": "execution", "valid": false, "error": "verification not implemented" }),
+        ));
     }
     if body.message.is_some() {
-        return Ok(Json(json!({ "type": "message", "valid": false, "error": "verification not implemented" })));
+        return Ok(Json(
+            json!({ "type": "message", "valid": false, "error": "verification not implemented" }),
+        ));
     }
     if body.tool_manifest.is_some() {
-        return Ok(Json(json!({ "type": "tool_manifest", "valid": false, "error": "verification not implemented" })));
+        return Ok(Json(
+            json!({ "type": "tool_manifest", "valid": false, "error": "verification not implemented" }),
+        ));
     }
     Err(AppError(engram_lib::EngError::InvalidInput(
         "Provide 'passport', 'execution', 'message', or 'tool_manifest' to verify".into(),
@@ -274,8 +280,9 @@ fn sign_value(payload: &Value) -> Result<String, AppError> {
     let secret = signing_secret()?;
     let bytes = serde_json::to_vec(payload)
         .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?;
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .map_err(|e: hmac::digest::InvalidLength| AppError(engram_lib::EngError::Internal(e.to_string())))?;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(
+        |e: hmac::digest::InvalidLength| AppError(engram_lib::EngError::Internal(e.to_string())),
+    )?;
     mac.update(&bytes);
     let digest = mac.finalize().into_bytes();
     Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())

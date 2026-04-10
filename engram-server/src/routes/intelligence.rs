@@ -66,7 +66,10 @@ pub fn router() -> Router<AppState> {
             "/intelligence/temporal/detect",
             post(detect_temporal_handler),
         )
-        .route("/intelligence/temporal/patterns", get(list_temporal_handler))
+        .route(
+            "/intelligence/temporal/patterns",
+            get(list_temporal_handler),
+        )
         // Digests (with root-level alias for parity)
         .route("/digests/generate", post(generate_digest_handler))
         .route("/digests", get(list_digests_handler))
@@ -76,7 +79,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/intelligence/digests", get(list_digests_handler))
         // Reflections (with root-level alias for parity)
-        .route("/reflections", post(create_reflection_handler).get(list_reflections_handler))
+        .route(
+            "/reflections",
+            post(create_reflection_handler).get(list_reflections_handler),
+        )
         .route("/reflect", post(create_reflection_handler))
         .route(
             "/intelligence/reflections",
@@ -99,10 +105,7 @@ pub fn router() -> Router<AppState> {
             get(sentiment_history_handler),
         )
         // -- NEW: Valence
-        .route(
-            "/intelligence/valence/score",
-            post(valence_score_handler),
-        )
+        .route("/intelligence/valence/score", post(valence_score_handler))
         .route(
             "/intelligence/valence/{memory_id}",
             get(valence_get_handler),
@@ -130,10 +133,7 @@ pub fn router() -> Router<AppState> {
             get(reconsolidation_candidates_handler),
         )
         // -- NEW: Extraction
-        .route(
-            "/intelligence/extract",
-            post(extract_handler),
-        )
+        .route("/intelligence/extract", post(extract_handler))
         // -- NEW: Time travel
         .route("/timetravel", post(time_travel_handler))
         // -- NEW: Sweep
@@ -166,7 +166,11 @@ async fn consolidate_handler(
     Auth(auth): Auth,
     Json(body): Json<ConsolidateBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let ids: Vec<String> = body.memory_ids.into_iter().map(|id| id.to_string()).collect();
+    let ids: Vec<String> = body
+        .memory_ids
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
     let result = consolidate(&state.db, &ids, auth.user_id).await?;
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
@@ -309,10 +313,7 @@ async fn create_reflection_handler(
     Auth(auth): Auth,
     Json(body): Json<CreateReflectionBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let reflection_type = body
-        .reflection_type
-        .as_deref()
-        .unwrap_or("general");
+    let reflection_type = body.reflection_type.as_deref().unwrap_or("general");
     let confidence = body.confidence.unwrap_or(1.0);
     let reflection = create_reflection(
         &state.db,
@@ -465,10 +466,7 @@ async fn sentiment_history_handler(
     Query(params): Query<SentimentHistoryQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
-    let since = params
-        .since
-        .as_deref()
-        .unwrap_or("1970-01-01");
+    let since = params.since.as_deref().unwrap_or("1970-01-01");
 
     let mut rows = state
         .db
@@ -483,10 +481,20 @@ async fn sentiment_history_handler(
         .map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?;
 
     let mut history = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| AppError::from(engram_lib::EngError::Database(e)))? {
-        let id: i64 = row.get(0).map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?;
-        let content: String = row.get(1).map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?;
-        let created_at: String = row.get(2).map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?;
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?
+    {
+        let id: i64 = row
+            .get(0)
+            .map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?;
+        let content: String = row
+            .get(1)
+            .map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?;
+        let created_at: String = row
+            .get(2)
+            .map_err(|e| AppError::from(engram_lib::EngError::Database(e)))?;
         let score = sentiment::score_text(&content);
         history.push(json!({
             "memory_id": id,
@@ -644,8 +652,7 @@ async fn extract_handler(
         )));
     };
 
-    let stats =
-        fast_extract_facts(&state.db, &content, memory_id, auth.user_id, None).await?;
+    let stats = fast_extract_facts(&state.db, &content, memory_id, auth.user_id, None).await?;
     Ok(Json(json!({
         "memory_id": memory_id,
         "facts": stats.facts,

@@ -15,9 +15,20 @@ pub fn router() -> Router<AppState> {
         .route("/export", get(export_handler))
         .route("/import", axum::routing::post(import_handler))
         // NOTE: /import/mem0 is in ingestion.rs to avoid duplicate routes
-        .route("/state", get(get_state_handler).delete(delete_state_handler))
-        .route("/preferences", get(list_preferences_handler).put(put_preferences_handler).delete(delete_all_preferences_handler))
-        .route("/preferences/{key}", get(get_preference_handler).delete(delete_preference_handler))
+        .route(
+            "/state",
+            get(get_state_handler).delete(delete_state_handler),
+        )
+        .route(
+            "/preferences",
+            get(list_preferences_handler)
+                .put(put_preferences_handler)
+                .delete(delete_all_preferences_handler),
+        )
+        .route(
+            "/preferences/{key}",
+            get(get_preference_handler).delete(delete_preference_handler),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -29,7 +40,9 @@ async fn export_handler(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     let data = engram_lib::admin::export_user_data(&state.db, auth.user_id).await?;
-    Ok(Json(serde_json::to_value(data).map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?))
+    Ok(Json(serde_json::to_value(data).map_err(|e| {
+        AppError(engram_lib::EngError::Internal(e.to_string()))
+    })?))
 }
 
 // ---------------------------------------------------------------------------
@@ -63,14 +76,18 @@ async fn import_handler(
             }
         }
         if obj.contains_key("documents") || obj.contains_key("data") {
-            let items = obj.get("documents").or_else(|| obj.get("data"))
+            let items = obj
+                .get("documents")
+                .or_else(|| obj.get("data"))
                 .and_then(|v| v.as_array());
             if let Some(arr) = items {
                 return import_array(&state, auth.user_id, arr).await;
             }
         }
     }
-    Err(AppError(engram_lib::EngError::InvalidInput("unrecognized import format".into())))
+    Err(AppError(engram_lib::EngError::InvalidInput(
+        "unrecognized import format".into(),
+    )))
 }
 
 async fn import_engram_export(
@@ -82,24 +99,47 @@ async fn import_engram_export(
     let mut skipped = 0i64;
     if let Some(memories) = obj.get("memories").and_then(|v| v.as_array()) {
         for mem in memories {
-            let content = mem.get("content")
+            let content = mem
+                .get("content")
                 .or_else(|| mem.get("col_1"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim().to_string());
             let content = match content.filter(|c| !c.is_empty()) {
                 Some(c) => c,
-                None => { skipped += 1; continue; }
+                None => {
+                    skipped += 1;
+                    continue;
+                }
             };
-            let category = mem.get("category").or_else(|| mem.get("col_2"))
-                .and_then(|v| v.as_str()).unwrap_or("general").to_string();
-            let source = mem.get("source").or_else(|| mem.get("col_3"))
-                .and_then(|v| v.as_str()).unwrap_or("import").to_string();
-            let importance = mem.get("importance").or_else(|| mem.get("col_4"))
-                .and_then(|v| v.as_i64()).unwrap_or(5) as i32;
+            let category = mem
+                .get("category")
+                .or_else(|| mem.get("col_2"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("general")
+                .to_string();
+            let source = mem
+                .get("source")
+                .or_else(|| mem.get("col_3"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("import")
+                .to_string();
+            let importance = mem
+                .get("importance")
+                .or_else(|| mem.get("col_4"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(5) as i32;
             let sync_id = Uuid::new_v4().to_string();
             let now = chrono::Utc::now().to_rfc3339();
-            let created_at = mem.get("created_at").and_then(|v| v.as_str()).unwrap_or(&now).to_string();
-            let updated_at = mem.get("updated_at").and_then(|v| v.as_str()).unwrap_or(&now).to_string();
+            let created_at = mem
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&now)
+                .to_string();
+            let updated_at = mem
+                .get("updated_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&now)
+                .to_string();
             match state.db.conn.execute(
                 "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -110,7 +150,9 @@ async fn import_engram_export(
             }
         }
     }
-    Ok(Json(json!({ "imported": imported, "skipped": skipped, "format": "engram" })))
+    Ok(Json(
+        json!({ "imported": imported, "skipped": skipped, "format": "engram" }),
+    ))
 }
 
 async fn import_array(
@@ -121,14 +163,29 @@ async fn import_array(
     let mut imported = 0i64;
     let mut skipped = 0i64;
     for item in arr {
-        let content = item.get("content").or_else(|| item.get("text")).or_else(|| item.get("memory"))
-            .and_then(|v| v.as_str()).map(|s| s.trim().to_string());
+        let content = item
+            .get("content")
+            .or_else(|| item.get("text"))
+            .or_else(|| item.get("memory"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string());
         let content = match content.filter(|c| !c.is_empty()) {
             Some(c) => c,
-            None => { skipped += 1; continue; }
+            None => {
+                skipped += 1;
+                continue;
+            }
         };
-        let category = item.get("category").and_then(|v| v.as_str()).unwrap_or("general").to_string();
-        let source = item.get("source").and_then(|v| v.as_str()).unwrap_or("import").to_string();
+        let category = item
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("general")
+            .to_string();
+        let source = item
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("import")
+            .to_string();
         let importance = item.get("importance").and_then(|v| v.as_i64()).unwrap_or(5) as i32;
         let sync_id = Uuid::new_v4().to_string();
         match state.db.conn.execute(
@@ -140,7 +197,9 @@ async fn import_array(
             Err(_) => { skipped += 1; }
         }
     }
-    Ok(Json(json!({ "imported": imported, "skipped": skipped, "format": "array" })))
+    Ok(Json(
+        json!({ "imported": imported, "skipped": skipped, "format": "array" }),
+    ))
 }
 
 async fn import_mem0_array(
@@ -151,18 +210,35 @@ async fn import_mem0_array(
     let mut imported = 0i64;
     let mut skipped = 0i64;
     for mem in arr {
-        let content = mem.get("memory").or_else(|| mem.get("text")).or_else(|| mem.get("content"))
-            .and_then(|v| v.as_str()).map(|s| s.trim().to_string());
+        let content = mem
+            .get("memory")
+            .or_else(|| mem.get("text"))
+            .or_else(|| mem.get("content"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string());
         let content = match content.filter(|c| !c.is_empty()) {
             Some(c) => c,
-            None => { skipped += 1; continue; }
+            None => {
+                skipped += 1;
+                continue;
+            }
         };
         let meta = mem.get("metadata").and_then(|m| m.as_object());
-        let category = meta.and_then(|m| m.get("category")).and_then(|v| v.as_str())
-            .or_else(|| mem.get("category").and_then(|v| v.as_str())).unwrap_or("general").to_string();
-        let source = meta.and_then(|m| m.get("source")).and_then(|v| v.as_str())
-            .or_else(|| mem.get("source").and_then(|v| v.as_str())).unwrap_or("mem0-import").to_string();
-        let importance = meta.and_then(|m| m.get("importance")).and_then(|v| v.as_i64())
+        let category = meta
+            .and_then(|m| m.get("category"))
+            .and_then(|v| v.as_str())
+            .or_else(|| mem.get("category").and_then(|v| v.as_str()))
+            .unwrap_or("general")
+            .to_string();
+        let source = meta
+            .and_then(|m| m.get("source"))
+            .and_then(|v| v.as_str())
+            .or_else(|| mem.get("source").and_then(|v| v.as_str()))
+            .unwrap_or("mem0-import")
+            .to_string();
+        let importance = meta
+            .and_then(|m| m.get("importance"))
+            .and_then(|v| v.as_i64())
             .unwrap_or(5) as i32;
         let sync_id = Uuid::new_v4().to_string();
         match state.db.conn.execute(
@@ -174,7 +250,9 @@ async fn import_mem0_array(
             Err(_) => { skipped += 1; }
         }
     }
-    Ok(Json(json!({ "imported": imported, "skipped": skipped, "format": "mem0" })))
+    Ok(Json(
+        json!({ "imported": imported, "skipped": skipped, "format": "mem0" }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -203,10 +281,16 @@ async fn delete_state_handler(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     let prefix = format!("user:{}:%", auth.user_id);
-    let affected = state.db.conn.execute(
-        "DELETE FROM app_state WHERE key LIKE ?1",
-        libsql::params![prefix],
-    ).await.map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))? as i64;
+    let affected = state
+        .db
+        .conn
+        .execute(
+            "DELETE FROM app_state WHERE key LIKE ?1",
+            libsql::params![prefix],
+        )
+        .await
+        .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?
+        as i64;
     Ok(Json(json!({ "deleted": affected })))
 }
 
@@ -219,7 +303,9 @@ async fn list_preferences_handler(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     let prefs = engram_lib::preferences::list_preferences(&state.db, auth.user_id).await?;
-    Ok(Json(serde_json::to_value(prefs).map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?))
+    Ok(Json(serde_json::to_value(prefs).map_err(|e| {
+        AppError(engram_lib::EngError::Internal(e.to_string()))
+    })?))
 }
 
 async fn get_preference_handler(
@@ -228,7 +314,9 @@ async fn get_preference_handler(
     Path(key): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let pref = engram_lib::preferences::get_preference(&state.db, auth.user_id, &key).await?;
-    Ok(Json(serde_json::to_value(pref).map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?))
+    Ok(Json(serde_json::to_value(pref).map_err(|e| {
+        AppError(engram_lib::EngError::Internal(e.to_string()))
+    })?))
 }
 
 async fn put_preferences_handler(
@@ -238,7 +326,10 @@ async fn put_preferences_handler(
 ) -> Result<Json<Value>, AppError> {
     let mut updated = 0i64;
     for (key, val) in &body {
-        let v = val.as_str().map(|s| s.to_string()).unwrap_or_else(|| val.to_string());
+        let v = val
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| val.to_string());
         engram_lib::preferences::set_preference(&state.db, auth.user_id, key, &v).await?;
         updated += 1;
     }

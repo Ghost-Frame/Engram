@@ -9,14 +9,17 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::conversations::{
-    self, CreateConversationRequest, UpdateConversationRequest, AddMessageRequest,
-    BulkInsertRequest, UpsertConversationRequest, SearchMessagesRequest,
+    self, AddMessageRequest, BulkInsertRequest, CreateConversationRequest, SearchMessagesRequest,
+    UpdateConversationRequest, UpsertConversationRequest,
 };
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/conversations", post(create).get(list))
-        .route("/conversations/{id}", get(get_one).patch(update).delete(remove))
+        .route(
+            "/conversations/{id}",
+            get(get_one).patch(update).delete(remove),
+        )
         .route("/conversations/{id}/messages", post(add_msg).get(list_msgs))
         .route("/conversations/bulk", post(bulk_insert))
         .route("/conversations/upsert", post(upsert))

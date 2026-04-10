@@ -1,9 +1,4 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -42,7 +37,14 @@ async fn respond_handler(
     Auth(auth): Auth,
     Json(body): Json<RespondBody>,
 ) -> Result<Json<Value>, AppError> {
-    let result = respond_to_gate(&state.db, body.gate_id, body.approved, body.reason.as_deref(), auth.user_id).await?;
+    let result = respond_to_gate(
+        &state.db,
+        body.gate_id,
+        body.approved,
+        body.reason.as_deref(),
+        auth.user_id,
+    )
+    .await?;
     Ok(Json(result))
 }
 
@@ -59,7 +61,14 @@ async fn complete_handler(
     Auth(auth): Auth,
     Json(body): Json<CompleteBody>,
 ) -> Result<Json<Value>, AppError> {
-    complete_gate(&state.db, body.gate_id, &body.output, &body.known_secrets, auth.user_id).await?;
+    complete_gate(
+        &state.db,
+        body.gate_id,
+        &body.output,
+        &body.known_secrets,
+        auth.user_id,
+    )
+    .await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -122,7 +131,14 @@ async fn guard_handler(
     // Simple heuristic: if any rule contains prohibition keywords and the action
     // contains related terms, warn. Without LLM, we can't do semantic matching.
     let action_lower = body.action.to_lowercase();
-    let prohibition_keywords = ["never", "don't", "do not", "must not", "prohibited", "forbidden"];
+    let prohibition_keywords = [
+        "never",
+        "don't",
+        "do not",
+        "must not",
+        "prohibited",
+        "forbidden",
+    ];
 
     let mut matched_rules = Vec::new();
     for rule in &rules {
@@ -142,9 +158,15 @@ async fn guard_handler(
     }
 
     let (signal, message) = if matched_rules.is_empty() {
-        ("allow", "No direct conflicts detected. Note: LLM-based semantic matching not available.")
+        (
+            "allow",
+            "No direct conflicts detected. Note: LLM-based semantic matching not available.",
+        )
     } else {
-        ("warn", "Potential rule conflicts detected. Review before proceeding.")
+        (
+            "warn",
+            "Potential rule conflicts detected. Review before proceeding.",
+        )
     };
 
     Ok(Json(json!({

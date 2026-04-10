@@ -9,11 +9,19 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
     let a_len = a.len();
     let b_len = b.len();
     let mut dp = vec![vec![0usize; b_len + 1]; a_len + 1];
-    for i in 0..=a_len { dp[i][0] = i; }
-    for j in 0..=b_len { dp[0][j] = j; }
+    for (i, row) in dp.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, val) in dp[0].iter_mut().enumerate() {
+        *val = j;
+    }
     for i in 1..=a_len {
         for j in 1..=b_len {
-            let cost = if a.as_bytes()[i - 1] == b.as_bytes()[j - 1] { 0 } else { 1 };
+            let cost = if a.as_bytes()[i - 1] == b.as_bytes()[j - 1] {
+                0
+            } else {
+                1
+            };
             dp[i][j] = (dp[i - 1][j] + 1)
                 .min(dp[i][j - 1] + 1)
                 .min(dp[i - 1][j - 1] + cost);
@@ -26,10 +34,12 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
 /// Returns the best match name if edit distance <= 3, or prefix match.
 pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result<Option<String>> {
     let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT name FROM skill_records WHERE user_id = ?1 AND is_active = 1",
-        params![user_id],
-    ).await?;
+    let mut rows = conn
+        .query(
+            "SELECT name FROM skill_records WHERE user_id = ?1 AND is_active = 1",
+            params![user_id],
+        )
+        .await?;
 
     let mut names = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -45,10 +55,9 @@ pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result
     let mut best: Option<(String, usize)> = None;
     for n in &names {
         let dist = edit_distance(name, n);
-        if dist <= 3
-            && (best.is_none() || dist < best.as_ref().unwrap().1) {
-                best = Some((n.clone(), dist));
-            }
+        if dist <= 3 && (best.is_none() || dist < best.as_ref().unwrap().1) {
+            best = Some((n.clone(), dist));
+        }
     }
     if let Some((matched, _)) = best {
         return Ok(Some(matched));
@@ -166,7 +175,11 @@ pub async fn get_usage_stats(db: &Database, user_id: i64) -> Result<serde_json::
         let sc: i32 = row.get(2)?;
         let fc: i32 = row.get(3)?;
         let total = sc + fc;
-        let rate = if total > 0 { sc as f64 / total as f64 } else { 0.0 };
+        let rate = if total > 0 {
+            sc as f64 / total as f64
+        } else {
+            0.0
+        };
         failing.push(serde_json::json!({
             "id": row.get::<i64>(0)?,
             "name": row.get::<String>(1)?,

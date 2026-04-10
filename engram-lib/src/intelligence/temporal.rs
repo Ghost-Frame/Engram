@@ -39,10 +39,13 @@ pub async fn store_pattern(_db: &Database, _pattern: &TemporalPattern) -> Result
 /// Set valid_at on a newly inserted structured_fact.
 /// Priority: date_approx > date_ref resolved > created_at of memory
 pub async fn set_fact_validity(db: &Database, fact_id: i64, memory_created_at: &str) -> Result<()> {
-    let mut rows = db.conn.query(
-        "SELECT date_approx, date_ref FROM structured_facts WHERE id = ?1",
-        libsql::params![fact_id],
-    ).await?;
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT date_approx, date_ref FROM structured_facts WHERE id = ?1",
+            libsql::params![fact_id],
+        )
+        .await?;
 
     let row = match rows.next().await? {
         Some(r) => r,
@@ -63,10 +66,12 @@ pub async fn set_fact_validity(db: &Database, fact_id: i64, memory_created_at: &
         memory_created_at.to_string()
     };
 
-    db.conn.execute(
-        "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2",
-        libsql::params![valid_at.clone(), fact_id],
-    ).await?;
+    db.conn
+        .execute(
+            "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2",
+            libsql::params![valid_at.clone(), fact_id],
+        )
+        .await?;
 
     Ok(())
 }
@@ -146,8 +151,7 @@ pub fn resolve_relative_date(reference: &str, base_date: &str) -> Option<String>
                     m += 12;
                     y -= 1;
                 }
-                NaiveDate::from_ymd_opt(y, m as u32, base.day().min(28))
-                    .unwrap_or(base)
+                NaiveDate::from_ymd_opt(y, m as u32, base.day().min(28)).unwrap_or(base)
             } else {
                 return None;
             };
@@ -162,9 +166,11 @@ pub fn resolve_relative_date(reference: &str, base_date: &str) -> Option<String>
             "month" => {
                 let mut y = base.year();
                 let mut m = base.month() as i32 - 1;
-                if m <= 0 { m += 12; y -= 1; }
-                NaiveDate::from_ymd_opt(y, m as u32, base.day().min(28))
-                    .unwrap_or(base)
+                if m <= 0 {
+                    m += 12;
+                    y -= 1;
+                }
+                NaiveDate::from_ymd_opt(y, m as u32, base.day().min(28)).unwrap_or(base)
             }
             _ => return None,
         };
@@ -181,9 +187,11 @@ pub fn resolve_relative_date(reference: &str, base_date: &str) -> Option<String>
         if unit == "month" {
             let mut y = base.year();
             let mut m = base.month() as i32 - 1;
-            if m <= 0 { m += 12; y -= 1; }
-            let d = NaiveDate::from_ymd_opt(y, m as u32, base.day().min(28))
-                .unwrap_or(base);
+            if m <= 0 {
+                m += 12;
+                y -= 1;
+            }
+            let d = NaiveDate::from_ymd_opt(y, m as u32, base.day().min(28)).unwrap_or(base);
             return Some(d.format("%Y-%m-%d").to_string());
         }
         // Day of week
@@ -201,7 +209,9 @@ pub fn resolve_relative_date(reference: &str, base_date: &str) -> Option<String>
             let current = base.weekday().num_days_from_sunday() as i64;
             let target_num = target.num_days_from_sunday() as i64;
             let mut diff = current - target_num;
-            if diff <= 0 { diff += 7; }
+            if diff <= 0 {
+                diff += 7;
+            }
             let d = base - chrono::Duration::days(diff);
             return Some(d.format("%Y-%m-%d").to_string());
         }
@@ -227,8 +237,7 @@ pub struct FactContradiction {
 
 /// State-type verbs where only one value can be true at a time.
 const STATE_VERBS: &[&str] = &[
-    "is", "has", "lives", "works", "became", "started", "moved",
-    "lives in", "works at", "works as",
+    "is", "has", "lives", "works", "became", "started", "moved", "lives in", "works at", "works as",
 ];
 
 /// Check if a new structured fact contradicts existing facts.
@@ -247,8 +256,10 @@ pub async fn detect_fact_contradictions(
 ) -> Result<Vec<FactContradiction>> {
     let mut contradictions = Vec::new();
 
-    let mut rows = db.conn.query(
-        "SELECT id, memory_id, object, quantity, unit
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT id, memory_id, object, quantity, unit
          FROM structured_facts
          WHERE subject = ?1 COLLATE NOCASE
            AND verb = ?2 COLLATE NOCASE
@@ -257,8 +268,9 @@ pub async fn detect_fact_contradictions(
            AND invalid_at IS NULL
          ORDER BY created_at DESC
          LIMIT 20",
-        libsql::params![subject.to_string(), verb.to_string(), user_id, new_fact_id],
-    ).await?;
+            libsql::params![subject.to_string(), verb.to_string(), user_id, new_fact_id],
+        )
+        .await?;
 
     let verb_lower = verb.to_lowercase();
     let verb_lower = verb_lower.trim();
@@ -331,7 +343,11 @@ pub async fn invalidate_contradicted_facts(
             .iter()
             .map(|c| format!("{}.{}", c.subject, c.verb))
             .collect();
-        info!(msg = "facts_invalidated_by_contradiction", count = invalidated, ?subjects);
+        info!(
+            msg = "facts_invalidated_by_contradiction",
+            count = invalidated,
+            ?subjects
+        );
     }
 
     Ok(invalidated)
@@ -340,16 +356,15 @@ pub async fn invalidate_contradicted_facts(
 /// Post-process newly inserted facts for a memory:
 /// 1. Set valid_at based on date info
 /// 2. Detect and invalidate contradictions
-pub async fn post_process_new_facts(
-    db: &Database,
-    memory_id: i64,
-    user_id: i64,
-) -> Result<()> {
+pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64) -> Result<()> {
     // Get the memory created_at for date resolution
-    let mut mem_rows = db.conn.query(
-        "SELECT created_at FROM memories WHERE id = ?1",
-        libsql::params![memory_id],
-    ).await?;
+    let mut mem_rows = db
+        .conn
+        .query(
+            "SELECT created_at FROM memories WHERE id = ?1",
+            libsql::params![memory_id],
+        )
+        .await?;
 
     let created_at = match mem_rows.next().await? {
         Some(row) => {
@@ -360,11 +375,14 @@ pub async fn post_process_new_facts(
     };
 
     // Get all facts just inserted for this memory (those without valid_at)
-    let mut fact_rows = db.conn.query(
-        "SELECT id, subject, verb, object, quantity
+    let mut fact_rows = db
+        .conn
+        .query(
+            "SELECT id, subject, verb, object, quantity
          FROM structured_facts WHERE memory_id = ?1 AND user_id = ?2 AND valid_at IS NULL",
-        libsql::params![memory_id, user_id],
-    ).await?;
+            libsql::params![memory_id, user_id],
+        )
+        .await?;
 
     let mut facts = Vec::new();
     while let Some(row) = fact_rows.next().await? {
@@ -384,9 +402,17 @@ pub async fn post_process_new_facts(
 
         // Check for contradictions
         match detect_fact_contradictions(
-            db, *fact_id, memory_id, subject, verb,
-            object.as_deref(), *quantity, user_id,
-        ).await {
+            db,
+            *fact_id,
+            memory_id,
+            subject,
+            verb,
+            object.as_deref(),
+            *quantity,
+            user_id,
+        )
+        .await
+        {
             Ok(contradictions) if !contradictions.is_empty() => {
                 if let Err(e) = invalidate_contradicted_facts(db, &contradictions).await {
                     warn!(msg = "fact_invalidation_failed", error = %e);
@@ -441,10 +467,12 @@ pub async fn backfill_fact_validity(db: &Database, user_id: Option<i64>) -> Resu
             memory_created_at.clone()
         };
 
-        db.conn.execute(
-            "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2",
-            libsql::params![valid_at.clone(), *id],
-        ).await?;
+        db.conn
+            .execute(
+                "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2",
+                libsql::params![valid_at.clone(), *id],
+            )
+            .await?;
         filled += 1;
     }
 
@@ -479,14 +507,17 @@ pub async fn time_travel(
 ) -> Result<Vec<TimeTravelResult>> {
     let results = if let Some(q) = query {
         let pattern = format!("%{}%", q);
-        let mut rows = db.conn.query(
-            "SELECT id, content, category, importance, created_at \
+        let mut rows = db
+            .conn
+            .query(
+                "SELECT id, content, category, importance, created_at \
              FROM memories \
              WHERE user_id = ?1 AND created_at <= ?2 AND is_forgotten = 0 \
                AND content LIKE ?3 \
              ORDER BY created_at DESC LIMIT ?4",
-            libsql::params![user_id, timestamp.to_string(), pattern, limit],
-        ).await?;
+                libsql::params![user_id, timestamp.to_string(), pattern, limit],
+            )
+            .await?;
 
         let mut out = Vec::new();
         while let Some(row) = rows.next().await? {
@@ -500,13 +531,16 @@ pub async fn time_travel(
         }
         out
     } else {
-        let mut rows = db.conn.query(
-            "SELECT id, content, category, importance, created_at \
+        let mut rows = db
+            .conn
+            .query(
+                "SELECT id, content, category, importance, created_at \
              FROM memories \
              WHERE user_id = ?1 AND created_at <= ?2 AND is_forgotten = 0 \
              ORDER BY created_at DESC LIMIT ?3",
-            libsql::params![user_id, timestamp.to_string(), limit],
-        ).await?;
+                libsql::params![user_id, timestamp.to_string(), limit],
+            )
+            .await?;
 
         let mut out = Vec::new();
         while let Some(row) = rows.next().await? {

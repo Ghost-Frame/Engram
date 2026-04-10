@@ -31,32 +31,75 @@ pub async fn fast_extract_facts(
         let verb = cap[1].to_lowercase();
         let quantity: i64 = cap[2].parse().unwrap_or(0);
         let object = cap[3].trim();
-        if object.len() > 200 { continue; }
-        if insert_fact(conn, memory_id, "user", &verb, object, Some(quantity), None, date_ref.as_deref(), date_approx.as_deref(), user_id).await.is_ok() {
+        if object.len() > 200 {
+            continue;
+        }
+        if insert_fact(
+            conn,
+            memory_id,
+            "user",
+            &verb,
+            object,
+            Some(quantity),
+            None,
+            date_ref.as_deref(),
+            date_approx.as_deref(),
+            user_id,
+        )
+        .await
+        .is_ok()
+        {
             stats.facts += 1;
         }
     }
 
     // -- Pattern 2: spent $N on X --
-    let spent_re = Regex::new(
-        r"(?i)\bspent\s+\$([\d,.]+)\s+(?:on|for)\s+(.+?)(?:\.|,|$)"
-    ).unwrap();
+    let spent_re = Regex::new(r"(?i)\bspent\s+\$([\d,.]+)\s+(?:on|for)\s+(.+?)(?:\.|,|$)").unwrap();
     for cap in spent_re.captures_iter(content) {
         let amount: f64 = cap[1].replace(',', "").parse().unwrap_or(0.0);
         let object = cap[2].trim();
-        if insert_fact(conn, memory_id, "user", "spent", object, Some(amount as i64), Some("dollars"), date_ref.as_deref(), date_approx.as_deref(), user_id).await.is_ok() {
+        if insert_fact(
+            conn,
+            memory_id,
+            "user",
+            "spent",
+            object,
+            Some(amount as i64),
+            Some("dollars"),
+            date_ref.as_deref(),
+            date_approx.as_deref(),
+            user_id,
+        )
+        .await
+        .is_ok()
+        {
             stats.facts += 1;
         }
     }
 
     // -- Pattern 3: have/own N X --
     let have_re = Regex::new(
-        r"(?i)\b(?:I\s+)?(?:have|has|own|got)\s+(\d+)\s+(.+?)(?:\.|,|\s+(?:and|but|so|now))"
-    ).unwrap();
+        r"(?i)\b(?:I\s+)?(?:have|has|own|got)\s+(\d+)\s+(.+?)(?:\.|,|\s+(?:and|but|so|now))",
+    )
+    .unwrap();
     for cap in have_re.captures_iter(content) {
         let quantity: i64 = cap[1].parse().unwrap_or(0);
         let object = cap[2].trim();
-        if insert_fact(conn, memory_id, "user", "has", object, Some(quantity), None, date_ref.as_deref(), date_approx.as_deref(), user_id).await.is_ok() {
+        if insert_fact(
+            conn,
+            memory_id,
+            "user",
+            "has",
+            object,
+            Some(quantity),
+            None,
+            date_ref.as_deref(),
+            date_approx.as_deref(),
+            user_id,
+        )
+        .await
+        .is_ok()
+        {
             stats.facts += 1;
         }
     }
@@ -69,7 +112,21 @@ pub async fn fast_extract_facts(
         let verb = cap[1].to_lowercase();
         let quantity: f64 = cap[2].parse().unwrap_or(0.0);
         let unit = cap[3].to_lowercase();
-        if insert_fact(conn, memory_id, "user", &verb, "", Some(quantity as i64), Some(&unit), date_ref.as_deref(), date_approx.as_deref(), user_id).await.is_ok() {
+        if insert_fact(
+            conn,
+            memory_id,
+            "user",
+            &verb,
+            "",
+            Some(quantity as i64),
+            Some(&unit),
+            date_ref.as_deref(),
+            date_approx.as_deref(),
+            user_id,
+        )
+        .await
+        .is_ok()
+        {
             stats.facts += 1;
         }
     }
@@ -81,7 +138,21 @@ pub async fn fast_extract_facts(
     for cap in made_re.captures_iter(content) {
         let verb = cap[1].to_lowercase();
         let object = cap[2].trim();
-        if insert_fact(conn, memory_id, "user", &verb, object, Some(1), None, date_ref.as_deref(), date_approx.as_deref(), user_id).await.is_ok() {
+        if insert_fact(
+            conn,
+            memory_id,
+            "user",
+            &verb,
+            object,
+            Some(1),
+            None,
+            date_ref.as_deref(),
+            date_approx.as_deref(),
+            user_id,
+        )
+        .await
+        .is_ok()
+        {
             stats.facts += 1;
         }
     }
@@ -93,7 +164,21 @@ pub async fn fast_extract_facts(
     for cap in earned_re.captures_iter(content) {
         let amount: f64 = cap[1].replace(',', "").parse().unwrap_or(0.0);
         let object = cap.get(2).map(|m| m.as_str().trim()).unwrap_or("");
-        if insert_fact(conn, memory_id, "user", "earned", object, Some(amount as i64), Some("dollars"), date_ref.as_deref(), date_approx.as_deref(), user_id).await.is_ok() {
+        if insert_fact(
+            conn,
+            memory_id,
+            "user",
+            "earned",
+            object,
+            Some(amount as i64),
+            Some("dollars"),
+            date_ref.as_deref(),
+            date_approx.as_deref(),
+            user_id,
+        )
+        .await
+        .is_ok()
+        {
             stats.facts += 1;
         }
     }
@@ -106,7 +191,16 @@ pub async fn fast_extract_facts(
         let object = cap[2].trim();
         if object.len() > 3 && object.len() < 100 {
             let domain = infer_domain(object);
-            if upsert_preference(conn, &domain, &format!("likes {}", object), memory_id, user_id).await.is_ok() {
+            if upsert_preference(
+                conn,
+                &domain,
+                &format!("likes {}", object),
+                memory_id,
+                user_id,
+            )
+            .await
+            .is_ok()
+            {
                 stats.preferences += 1;
             }
         }
@@ -120,31 +214,51 @@ pub async fn fast_extract_facts(
         let object = cap[2].trim();
         if object.len() > 3 && object.len() < 100 {
             let domain = infer_domain(object);
-            if upsert_preference(conn, &domain, &format!("dislikes {}", object), memory_id, user_id).await.is_ok() {
+            if upsert_preference(
+                conn,
+                &domain,
+                &format!("dislikes {}", object),
+                memory_id,
+                user_id,
+            )
+            .await
+            .is_ok()
+            {
                 stats.preferences += 1;
             }
         }
     }
 
     // -- Preferences: favorites --
-    let fav_re = Regex::new(
-        r"(?i)\bmy favorite\s+(.+?)\s+(?:is|are)\s+(.+?)(?:\.|,|$)"
-    ).unwrap();
+    let fav_re = Regex::new(r"(?i)\bmy favorite\s+(.+?)\s+(?:is|are)\s+(.+?)(?:\.|,|$)").unwrap();
     for cap in fav_re.captures_iter(content) {
         let category = cap[1].trim().to_lowercase();
         let value = cap[2].trim();
-        if upsert_preference(conn, &category, &format!("favorite: {}", value), memory_id, user_id).await.is_ok() {
+        if upsert_preference(
+            conn,
+            &category,
+            &format!("favorite: {}", value),
+            memory_id,
+            user_id,
+        )
+        .await
+        .is_ok()
+        {
             stats.preferences += 1;
         }
     }
 
     // -- State updates: location changes --
     let loc_re = Regex::new(
-        r"(?i)\b(?:I\s+)?(?:moved to|relocated to|live in|living in|staying in)\s+(.+?)(?:\.|,|$)"
-    ).unwrap();
+        r"(?i)\b(?:I\s+)?(?:moved to|relocated to|live in|living in|staying in)\s+(.+?)(?:\.|,|$)",
+    )
+    .unwrap();
     for cap in loc_re.captures_iter(content) {
         let location = cap[1].trim();
-        if upsert_state(conn, "current_location", location, memory_id, user_id).await.is_ok() {
+        if upsert_state(conn, "current_location", location, memory_id, user_id)
+            .await
+            .is_ok()
+        {
             stats.state_updates += 1;
         }
     }
@@ -155,9 +269,13 @@ pub async fn fast_extract_facts(
     ).unwrap();
     for cap in role_re.captures_iter(content) {
         let role = cap[1].trim();
-        if role.len() > 3 && role.len() < 100
-            && upsert_state(conn, "current_role", role, memory_id, user_id).await.is_ok() {
-                stats.state_updates += 1;
+        if role.len() > 3
+            && role.len() < 100
+            && upsert_state(conn, "current_role", role, memory_id, user_id)
+                .await
+                .is_ok()
+        {
+            stats.state_updates += 1;
         }
     }
 
@@ -289,15 +407,60 @@ fn extract_date_ref(content: &str) -> Option<String> {
 
 fn infer_domain(text: &str) -> String {
     let t = text.to_lowercase();
-    if Regex::new(r"(?i)food|cook|bak|\beat\b|restaurant|meal|recipe|cuisine").unwrap().is_match(&t) { return "food".to_string(); }
-    if Regex::new(r"(?i)movie|film|show|series|watch|tv|netflix|stream").unwrap().is_match(&t) { return "entertainment".to_string(); }
-    if Regex::new(r"(?i)book|read|novel|author|library").unwrap().is_match(&t) { return "reading".to_string(); }
-    if Regex::new(r"(?i)music|song|album|artist|band|listen|concert").unwrap().is_match(&t) { return "music".to_string(); }
-    if Regex::new(r"(?i)travel|trip|visit|vacation|hotel|flight|city|country").unwrap().is_match(&t) { return "travel".to_string(); }
-    if Regex::new(r"(?i)sport|run|jog|gym|exercise|hike|swim|yoga|fitness").unwrap().is_match(&t) { return "fitness".to_string(); }
-    if Regex::new(r"(?i)game|play|gaming|console").unwrap().is_match(&t) { return "gaming".to_string(); }
-    if Regex::new(r"(?i)tech|code|program|software|app|computer").unwrap().is_match(&t) { return "technology".to_string(); }
-    if Regex::new(r"(?i)pet|dog|cat|fish|animal|tank|aquarium").unwrap().is_match(&t) { return "pets".to_string(); }
+    if Regex::new(r"(?i)food|cook|bak|\beat\b|restaurant|meal|recipe|cuisine")
+        .unwrap()
+        .is_match(&t)
+    {
+        return "food".to_string();
+    }
+    if Regex::new(r"(?i)movie|film|show|series|watch|tv|netflix|stream")
+        .unwrap()
+        .is_match(&t)
+    {
+        return "entertainment".to_string();
+    }
+    if Regex::new(r"(?i)book|read|novel|author|library")
+        .unwrap()
+        .is_match(&t)
+    {
+        return "reading".to_string();
+    }
+    if Regex::new(r"(?i)music|song|album|artist|band|listen|concert")
+        .unwrap()
+        .is_match(&t)
+    {
+        return "music".to_string();
+    }
+    if Regex::new(r"(?i)travel|trip|visit|vacation|hotel|flight|city|country")
+        .unwrap()
+        .is_match(&t)
+    {
+        return "travel".to_string();
+    }
+    if Regex::new(r"(?i)sport|run|jog|gym|exercise|hike|swim|yoga|fitness")
+        .unwrap()
+        .is_match(&t)
+    {
+        return "fitness".to_string();
+    }
+    if Regex::new(r"(?i)game|play|gaming|console")
+        .unwrap()
+        .is_match(&t)
+    {
+        return "gaming".to_string();
+    }
+    if Regex::new(r"(?i)tech|code|program|software|app|computer")
+        .unwrap()
+        .is_match(&t)
+    {
+        return "technology".to_string();
+    }
+    if Regex::new(r"(?i)pet|dog|cat|fish|animal|tank|aquarium")
+        .unwrap()
+        .is_match(&t)
+    {
+        return "pets".to_string();
+    }
     "general".to_string()
 }
 

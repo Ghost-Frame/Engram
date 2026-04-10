@@ -34,7 +34,9 @@ async fn refresh_decay(
 
     let mut updates = Vec::new();
     while let Some(r) = rows.next().await.map_err(engram_lib::EngError::Database)? {
-        let id: i64 = r.get(0).map_err(|e| engram_lib::EngError::Internal(e.to_string()))?;
+        let id: i64 = r
+            .get(0)
+            .map_err(|e| engram_lib::EngError::Internal(e.to_string()))?;
         let importance: f64 = r.get::<f64>(1).unwrap_or(5.0);
         let created_at: String = r.get::<String>(2).unwrap_or_default();
         let access_count: i64 = r.get::<i64>(3).unwrap_or(0);

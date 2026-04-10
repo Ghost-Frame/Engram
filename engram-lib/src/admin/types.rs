@@ -65,7 +65,11 @@ pub struct SlaTargets {
 
 impl Default for SlaTargets {
     fn default() -> Self {
-        Self { uptime_pct: 99.9, p99_latency_ms: 500, error_rate_pct: 1.0 }
+        Self {
+            uptime_pct: 99.9,
+            p99_latency_ms: 500,
+            error_rate_pct: 1.0,
+        }
     }
 }
 

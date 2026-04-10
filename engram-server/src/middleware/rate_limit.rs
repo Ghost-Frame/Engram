@@ -25,7 +25,10 @@ pub async fn rate_limit_middleware(
     let path = request.uri().path().to_string();
 
     // Skip rate limiting for health/bootstrap paths.
-    if OPEN_PATHS.iter().any(|p| path == *p || path.starts_with(&format!("{}/", p))) {
+    if OPEN_PATHS
+        .iter()
+        .any(|p| path == *p || path.starts_with(&format!("{}/", p)))
+    {
         return next.run(request).await;
     }
 

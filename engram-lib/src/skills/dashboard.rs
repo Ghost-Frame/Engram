@@ -12,8 +12,16 @@ pub fn compute_skill_score(
     days_since_last: f64,
 ) -> f64 {
     let total = success_count + failure_count;
-    let completion_rate = if total > 0 { success_count as f64 / total as f64 } else { 0.0 };
-    let applied_rate = if execution_count > 0 { total as f64 / execution_count as f64 } else { 0.0 };
+    let completion_rate = if total > 0 {
+        success_count as f64 / total as f64
+    } else {
+        0.0
+    };
+    let applied_rate = if execution_count > 0 {
+        total as f64 / execution_count as f64
+    } else {
+        0.0
+    };
     let recency = 1.0 / (1.0 + days_since_last / 30.0);
     completion_rate * 0.5 + applied_rate * 0.3 + recency * 0.2
 }
@@ -53,7 +61,13 @@ pub async fn get_overview(db: &Database, user_id: i64) -> Result<SkillOverview> 
             avg_trust_score: row.get::<Option<f64>>(4)?.unwrap_or(0.0),
         })
     } else {
-        Ok(SkillOverview { total_skills: 0, active_skills: 0, deprecated_skills: 0, total_executions: 0, avg_trust_score: 0.0 })
+        Ok(SkillOverview {
+            total_skills: 0,
+            active_skills: 0,
+            deprecated_skills: 0,
+            total_executions: 0,
+            avg_trust_score: 0.0,
+        })
     }
 }
 
@@ -69,7 +83,12 @@ pub struct SkillStats {
 }
 
 /// Get stats for all active skills.
-pub async fn get_skill_stats(db: &Database, user_id: i64, sort_by: Option<&str>, limit: usize) -> Result<Vec<SkillStats>> {
+pub async fn get_skill_stats(
+    db: &Database,
+    user_id: i64,
+    sort_by: Option<&str>,
+    limit: usize,
+) -> Result<Vec<SkillStats>> {
     let conn = db.connection();
     let order = match sort_by {
         Some("trust") => "trust_score DESC",
@@ -105,7 +124,9 @@ pub async fn get_skill_detail(db: &Database, skill_id: i64) -> Result<serde_json
         "SELECT id, name, agent, description, trust_score, execution_count, success_count, failure_count, avg_duration_ms, version, created_at, updated_at FROM skill_records WHERE id = ?1",
         params![skill_id],
     ).await?;
-    let row = rows.next().await?
+    let row = rows
+        .next()
+        .await?
         .ok_or_else(|| crate::EngError::NotFound(format!("skill {} not found", skill_id)))?;
 
     let updated: String = row.get(11)?;
@@ -113,13 +134,27 @@ pub async fn get_skill_detail(db: &Database, skill_id: i64) -> Result<serde_json
     let sc: i32 = row.get(6)?;
     let fc: i32 = row.get(7)?;
 
-    let mut tag_rows = conn.query("SELECT tag FROM skill_tags WHERE skill_id = ?1", params![skill_id]).await?;
+    let mut tag_rows = conn
+        .query(
+            "SELECT tag FROM skill_tags WHERE skill_id = ?1",
+            params![skill_id],
+        )
+        .await?;
     let mut tags = Vec::new();
-    while let Some(tr) = tag_rows.next().await? { tags.push(tr.get::<String>(0)?); }
+    while let Some(tr) = tag_rows.next().await? {
+        tags.push(tr.get::<String>(0)?);
+    }
 
-    let mut lin_rows = conn.query("SELECT parent_id FROM skill_lineage_parents WHERE skill_id = ?1", params![skill_id]).await?;
+    let mut lin_rows = conn
+        .query(
+            "SELECT parent_id FROM skill_lineage_parents WHERE skill_id = ?1",
+            params![skill_id],
+        )
+        .await?;
     let mut parents = Vec::new();
-    while let Some(lr) = lin_rows.next().await? { parents.push(lr.get::<i64>(0)?); }
+    while let Some(lr) = lin_rows.next().await? {
+        parents.push(lr.get::<i64>(0)?);
+    }
 
     let mut exec_rows = conn.query(
         "SELECT id, success, duration_ms, error_type, created_at FROM execution_analyses WHERE skill_id = ?1 ORDER BY id DESC LIMIT 10",
@@ -160,23 +195,38 @@ pub async fn get_skill_detail(db: &Database, skill_id: i64) -> Result<serde_json
 pub async fn health_check(db: &Database) -> Result<serde_json::Value> {
     let conn = db.connection();
     let mut rows = conn.query("SELECT COUNT(*) FROM skill_records", ()).await?;
-    let count: i64 = if let Some(row) = rows.next().await? { row.get(0)? } else { 0 };
+    let count: i64 = if let Some(row) = rows.next().await? {
+        row.get(0)?
+    } else {
+        0
+    };
     Ok(serde_json::json!({ "status": "ok", "skills_count": count }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn test_score_perfect() { assert!(compute_skill_score(10, 0, 10, 0.0) > 0.9); }
-    #[test] fn test_score_zero() { assert!(compute_skill_score(0, 0, 0, 999.0) < 0.01); }
-    #[test] fn test_score_mixed() {
+    #[test]
+    fn test_score_perfect() {
+        assert!(compute_skill_score(10, 0, 10, 0.0) > 0.9);
+    }
+    #[test]
+    fn test_score_zero() {
+        assert!(compute_skill_score(0, 0, 0, 999.0) < 0.01);
+    }
+    #[test]
+    fn test_score_mixed() {
         let s = compute_skill_score(5, 5, 10, 7.0);
         assert!(s > 0.0 && s < 1.0);
     }
-    #[test] fn test_days_since_recent() {
+    #[test]
+    fn test_days_since_recent() {
         let now = chrono::Utc::now().naive_utc();
         let s = now.format("%Y-%m-%d %H:%M:%S").to_string();
         assert!(days_since(&s) < 1.0);
     }
-    #[test] fn test_days_since_invalid() { assert_eq!(days_since("not-a-date"), 999.0); }
+    #[test]
+    fn test_days_since_invalid() {
+        assert_eq!(days_since("not-a-date"), 999.0);
+    }
 }

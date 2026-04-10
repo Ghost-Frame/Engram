@@ -34,14 +34,18 @@ async fn create_webhook_handler(
         &events,
         body.secret.as_deref(),
         auth.user_id,
-    ).await?;
-    Ok((StatusCode::CREATED, Json(json!({
-        "created": true,
-        "id": id,
-        "url": body.url,
-        "events": events,
-        "created_at": created_at
-    }))))
+    )
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "created": true,
+            "id": id,
+            "url": body.url,
+            "events": events,
+            "created_at": created_at
+        })),
+    ))
 }
 
 async fn list_webhooks_handler(

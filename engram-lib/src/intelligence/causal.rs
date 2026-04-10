@@ -36,10 +36,15 @@ pub async fn create_chain(
     conn.execute(
         "INSERT INTO causal_chains (root_memory_id, description, user_id) VALUES (?1, ?2, ?3)",
         params![root_memory_id, description, user_id],
-    ).await?;
+    )
+    .await?;
 
     let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = if let Some(row) = rows.next().await? { row.get(0)? } else { 0 };
+    let id: i64 = if let Some(row) = rows.next().await? {
+        row.get(0)?
+    } else {
+        0
+    };
 
     Ok(CausalChain {
         id,
@@ -70,7 +75,11 @@ pub async fn add_link(
     ).await?;
 
     let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = if let Some(row) = rows.next().await? { row.get(0)? } else { 0 };
+    let id: i64 = if let Some(row) = rows.next().await? {
+        row.get(0)?
+    } else {
+        0
+    };
 
     Ok(CausalLink {
         id,
@@ -87,13 +96,17 @@ pub async fn add_link(
 pub async fn get_chain(db: &Database, chain_id: i64, _user_id: i64) -> Result<CausalChain> {
     let conn = db.connection();
 
-    let mut rows = conn.query(
-        "SELECT id, root_memory_id, description, confidence, user_id, created_at \
+    let mut rows = conn
+        .query(
+            "SELECT id, root_memory_id, description, confidence, user_id, created_at \
          FROM causal_chains WHERE id = ?1",
-        params![chain_id],
-    ).await?;
+            params![chain_id],
+        )
+        .await?;
 
-    let row = rows.next().await?
+    let row = rows
+        .next()
+        .await?
         .ok_or_else(|| EngError::NotFound(format!("causal chain {} not found", chain_id)))?;
 
     let mut chain = CausalChain {
@@ -131,10 +144,12 @@ pub async fn get_chain(db: &Database, chain_id: i64, _user_id: i64) -> Result<Ca
 /// List causal chains for a user.
 pub async fn list_chains(db: &Database, user_id: i64, limit: usize) -> Result<Vec<CausalChain>> {
     let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT id FROM causal_chains WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
-        params![user_id, limit as i64],
-    ).await?;
+    let mut rows = conn
+        .query(
+            "SELECT id FROM causal_chains WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
+            params![user_id, limit as i64],
+        )
+        .await?;
 
     let mut ids = Vec::new();
     while let Some(row) = rows.next().await? {

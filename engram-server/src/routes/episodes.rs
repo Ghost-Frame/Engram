@@ -9,7 +9,7 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::episodes::{
-    self, CreateEpisodeRequest, UpdateEpisodeRequest, AssignMemoriesRequest,
+    self, AssignMemoriesRequest, CreateEpisodeRequest, UpdateEpisodeRequest,
 };
 
 pub fn router() -> Router<AppState> {
@@ -27,9 +27,12 @@ async fn create_episode(
     Json(body): Json<CreateEpisodeRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let ep = episodes::create_episode(&state.db, body, auth.user_id).await?;
-    Ok((StatusCode::CREATED, Json(json!({
-        "created": true, "id": ep.id, "started_at": ep.started_at, "summary": ep.summary
-    }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "created": true, "id": ep.id, "started_at": ep.started_at, "summary": ep.summary
+        })),
+    ))
 }
 
 // GET /episodes
@@ -52,9 +55,9 @@ async fn list_episodes(
     if params.after.is_some() || params.before.is_some() {
         let after = params.after.as_deref().unwrap_or("2000-01-01");
         let before = params.before.as_deref().unwrap_or("2099-12-31");
-        let eps = episodes::list_episodes_by_time_range(
-            &state.db, auth.user_id, after, before, limit,
-        ).await?;
+        let eps =
+            episodes::list_episodes_by_time_range(&state.db, auth.user_id, after, before, limit)
+                .await?;
         return Ok(Json(json!({ "episodes": eps })));
     }
 
@@ -109,9 +112,8 @@ async fn assign_memories(
 ) -> Result<Json<Value>, AppError> {
     // Verify episode exists for this user
     episodes::get_episode_for_user(&state.db, id, auth.user_id).await?;
-    let assigned = episodes::assign_memories_to_episode(
-        &state.db, id, &body.memory_ids, auth.user_id,
-    ).await?;
+    let assigned =
+        episodes::assign_memories_to_episode(&state.db, id, &body.memory_ids, auth.user_id).await?;
     Ok(Json(json!({ "assigned": assigned, "episode_id": id })))
 }
 

@@ -89,19 +89,25 @@ async fn store_memory(
     let embedded = req.embedding.is_some();
     let result = memory::store(&state.db, req).await?;
     if let Some(existing_id) = result.duplicate_of {
-        return Ok((StatusCode::OK, Json(json!({
-            "stored": false, "duplicate": true,
-            "existing_id": existing_id, "boosted": true,
-            "distance": Value::Null,
-        }))));
+        return Ok((
+            StatusCode::OK,
+            Json(json!({
+                "stored": false, "duplicate": true,
+                "existing_id": existing_id, "boosted": true,
+                "distance": Value::Null,
+            })),
+        ));
     }
     let mem = memory::get(&state.db, result.id, auth.user_id).await?;
-    Ok((StatusCode::CREATED, Json(json!({
-        "stored": true, "id": result.id, "created_at": mem.created_at,
-        "importance": mem.importance, "embedded": embedded,
-        "tags": parse_tags(&mem.tags),
-        "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
-    }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "stored": true, "id": result.id, "created_at": mem.created_at,
+            "importance": mem.importance, "embedded": embedded,
+            "tags": parse_tags(&mem.tags),
+            "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
+        })),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,19 +137,29 @@ async fn search_memories(
     let embedding = if let Some(ref embedder) = state.embedder {
         match embedder.embed(&body.query).await {
             Ok(emb) => Some(emb),
-            Err(e) => { tracing::warn!("embedding failed for search: {}", e); None }
+            Err(e) => {
+                tracing::warn!("embedding failed for search: {}", e);
+                None
+            }
         }
-    } else { None };
+    } else {
+        None
+    };
 
     let body_query = body.query.clone();
 
     let req = SearchRequest {
-        query: body.query, embedding,
-        limit: body.limit, category: body.category, source: body.source,
+        query: body.query,
+        embedding,
+        limit: body.limit,
+        category: body.category,
+        source: body.source,
         tags: body.tags.or_else(|| body.tag.map(|tag| vec![tag])),
         threshold: body.threshold,
-        user_id: Some(auth.user_id), space_id: body.space_id,
-        include_forgotten: body.include_forgotten, mode: body.mode,
+        user_id: Some(auth.user_id),
+        space_id: body.space_id,
+        include_forgotten: body.include_forgotten,
+        mode: body.mode,
         question_type: body.question_type,
         expand_relationships: body.expand_relationships.unwrap_or(false),
         include_links: body.include_links.unwrap_or(false),
@@ -162,21 +178,34 @@ async fn search_memories(
     let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
     let abstained = results.is_empty();
 
-    let result_items: Vec<Value> = results.iter().map(|r| {
-        let mut item = json!({
-            "id": r.memory.id, "content": r.memory.content,
-            "category": r.memory.category, "source": r.memory.source,
-            "importance": r.memory.importance, "created_at": r.memory.created_at,
-            "score": r.score, "tags": parse_tags(&r.memory.tags),
-            "search_type": r.search_type,
-        });
-        if let Some(d) = r.decay_score { item["decay_score"] = json!(d); }
-        if let Some(q) = &r.question_type { item["question_type"] = json!(q); }
-        if let Some(ref ch) = r.channels { item["channels"] = json!(ch); }
-        if let Some(ref linked) = r.linked { item["linked"] = json!(linked); }
-        if let Some(ref vc) = r.version_chain { item["version_chain"] = json!(vc); }
-        item
-    }).collect();
+    let result_items: Vec<Value> = results
+        .iter()
+        .map(|r| {
+            let mut item = json!({
+                "id": r.memory.id, "content": r.memory.content,
+                "category": r.memory.category, "source": r.memory.source,
+                "importance": r.memory.importance, "created_at": r.memory.created_at,
+                "score": r.score, "tags": parse_tags(&r.memory.tags),
+                "search_type": r.search_type,
+            });
+            if let Some(d) = r.decay_score {
+                item["decay_score"] = json!(d);
+            }
+            if let Some(q) = &r.question_type {
+                item["question_type"] = json!(q);
+            }
+            if let Some(ref ch) = r.channels {
+                item["channels"] = json!(ch);
+            }
+            if let Some(ref linked) = r.linked {
+                item["linked"] = json!(linked);
+            }
+            if let Some(ref vc) = r.version_chain {
+                item["version_chain"] = json!(vc);
+            }
+            item
+        })
+        .collect();
 
     Ok(Json(json!({
         "results": result_items, "abstained": abstained, "top_score": top_score,
@@ -205,9 +234,14 @@ async fn recall(
         .unwrap_or_default();
 
     let static_opts = ListOptions {
-        limit: 10, offset: 0, category: None, source: None,
-        user_id: Some(user_id), space_id: body.space_id,
-        include_forgotten: false, include_archived: false,
+        limit: 10,
+        offset: 0,
+        category: None,
+        source: None,
+        user_id: Some(user_id),
+        space_id: body.space_id,
+        include_forgotten: false,
+        include_archived: false,
     };
     let all_list = memory::list(&state.db, static_opts).await?;
     let static_memories: Vec<_> = all_list.into_iter().filter(|m| m.is_static).collect();
@@ -215,29 +249,51 @@ async fn recall(
     let query_embedding = if let Some(ref embedder) = state.embedder {
         match embedder.embed(&query).await {
             Ok(emb) => Some(emb),
-            Err(e) => { tracing::warn!("embedding failed for recall: {}", e); None }
+            Err(e) => {
+                tracing::warn!("embedding failed for recall: {}", e);
+                None
+            }
         }
-    } else { None };
+    } else {
+        None
+    };
 
     let semantic_req = SearchRequest {
-        query: query.clone(), embedding: query_embedding,
-        limit: Some(limit), category: None, source: None,
-        tags: None, threshold: None,
-        user_id: Some(user_id), space_id: body.space_id,
-        include_forgotten: None, mode: None,
-        question_type: None, expand_relationships: false,
-        include_links: false, latest_only: true, source_filter: None,
+        query: query.clone(),
+        embedding: query_embedding,
+        limit: Some(limit),
+        category: None,
+        source: None,
+        tags: None,
+        threshold: None,
+        user_id: Some(user_id),
+        space_id: body.space_id,
+        include_forgotten: None,
+        mode: None,
+        question_type: None,
+        expand_relationships: false,
+        include_links: false,
+        latest_only: true,
+        source_filter: None,
     };
     let semantic_results = hybrid_search(&state.db, semantic_req).await?;
 
     let recent_opts = ListOptions {
-        limit: 20, offset: 0, category: None, source: None,
-        user_id: Some(user_id), space_id: body.space_id,
-        include_forgotten: false, include_archived: false,
+        limit: 20,
+        offset: 0,
+        category: None,
+        source: None,
+        user_id: Some(user_id),
+        space_id: body.space_id,
+        include_forgotten: false,
+        include_archived: false,
     };
     let recent_all = memory::list(&state.db, recent_opts).await?;
-    let important_memories: Vec<_> = recent_all.into_iter()
-        .filter(|m| m.importance >= 7).take(10).collect();
+    let important_memories: Vec<_> = recent_all
+        .into_iter()
+        .filter(|m| m.importance >= 7)
+        .take(10)
+        .collect();
 
     let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let static_count = static_memories.len();
@@ -277,12 +333,20 @@ async fn recall(
 
     let mut recent_count = 0usize;
     let recent_extra_opts = ListOptions {
-        limit: 10, offset: 0, category: None, source: None,
-        user_id: Some(user_id), space_id: body.space_id,
-        include_forgotten: false, include_archived: false,
+        limit: 10,
+        offset: 0,
+        category: None,
+        source: None,
+        user_id: Some(user_id),
+        space_id: body.space_id,
+        include_forgotten: false,
+        include_archived: false,
     };
     let recent_extra = memory::list(&state.db, recent_extra_opts).await?;
-    for m in recent_extra.iter().filter(|m| m.importance < 7 && !m.is_static) {
+    for m in recent_extra
+        .iter()
+        .filter(|m| m.importance < 7 && !m.is_static)
+    {
         if seen_ids.insert(m.id) {
             recent_count += 1;
             output.push(json!({
@@ -305,9 +369,12 @@ async fn recall(
 
 #[derive(Debug, Deserialize)]
 struct ListQuery {
-    pub limit: Option<usize>, pub offset: Option<usize>,
-    pub category: Option<String>, pub source: Option<String>,
-    pub space_id: Option<i64>, pub include_forgotten: Option<bool>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    pub category: Option<String>,
+    pub source: Option<String>,
+    pub space_id: Option<i64>,
+    pub include_forgotten: Option<bool>,
     pub include_archived: Option<bool>,
 }
 
@@ -329,13 +396,17 @@ struct ForgetBody {
 }
 
 async fn list_memories(
-    State(state): State<AppState>, Auth(auth): Auth,
+    State(state): State<AppState>,
+    Auth(auth): Auth,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let opts = ListOptions {
-        limit: params.limit.unwrap_or(50), offset: params.offset.unwrap_or(0),
-        category: params.category, source: params.source,
-        user_id: Some(auth.user_id), space_id: params.space_id,
+        limit: params.limit.unwrap_or(50),
+        offset: params.offset.unwrap_or(0),
+        category: params.category,
+        source: params.source,
+        user_id: Some(auth.user_id),
+        space_id: params.space_id,
         include_forgotten: params.include_forgotten.unwrap_or(false),
         include_archived: params.include_archived.unwrap_or(false),
     };
@@ -345,22 +416,28 @@ async fn list_memories(
 }
 
 async fn get_memory(
-    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let mem = memory::get(&state.db, id, auth.user_id).await?;
     Ok(Json(memory_to_json(&mem)))
 }
 
 async fn delete_memory(
-    State(state): State<AppState>, Auth(auth): Auth, Path(id): Path<i64>,
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     memory::delete(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
 async fn update_memory(
-    State(state): State<AppState>, Auth(auth): Auth,
-    Path(id): Path<i64>, Json(req): Json<UpdateRequest>,
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+    Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
     let updated = memory::update(&state.db, id, req, auth.user_id).await?;
     Ok(Json(memory_to_json(&updated)))
@@ -455,7 +532,8 @@ async fn synthesize_profile(
         .await?;
     }
 
-    let _ = engram_lib::personality::synthesize_personality_profile(&state.db, auth.user_id).await?;
+    let _ =
+        engram_lib::personality::synthesize_personality_profile(&state.db, auth.user_id).await?;
     let profile = memory::get_user_profile(&state.db, auth.user_id).await?;
     Ok(Json(json!(profile)))
 }

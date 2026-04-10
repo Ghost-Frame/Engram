@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::{EngError, Result};
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Rubric types
@@ -182,8 +182,8 @@ pub struct DriftSummaryEntry {
 
 fn row_to_rubric(row: &libsql::Row) -> Result<Rubric> {
     let criteria_str: String = row.get(3)?;
-    let criteria: serde_json::Value = serde_json::from_str(&criteria_str)
-        .unwrap_or(serde_json::Value::Array(vec![]));
+    let criteria: serde_json::Value =
+        serde_json::from_str(&criteria_str).unwrap_or(serde_json::Value::Array(vec![]));
     Ok(Rubric {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -242,10 +242,10 @@ fn row_to_session_quality(row: &libsql::Row) -> Result<SessionQuality> {
     let rules_followed_str: String = row.get(4)?;
     let rules_drifted_str: String = row.get(5)?;
 
-    let rules_followed: serde_json::Value = serde_json::from_str(&rules_followed_str)
-        .unwrap_or(serde_json::Value::Array(vec![]));
-    let rules_drifted: serde_json::Value = serde_json::from_str(&rules_drifted_str)
-        .unwrap_or(serde_json::Value::Array(vec![]));
+    let rules_followed: serde_json::Value =
+        serde_json::from_str(&rules_followed_str).unwrap_or(serde_json::Value::Array(vec![]));
+    let rules_drifted: serde_json::Value =
+        serde_json::from_str(&rules_drifted_str).unwrap_or(serde_json::Value::Array(vec![]));
 
     Ok(SessionQuality {
         id: row.get(0)?,
@@ -333,7 +333,12 @@ pub async fn list_rubrics(db: &Database, user_id: i64) -> Result<Vec<Rubric>> {
     Ok(results)
 }
 
-pub async fn update_rubric(db: &Database, id: i64, req: UpdateRubricRequest, user_id: i64) -> Result<Rubric> {
+pub async fn update_rubric(
+    db: &Database,
+    id: i64,
+    req: UpdateRubricRequest,
+    user_id: i64,
+) -> Result<Rubric> {
     let conn = &db.conn;
 
     // Verify ownership
@@ -366,11 +371,17 @@ pub async fn update_rubric(db: &Database, id: i64, req: UpdateRubricRequest, use
         return get_rubric(db, id, user_id).await;
     }
 
-    let sql = format!("UPDATE rubrics SET {} WHERE id = ?{} AND user_id = ?{}", sets.join(", "), idx, idx + 1);
+    let sql = format!(
+        "UPDATE rubrics SET {} WHERE id = ?{} AND user_id = ?{}",
+        sets.join(", "),
+        idx,
+        idx + 1
+    );
     params_vec.push(libsql::Value::Integer(id));
     params_vec.push(libsql::Value::Integer(user_id));
 
-    conn.execute(&sql, libsql::params_from_iter(params_vec)).await?;
+    conn.execute(&sql, libsql::params_from_iter(params_vec))
+        .await?;
 
     get_rubric(db, id, user_id).await
 }
@@ -393,10 +404,7 @@ pub async fn delete_rubric(db: &Database, id: i64, user_id: i64) -> Result<bool>
 /// Each criterion: { name, weight, scale_min, scale_max }
 /// normalized = (score - scale_min) / (scale_max - scale_min)
 /// overall = sum(normalized * weight) / total_weight
-fn compute_weighted_score(
-    criteria: &serde_json::Value,
-    scores: &serde_json::Value,
-) -> Result<f64> {
+fn compute_weighted_score(criteria: &serde_json::Value, scores: &serde_json::Value) -> Result<f64> {
     let criteria_arr = criteria
         .as_array()
         .ok_or_else(|| EngError::InvalidInput("rubric criteria must be an array".into()))?;
@@ -436,7 +444,9 @@ fn compute_weighted_score(
         let raw_score = scores_obj
             .get(name)
             .and_then(|v| v.as_f64())
-            .ok_or_else(|| EngError::InvalidInput(format!("missing score for criterion '{}'", name)))?;
+            .ok_or_else(|| {
+                EngError::InvalidInput(format!("missing score for criterion '{}'", name))
+            })?;
 
         let range = scale_max - scale_min;
         let normalized = if range == 0.0 {
@@ -466,8 +476,12 @@ pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation>
     // Compute weighted overall score
     let overall_score = compute_weighted_score(&rubric.criteria, &req.scores)?;
 
-    let input = req.input.unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-    let output = req.output.unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+    let input = req
+        .input
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+    let output = req
+        .output
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
     let input_json = serde_json::to_string(&input)?;
     let output_json = serde_json::to_string(&output)?;
     let scores_json = serde_json::to_string(&req.scores)?;
@@ -550,7 +564,9 @@ pub async fn list_evaluations(
     sql.push_str(&format!(" ORDER BY created_at DESC LIMIT ?{}", idx));
     params_vec.push(libsql::Value::Integer(limit as i64));
 
-    let mut rows = conn.query(&sql, libsql::params_from_iter(params_vec)).await?;
+    let mut rows = conn
+        .query(&sql, libsql::params_from_iter(params_vec))
+        .await?;
     let mut results = Vec::new();
     while let Some(row) = rows.next().await? {
         results.push(row_to_evaluation(&row)?);
@@ -588,7 +604,9 @@ pub async fn get_agent_scores(
         params_vec.push(libsql::Value::Text(s.to_string()));
     }
 
-    let mut rows = conn.query(&sql, libsql::params_from_iter(params_vec)).await?;
+    let mut rows = conn
+        .query(&sql, libsql::params_from_iter(params_vec))
+        .await?;
 
     let mut overall_sum = 0.0f64;
     let mut count = 0i64;
@@ -607,7 +625,12 @@ pub async fn get_agent_scores(
             if let Some(obj) = scores_obj.as_object() {
                 for (k, v) in obj {
                     if let Some(score) = v.as_f64() {
-                        let entry = criterion_stats.entry(k.clone()).or_insert((0.0, f64::MAX, f64::MIN, 0));
+                        let entry = criterion_stats.entry(k.clone()).or_insert((
+                            0.0,
+                            f64::MAX,
+                            f64::MIN,
+                            0,
+                        ));
                         entry.0 += score;
                         entry.1 = entry.1.min(score);
                         entry.2 = entry.2.max(score);
@@ -618,7 +641,11 @@ pub async fn get_agent_scores(
         }
     }
 
-    let overall_avg = if count == 0 { 0.0 } else { overall_sum / count as f64 };
+    let overall_avg = if count == 0 {
+        0.0
+    } else {
+        overall_sum / count as f64
+    };
 
     // Build by_criterion JSON
     let mut by_criterion = serde_json::Map::new();
@@ -650,7 +677,9 @@ pub async fn get_agent_scores(
 pub async fn record_metric(db: &Database, req: RecordMetricRequest) -> Result<QualityMetric> {
     let conn = &db.conn;
     let user_id = req.user_id.unwrap_or(1);
-    let tags = req.tags.unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+    let tags = req
+        .tags
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
     let tags_json = serde_json::to_string(&tags)?;
 
     conn.execute(
@@ -719,7 +748,9 @@ pub async fn get_metrics(
     sql.push_str(&format!(" ORDER BY recorded_at DESC LIMIT ?{}", idx));
     params_vec.push(libsql::Value::Integer(limit as i64));
 
-    let mut rows = conn.query(&sql, libsql::params_from_iter(params_vec)).await?;
+    let mut rows = conn
+        .query(&sql, libsql::params_from_iter(params_vec))
+        .await?;
     let mut results = Vec::new();
     while let Some(row) = rows.next().await? {
         results.push(row_to_metric(&row)?);
@@ -751,7 +782,9 @@ pub async fn get_metric_summary(
         params_vec.push(libsql::Value::Text(s.to_string()));
     }
 
-    let mut rows = conn.query(&sql, libsql::params_from_iter(params_vec)).await?;
+    let mut rows = conn
+        .query(&sql, libsql::params_from_iter(params_vec))
+        .await?;
 
     let row = rows
         .next()
@@ -852,7 +885,9 @@ pub async fn get_session_quality(
     sql.push_str(&format!(" ORDER BY created_at DESC LIMIT ?{}", idx));
     params_vec.push(libsql::Value::Integer(limit as i64));
 
-    let mut rows = conn.query(&sql, libsql::params_from_iter(params_vec)).await?;
+    let mut rows = conn
+        .query(&sql, libsql::params_from_iter(params_vec))
+        .await?;
     let mut results = Vec::new();
     while let Some(row) = rows.next().await? {
         results.push(row_to_session_quality(&row)?);
@@ -875,10 +910,7 @@ const VALID_DRIFT_TYPES: &[&str] = &[
 
 const VALID_SEVERITIES: &[&str] = &["low", "medium", "high", "critical"];
 
-pub async fn record_drift_event(
-    db: &Database,
-    req: RecordDriftEventRequest,
-) -> Result<DriftEvent> {
+pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> Result<DriftEvent> {
     // Validate drift_type
     if !VALID_DRIFT_TYPES.contains(&req.drift_type.as_str()) {
         return Err(EngError::InvalidInput(format!(
@@ -904,7 +936,13 @@ pub async fn record_drift_event(
     conn.execute(
         "INSERT INTO behavioral_drift_events (agent, session_id, drift_type, severity, signal)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        libsql::params![req.agent, req.session_id, req.drift_type, severity, req.signal],
+        libsql::params![
+            req.agent,
+            req.session_id,
+            req.drift_type,
+            severity,
+            req.signal
+        ],
     )
     .await?;
 
@@ -931,11 +969,7 @@ pub async fn record_drift_event(
     row_to_drift_event(&row)
 }
 
-pub async fn get_drift_events(
-    db: &Database,
-    agent: &str,
-    limit: usize,
-) -> Result<Vec<DriftEvent>> {
+pub async fn get_drift_events(db: &Database, agent: &str, limit: usize) -> Result<Vec<DriftEvent>> {
     let conn = &db.conn;
     let mut rows = conn
         .query(
@@ -953,10 +987,7 @@ pub async fn get_drift_events(
     Ok(results)
 }
 
-pub async fn get_drift_summary(
-    db: &Database,
-    agent: &str,
-) -> Result<Vec<DriftSummaryEntry>> {
+pub async fn get_drift_summary(db: &Database, agent: &str) -> Result<Vec<DriftSummaryEntry>> {
     let conn = &db.conn;
     let mut rows = conn
         .query(
@@ -988,21 +1019,32 @@ pub async fn get_stats(db: &Database) -> Result<ThymusStats> {
 
     let rubrics = {
         let mut rows = conn.query("SELECT COUNT(*) FROM rubrics", ()).await?;
-        let row = rows.next().await?.ok_or_else(|| EngError::Internal("no count row".into()))?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| EngError::Internal("no count row".into()))?;
         let n: i64 = row.get(0)?;
         n
     };
 
     let evaluations = {
         let mut rows = conn.query("SELECT COUNT(*) FROM evaluations", ()).await?;
-        let row = rows.next().await?.ok_or_else(|| EngError::Internal("no count row".into()))?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| EngError::Internal("no count row".into()))?;
         let n: i64 = row.get(0)?;
         n
     };
 
     let metrics = {
-        let mut rows = conn.query("SELECT COUNT(*) FROM quality_metrics", ()).await?;
-        let row = rows.next().await?.ok_or_else(|| EngError::Internal("no count row".into()))?;
+        let mut rows = conn
+            .query("SELECT COUNT(*) FROM quality_metrics", ())
+            .await?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| EngError::Internal("no count row".into()))?;
         let n: i64 = row.get(0)?;
         n
     };
@@ -1011,7 +1053,10 @@ pub async fn get_stats(db: &Database) -> Result<ThymusStats> {
         let mut rows = conn
             .query("SELECT COUNT(DISTINCT agent) FROM evaluations", ())
             .await?;
-        let row = rows.next().await?.ok_or_else(|| EngError::Internal("no count row".into()))?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| EngError::Internal("no count row".into()))?;
         let n: i64 = row.get(0)?;
         n
     };

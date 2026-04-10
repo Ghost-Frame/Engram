@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 const ALPHA: f64 = 0.1;
 const MIN_WEIGHT: f64 = 0.05;
@@ -45,7 +45,11 @@ impl SearchWeightOptimizer {
     pub fn get_weights(&self, mode: &str) -> WeightState {
         self.weights.get(mode).cloned().unwrap_or_else(|| {
             let (vw, fw) = default_weights(mode);
-            WeightState { vector_weight: vw, fts_weight: fw, update_count: 0 }
+            WeightState {
+                vector_weight: vw,
+                fts_weight: fw,
+                update_count: 0,
+            }
         })
     }
 
@@ -55,14 +59,19 @@ impl SearchWeightOptimizer {
     pub fn update(&mut self, mode: &str, signal: f64) {
         let state = self.weights.entry(mode.to_string()).or_insert_with(|| {
             let (vw, fw) = default_weights(mode);
-            WeightState { vector_weight: vw, fts_weight: fw, update_count: 0 }
+            WeightState {
+                vector_weight: vw,
+                fts_weight: fw,
+                update_count: 0,
+            }
         });
 
         let old_vector = state.vector_weight;
 
         // EMA update: nudge vector_weight toward 1.0 or 0.0 based on signal
         let adjustment = ALPHA * signal;
-        state.vector_weight = (state.vector_weight + adjustment).clamp(MIN_WEIGHT, 1.0 - MIN_WEIGHT);
+        state.vector_weight =
+            (state.vector_weight + adjustment).clamp(MIN_WEIGHT, 1.0 - MIN_WEIGHT);
         state.fts_weight = 1.0 - state.vector_weight;
         state.update_count += 1;
 

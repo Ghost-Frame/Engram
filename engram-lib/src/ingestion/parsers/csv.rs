@@ -115,9 +115,7 @@ pub fn parse(input: &str) -> Result<Vec<ParsedDocument>> {
         let content_text = row.get(content_idx).map(|s| s.as_str()).unwrap_or("");
 
         let title = match title_idx {
-            Some(idx) if row.get(idx).map(|s| !s.is_empty()).unwrap_or(false) => {
-                row[idx].clone()
-            }
+            Some(idx) if row.get(idx).map(|s| !s.is_empty()).unwrap_or(false) => row[idx].clone(),
             _ => format!("Row {}", row_num + 1),
         };
 
@@ -127,10 +125,7 @@ pub fn parse(input: &str) -> Result<Vec<ParsedDocument>> {
                 continue;
             }
             let value = row.get(col_idx).map(|s| s.as_str()).unwrap_or("");
-            metadata.insert(
-                header.clone(),
-                serde_json::Value::String(value.to_string()),
-            );
+            metadata.insert(header.clone(), serde_json::Value::String(value.to_string()));
         }
 
         docs.push(ParsedDocument {
@@ -147,7 +142,9 @@ pub fn parse(input: &str) -> Result<Vec<ParsedDocument>> {
 
 /// Detect if input has .csv extension.
 pub fn detect(extension: Option<&str>) -> bool {
-    extension.map(|e| e.to_lowercase() == ".csv").unwrap_or(false)
+    extension
+        .map(|e| e.to_lowercase() == ".csv")
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

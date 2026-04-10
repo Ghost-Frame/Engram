@@ -28,14 +28,11 @@ async fn review(
     Auth(auth): Auth,
     Json(body): Json<ReviewBody>,
 ) -> Result<Json<Value>, AppError> {
-    let id = body
-        .id
-        .or(body.memory_id)
-        .ok_or_else(|| {
-            AppError(engram_lib::EngError::InvalidInput(
-                "id (or memory_id) required, grade 1-4".into(),
-            ))
-        })?;
+    let id = body.id.or(body.memory_id).ok_or_else(|| {
+        AppError(engram_lib::EngError::InvalidInput(
+            "id (or memory_id) required, grade 1-4".into(),
+        ))
+    })?;
 
     let grade_num = body.grade.unwrap_or(3);
     if !(1..=4).contains(&grade_num) {
@@ -153,9 +150,9 @@ async fn get_state(
     Auth(auth): Auth,
     Query(params): Query<StateQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let id = params.id.ok_or_else(|| {
-        AppError(engram_lib::EngError::InvalidInput("id required".into()))
-    })?;
+    let id = params
+        .id
+        .ok_or_else(|| AppError(engram_lib::EngError::InvalidInput("id required".into())))?;
 
     let mut rows = state
         .db
@@ -193,10 +190,8 @@ async fn get_state(
     // Calculate retrievability
     let ref_str = last_review_at.as_deref().unwrap_or(&created_at);
     let elapsed = calculate_elapsed_days(ref_str);
-    let retrievability = stability
-        .map(|s| fsrs::retrievability(s as f32, elapsed));
-    let next_review = stability
-        .map(|s| fsrs::next_interval(s as f32, 0.9));
+    let retrievability = stability.map(|s| fsrs::retrievability(s as f32, elapsed));
+    let next_review = stability.map(|s| fsrs::next_interval(s as f32, 0.9));
 
     Ok(Json(json!({
         "id": id,

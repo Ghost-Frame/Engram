@@ -10,8 +10,8 @@ use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::services::loom::{
     cancel_run, complete_step, create_run, create_workflow, delete_workflow, fail_step, get_logs,
-    get_run, get_stats, get_steps, get_workflow, list_runs, list_workflows,
-    update_workflow, CreateRunRequest, CreateWorkflowRequest, UpdateWorkflowRequest,
+    get_run, get_stats, get_steps, get_workflow, list_runs, list_workflows, update_workflow,
+    CreateRunRequest, CreateWorkflowRequest, UpdateWorkflowRequest,
 };
 
 pub fn router() -> Router<AppState> {
@@ -26,7 +26,10 @@ pub fn router() -> Router<AppState> {
                 .patch(update_workflow_handler)
                 .delete(delete_workflow_handler),
         )
-        .route("/loom/runs", post(create_run_handler).get(list_runs_handler))
+        .route(
+            "/loom/runs",
+            post(create_run_handler).get(list_runs_handler),
+        )
         .route("/loom/runs/{id}", get(get_run_handler))
         .route("/loom/runs/{id}/cancel", post(cancel_run_handler))
         .route("/loom/runs/{id}/steps", get(get_steps_handler))

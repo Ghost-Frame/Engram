@@ -43,10 +43,12 @@ impl Database {
         info!("database connected: {}", db_path);
 
         let vector_index = if config.use_lance_index {
-            let lance_path = config
-                .lance_index_path
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(&config.data_dir).join("lance").to_string_lossy().into_owned());
+            let lance_path = config.lance_index_path.clone().unwrap_or_else(|| {
+                PathBuf::from(&config.data_dir)
+                    .join("lance")
+                    .to_string_lossy()
+                    .into_owned()
+            });
 
             match LanceIndex::open(&lance_path, config.vector_dimensions).await {
                 Ok(index) => {
@@ -54,7 +56,10 @@ impl Database {
                     Some(Arc::new(index) as Arc<dyn VectorIndex>)
                 }
                 Err(e) => {
-                    warn!("LanceDB vector index unavailable, falling back to libsql vectors: {}", e);
+                    warn!(
+                        "LanceDB vector index unavailable, falling back to libsql vectors: {}",
+                        e
+                    );
                     None
                 }
             }
@@ -62,7 +67,11 @@ impl Database {
             None
         };
 
-        Ok(Self { db, conn, vector_index })
+        Ok(Self {
+            db,
+            conn,
+            vector_index,
+        })
     }
 
     /// Connect to an in-memory database for testing.
@@ -75,7 +84,11 @@ impl Database {
 
         migrations::run_migrations(&conn).await?;
 
-        Ok(Self { db, conn, vector_index: None })
+        Ok(Self {
+            db,
+            conn,
+            vector_index: None,
+        })
     }
 
     pub fn connection(&self) -> &Connection {

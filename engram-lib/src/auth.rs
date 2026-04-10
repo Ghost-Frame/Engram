@@ -113,10 +113,7 @@ fn generate_key() -> (String, String, String) {
     // Take the first 32.
     let part_a = Uuid::new_v4().simple().to_string(); // 32 hex chars
     let part_b = Uuid::new_v4().simple().to_string(); // 32 hex chars
-    let raw_hex: String = format!("{}{}", part_a, part_b)
-        .chars()
-        .take(32)
-        .collect();
+    let raw_hex: String = format!("{}{}", part_a, part_b).chars().take(32).collect();
 
     let full_key = format!("engram_{}", raw_hex);
     // key_prefix = first 8 chars of the hex portion (chars 7..15 of full_key)
@@ -161,7 +158,13 @@ pub async fn create_key(
         .execute(
             "INSERT INTO api_keys (user_id, key_prefix, key_hash, name, scopes)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            libsql::params![user_id, key_prefix.clone(), key_hash.clone(), name, scopes_str],
+            libsql::params![
+                user_id,
+                key_prefix.clone(),
+                key_hash.clone(),
+                name,
+                scopes_str
+            ],
         )
         .await?;
 

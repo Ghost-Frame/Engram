@@ -70,10 +70,7 @@ pub async fn reconsolidate_memory(
         if contra_count > 0 {
             new_confidence = (new_confidence * 0.5).max(0.1);
             new_importance = (new_importance - 2).max(1);
-            reason.push_str(&format!(
-                "Superseded by {} newer memories. ",
-                contra_count
-            ));
+            reason.push_str(&format!("Superseded by {} newer memories. ", contra_count));
         }
     }
 
@@ -109,7 +106,8 @@ pub async fn reconsolidate_memory(
     // Parse created_at and compute age in days
     if !is_static && access_count < 3 {
         // Rough age check: if created_at is more than 30 days ago
-        if let Ok(created) = chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S") {
+        if let Ok(created) = chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S")
+        {
             let now = chrono::Utc::now().naive_utc();
             let age_days = (now - created).num_days();
             if age_days > 30 {
@@ -120,9 +118,7 @@ pub async fn reconsolidate_memory(
     }
 
     // Determine action
-    let action = if new_importance == importance
-        && (new_confidence - confidence).abs() < 0.05
-    {
+    let action = if new_importance == importance && (new_confidence - confidence).abs() < 0.05 {
         ReconsolidationAction::Unchanged
     } else if new_importance > importance || new_confidence > confidence {
         ReconsolidationAction::Strengthened
@@ -253,22 +249,30 @@ pub async fn run_reconsolidation_sweep(
 pub async fn record_recall_outcome(
     db: &Database,
     memory_id: i64,
+    user_id: i64,
     useful: bool,
 ) -> Result<()> {
     let conn = db.connection();
 
-    if useful {
+    let affected = if useful {
         conn.execute(
-            "UPDATE memories SET recall_hits = recall_hits + 1 WHERE id = ?1",
-            libsql::params![memory_id],
+            "UPDATE memories SET recall_hits = recall_hits + 1 WHERE id = ?1 AND user_id = ?2",
+            libsql::params![memory_id, user_id],
         )
-        .await?;
+        .await?
     } else {
         conn.execute(
-            "UPDATE memories SET recall_misses = recall_misses + 1 WHERE id = ?1",
-            libsql::params![memory_id],
+            "UPDATE memories SET recall_misses = recall_misses + 1 WHERE id = ?1 AND user_id = ?2",
+            libsql::params![memory_id, user_id],
         )
-        .await?;
+        .await?
+    };
+
+    if affected == 0 {
+        return Err(crate::EngError::NotFound(format!(
+            "memory {} not found or not owned by user",
+            memory_id
+        )));
     }
 
     Ok(())
@@ -285,9 +289,7 @@ mod tests {
         let new_importance = 5;
         let new_confidence: f64 = 0.9;
 
-        let action = if new_importance == importance
-            && (new_confidence - confidence).abs() < 0.05
-        {
+        let action = if new_importance == importance && (new_confidence - confidence).abs() < 0.05 {
             ReconsolidationAction::Unchanged
         } else {
             ReconsolidationAction::Weakened
@@ -303,9 +305,7 @@ mod tests {
         let new_importance = 6;
         let new_confidence: f64 = 0.9;
 
-        let action = if new_importance == importance
-            && (new_confidence - confidence).abs() < 0.05
-        {
+        let action = if new_importance == importance && (new_confidence - confidence).abs() < 0.05 {
             ReconsolidationAction::Unchanged
         } else if new_importance > importance || new_confidence > confidence {
             ReconsolidationAction::Strengthened

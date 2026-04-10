@@ -292,8 +292,16 @@ impl BrainManager {
         {
             let mut stdin_lock = self.stdin.lock().await;
             if let Some(ref mut stdin) = *stdin_lock {
-                let write_result = stdin.write_all(format!("{}
-", payload).as_bytes()).await;
+                let write_result = stdin
+                    .write_all(
+                        format!(
+                            "{}
+",
+                            payload
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
                 if let Err(e) = write_result {
                     let mut pending = self.pending.lock().await;
                     pending.remove(&this_seq);
@@ -312,12 +320,18 @@ impl BrainManager {
             Ok(Err(_)) => {
                 let mut pending = self.pending.lock().await;
                 pending.remove(&this_seq);
-                Err(EngError::Internal(format!("brain_channel_closed seq={}", this_seq)))
+                Err(EngError::Internal(format!(
+                    "brain_channel_closed seq={}",
+                    this_seq
+                )))
             }
             Err(_) => {
                 let mut pending = self.pending.lock().await;
                 pending.remove(&this_seq);
-                Err(EngError::Internal(format!("brain_timeout seq={}", this_seq)))
+                Err(EngError::Internal(format!(
+                    "brain_timeout seq={}",
+                    this_seq
+                )))
             }
         }
     }
@@ -550,7 +564,8 @@ impl BrainManager {
     }
 
     pub async fn dream_cycle(&self) -> Result<BrainResponse> {
-        self.send_command(BrainCommand::DreamCycle { seq: None }).await
+        self.send_command(BrainCommand::DreamCycle { seq: None })
+            .await
     }
 
     pub async fn feedback_signal(
@@ -634,9 +649,7 @@ pub async fn verify_memory_ownership(
         return Ok(true);
     }
 
-    let placeholders: Vec<String> = (1..=memory_ids.len())
-        .map(|i| format!("?{}", i))
-        .collect();
+    let placeholders: Vec<String> = (1..=memory_ids.len()).map(|i| format!("?{}", i)).collect();
     let sql = format!(
         "SELECT COUNT(*) FROM memories WHERE id IN ({}) AND user_id = ?{}",
         placeholders.join(","),
@@ -669,11 +682,7 @@ pub async fn verify_memory_ownership(
 #[allow(dead_code)]
 const ORACLE_SYSTEM_PROMPT: &str = "You are Eidolon, a living memory system. You answer questions \nusing ONLY the memories provided below. You are not a general AI assistant - you are a specific \nintelligence that knows what it has been taught and nothing else.";
 
-pub fn build_user_prompt(
-    query: &str,
-    result: &BrainQueryResult,
-    context: Option<&str>,
-) -> String {
+pub fn build_user_prompt(query: &str, result: &BrainQueryResult, context: Option<&str>) -> String {
     let mut lines = Vec::new();
 
     lines.push(format!("QUERY: {}", query));
@@ -684,7 +693,11 @@ pub fn build_user_prompt(
     } else {
         lines.push("MEMORIES (sorted by activation, highest first):".into());
         let mut sorted = result.activated.clone();
-        sorted.sort_by(|a, b| b.activation.partial_cmp(&a.activation).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.activation
+                .partial_cmp(&a.activation)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let top = sorted.into_iter().take(8);
         for mem in top {
             let age = mem.created_at.as_deref().unwrap_or("");
@@ -724,9 +737,10 @@ pub fn build_user_prompt(
         lines.push(String::new());
     }
 
-
-    lines.join("
-")
+    lines.join(
+        "
+",
+    )
 }
 
 pub fn extract_claims(text: &str) -> Vec<String> {
@@ -752,9 +766,9 @@ pub fn detect_hallucinations(answer: &str, result: &BrainQueryResult) -> Vec<Str
     let mut flags = Vec::new();
 
     let stopwords: HashSet<&str> = [
-        "this", "that", "with", "from", "have", "been", "were", "they",
-        "about", "their", "there", "which", "would", "could", "should",
-        "these", "those", "then", "than", "when", "what", "also", "into",
+        "this", "that", "with", "from", "have", "been", "were", "they", "about", "their", "there",
+        "which", "would", "could", "should", "these", "those", "then", "than", "when", "what",
+        "also", "into",
     ]
     .iter()
     .copied()
@@ -764,7 +778,13 @@ pub fn detect_hallucinations(answer: &str, result: &BrainQueryResult) -> Vec<Str
         let keywords: Vec<String> = claim
             .to_lowercase()
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == ' ' {
+                    c
+                } else {
+                    ' '
+                }
+            })
             .collect::<String>()
             .split_whitespace()
             .filter(|w| w.len() > 4 && !stopwords.contains(w))
@@ -775,7 +795,10 @@ pub fn detect_hallucinations(answer: &str, result: &BrainQueryResult) -> Vec<Str
             continue;
         }
 
-        let matched = keywords.iter().filter(|kw| memory_corpus.contains(kw.as_str())).count();
+        let matched = keywords
+            .iter()
+            .filter(|kw| memory_corpus.contains(kw.as_str()))
+            .count();
         let ratio = matched as f64 / keywords.len() as f64;
 
         if ratio < 0.25 {
@@ -867,10 +890,8 @@ mod tests {
             }],
             contradictions: vec![],
         };
-        let flags = detect_hallucinations(
-            "The database server runs PostgreSQL on port 5432.",
-            &result,
-        );
+        let flags =
+            detect_hallucinations("The database server runs PostgreSQL on port 5432.", &result);
         assert!(flags.is_empty(), "Expected no flags, got {:?}", flags);
     }
 
@@ -911,18 +932,16 @@ mod tests {
     #[test]
     fn test_format_fallback_with_memories() {
         let result = BrainQueryResult {
-            activated: vec![
-                BrainMemory {
-                    id: 42,
-                    content: "Engram stores memories in SQLite".into(),
-                    category: "docs".into(),
-                    source: "manual".into(),
-                    importance: 0.8,
-                    activation: 0.95,
-                    created_at: None,
-                    tags: None,
-                },
-            ],
+            activated: vec![BrainMemory {
+                id: 42,
+                content: "Engram stores memories in SQLite".into(),
+                category: "docs".into(),
+                source: "manual".into(),
+                importance: 0.8,
+                activation: 0.95,
+                created_at: None,
+                tags: None,
+            }],
             contradictions: vec![],
         };
         let oracle = format_fallback(&result);

@@ -42,9 +42,12 @@ async fn observations_handler(
     Query(params): Query<ObservationsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
-    let observations: Vec<engram_lib::intelligence::growth::GrowthObservation> = list_observations(&state.db, auth.user_id, limit).await?;
+    let observations: Vec<engram_lib::intelligence::growth::GrowthObservation> =
+        list_observations(&state.db, auth.user_id, limit).await?;
     let count = observations.len();
-    Ok(Json(json!({ "observations": observations, "count": count })))
+    Ok(Json(
+        json!({ "observations": observations, "count": count }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -58,5 +61,8 @@ async fn materialize_handler(
     Json(body): Json<MaterializeBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let new_id = materialize(&state.db, body.observation_id, auth.user_id).await?;
-    Ok((StatusCode::CREATED, Json(json!({ "ok": true, "memory_id": new_id }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "ok": true, "memory_id": new_id })),
+    ))
 }

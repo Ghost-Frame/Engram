@@ -50,14 +50,30 @@ fn generate_key() -> (String, String, String) {
 
 fn row_to_key(row: &libsql::Row) -> Result<ApiKey> {
     Ok(ApiKey {
-        id: row.get::<i64>(0).map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        user_id: row.get::<i64>(1).map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        key_prefix: row.get::<String>(2).map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        scopes: row.get::<String>(3).map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        rate_limit: row.get::<i64>(4).map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        agent_id: row.get::<Option<i64>>(5).map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        expires_at: row.get::<Option<String>>(6).map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        created_at: row.get::<String>(7).map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        id: row
+            .get::<i64>(0)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        user_id: row
+            .get::<i64>(1)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        key_prefix: row
+            .get::<String>(2)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        scopes: row
+            .get::<String>(3)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        rate_limit: row
+            .get::<i64>(4)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        agent_id: row
+            .get::<Option<i64>>(5)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        expires_at: row
+            .get::<Option<String>>(6)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        created_at: row
+            .get::<String>(7)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
     })
 }
 
@@ -80,7 +96,13 @@ pub async fn create_api_key(
         .execute(
             "INSERT INTO api_keys (user_id, key_prefix, key_hash, scopes, rate_limit)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            libsql::params![user_id, prefix.clone(), key_hash.clone(), scopes, rate_limit],
+            libsql::params![
+                user_id,
+                prefix.clone(),
+                key_hash.clone(),
+                scopes,
+                rate_limit
+            ],
         )
         .await?;
 
@@ -153,10 +175,7 @@ pub async fn list_api_keys(db: &Database, user_id: i64) -> Result<Vec<ApiKey>> {
 /// Delete an API key by id (no ownership check -- admin use only).
 pub async fn delete_api_key(db: &Database, id: i64) -> Result<()> {
     db.conn
-        .execute(
-            "DELETE FROM api_keys WHERE id = ?1",
-            libsql::params![id],
-        )
+        .execute("DELETE FROM api_keys WHERE id = ?1", libsql::params![id])
         .await?;
     Ok(())
 }

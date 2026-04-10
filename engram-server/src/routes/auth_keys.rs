@@ -123,8 +123,13 @@ async fn rotate_key(
 
     // Create new key with same properties
     let new_name = format!("{} (rotated)", old_key.name);
-    let (new_key, raw_key) =
-        auth::create_key(&state.db, auth_ctx.user_id, &new_name, old_key.scopes.clone()).await?;
+    let (new_key, raw_key) = auth::create_key(
+        &state.db,
+        auth_ctx.user_id,
+        &new_name,
+        old_key.scopes.clone(),
+    )
+    .await?;
 
     // Set 24-hour grace period on old key
     let grace_expiry = (chrono::Utc::now() + chrono::Duration::hours(24))

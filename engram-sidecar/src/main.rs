@@ -11,7 +11,10 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "engram-sidecar", about = "Engram memory sidecar for agent sessions")]
+#[command(
+    name = "engram-sidecar",
+    about = "Engram memory sidecar for agent sessions"
+)]
 struct Cli {
     #[arg(short, long, default_value = "7711", env = "ENGRAM_SIDECAR_PORT")]
     port: u16,
@@ -73,7 +76,9 @@ async fn main() {
             tracing::info!("local LLM client ready for sidecar");
             Some(Arc::new(client))
         } else {
-            tracing::warn!("local LLM unavailable for sidecar. Observations stored without enrichment.");
+            tracing::warn!(
+                "local LLM unavailable for sidecar. Observations stored without enrichment."
+            );
             None
         }
     };
@@ -102,7 +107,5 @@ async fn main() {
 
     tracing::info!(addr = %addr, "sidecar listening");
 
-    axum::serve(listener, app)
-        .await
-        .expect("server error");
+    axum::serve(listener, app).await.expect("server error");
 }

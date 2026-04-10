@@ -45,7 +45,13 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
 
     // Time context string
     let day_names = [
-        "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
     ];
     let day_name = day_names.get(dow as usize).unwrap_or(&"Unknown");
     let time_period = if hour < 12 {
@@ -58,10 +64,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
     let time_context = format!("{} {}", day_name, time_period);
 
     // Get temporal patterns for this time slot
-    let pattern_query = format!(
-        "%dow:{},hour:{}%",
-        dow, hour
-    );
+    let pattern_query = format!("%dow:{},hour:{}%", dow, hour);
     let mut pattern_rows = conn
         .query(
             "SELECT description FROM temporal_patterns \
@@ -106,7 +109,11 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
         let importance: i32 = row.get(3)?;
 
         if suggested_actions.is_empty() {
-            let truncated = if content.len() > 80 { &content[..80] } else { &content };
+            let truncated = if content.len() > 80 {
+                &content[..80]
+            } else {
+                &content
+            };
             suggested_actions.push(format!("Continue: {}", truncated));
         }
 
@@ -140,7 +147,11 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
         let importance: i32 = row.get(3)?;
 
         if suggested_actions.len() < 3 {
-            let truncated = if content.len() > 80 { &content[..80] } else { &content };
+            let truncated = if content.len() > 80 {
+                &content[..80]
+            } else {
+                &content
+            };
             suggested_actions.push(format!("Address issue: {}", truncated));
         }
 
@@ -185,7 +196,11 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
     }
 
     // Sort by composite score
-    proactive_memories.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    proactive_memories.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     proactive_memories.truncate(10);
 
     // Try to predict project from recent activity
@@ -243,12 +258,24 @@ mod tests {
     #[test]
     fn test_time_context_format() {
         let day_names = [
-            "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
         ];
         let dow = 3; // Wednesday
         let hour = 14;
         let day_name = day_names[dow];
-        let time_period = if hour < 12 { "morning" } else if hour < 17 { "afternoon" } else { "evening" };
+        let time_period = if hour < 12 {
+            "morning"
+        } else if hour < 17 {
+            "afternoon"
+        } else {
+            "evening"
+        };
         let context = format!("{} {}", day_name, time_period);
         assert_eq!(context, "Wednesday afternoon");
     }

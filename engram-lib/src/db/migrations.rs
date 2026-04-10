@@ -1,10 +1,14 @@
 use crate::Result;
 use libsql::Connection;
+use tracing::info;
 
+/// Migration versions - add new migrations here
 const MIGRATION_CREATE_SCHEMA: i64 = 1;
+const MIGRATION_ADD_MISSING_INDEXES: i64 = 2;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
+    // Create schema_version table if it doesn't exist
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -24,13 +28,98 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         None => 0,
     };
 
+    // Migration 1: Create initial schema
     if current_version < MIGRATION_CREATE_SCHEMA {
+        info!("Running migration 1: create_tables");
         super::schema::create_tables(conn).await?;
-        conn.execute(
-            "INSERT INTO schema_version (version, name) VALUES (?1, ?2)",
-            libsql::params![MIGRATION_CREATE_SCHEMA, "create_tables"],
-        )
-        .await?;
+        record_migration(conn, MIGRATION_CREATE_SCHEMA, "create_tables").await?;
+    }
+
+    // Migration 2: Add any missing indexes (idempotent - CREATE INDEX IF NOT EXISTS)
+    // This ensures existing DBs get new indexes added in schema.rs updates
+    if current_version < MIGRATION_ADD_MISSING_INDEXES {
+        info!("Running migration 2: add_missing_indexes");
+        run_migration_add_missing_indexes(conn).await?;
+        record_migration(conn, MIGRATION_ADD_MISSING_INDEXES, "add_missing_indexes").await?;
+    }
+
+    // Future migrations go here:
+    // if current_version < MIGRATION_XXX { ... }
+
+    Ok(())
+}
+
+/// Record that a migration has been applied
+async fn record_migration(conn: &Connection, version: i64, name: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO schema_version (version, name) VALUES (?1, ?2)",
+        libsql::params![version, name],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Migration 2: Ensure all indexes from schema.rs exist
+/// This is safe to run multiple times due to IF NOT EXISTS
+async fn run_migration_add_missing_indexes(conn: &Connection) -> Result<()> {
+    // Re-run index creation from schema to catch any new indexes
+    // All indexes use CREATE INDEX IF NOT EXISTS so this is idempotent
+    conn.execute_batch(
+        "
+        -- Memory indexes
+        CREATE INDEX IF NOT EXISTS idx_memories_root ON memories(root_memory_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_superseded ON memories(is_superseded) WHERE is_superseded = 1;
+        CREATE INDEX IF NOT EXISTS idx_memories_parent ON memories(parent_memory_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_latest ON memories(is_latest) WHERE is_latest = 1;
+        CREATE INDEX IF NOT EXISTS idx_memories_forgotten ON memories(is_forgotten);
+        CREATE INDEX IF NOT EXISTS idx_memories_archived ON memories(is_archived) WHERE is_archived = 1;
+        CREATE INDEX IF NOT EXISTS idx_memories_forget_after ON memories(forget_after) WHERE forget_after IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(tags) WHERE tags IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_memories_episode ON memories(episode_id) WHERE episode_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_memories_access ON memories(access_count DESC);
+        CREATE INDEX IF NOT EXISTS idx_memories_decay ON memories(decay_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
+        CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_space ON memories(space_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_fsrs_stability ON memories(fsrs_stability) WHERE fsrs_stability IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+        CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source);
+        CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+        CREATE INDEX IF NOT EXISTS idx_memories_user_latest ON memories(user_id, is_latest, is_forgotten);
+
+        -- Composite indexes for common query patterns
+        CREATE INDEX IF NOT EXISTS idx_memories_search_composite ON memories(user_id, is_forgotten, is_latest, category);
+        ",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Add a new column to a table if it doesn't exist
+/// SQLite doesn't have IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check first
+#[allow(dead_code)]
+async fn add_column_if_not_exists(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    column_def: &str,
+) -> Result<()> {
+    // Check if column exists
+    let check_sql = format!(
+        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1",
+        table
+    );
+    let mut rows = conn.query(&check_sql, libsql::params![column]).await?;
+    let exists: i64 = if let Some(row) = rows.next().await? {
+        row.get(0)?
+    } else {
+        0
+    };
+
+    if exists == 0 {
+        let alter_sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, column_def);
+        conn.execute(&alter_sql, ()).await?;
+        info!("Added column {}.{}", table, column);
     }
 
     Ok(())
@@ -49,10 +138,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_migrations_idempotent() -> Result<()> {
-        let db_path = std::env::temp_dir().join(format!(
-            "engram-migrations-{}.db",
-            uuid::Uuid::new_v4()
-        ));
+        let db_path =
+            std::env::temp_dir().join(format!("engram-migrations-{}.db", uuid::Uuid::new_v4()));
         let db = Builder::new_local(db_path.to_string_lossy().as_ref())
             .build()
             .await?;

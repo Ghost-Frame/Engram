@@ -38,7 +38,10 @@ pub fn checkpoint(db: &Database, input: CheckpointInput) -> ToolResult {
         )
         .map_err(|e| ToolError::DatabaseError(e.to_string()))?;
 
-    Ok(Output::ok_with_id(id, format!("Checkpoint '{}' created", name)))
+    Ok(Output::ok_with_id(
+        id,
+        format!("Checkpoint '{}' created", name),
+    ))
 }
 
 #[derive(Deserialize)]

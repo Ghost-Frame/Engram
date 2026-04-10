@@ -1,9 +1,7 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-static SENTENCE_BREAK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[.!?]\s").unwrap()
-});
+static SENTENCE_BREAK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[.!?]\s").unwrap());
 
 /// Split text into overlapping chunks of roughly `chunk_size` characters
 /// with `overlap` chars of context. Default max 6 chunks.
@@ -98,7 +96,11 @@ mod tests {
     fn long_text_splits_at_sentence_boundary() {
         let text = "First sentence here. Second sentence here. Third sentence here. Fourth sentence here. Fifth sentence here.";
         let chunks = chunk_text(text, 60, 10);
-        assert!(chunks.len() > 1, "expected multiple chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() > 1,
+            "expected multiple chunks, got {}",
+            chunks.len()
+        );
         for chunk in &chunks {
             assert!(chunk.len() <= 70, "chunk too long: {} chars", chunk.len());
         }

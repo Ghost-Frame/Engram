@@ -24,7 +24,6 @@ pub struct Config {
     pub embedding_chunk_max_chunks: usize,
     pub reranker_enabled: bool,
     pub reranker_top_k: usize,
-    pub reranker_pool_size: usize,
     pub data_dir: String,
     pub lance_index_path: Option<String>,
     pub vector_dimensions: usize,
@@ -51,7 +50,6 @@ impl Default for Config {
             embedding_chunk_max_chunks: 6,
             reranker_enabled: true,
             reranker_top_k: 12,
-            reranker_pool_size: 4,
             data_dir: "./data".to_string(),
             lance_index_path: None,
             vector_dimensions: 1024,
@@ -93,7 +91,9 @@ impl Config {
             config.embedding_model = v;
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_MAX_SEQ") {
-            if let Ok(n) = v.parse() { config.embedding_max_seq = n; }
+            if let Ok(n) = v.parse() {
+                config.embedding_max_seq = n;
+            }
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_MODEL_DIR") {
             config.embedding_model_dir = Some(v);
@@ -102,22 +102,27 @@ impl Config {
             config.embedding_onnx_file = v;
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_CHUNK_MAX_CHARS") {
-            if let Ok(n) = v.parse() { config.embedding_chunk_max_chars = n; }
+            if let Ok(n) = v.parse() {
+                config.embedding_chunk_max_chars = n;
+            }
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_CHUNK_OVERLAP") {
-            if let Ok(n) = v.parse() { config.embedding_chunk_overlap = n; }
+            if let Ok(n) = v.parse() {
+                config.embedding_chunk_overlap = n;
+            }
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_CHUNK_MAX_CHUNKS") {
-            if let Ok(n) = v.parse() { config.embedding_chunk_max_chunks = n; }
+            if let Ok(n) = v.parse() {
+                config.embedding_chunk_max_chunks = n;
+            }
         }
         if let Ok(v) = std::env::var("ENGRAM_CROSS_ENCODER") {
             config.reranker_enabled = v != "0";
         }
         if let Ok(v) = std::env::var("ENGRAM_RERANKER_TOP_K") {
-            if let Ok(n) = v.parse() { config.reranker_top_k = n; }
-        }
-        if let Ok(v) = std::env::var("ENGRAM_RERANKER_POOL_SIZE") {
-            if let Ok(n) = v.parse() { config.reranker_pool_size = n; }
+            if let Ok(n) = v.parse() {
+                config.reranker_top_k = n;
+            }
         }
         if let Ok(v) = std::env::var("ENGRAM_DATA_DIR") {
             config.data_dir = v;
@@ -126,7 +131,9 @@ impl Config {
             config.lance_index_path = Some(v);
         }
         if let Ok(v) = std::env::var("ENGRAM_VECTOR_DIMENSIONS") {
-            if let Ok(n) = v.parse() { config.vector_dimensions = n; }
+            if let Ok(n) = v.parse() {
+                config.vector_dimensions = n;
+            }
         }
         if let Ok(v) = std::env::var("ENGRAM_USE_LANCE_INDEX") {
             config.use_lance_index = v != "0" && !v.eq_ignore_ascii_case("false");
@@ -146,7 +153,6 @@ impl Config {
         if let Some(ref dir) = self.embedding_model_dir {
             std::path::PathBuf::from(dir)
         } else {
-
             dirs::data_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("engram")

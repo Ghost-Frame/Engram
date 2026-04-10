@@ -53,7 +53,10 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::onboard::router())
         .merge(routes::portability::router())
         // Rate limit runs after auth (inner layer), then auth sets context (outer layer)
-        .layer(axum_mw::from_fn_with_state(state.clone(), rate_limit_middleware))
+        .layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            rate_limit_middleware,
+        ))
         .layer(axum_mw::from_fn_with_state(state.clone(), auth_middleware));
 
     // GUI routes handle their own cookie-based auth
@@ -63,7 +66,10 @@ pub fn build_router(state: AppState) -> Router {
         .merge(api_routes)
         .merge(gui_routes)
         // GUI SPA middleware intercepts HTML requests to SPA routes before API handlers
-        .layer(axum_mw::from_fn_with_state(state.clone(), routes::gui::gui_spa_middleware))
+        .layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            routes::gui::gui_spa_middleware,
+        ))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

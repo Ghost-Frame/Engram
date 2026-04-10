@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use crate::db::Database;
 use crate::Result;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateCheckRequest {
@@ -20,11 +20,24 @@ pub struct GateCheckResult {
 }
 
 /// Check a command against blocked patterns and store the gate request in the DB.
-pub async fn check_command(db: &Database, req: &GateCheckRequest, user_id: i64) -> Result<GateCheckResult> {
+pub async fn check_command(
+    db: &Database,
+    req: &GateCheckRequest,
+    user_id: i64,
+) -> Result<GateCheckResult> {
     // 1. Check dangerous patterns
     if let Some(reason) = check_dangerous_patterns(&req.command) {
         // Store blocked request
-        let gate_id = store_gate_request(db, user_id, &req.agent, &req.command, req.context.as_deref(), "blocked", Some(&reason)).await?;
+        let gate_id = store_gate_request(
+            db,
+            user_id,
+            &req.agent,
+            &req.command,
+            req.context.as_deref(),
+            "blocked",
+            Some(&reason),
+        )
+        .await?;
         return Ok(GateCheckResult {
             allowed: false,
             reason: Some(reason),
@@ -38,40 +51,80 @@ pub async fn check_command(db: &Database, req: &GateCheckRequest, user_id: i64) 
     let has_secrets = has_secret_placeholders(&req.command);
 
     // 3. Store as pending gate request
-    let status = if has_secrets { "pending_secrets" } else { "allowed" };
-    let reason = if has_secrets { Some("Command contains secret placeholders -- resolve before execution") } else { None };
-    let gate_id = store_gate_request(db, user_id, &req.agent, &req.command, req.context.as_deref(), status, reason).await?;
+    let status = if has_secrets {
+        "pending_secrets"
+    } else {
+        "allowed"
+    };
+    let reason = if has_secrets {
+        Some("Command contains secret placeholders -- resolve before execution")
+    } else {
+        None
+    };
+    let gate_id = store_gate_request(
+        db,
+        user_id,
+        &req.agent,
+        &req.command,
+        req.context.as_deref(),
+        status,
+        reason,
+    )
+    .await?;
 
     Ok(GateCheckResult {
         allowed: !has_secrets,
         reason: reason.map(|r| r.to_string()),
-        resolved_command: if !has_secrets { Some(req.command.clone()) } else { None },
+        resolved_command: if !has_secrets {
+            Some(req.command.clone())
+        } else {
+            None
+        },
         gate_id,
         requires_approval: has_secrets,
     })
 }
 
 /// Update a gate request with approval decision.
-pub async fn respond_to_gate(db: &Database, gate_id: i64, approved: bool, reason: Option<&str>, user_id: i64) -> Result<Value> {
+pub async fn respond_to_gate(
+    db: &Database,
+    gate_id: i64,
+    approved: bool,
+    reason: Option<&str>,
+    user_id: i64,
+) -> Result<Value> {
     let status = if approved { "approved" } else { "denied" };
-    let reason_str = reason.unwrap_or(if approved { "approved by user" } else { "denied by user" });
+    let reason_str = reason.unwrap_or(if approved {
+        "approved by user"
+    } else {
+        "denied by user"
+    });
 
-    let rows_affected = db.conn.execute(
-        "UPDATE gate_requests SET status = ?1, reason = ?2, updated_at = datetime('now')
+    let rows_affected = db
+        .conn
+        .execute(
+            "UPDATE gate_requests SET status = ?1, reason = ?2, updated_at = datetime('now')
          WHERE id = ?3 AND user_id = ?4",
-        libsql::params![status.to_string(), reason_str.to_string(), gate_id, user_id],
-    ).await?;
+            libsql::params![status.to_string(), reason_str.to_string(), gate_id, user_id],
+        )
+        .await?;
 
     if rows_affected == 0 {
-        return Err(crate::EngError::NotFound(format!("gate request {} not found", gate_id)));
+        return Err(crate::EngError::NotFound(format!(
+            "gate request {} not found",
+            gate_id
+        )));
     }
 
     // Return the (possibly resolved) command if approved
     if approved {
-        let mut rows = db.conn.query(
-            "SELECT command FROM gate_requests WHERE id = ?1 AND user_id = ?2",
-            libsql::params![gate_id, user_id],
-        ).await?;
+        let mut rows = db
+            .conn
+            .query(
+                "SELECT command FROM gate_requests WHERE id = ?1 AND user_id = ?2",
+                libsql::params![gate_id, user_id],
+            )
+            .await?;
         if let Some(row) = rows.next().await? {
             let command: String = row.get(0)?;
             return Ok(serde_json::json!({ "ok": true, "approved": true, "command": command }));
@@ -82,7 +135,13 @@ pub async fn respond_to_gate(db: &Database, gate_id: i64, approved: bool, reason
 }
 
 /// Mark a gate request as complete and scrub sensitive data from output.
-pub async fn complete_gate(db: &Database, gate_id: i64, output: &str, known_secrets: &[String], user_id: i64) -> Result<()> {
+pub async fn complete_gate(
+    db: &Database,
+    gate_id: i64,
+    output: &str,
+    known_secrets: &[String],
+    user_id: i64,
+) -> Result<()> {
     let scrubbed = scrub_output(output, known_secrets);
 
     let rows_affected = db.conn.execute(
@@ -92,7 +151,10 @@ pub async fn complete_gate(db: &Database, gate_id: i64, output: &str, known_secr
     ).await?;
 
     if rows_affected == 0 {
-        return Err(crate::EngError::NotFound(format!("gate request {} not found", gate_id)));
+        return Err(crate::EngError::NotFound(format!(
+            "gate request {} not found",
+            gate_id
+        )));
     }
 
     Ok(())
@@ -109,21 +171,26 @@ async fn store_gate_request(
     status: &str,
     reason: Option<&str>,
 ) -> Result<i64> {
-    db.conn.execute(
-        "INSERT INTO gate_requests (user_id, agent, command, context, status, reason)
+    db.conn
+        .execute(
+            "INSERT INTO gate_requests (user_id, agent, command, context, status, reason)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        libsql::params![
-            user_id,
-            agent.to_string(),
-            command.to_string(),
-            context.map(|s| s.to_string()),
-            status.to_string(),
-            reason.map(|s| s.to_string()),
-        ],
-    ).await?;
+            libsql::params![
+                user_id,
+                agent.to_string(),
+                command.to_string(),
+                context.map(|s| s.to_string()),
+                status.to_string(),
+                reason.map(|s| s.to_string()),
+            ],
+        )
+        .await?;
 
     let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-    let row = rows.next().await?.ok_or_else(|| crate::EngError::Internal("no rowid".into()))?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| crate::EngError::Internal("no rowid".into()))?;
     Ok(row.get(0)?)
 }
 
@@ -136,8 +203,10 @@ pub fn check_dangerous_patterns(command: &str) -> Option<String> {
     if cmd_lower.contains("rm -rf /") {
         let after_parts: Vec<&str> = cmd_lower.splitn(2, "rm -rf /").collect();
         let path_start = after_parts.get(1).unwrap_or(&"");
-        let is_tmp_safe = path_start.starts_with("tmp ") || path_start.starts_with("tmp/")
-            || *path_start == "tmp" || path_start.starts_with("tmp\n");
+        let is_tmp_safe = path_start.starts_with("tmp ")
+            || path_start.starts_with("tmp/")
+            || *path_start == "tmp"
+            || path_start.starts_with("tmp\n");
         if !is_tmp_safe {
             return Some("Destructive rm -rf on critical path -- not allowed".to_string());
         }
@@ -150,7 +219,8 @@ pub fn check_dangerous_patterns(command: &str) -> Option<String> {
     }
 
     // Force push to protected branches
-    if cmd_lower.contains("git push") && cmd_lower.contains("--force")
+    if cmd_lower.contains("git push")
+        && cmd_lower.contains("--force")
         && (cmd_lower.contains("main") || cmd_lower.contains("master"))
     {
         return Some("Force push to main/master branch blocked".to_string());
@@ -177,14 +247,16 @@ pub fn check_dangerous_patterns(command: &str) -> Option<String> {
     }
 
     // base64 decode piped to shell
-    let has_base64_decode = cmd_lower.contains("base64 -d")
-        || cmd_lower.contains("base64 --decode");
+    let has_base64_decode =
+        cmd_lower.contains("base64 -d") || cmd_lower.contains("base64 --decode");
     let has_shell_pipe = cmd_lower.contains("| sh")
         || cmd_lower.contains("| bash")
         || cmd_lower.contains("|sh")
         || cmd_lower.contains("|bash");
     if has_base64_decode && has_shell_pipe {
-        return Some("base64 decode piped to shell blocked -- potential command obfuscation".to_string());
+        return Some(
+            "base64 decode piped to shell blocked -- potential command obfuscation".to_string(),
+        );
     }
 
     // eval with args
@@ -195,11 +267,17 @@ pub fn check_dangerous_patterns(command: &str) -> Option<String> {
         }
         // Inline interpreter execution
         let basename = token.rsplit('/').next().unwrap_or(token);
-        let is_interpreter = matches!(basename, "python" | "python3" | "perl" | "ruby" | "node" | "nodejs");
+        let is_interpreter = matches!(
+            basename,
+            "python" | "python3" | "perl" | "ruby" | "node" | "nodejs"
+        );
         if is_interpreter {
             if let Some(flag) = tokens.get(i + 1) {
                 if *flag == "-c" || *flag == "-e" {
-                    return Some(format!("Inline code execution via {} {} blocked -- use a script file instead", token, flag));
+                    return Some(format!(
+                        "Inline code execution via {} {} blocked -- use a script file instead",
+                        token, flag
+                    ));
                 }
             }
         }

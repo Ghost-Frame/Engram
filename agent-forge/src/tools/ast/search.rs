@@ -97,7 +97,10 @@ fn search_in_tree(
         let kind = node.kind();
 
         let symbol_kind = match kind {
-            "function_item" | "function_definition" | "function_declaration" | "method_definition" => Some("function"),
+            "function_item"
+            | "function_definition"
+            | "function_declaration"
+            | "method_definition" => Some("function"),
             "struct_item" | "class_definition" | "class_declaration" => Some("class"),
             "impl_item" => Some("impl"),
             "trait_item" | "interface_declaration" => Some("trait"),

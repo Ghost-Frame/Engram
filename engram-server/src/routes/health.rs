@@ -1,10 +1,5 @@
 use axum::{
-    body::Body,
-    extract::State,
-    http::header,
-    response::Response,
-    routing::get,
-    Json, Router,
+    body::Body, extract::State, http::header, response::Response, routing::get, Json, Router,
 };
 use serde_json::{json, Value};
 
@@ -90,16 +85,31 @@ async fn get_metrics(State(state): State<AppState>) -> Response<Body> {
     if let Ok(stats) = jobs::get_job_stats(&state.db.conn).await {
         lines.push("# HELP engram_jobs_total Jobs by status".to_string());
         lines.push("# TYPE engram_jobs_total gauge".to_string());
-        lines.push(format!("engram_jobs_total{{status=\"pending\"}} {}", stats.pending));
-        lines.push(format!("engram_jobs_total{{status=\"running\"}} {}", stats.running));
-        lines.push(format!("engram_jobs_total{{status=\"completed\"}} {}", stats.completed));
-        lines.push(format!("engram_jobs_total{{status=\"failed\"}} {}", stats.failed));
+        lines.push(format!(
+            "engram_jobs_total{{status=\"pending\"}} {}",
+            stats.pending
+        ));
+        lines.push(format!(
+            "engram_jobs_total{{status=\"running\"}} {}",
+            stats.running
+        ));
+        lines.push(format!(
+            "engram_jobs_total{{status=\"completed\"}} {}",
+            stats.completed
+        ));
+        lines.push(format!(
+            "engram_jobs_total{{status=\"failed\"}} {}",
+            stats.failed
+        ));
         lines.push(String::new());
     }
 
     let body = lines.join("\n");
     Response::builder()
-        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")
+        .header(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )
         .body(Body::from(body))
         .unwrap()
 }

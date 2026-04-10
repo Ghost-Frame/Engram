@@ -60,7 +60,9 @@ async fn list_for_memory(
     }
 
     let artifacts = artifacts::get_artifacts_by_memory(&state.db, memory_id).await?;
-    Ok(Json(json!({ "artifacts": artifacts, "memory_id": memory_id })))
+    Ok(Json(
+        json!({ "artifacts": artifacts, "memory_id": memory_id }),
+    ))
 }
 
 async fn download_artifact(
@@ -84,10 +86,7 @@ async fn download_artifact(
             .await
             .map_err(engram_lib::EngError::Database)?;
 
-        let row = rows
-            .next()
-            .await
-            .map_err(engram_lib::EngError::Database)?;
+        let row = rows.next().await.map_err(engram_lib::EngError::Database)?;
 
         match row {
             Some(r) => {
@@ -117,10 +116,7 @@ async fn download_artifact(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, artifact.mime_type.clone()),
-            (
-                header::CONTENT_LENGTH,
-                data.len().to_string(),
-            ),
+            (header::CONTENT_LENGTH, data.len().to_string()),
             (
                 header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"{}\"", artifact.filename),

@@ -24,10 +24,7 @@ pub async fn build_graph(db: &Database) -> Result<(Vec<GraphNode>, Vec<GraphEdge
 /// Phase 2: Build nodes from memory metadata
 /// Phase 3: Batch fetch links as edges
 /// Phase 4: Prune orphan memory nodes (no edges)
-pub async fn build_graph_data(
-    db: &Database,
-    opts: &GraphBuildOptions,
-) -> Result<GraphBuildResult> {
+pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result<GraphBuildResult> {
     let conn = db.connection();
     let limit = opts.limit.unwrap_or(500) as i64;
     let user_id = opts.user_id;
@@ -55,7 +52,13 @@ pub async fn build_graph_data(
         let pagerank: f64 = row.get::<f64>(4).unwrap_or(0.0);
 
         let label = if content.len() > 60 {
-            format!("{}...", &content[..content.char_indices().nth(60).map_or(content.len(), |(i, _)| i)])
+            format!(
+                "{}...",
+                &content[..content
+                    .char_indices()
+                    .nth(60)
+                    .map_or(content.len(), |(i, _)| i)]
+            )
         } else {
             content
         };
@@ -198,7 +201,10 @@ mod tests {
         let label = if long_content.len() > 60 {
             format!(
                 "{}...",
-                &long_content[..long_content.char_indices().nth(60).map_or(long_content.len(), |(i, _)| i)]
+                &long_content[..long_content
+                    .char_indices()
+                    .nth(60)
+                    .map_or(long_content.len(), |(i, _)| i)]
             )
         } else {
             long_content.clone()

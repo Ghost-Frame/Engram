@@ -20,10 +20,7 @@ pub struct Contradiction {
 /// Extracts SVO triples from the memory's structured_facts and compares
 /// against existing facts with the same subject+predicate. If the object
 /// differs, flags as a contradiction.
-pub async fn detect_contradictions(
-    db: &Database,
-    memory: &Memory,
-) -> Result<Vec<Contradiction>> {
+pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec<Contradiction>> {
     let conn = db.connection();
     let mut contradictions = Vec::new();
 
@@ -58,12 +55,7 @@ pub async fn detect_contradictions(
                    AND sf.memory_id != ?3 \
                    AND sf.id != ?4 \
                  ORDER BY sf.confidence DESC",
-                libsql::params![
-                    subject.clone(),
-                    predicate.clone(),
-                    memory.id,
-                    *new_fact_id
-                ],
+                libsql::params![subject.clone(), predicate.clone(), memory.id, *new_fact_id],
             )
             .await?;
 

@@ -69,8 +69,14 @@ pub fn router() -> Router<AppState> {
         .route("/backup/verify", post(backup_verify_handler))
         .route("/checkpoint", post(checkpoint_handler))
         // Graph operations
-        .route("/admin/detect-communities", post(detect_communities_handler))
-        .route("/admin/rebuild-cooccurrences", post(rebuild_cooccurrences_handler))
+        .route(
+            "/admin/detect-communities",
+            post(detect_communities_handler),
+        )
+        .route(
+            "/admin/rebuild-cooccurrences",
+            post(rebuild_cooccurrences_handler),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -98,9 +104,7 @@ async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-async fn bootstrap(
-    State(state): State<AppState>,
-) -> Result<(StatusCode, Json<Value>), AppError> {
+async fn bootstrap(State(state): State<AppState>) -> Result<(StatusCode, Json<Value>), AppError> {
     let existing_count =
         count_rows(&state, "SELECT COUNT(*) FROM api_keys WHERE is_active = 1").await?;
 
@@ -259,7 +263,9 @@ async fn refresh_cache(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    Ok(Json(json!({ "status": "ok", "message": "cache refresh signaled" })))
+    Ok(Json(
+        json!({ "status": "ok", "message": "cache refresh signaled" }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -276,18 +282,16 @@ async fn backfill_facts(
     let mut facts_created = 0i32;
     for (memory_id, content, user_id) in memories {
         if let Ok(stats) = engram_lib::intelligence::extraction::fast_extract_facts(
-            &state.db,
-            &content,
-            memory_id,
-            user_id,
-            None,
+            &state.db, &content, memory_id, user_id, None,
         )
         .await
         {
             facts_created += stats.facts;
         }
     }
-    Ok(Json(json!({ "processed": processed, "facts_created": facts_created })))
+    Ok(Json(
+        json!({ "processed": processed, "facts_created": facts_created }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -419,12 +423,9 @@ async fn post_maintenance_handler(
     Json(body): Json<MaintenanceBody>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let result = engram_lib::admin::set_maintenance(
-        &state.db,
-        body.enabled,
-        body.message.as_deref(),
-    )
-    .await?;
+    let result =
+        engram_lib::admin::set_maintenance(&state.db, body.enabled, body.message.as_deref())
+            .await?;
     to_json(result)
 }
 
@@ -589,10 +590,7 @@ async fn backup_handler(
     Auth(auth): Auth,
 ) -> Result<impl IntoResponse, AppError> {
     require_admin(&auth)?;
-    let tmp = format!(
-        "/tmp/engram-backup-{}.db",
-        chrono::Utc::now().timestamp()
-    );
+    let tmp = format!("/tmp/engram-backup-{}.db", chrono::Utc::now().timestamp());
     state
         .db
         .conn
@@ -605,10 +603,7 @@ async fn backup_handler(
     let _ = tokio::fs::remove_file(&tmp).await;
     Ok((
         [
-            (
-                axum::http::header::CONTENT_TYPE,
-                "application/octet-stream",
-            ),
+            (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
             (
                 axum::http::header::CONTENT_DISPOSITION,
                 "attachment; filename=\"engram-backup.db\"",
@@ -648,8 +643,12 @@ async fn reset_user(
     ];
     let mut total = 0i64;
     for sql in tables {
-        total +=
-            state.db.conn.execute(sql, libsql::params![uid]).await.map_err(engram_lib::EngError::Database)? as i64;
+        total += state
+            .db
+            .conn
+            .execute(sql, libsql::params![uid])
+            .await
+            .map_err(engram_lib::EngError::Database)? as i64;
     }
     Ok(Json(json!({ "deleted_rows": total, "user_id": uid })))
 }
@@ -675,4 +674,3 @@ async fn rebuild_cooccurrences_handler(
     let pairs = cooccurrence::rebuild_cooccurrences(&state.db, auth.user_id).await?;
     Ok(Json(json!({ "rebuilt_pairs": pairs })))
 }
-

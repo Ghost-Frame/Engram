@@ -2,16 +2,19 @@
 //!
 //! Ports: pack/index.ts
 
-use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::Result;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
-pub enum PackFormat { #[default]
-Text, Json, Xml }
-
+pub enum PackFormat {
+    #[default]
+    Text,
+    Json,
+    Xml,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PackCandidate {
@@ -32,7 +35,13 @@ pub struct PackResult {
     pub utilization: String,
 }
 
-pub async fn pack_memories(db: &Database, _context: &str, token_budget: usize, format: PackFormat, user_id: i64) -> Result<PackResult> {
+pub async fn pack_memories(
+    db: &Database,
+    _context: &str,
+    token_budget: usize,
+    format: PackFormat,
+    user_id: i64,
+) -> Result<PackResult> {
     let mut candidates: Vec<PackCandidate> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -42,13 +51,21 @@ pub async fn pack_memories(db: &Database, _context: &str, token_budget: usize, f
         libsql::params![user_id],
     ).await?;
     while let Some(row) = rows.next().await? {
-        let id: i64 = row.get(0).map_err(|e| crate::EngError::Internal(e.to_string()))?;
+        let id: i64 = row
+            .get(0)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?;
         if seen.insert(id) {
             candidates.push(PackCandidate {
                 id,
-                content: row.get(1).map_err(|e| crate::EngError::Internal(e.to_string()))?,
-                category: row.get(2).map_err(|e| crate::EngError::Internal(e.to_string()))?,
-                importance: row.get(3).map_err(|e| crate::EngError::Internal(e.to_string()))?,
+                content: row
+                    .get(1)
+                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+                category: row
+                    .get(2)
+                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+                importance: row
+                    .get(3)
+                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
                 score: 100.0,
                 source: "static".into(),
             });
@@ -61,36 +78,56 @@ pub async fn pack_memories(db: &Database, _context: &str, token_budget: usize, f
         libsql::params![user_id],
     ).await?;
     while let Some(row) = rows.next().await? {
-        let id: i64 = row.get(0).map_err(|e| crate::EngError::Internal(e.to_string()))?;
+        let id: i64 = row
+            .get(0)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?;
         if seen.insert(id) {
             let ds: f64 = row.get(4).unwrap_or(5.0);
             candidates.push(PackCandidate {
                 id,
-                content: row.get(1).map_err(|e| crate::EngError::Internal(e.to_string()))?,
-                category: row.get(2).map_err(|e| crate::EngError::Internal(e.to_string()))?,
-                importance: row.get(3).map_err(|e| crate::EngError::Internal(e.to_string()))?,
+                content: row
+                    .get(1)
+                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+                category: row
+                    .get(2)
+                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+                importance: row
+                    .get(3)
+                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
                 score: ds * 2.0,
                 source: "important".into(),
             });
         }
     }
 
-    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut packed: Vec<&PackCandidate> = Vec::new();
     let mut tokens_used = 0usize;
     for c in &candidates {
         let mem_tokens = c.content.len() / 4 + 10;
-        if tokens_used + mem_tokens > token_budget { continue; }
+        if tokens_used + mem_tokens > token_budget {
+            continue;
+        }
         packed.push(c);
         tokens_used += mem_tokens;
     }
 
     let output = match format {
         PackFormat::Xml => {
-            let parts: Vec<String> = packed.iter().map(|p| {
-                format!("<memory id=\"{}\" category=\"{}\" importance=\"{}\">\n{}\n</memory>", p.id, p.category, p.importance, p.content)
-            }).collect();
+            let parts: Vec<String> = packed
+                .iter()
+                .map(|p| {
+                    format!(
+                        "<memory id=\"{}\" category=\"{}\" importance=\"{}\">\n{}\n</memory>",
+                        p.id, p.category, p.importance, p.content
+                    )
+                })
+                .collect();
             parts.join("\n")
         }
         PackFormat::Json => {
@@ -100,12 +137,19 @@ pub async fn pack_memories(db: &Database, _context: &str, token_budget: usize, f
             serde_json::to_string(&items).unwrap_or_default()
         }
         PackFormat::Text => {
-            let parts: Vec<String> = packed.iter().map(|p| format!("[{}] {}", p.category, p.content)).collect();
+            let parts: Vec<String> = packed
+                .iter()
+                .map(|p| format!("[{}] {}", p.category, p.content))
+                .collect();
             parts.join("\n\n")
         }
     };
 
-    let util = if token_budget > 0 { tokens_used * 100 / token_budget } else { 0 };
+    let util = if token_budget > 0 {
+        tokens_used * 100 / token_budget
+    } else {
+        0
+    };
     Ok(PackResult {
         packed: output,
         memories_included: packed.len(),

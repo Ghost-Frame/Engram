@@ -16,7 +16,6 @@ pub enum IngestMode {
     Raw,
 }
 
-
 impl std::fmt::Display for IngestMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -88,8 +87,7 @@ impl std::str::FromStr for SupportedFormat {
 
 /// Supported file extensions for ingestion.
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
-    ".md", ".txt", ".text", ".html", ".htm", ".pdf",
-    ".docx", ".csv", ".jsonl", ".json", ".zip",
+    ".md", ".txt", ".text", ".html", ".htm", ".pdf", ".docx", ".csv", ".jsonl", ".json", ".zip",
 ];
 
 // -- Core document types --
@@ -116,8 +114,7 @@ pub struct Chunk {
 
 // -- Options and results --
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChunkerOptions {
     /// Maximum characters per chunk (default: 3000)
     pub max_chunk_size: Option<usize>,
@@ -126,7 +123,6 @@ pub struct ChunkerOptions {
     /// Respect heading/paragraph/sentence boundaries (default: true)
     pub respect_structure: Option<bool>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessOptions {

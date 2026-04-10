@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use engram_lib::grounding::{GroundingClient, SessionConfig, BackendType};
+use engram_lib::grounding::{BackendType, GroundingClient, SessionConfig};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
@@ -20,7 +20,10 @@ fn client() -> &'static RwLock<GroundingClient> {
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/grounding/sessions", post(create_session).get(list_sessions))
+        .route(
+            "/grounding/sessions",
+            post(create_session).get(list_sessions),
+        )
         .route(
             "/grounding/sessions/{id}",
             get(get_session).delete(destroy_session),
@@ -71,9 +74,7 @@ async fn create_session(
     ))
 }
 
-async fn list_sessions(
-    Auth(_auth): Auth,
-) -> Result<Json<Value>, AppError> {
+async fn list_sessions(Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
     let guard = client().read().await;
     let sessions = guard.list_sessions();
     let session_values: Vec<Value> = sessions
@@ -84,10 +85,7 @@ async fn list_sessions(
     Ok(Json(json!({ "sessions": session_values, "count": count })))
 }
 
-async fn get_session(
-    Auth(_auth): Auth,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, AppError> {
+async fn get_session(Auth(_auth): Auth, Path(id): Path<String>) -> Result<Json<Value>, AppError> {
     let guard = client().read().await;
     let sessions = guard.list_sessions();
     let session = sessions
@@ -162,9 +160,10 @@ async fn get_quality(
     let qm = engram_lib::grounding::ToolQualityManager::new(None);
 
     if degraded_only {
-        let tools = qm.get_degraded_tools(&state.db.conn).await.map_err(|e| {
-            AppError(engram_lib::EngError::Internal(e.to_string()))
-        })?;
+        let tools = qm
+            .get_degraded_tools(&state.db.conn)
+            .await
+            .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?;
         let records: Vec<Value> = tools
             .iter()
             .map(|(name, score)| json!({ "tool_name": name, "quality_score": score }))
@@ -187,9 +186,7 @@ struct QualityQuery {
     pub degraded: Option<String>,
 }
 
-async fn list_providers(
-    Auth(_auth): Auth,
-) -> Result<Json<Value>, AppError> {
+async fn list_providers(Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
     // Currently only shell provider is registered
     Ok(Json(json!({
         "providers": [{ "name": "shell", "type": "shell", "status": "connected" }],

@@ -89,7 +89,10 @@ async fn list_events_handler(
 
     // Filter by since_id if provided
     let events = if let Some(since_id) = params.since_id {
-        events.into_iter().filter(|e| e.id > since_id).collect::<Vec<_>>()
+        events
+            .into_iter()
+            .filter(|e| e.id > since_id)
+            .collect::<Vec<_>>()
     } else {
         events
     };

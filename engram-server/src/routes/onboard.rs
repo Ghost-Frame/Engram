@@ -1,9 +1,9 @@
-use axum::{
-    extract::State,
-    routing::post,
-    Json, Router,
+use axum::{extract::State, routing::post, Json, Router};
+use engram_lib::memory::{
+    self,
+    search::hybrid_search,
+    types::{SearchRequest, StoreRequest},
 };
-use engram_lib::memory::{self, search::hybrid_search, types::{SearchRequest, StoreRequest}};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -15,10 +15,7 @@ pub fn router() -> Router<AppState> {
         .route("/fetch", post(fetch_url))
 }
 
-async fn onboard(
-    State(state): State<AppState>,
-    Auth(auth): Auth,
-) -> Result<Json<Value>, AppError> {
+async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
     let mut checks: Vec<(&str, bool, String)> = Vec::new();
 
     // Test store
@@ -42,7 +39,11 @@ async fn onboard(
 
     let test_id = match store_result {
         Ok(result) => {
-            checks.push(("store", true, format!("Created test memory id={}", result.id)));
+            checks.push((
+                "store",
+                true,
+                format!("Created test memory id={}", result.id),
+            ));
             Some(result.id)
         }
         Err(e) => {
@@ -82,7 +83,11 @@ async fn onboard(
         .await;
         match search_result {
             Ok(results) => {
-                checks.push(("search", true, format!("Search returned {} results", results.len())));
+                checks.push((
+                    "search",
+                    true,
+                    format!("Search returned {} results", results.len()),
+                ));
             }
             Err(e) => {
                 checks.push(("search", false, e.to_string()));
@@ -99,7 +104,16 @@ async fn onboard(
     }
 
     // Check embedding
-    checks.push(("embedding", state.embedder.is_some(), if state.embedder.is_some() { "Embedding provider ready" } else { "No embedding provider configured" }.into()));
+    checks.push((
+        "embedding",
+        state.embedder.is_some(),
+        if state.embedder.is_some() {
+            "Embedding provider ready"
+        } else {
+            "No embedding provider configured"
+        }
+        .into(),
+    ));
 
     // Check spaces
     let space_count = {
@@ -117,13 +131,20 @@ async fn onboard(
             _ => 0,
         }
     };
-    checks.push(("spaces", space_count > 0, format!("{} space(s) configured", space_count)));
+    checks.push((
+        "spaces",
+        space_count > 0,
+        format!("{} space(s) configured", space_count),
+    ));
 
     let all_passed = checks.iter().all(|(_, passed, _)| *passed);
     let checks_json: Value = checks
         .iter()
         .map(|(name, passed, detail)| {
-            (name.to_string(), json!({ "passed": passed, "detail": detail }))
+            (
+                name.to_string(),
+                json!({ "passed": passed, "detail": detail }),
+            )
         })
         .collect::<serde_json::Map<String, Value>>()
         .into();
@@ -162,9 +183,8 @@ async fn fetch_url(
         )));
     }
 
-    let parsed = url::Url::parse(&body.url).map_err(|_| {
-        AppError(engram_lib::EngError::InvalidInput("Invalid URL".into()))
-    })?;
+    let parsed = url::Url::parse(&body.url)
+        .map_err(|_| AppError(engram_lib::EngError::InvalidInput("Invalid URL".into())))?;
 
     // Only allow http/https
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
@@ -210,11 +230,12 @@ async fn fetch_url(
         .build()
         .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?;
 
-    let resp = client
-        .get(&body.url)
-        .send()
-        .await
-        .map_err(|e| AppError(engram_lib::EngError::Internal(format!("Fetch error: {}", e))))?;
+    let resp = client.get(&body.url).send().await.map_err(|e| {
+        AppError(engram_lib::EngError::Internal(format!(
+            "Fetch error: {}",
+            e
+        )))
+    })?;
 
     if !resp.status().is_success() {
         return Err(AppError(engram_lib::EngError::Internal(format!(
@@ -271,7 +292,10 @@ async fn fetch_url(
             source: "fetch".into(),
             importance: 3,
             user_id: Some(auth.user_id),
-            tags: Some(vec![format!("url:{}", &body.url[..body.url.len().min(200)])]),
+            tags: Some(vec![format!(
+                "url:{}",
+                &body.url[..body.url.len().min(200)]
+            )]),
             embedding: None,
             session_id: None,
             is_static: None,
@@ -280,7 +304,10 @@ async fn fetch_url(
         };
 
         if let Some(ref embedder) = state.embedder {
-            if let Ok(emb) = embedder.embed(&store_content[..store_content.len().min(8000)]).await {
+            if let Ok(emb) = embedder
+                .embed(&store_content[..store_content.len().min(8000)])
+                .await
+            {
                 req.embedding = Some(emb);
             }
         }

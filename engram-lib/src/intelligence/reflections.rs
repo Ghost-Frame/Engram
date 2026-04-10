@@ -33,7 +33,11 @@ pub async fn create_reflection(
     ).await?;
 
     let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = if let Some(row) = rows.next().await? { row.get(0)? } else { 0 };
+    let id: i64 = if let Some(row) = rows.next().await? {
+        row.get(0)?
+    } else {
+        0
+    };
 
     Ok(Reflection {
         id,
@@ -47,7 +51,11 @@ pub async fn create_reflection(
 }
 
 /// List reflections.
-pub async fn list_reflections(db: &Database, user_id: i64, limit: usize) -> Result<Vec<Reflection>> {
+pub async fn list_reflections(
+    db: &Database,
+    user_id: i64,
+    limit: usize,
+) -> Result<Vec<Reflection>> {
     let conn = db.connection();
     let mut rows = conn.query(
         "SELECT id, content, reflection_type, source_memory_ids, confidence, user_id, created_at \

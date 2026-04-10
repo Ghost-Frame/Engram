@@ -48,11 +48,7 @@ pub async fn list_observations(
     Ok(observations)
 }
 
-pub async fn materialize(
-    db: &Database,
-    observation_id: i64,
-    user_id: i64,
-) -> Result<i64> {
+pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Result<i64> {
     let conn = db.connection();
     let mut rows = conn
         .query(
@@ -61,10 +57,9 @@ pub async fn materialize(
         )
         .await?;
 
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| crate::EngError::NotFound(format!("growth observation {} not found", observation_id)))?;
+    let row = rows.next().await?.ok_or_else(|| {
+        crate::EngError::NotFound(format!("growth observation {} not found", observation_id))
+    })?;
 
     let content: String = row.get(0)?;
     let source: String = row.get(1)?;
@@ -161,10 +156,7 @@ pub async fn reflect(
         });
     }
 
-    let system_prompt = get_prompt_for_service(
-        &req.service,
-        req.prompt_override.as_deref(),
-    );
+    let system_prompt = get_prompt_for_service(&req.service, req.prompt_override.as_deref());
 
     let rules = "\nRules:\n\
         - Output ONE concise observation (1-3 sentences max)\n\
@@ -243,11 +235,7 @@ pub async fn reflect(
         "INSERT INTO reflections (content, reflection_type, source_memory_ids, \
          confidence, user_id, created_at) \
          VALUES (?1, 'growth', ?2, 1.0, ?3, datetime('now'))",
-        libsql::params![
-            trimmed.clone(),
-            format!("[{}]", memory_id),
-            user_id
-        ],
+        libsql::params![trimmed.clone(), format!("[{}]", memory_id), user_id],
     )
     .await?;
 

@@ -27,7 +27,14 @@ const COOKIE_NAME: &str = "engram_auth";
 
 // SPA routes that serve index.html
 const SPA_ROUTES: &[&str] = &[
-    "/", "/gui", "/graph", "/search", "/inbox", "/timeline", "/entities", "/projects",
+    "/",
+    "/gui",
+    "/graph",
+    "/search",
+    "/inbox",
+    "/timeline",
+    "/entities",
+    "/projects",
 ];
 
 // MIME types for static assets
@@ -77,8 +84,8 @@ async fn get_hmac_secret(data_dir: &str) -> String {
 /// Format: {user_id}:{timestamp}.{hmac}
 fn sign_cookie(user_id: i64, ts: i64, secret: &str) -> String {
     let payload = format!("{}:{}", user_id, ts);
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC can take key of any size");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
     mac.update(payload.as_bytes());
     let result = mac.finalize();
     let hex = hex::encode(result.into_bytes());
@@ -105,8 +112,8 @@ fn verify_cookie(cookie: &str, secret: &str) -> Option<i64> {
     }
 
     // Verify HMAC
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC can take key of any size");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
     mac.update(payload.as_bytes());
     let expected = hex::encode(mac.finalize().into_bytes());
 
@@ -114,7 +121,12 @@ fn verify_cookie(cookie: &str, secret: &str) -> Option<i64> {
     if expected.len() != sig.len() {
         return None;
     }
-    if !expected.as_bytes().iter().zip(sig.as_bytes()).all(|(a, b)| a == b) {
+    if !expected
+        .as_bytes()
+        .iter()
+        .zip(sig.as_bytes())
+        .all(|(a, b)| a == b)
+    {
         return None;
     }
 
@@ -201,7 +213,10 @@ async fn gui_auth(
         .status(StatusCode::OK)
         .header(header::SET_COOKIE, cookie)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(format!(r#"{{"ok":true,"user_id":{}}}"#, auth_ctx.user_id)))
+        .body(Body::from(format!(
+            r#"{{"ok":true,"user_id":{}}}"#,
+            auth_ctx.user_id
+        )))
         .unwrap()
 }
 
@@ -233,17 +248,13 @@ fn resolve_gui_build_dir(state: &AppState) -> Option<PathBuf> {
         PathBuf::from("../engram/gui/build"),
     ];
 
-    for path in candidates {
-        if path.join("index.html").exists() {
-            return Some(path);
-        }
-    }
-
-    None
+    candidates
+        .into_iter()
+        .find(|path| path.join("index.html").exists())
 }
 
 /// Serve static file from GUI build
-async fn serve_static_file(build_dir: &PathBuf, file_path: &str) -> Option<Response> {
+async fn serve_static_file(build_dir: &std::path::Path, file_path: &str) -> Option<Response> {
     // Security: prevent path traversal
     let file_path = file_path.trim_start_matches('/');
     let full_path = build_dir.join(file_path);
@@ -267,10 +278,7 @@ async fn serve_static_file(build_dir: &PathBuf, file_path: &str) -> Option<Respo
     let content = fs::read(&canonical).await.ok()?;
 
     // Determine MIME type
-    let ext = canonical
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("");
     let mime = mime_for_extension(ext);
 
     // Cache headers: immutable for _app/immutable/, no-cache for everything else
@@ -286,7 +294,7 @@ async fn serve_static_file(build_dir: &PathBuf, file_path: &str) -> Option<Respo
             .header(header::CONTENT_TYPE, mime)
             .header(header::CACHE_CONTROL, cache)
             .body(Body::from(content))
-            .unwrap()
+            .unwrap(),
     )
 }
 
@@ -337,10 +345,7 @@ fn login_html() -> &'static str {
 }
 
 /// GET /_app/* - serve SvelteKit static assets
-async fn serve_app_assets(
-    State(state): State<AppState>,
-    Path(path): Path<String>,
-) -> Response {
+async fn serve_app_assets(State(state): State<AppState>, Path(path): Path<String>) -> Response {
     let Some(build_dir) = resolve_gui_build_dir(&state) else {
         return (StatusCode::NOT_FOUND, "GUI not available").into_response();
     };
@@ -356,7 +361,9 @@ async fn serve_app_assets(
 static CACHED_BUILD_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 fn get_cached_build_dir(state: &AppState) -> Option<PathBuf> {
-    CACHED_BUILD_DIR.get_or_init(|| resolve_gui_build_dir(state)).clone()
+    CACHED_BUILD_DIR
+        .get_or_init(|| resolve_gui_build_dir(state))
+        .clone()
 }
 
 /// Middleware that intercepts SPA routes when Accept: text/html is present.
@@ -426,12 +433,15 @@ async fn gui_create_memory(
     Json(body): Json<CreateMemoryBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     // Get authenticated user_id from GUI session
-    let user_id = get_gui_user_id(&state, &headers).await
+    let user_id = get_gui_user_id(&state, &headers)
+        .await
         .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
 
     let content = body.content.trim();
     if content.is_empty() {
-        return Err(AppError::from(engram_lib::EngError::InvalidInput("content is required".into())));
+        return Err(AppError::from(engram_lib::EngError::InvalidInput(
+            "content is required".into(),
+        )));
     }
 
     let result = memory::store(
@@ -449,9 +459,13 @@ async fn gui_create_memory(
             space_id: None,
             parent_memory_id: None,
         },
-    ).await?;
+    )
+    .await?;
 
-    Ok((StatusCode::CREATED, Json(json!({ "created": true, "id": result.id }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "created": true, "id": result.id })),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -468,7 +482,8 @@ async fn gui_update_memory(
     Path(id): Path<i64>,
     Json(body): Json<UpdateMemoryBody>,
 ) -> Result<Json<Value>, AppError> {
-    let user_id = get_gui_user_id(&state, &headers).await
+    let user_id = get_gui_user_id(&state, &headers)
+        .await
         .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
 
     let req = memory::types::UpdateRequest {
@@ -490,7 +505,8 @@ async fn gui_delete_memory(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let user_id = get_gui_user_id(&state, &headers).await
+    let user_id = get_gui_user_id(&state, &headers)
+        .await
         .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
 
     memory::delete(&state.db, id, user_id).await?;
@@ -507,7 +523,8 @@ async fn gui_bulk_archive(
     headers: HeaderMap,
     Json(body): Json<BulkArchiveBody>,
 ) -> Result<Json<Value>, AppError> {
-    let user_id = get_gui_user_id(&state, &headers).await
+    let user_id = get_gui_user_id(&state, &headers)
+        .await
         .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
 
     let mut archived = 0;
@@ -527,6 +544,9 @@ pub fn router() -> Router<AppState> {
         .route("/_app/{*path}", get(serve_app_assets))
         // GUI memory CRUD
         .route("/gui/memories", post(gui_create_memory))
-        .route("/gui/memories/{id}", patch(gui_update_memory).delete(gui_delete_memory))
+        .route(
+            "/gui/memories/{id}",
+            patch(gui_update_memory).delete(gui_delete_memory),
+        )
         .route("/gui/memories/bulk-archive", post(gui_bulk_archive))
 }

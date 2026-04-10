@@ -14,11 +14,7 @@ use crate::ingestion::types::{Chunk, ProcessOptions, ProcessResult};
 use uuid::Uuid;
 
 /// Process chunks by storing each as a raw memory.
-pub async fn process(
-    db: &Database,
-    chunks: &[Chunk],
-    options: &ProcessOptions,
-) -> ProcessResult {
+pub async fn process(db: &Database, chunks: &[Chunk], options: &ProcessOptions) -> ProcessResult {
     let mut memories_created = 0;
     let mut errors = Vec::new();
 

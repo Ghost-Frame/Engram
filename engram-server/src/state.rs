@@ -1,12 +1,12 @@
-use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::sync::{RwLock, broadcast};
 use engram_lib::config::{Config, EidolonConfig};
 use engram_lib::db::Database;
 use engram_lib::embeddings::EmbeddingProvider;
 use engram_lib::llm::local::LocalModelClient;
 use engram_lib::reranker::Reranker;
 use engram_lib::services::brain::BrainManager;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{broadcast, RwLock};
 
 pub struct SessionBroadcast {
     pub buffer: Vec<String>,
@@ -16,7 +16,10 @@ pub struct SessionBroadcast {
 impl SessionBroadcast {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(1024);
-        SessionBroadcast { buffer: Vec::new(), tx }
+        SessionBroadcast {
+            buffer: Vec::new(),
+            tx,
+        }
     }
 }
 

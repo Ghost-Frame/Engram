@@ -143,7 +143,9 @@ async fn delete_agent_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    state.db.conn
+    state
+        .db
+        .conn
         .execute(
             "DELETE FROM agents WHERE id = ?1 AND user_id = ?2",
             libsql::params![id, auth.user_id],

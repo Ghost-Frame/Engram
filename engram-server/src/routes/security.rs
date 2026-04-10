@@ -20,7 +20,10 @@ pub fn router() -> Router<AppState> {
             "/api-keys",
             post(create_api_key_handler).get(list_api_keys_handler),
         )
-        .route("/api-keys/{id}", axum::routing::delete(delete_api_key_handler))
+        .route(
+            "/api-keys/{id}",
+            axum::routing::delete(delete_api_key_handler),
+        )
         .route("/audit", get(list_audit_handler))
         .route("/rate-limit/{key}", get(rate_limit_status_handler))
         .route("/quota", get(get_quota_handler))
@@ -113,7 +116,9 @@ async fn rate_limit_status_handler(
     };
     let limit = auth.key.rate_limit as i64;
     let allowed = ratelimit::check_rate_limit(&state.db, &check_key, limit, 60).await?;
-    Ok(Json(json!({ "key": check_key, "allowed": allowed, "limit": limit })))
+    Ok(Json(
+        json!({ "key": check_key, "allowed": allowed, "limit": limit }),
+    ))
 }
 
 async fn get_quota_handler(
@@ -137,7 +142,13 @@ async fn record_usage_handler(
     Json(body): Json<RecordUsageBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let quantity = body.quantity.unwrap_or(1);
-    quota::record_usage(&state.db, auth.user_id, body.agent_id, &body.event_type, quantity)
-        .await?;
+    quota::record_usage(
+        &state.db,
+        auth.user_id,
+        body.agent_id,
+        &body.event_type,
+        quantity,
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(json!({ "recorded": true }))))
 }

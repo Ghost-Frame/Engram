@@ -50,9 +50,9 @@ enum Commands {
 }
 
 fn expand_path(path: &str) -> PathBuf {
-    if path.starts_with("~/") {
+    if let Some(stripped) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
-            return home.join(&path[2..]);
+            return home.join(stripped);
         }
     }
     PathBuf::from(path)
@@ -72,13 +72,9 @@ fn main() {
     };
 
     let result = match cli.command {
-        Commands::SpecTask => {
-            read_input(&cli.input)
-                .map_err(|e| e.to_string())
-                .and_then(|input| {
-                    tools::spec::spec_task(&db, input).map_err(|e| e.to_string())
-                })
-        }
+        Commands::SpecTask => read_input(&cli.input)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::spec::spec_task(&db, input).map_err(|e| e.to_string())),
         Commands::LogHypothesis => {
             read_input(&cli.input)
                 .map_err(|e| e.to_string())
@@ -100,48 +96,24 @@ fn main() {
                     tools::hypothesis::recall_errors(&db, input).map_err(|e| e.to_string())
                 })
         }
-        Commands::Verify => {
-            read_input(&cli.input)
-                .map_err(|e| e.to_string())
-                .and_then(|input| {
-                    tools::verify::verify(&db, input).map_err(|e| e.to_string())
-                })
-        }
-        Commands::ChallengeCode => {
-            read_input(&cli.input)
-                .map_err(|e| e.to_string())
-                .and_then(|input| {
-                    tools::verify::challenge_code(&db, input).map_err(|e| e.to_string())
-                })
-        }
-        Commands::SessionDiff => {
-            read_input(&cli.input)
-                .map_err(|e| e.to_string())
-                .and_then(|input| {
-                    tools::verify::session_diff(&db, input).map_err(|e| e.to_string())
-                })
-        }
-        Commands::Checkpoint => {
-            read_input(&cli.input)
-                .map_err(|e| e.to_string())
-                .and_then(|input| {
-                    tools::session::checkpoint(&db, input).map_err(|e| e.to_string())
-                })
-        }
-        Commands::Rollback => {
-            read_input(&cli.input)
-                .map_err(|e| e.to_string())
-                .and_then(|input| {
-                    tools::session::rollback(&db, input).map_err(|e| e.to_string())
-                })
-        }
-        Commands::SessionLearn => {
-            read_input(&cli.input)
-                .map_err(|e| e.to_string())
-                .and_then(|input| {
-                    tools::session::session_learn(&db, input).map_err(|e| e.to_string())
-                })
-        }
+        Commands::Verify => read_input(&cli.input)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::verify::verify(&db, input).map_err(|e| e.to_string())),
+        Commands::ChallengeCode => read_input(&cli.input)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::verify::challenge_code(&db, input).map_err(|e| e.to_string())),
+        Commands::SessionDiff => read_input(&cli.input)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::verify::session_diff(&db, input).map_err(|e| e.to_string())),
+        Commands::Checkpoint => read_input(&cli.input)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::session::checkpoint(&db, input).map_err(|e| e.to_string())),
+        Commands::Rollback => read_input(&cli.input)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::session::rollback(&db, input).map_err(|e| e.to_string())),
+        Commands::SessionLearn => read_input(&cli.input)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::session::session_learn(&db, input).map_err(|e| e.to_string())),
         Commands::SessionRecall => {
             read_input(&cli.input)
                 .map_err(|e| e.to_string())
@@ -149,13 +121,9 @@ fn main() {
                     tools::session::session_recall(&db, input).map_err(|e| e.to_string())
                 })
         }
-        Commands::Think => {
-            read_input(&cli.input)
-                .map_err(|e| e.to_string())
-                .and_then(|input| {
-                    tools::think::think(&db, input).map_err(|e| e.to_string())
-                })
-        }
+        Commands::Think => read_input(&cli.input)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::think::think(&db, input).map_err(|e| e.to_string())),
         Commands::DeclareUnknowns => {
             read_input(&cli.input)
                 .map_err(|e| e.to_string())
@@ -163,16 +131,12 @@ fn main() {
                     tools::think::declare_unknowns(&db, input).map_err(|e| e.to_string())
                 })
         }
-        Commands::ConsiderApproaches => {
-            Ok(Output::error("Not yet implemented"))
-        }
-        Commands::RepoMap => {
-            read_input(&cli.input)
-                .map_err(|e| e.to_string())
-                .and_then(|input| {
-                    tools::ast::repo_map::repo_map(&db, input).map_err(|e| e.to_string())
-                })
-        }
+        Commands::ConsiderApproaches => Ok(Output::error("Not yet implemented")),
+        Commands::RepoMap => read_input(&cli.input)
+            .map_err(|e| e.to_string())
+            .and_then(|input| {
+                tools::ast::repo_map::repo_map(&db, input).map_err(|e| e.to_string())
+            }),
         Commands::SearchCode => {
             read_input(&cli.input)
                 .map_err(|e| e.to_string())

@@ -36,19 +36,28 @@ pub async fn receive_sync(
             "insert" | "update" => {
                 let content = match change.content.as_deref().filter(|c| !c.trim().is_empty()) {
                     Some(c) => c.to_string(),
-                    None => { skipped += 1; continue; }
+                    None => {
+                        skipped += 1;
+                        continue;
+                    }
                 };
-                let mut existing = db.conn.query(
-                    "SELECT id FROM memories WHERE sync_id = ?1 AND user_id = ?2",
-                    libsql::params![change.sync_id.clone(), user_id],
-                ).await?;
+                let mut existing = db
+                    .conn
+                    .query(
+                        "SELECT id FROM memories WHERE sync_id = ?1 AND user_id = ?2",
+                        libsql::params![change.sync_id.clone(), user_id],
+                    )
+                    .await?;
                 if existing.next().await?.is_some() {
                     skipped += 1;
                     continue;
                 }
                 let req = StoreRequest {
                     content,
-                    category: change.category.clone().unwrap_or_else(|| "general".to_string()),
+                    category: change
+                        .category
+                        .clone()
+                        .unwrap_or_else(|| "general".to_string()),
                     source: "sync".to_string(),
                     importance: change.importance.unwrap_or(5),
                     tags: None,
@@ -63,13 +72,22 @@ pub async fn receive_sync(
                 applied += 1;
             }
             "delete" => {
-                let affected = db.conn.execute(
-                    "UPDATE memories SET is_forgotten = 1 WHERE sync_id = ?1 AND user_id = ?2",
-                    libsql::params![change.sync_id.clone(), user_id],
-                ).await?;
-                if affected > 0 { applied += 1; } else { skipped += 1; }
+                let affected = db
+                    .conn
+                    .execute(
+                        "UPDATE memories SET is_forgotten = 1 WHERE sync_id = ?1 AND user_id = ?2",
+                        libsql::params![change.sync_id.clone(), user_id],
+                    )
+                    .await?;
+                if affected > 0 {
+                    applied += 1;
+                } else {
+                    skipped += 1;
+                }
             }
-            _ => { skipped += 1; }
+            _ => {
+                skipped += 1;
+            }
         }
     }
 

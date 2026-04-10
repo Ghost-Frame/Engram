@@ -6,27 +6,27 @@ use std::str::FromStr;
 
 // 21 default weights trained on millions of Anki reviews
 pub const FSRS6_WEIGHTS: [f32; 21] = [
-    0.212,   // w0:  Initial stability for Again
-    1.2931,  // w1:  Initial stability for Hard
-    2.3065,  // w2:  Initial stability for Good
-    8.2956,  // w3:  Initial stability for Easy
-    6.4133,  // w4:  Initial difficulty base
-    0.8334,  // w5:  Initial difficulty grade modifier
-    3.0194,  // w6:  Difficulty delta
-    0.001,   // w7:  Difficulty mean reversion
-    1.8722,  // w8:  Stability increase base
-    0.1666,  // w9:  Stability saturation
-    0.796,   // w10: Retrievability influence on stability
-    1.4835,  // w11: Forget stability base
-    0.0614,  // w12: Forget difficulty influence
-    0.2629,  // w13: Forget stability influence
-    1.6483,  // w14: Forget retrievability influence
-    0.6014,  // w15: Hard penalty
-    1.8729,  // w16: Easy bonus
-    0.5425,  // w17: Same-day review base (FSRS-6)
-    0.0912,  // w18: Same-day review grade modifier (FSRS-6)
-    0.0658,  // w19: Same-day review stability influence (FSRS-6)
-    0.1542,  // w20: Forgetting curve decay (FSRS-6, personalizable)
+    0.212,  // w0:  Initial stability for Again
+    1.2931, // w1:  Initial stability for Hard
+    2.3065, // w2:  Initial stability for Good
+    8.2956, // w3:  Initial stability for Easy
+    6.4133, // w4:  Initial difficulty base
+    0.8334, // w5:  Initial difficulty grade modifier
+    3.0194, // w6:  Difficulty delta
+    0.001,  // w7:  Difficulty mean reversion
+    1.8722, // w8:  Stability increase base
+    0.1666, // w9:  Stability saturation
+    0.796,  // w10: Retrievability influence on stability
+    1.4835, // w11: Forget stability base
+    0.0614, // w12: Forget difficulty influence
+    0.2629, // w13: Forget stability influence
+    1.6483, // w14: Forget retrievability influence
+    0.6014, // w15: Hard penalty
+    1.8729, // w16: Easy bonus
+    0.5425, // w17: Same-day review base (FSRS-6)
+    0.0912, // w18: Same-day review grade modifier (FSRS-6)
+    0.0658, // w19: Same-day review stability influence (FSRS-6)
+    0.1542, // w20: Forgetting curve decay (FSRS-6, personalizable)
 ];
 
 pub const FSRS_MIN_STABILITY: f32 = 0.1;
@@ -126,13 +126,8 @@ impl DualStrength {
         if elapsed_days <= 0.0 || stability <= 0.0 {
             return *self;
         }
-        let retrieval = f32::max(
-            0.0,
-            f32::min(
-                1.0,
-                f32::powf(1.0 + elapsed_days / (9.0 * stability), -1.0 / 0.5),
-            ),
-        );
+        let retrieval =
+            f32::powf(1.0 + elapsed_days / (9.0 * stability), -1.0 / 0.5).clamp(0.0, 1.0);
         DualStrength {
             storage: self.storage,
             retrieval,
@@ -164,19 +159,13 @@ pub fn retrievability_with_w20(stability: f32, elapsed_days: f32, w20: f32) -> f
         return 1.0;
     }
     let factor = forgetting_factor(w20);
-    f32::max(
-        0.0,
-        f32::min(
-            1.0,
-            f32::powf(1.0 + factor * elapsed_days / stability, -w20),
-        ),
-    )
+    f32::powf(1.0 + factor * elapsed_days / stability, -w20).clamp(0.0, 1.0)
 }
 
 pub fn initial_difficulty(grade: Rating) -> f32 {
     let g = grade as u8 as f32;
     let d = FSRS6_WEIGHTS[4] - f32::exp(FSRS6_WEIGHTS[5] * (g - 1.0)) + 1.0;
-    f32::max(FSRS_MIN_DIFFICULTY, f32::min(FSRS_MAX_DIFFICULTY, d))
+    d.clamp(FSRS_MIN_DIFFICULTY, FSRS_MAX_DIFFICULTY)
 }
 
 pub fn initial_stability(grade: Rating) -> f32 {
@@ -191,37 +180,47 @@ pub fn next_difficulty(current_d: f32, grade: Rating) -> f32 {
     let mean_reversion_scale = (10.0 - current_d) / 9.0;
     let new_d = current_d + delta * mean_reversion_scale;
     let final_d = FSRS6_WEIGHTS[7] * d0 + (1.0 - FSRS6_WEIGHTS[7]) * new_d;
-    f32::max(FSRS_MIN_DIFFICULTY, f32::min(FSRS_MAX_DIFFICULTY, final_d))
+    final_d.clamp(FSRS_MIN_DIFFICULTY, FSRS_MAX_DIFFICULTY)
 }
 
 pub fn recall_stability(s: f32, d: f32, r: f32, grade: Rating) -> f32 {
     if grade == Rating::Again {
         return forget_stability(d, s, r);
     }
-    let hard_penalty = if grade == Rating::Hard { FSRS6_WEIGHTS[15] } else { 1.0 };
-    let easy_bonus = if grade == Rating::Easy { FSRS6_WEIGHTS[16] } else { 1.0 };
-    let factor = f32::exp(FSRS6_WEIGHTS[8]) * (11.0 - d)
+    let hard_penalty = if grade == Rating::Hard {
+        FSRS6_WEIGHTS[15]
+    } else {
+        1.0
+    };
+    let easy_bonus = if grade == Rating::Easy {
+        FSRS6_WEIGHTS[16]
+    } else {
+        1.0
+    };
+    let factor = f32::exp(FSRS6_WEIGHTS[8])
+        * (11.0 - d)
         * f32::powf(s, -FSRS6_WEIGHTS[9])
         * (f32::exp(FSRS6_WEIGHTS[10] * (1.0 - r)) - 1.0)
-        * hard_penalty * easy_bonus + 1.0;
-    f32::max(FSRS_MIN_STABILITY, f32::min(FSRS_MAX_STABILITY, s * factor))
+        * hard_penalty
+        * easy_bonus
+        + 1.0;
+    (s * factor).clamp(FSRS_MIN_STABILITY, FSRS_MAX_STABILITY)
 }
 
 pub fn forget_stability(d: f32, s: f32, r: f32) -> f32 {
-    let new_s = FSRS6_WEIGHTS[11] * f32::powf(d, -FSRS6_WEIGHTS[12])
+    let new_s = FSRS6_WEIGHTS[11]
+        * f32::powf(d, -FSRS6_WEIGHTS[12])
         * (f32::powf(s + 1.0, FSRS6_WEIGHTS[13]) - 1.0)
         * f32::exp(FSRS6_WEIGHTS[14] * (1.0 - r));
-    f32::max(
-        FSRS_MIN_STABILITY,
-        f32::min(f32::min(new_s, s), FSRS_MAX_STABILITY),
-    )
+    f32::min(new_s, s).clamp(FSRS_MIN_STABILITY, FSRS_MAX_STABILITY)
 }
 
 pub fn same_day_stability(s: f32, grade: Rating) -> f32 {
     let g = grade as u8 as f32;
-    let new_s = s * f32::exp(FSRS6_WEIGHTS[17] * (g - 3.0 + FSRS6_WEIGHTS[18]))
+    let new_s = s
+        * f32::exp(FSRS6_WEIGHTS[17] * (g - 3.0 + FSRS6_WEIGHTS[18]))
         * f32::powf(s, -FSRS6_WEIGHTS[19]);
-    f32::max(FSRS_MIN_STABILITY, f32::min(FSRS_MAX_STABILITY, new_s))
+    new_s.clamp(FSRS_MIN_STABILITY, FSRS_MAX_STABILITY)
 }
 
 pub fn next_interval(stability: f32, desired_r: f32) -> i32 {
@@ -229,17 +228,14 @@ pub fn next_interval(stability: f32, desired_r: f32) -> i32 {
         return 0;
     }
     let factor = forgetting_factor(FSRS6_WEIGHTS[20]);
-    let interval =
-        stability / factor * (f32::powf(desired_r, -1.0 / FSRS6_WEIGHTS[20]) - 1.0);
+    let interval = stability / factor * (f32::powf(desired_r, -1.0 / FSRS6_WEIGHTS[20]) - 1.0);
     i32::max(0, interval.round() as i32)
 }
 
 // ---- Review processor ----
 
 fn now_str() -> String {
-    chrono::Utc::now()
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string()
+    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 pub fn process_review(state: Option<&FsrsState>, grade: Rating, elapsed_days: f32) -> FsrsState {
@@ -398,7 +394,12 @@ mod tests {
         let d = 6.0_f32;
         let r = 0.7_f32;
         let fs = forget_stability(d, s, r);
-        assert!(fs <= s, "forget stability {} should be <= current {}", fs, s);
+        assert!(
+            fs <= s,
+            "forget stability {} should be <= current {}",
+            fs,
+            s
+        );
         assert!(
             fs >= FSRS_MIN_STABILITY,
             "forget stability {} should be >= min",
@@ -408,15 +409,8 @@ mod tests {
 
     #[test]
     fn test_decay_score_static() {
-        let score = decay::calculate_decay_score(
-            0.8,
-            "2025-01-01 00:00:00",
-            0,
-            None,
-            true,
-            1,
-            None,
-        );
+        let score =
+            decay::calculate_decay_score(0.8, "2025-01-01 00:00:00", 0, None, true, 1, None);
         assert!(
             (score - 0.8).abs() < 0.001,
             "static should return importance, got {}",
@@ -447,8 +441,7 @@ mod tests {
         let expected = s
             * f32::exp(FSRS6_WEIGHTS[17] * (0.0 + FSRS6_WEIGHTS[18]))
             * f32::powf(s, -FSRS6_WEIGHTS[19]);
-        let expected_clamped =
-            f32::max(FSRS_MIN_STABILITY, f32::min(FSRS_MAX_STABILITY, expected));
+        let expected_clamped = expected.clamp(FSRS_MIN_STABILITY, FSRS_MAX_STABILITY);
         assert!(
             (new_s - expected_clamped).abs() < 0.001,
             "got {}, expected {}",

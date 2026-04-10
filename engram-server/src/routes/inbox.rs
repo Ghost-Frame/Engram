@@ -1,9 +1,13 @@
-use axum::{routing::{get, post}, extract::{State, Path, Query}, Json, Router};
+use axum::{
+    extract::{Path, Query, State},
+    routing::{get, post},
+    Json, Router,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::extractors::Auth;
 use crate::error::AppError;
+use crate::extractors::Auth;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -23,17 +27,23 @@ struct PagingQuery {
 }
 
 async fn list_inbox(
-    Auth(auth): Auth, State(state): State<AppState>, Query(q): Query<PagingQuery>,
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Query(q): Query<PagingQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
     let pending = engram_lib::inbox::list_pending(&state.db, auth.user_id, limit, offset).await?;
     let total = engram_lib::inbox::count_pending(&state.db, auth.user_id).await?;
-    Ok(Json(json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit })))
+    Ok(Json(
+        json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),
+    ))
 }
 
 async fn approve(
-    Auth(auth): Auth, State(state): State<AppState>, Path(id): Path<i64>,
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     engram_lib::inbox::approve_memory(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "approved": true, "id": id })))
@@ -45,7 +55,10 @@ struct RejectBody {
 }
 
 async fn reject(
-    Auth(auth): Auth, State(state): State<AppState>, Path(id): Path<i64>, Json(body): Json<RejectBody>,
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(body): Json<RejectBody>,
 ) -> Result<Json<Value>, AppError> {
     engram_lib::inbox::reject_memory(&state.db, id, auth.user_id).await?;
     if let Some(reason) = &body.reason {
@@ -63,13 +76,21 @@ struct EditBody {
 }
 
 async fn edit(
-    Auth(auth): Auth, State(state): State<AppState>, Path(id): Path<i64>, Json(body): Json<EditBody>,
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(body): Json<EditBody>,
 ) -> Result<Json<Value>, AppError> {
     engram_lib::inbox::edit_and_approve(
-        &state.db, id,
-        body.content.as_deref(), body.category.as_deref(),
-        body.importance, body.tags.as_deref(), auth.user_id,
-    ).await?;
+        &state.db,
+        id,
+        body.content.as_deref(),
+        body.category.as_deref(),
+        body.importance,
+        body.tags.as_deref(),
+        auth.user_id,
+    )
+    .await?;
     Ok(Json(json!({ "approved": true, "edited": true, "id": id })))
 }
 
@@ -80,25 +101,43 @@ struct BulkBody {
 }
 
 async fn bulk_action(
-    Auth(auth): Auth, State(state): State<AppState>, Json(body): Json<BulkBody>,
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Json(body): Json<BulkBody>,
 ) -> Result<Json<Value>, AppError> {
     let mut count = 0;
     for id in &body.ids {
         match body.action.as_str() {
-            "approve" => { engram_lib::inbox::approve_memory(&state.db, *id, auth.user_id).await?; count += 1; }
-            "reject" => { engram_lib::inbox::reject_memory(&state.db, *id, auth.user_id).await?; count += 1; }
-            _ => return Err(AppError(engram_lib::EngError::InvalidInput("action must be approve or reject".into()))),
+            "approve" => {
+                engram_lib::inbox::approve_memory(&state.db, *id, auth.user_id).await?;
+                count += 1;
+            }
+            "reject" => {
+                engram_lib::inbox::reject_memory(&state.db, *id, auth.user_id).await?;
+                count += 1;
+            }
+            _ => {
+                return Err(AppError(engram_lib::EngError::InvalidInput(
+                    "action must be approve or reject".into(),
+                )))
+            }
         }
     }
-    Ok(Json(json!({ "action": body.action, "count": count, "ids": body.ids })))
+    Ok(Json(
+        json!({ "action": body.action, "count": count, "ids": body.ids }),
+    ))
 }
 
 async fn list_pending_legacy(
-    Auth(auth): Auth, State(state): State<AppState>, Query(q): Query<PagingQuery>,
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Query(q): Query<PagingQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
     let pending = engram_lib::inbox::list_pending(&state.db, auth.user_id, limit, offset).await?;
     let total = engram_lib::inbox::count_pending(&state.db, auth.user_id).await?;
-    Ok(Json(json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit })))
+    Ok(Json(
+        json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),
+    ))
 }

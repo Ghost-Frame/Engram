@@ -51,7 +51,9 @@ pub async fn audit_middleware(
             Some(&details),
             ip.as_deref(),
             None,
-        ).await {
+        )
+        .await
+        {
             tracing::warn!("audit log failed: {}", e);
         }
     });

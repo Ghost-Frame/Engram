@@ -19,5 +19,8 @@ async fn report_activity(
     Json(body): Json<ActivityReport>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let memory_id = process_activity(&state.db, &body, auth.user_id).await?;
-    Ok((StatusCode::CREATED, Json(json!({ "ok": true, "memory_id": memory_id }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "ok": true, "memory_id": memory_id })),
+    ))
 }

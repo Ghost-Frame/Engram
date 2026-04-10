@@ -62,13 +62,19 @@ impl OllamaConfig {
             cfg.model = v;
         }
         if let Ok(v) = std::env::var("OLLAMA_TIMEOUT_BG_MS") {
-            if let Ok(n) = v.parse() { cfg.timeout_bg_ms = n; }
+            if let Ok(n) = v.parse() {
+                cfg.timeout_bg_ms = n;
+            }
         }
         if let Ok(v) = std::env::var("OLLAMA_TIMEOUT_HOT_MS") {
-            if let Ok(n) = v.parse() { cfg.timeout_hot_ms = n; }
+            if let Ok(n) = v.parse() {
+                cfg.timeout_hot_ms = n;
+            }
         }
         if let Ok(v) = std::env::var("OLLAMA_CONCURRENCY") {
-            if let Ok(n) = v.parse() { cfg.concurrency = n; }
+            if let Ok(n) = v.parse() {
+                cfg.concurrency = n;
+            }
         }
         cfg
     }
@@ -219,28 +225,36 @@ impl LocalModelClient {
 
     /// Probe Ollama availability by hitting /api/tags.
     pub async fn probe(&self) -> bool {
-        let tags_url = self.config.url
+        let tags_url = self
+            .config
+            .url
             .replace("/v1/chat/completions", "")
             .replace("/v1", "")
             + "/api/tags";
 
-        let result = self.http
+        let result = self
+            .http
             .get(&tags_url)
             .timeout(Duration::from_secs(3))
             .send()
             .await;
 
         let ok = matches!(result, Ok(ref r) if r.status().is_success());
-        self.probe_result.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
+        self.probe_result
+            .store(if ok { 1 } else { 2 }, Ordering::Relaxed);
         tracing::info!(msg = "ollama_probe", reachable = ok, url = %self.config.url, model = %self.config.model);
         ok
     }
 
     /// Check if the local model is likely available.
     pub fn is_available(&self) -> bool {
-        if self.circuit_breaker.is_open() { return false; }
+        if self.circuit_breaker.is_open() {
+            return false;
+        }
         let probe = self.probe_result.load(Ordering::Relaxed);
-        if probe == 2 { return false; }
+        if probe == 2 {
+            return false;
+        }
         true
     }
 
@@ -253,9 +267,11 @@ impl LocalModelClient {
     ) -> Result<String> {
         let opts = opts.unwrap_or_default();
         let priority = opts.priority;
-        let timeout_ms = opts.timeout_ms.unwrap_or(
-            if priority == Priority::Hot { self.config.timeout_hot_ms } else { self.config.timeout_bg_ms }
-        );
+        let timeout_ms = opts.timeout_ms.unwrap_or(if priority == Priority::Hot {
+            self.config.timeout_hot_ms
+        } else {
+            self.config.timeout_bg_ms
+        });
         let model = opts.model.as_deref().unwrap_or(&self.config.model);
 
         if self.circuit_breaker.is_open() {
@@ -266,7 +282,11 @@ impl LocalModelClient {
         let permit = if priority == Priority::Hot {
             match self.semaphore.clone().try_acquire_owned() {
                 Ok(p) => p,
-                Err(_) => return Err(EngError::Internal("ollama busy (hot-path fast-fail)".into())),
+                Err(_) => {
+                    return Err(EngError::Internal(
+                        "ollama busy (hot-path fast-fail)".into(),
+                    ))
+                }
             }
         } else {
             let queue = self.queue_len.fetch_add(1, Ordering::Relaxed);
@@ -274,7 +294,11 @@ impl LocalModelClient {
                 self.queue_len.fetch_sub(1, Ordering::Relaxed);
                 return Err(EngError::Internal("ollama queue full".into()));
             }
-            let permit = self.semaphore.clone().acquire_owned().await
+            let permit = self
+                .semaphore
+                .clone()
+                .acquire_owned()
+                .await
                 .map_err(|_| EngError::Internal("semaphore closed".into()))?;
             self.queue_len.fetch_sub(1, Ordering::Relaxed);
             permit
@@ -291,7 +315,8 @@ impl LocalModelClient {
             "stream": false,
         });
 
-        let result = self.http
+        let result = self
+            .http
             .post(&self.config.url)
             .header("Content-Type", "application/json")
             .timeout(Duration::from_millis(timeout_ms))
@@ -307,13 +332,17 @@ impl LocalModelClient {
                     let status = resp.status();
                     let body_text = resp.text().await.unwrap_or_default();
                     self.circuit_breaker.record_failure();
-                    return Err(EngError::Internal(
-                        format!("ollama {}: {}", status, &body_text[..body_text.len().min(200)])
-                    ));
+                    return Err(EngError::Internal(format!(
+                        "ollama {}: {}",
+                        status,
+                        &body_text[..body_text.len().min(200)]
+                    )));
                 }
 
-                let data: serde_json::Value = resp.json().await
-                    .map_err(|e| { self.circuit_breaker.record_failure(); EngError::Internal(format!("ollama json: {}", e)) })?;
+                let data: serde_json::Value = resp.json().await.map_err(|e| {
+                    self.circuit_breaker.record_failure();
+                    EngError::Internal(format!("ollama json: {}", e))
+                })?;
 
                 let text = data["choices"][0]["message"]["content"]
                     .as_str()
