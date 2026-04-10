@@ -650,14 +650,15 @@ pub async fn insert_signal(
     signal: &PersonalitySignal,
 ) -> Result<()> {
     db.conn.execute(
-        "INSERT INTO personality_signals (memory_id, user_id, signal_type, subject, valence, intensity, reasoning, source_text)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO personality_signals (memory_id, user_id, signal_type, subject, valence, value, intensity, reasoning, source_text)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         libsql::params![
             memory_id,
             user_id,
             signal.signal_type.as_str().to_string(),
             signal.subject.chars().take(200).collect::<String>(),
             signal.valence.as_str().to_string(),
+            signal.intensity,
             signal.intensity,
             signal.reasoning.chars().take(1000).collect::<String>(),
             signal.source_text.chars().take(500).collect::<String>(),

@@ -6,10 +6,15 @@ pub mod types;
 pub mod vector;
 
 use crate::db::Database;
+use crate::personality;
 use crate::EngError;
 use crate::Result;
 use libsql::params;
-use types::{ListOptions, Memory, StoreRequest, StoreResult, UpdateRequest};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use types::{
+    CategoryCount, LinkedMemory, ListOptions, Memory, StoreRequest, StoreResult, TagCount,
+    UpdateRequest, UserProfile, UserStats, VersionChainEntry,
+};
 
 // -- Constants ---
 
@@ -30,6 +35,12 @@ fn normalize_tags(tags: &Option<Vec<String>>) -> Option<String> {
             Some(serde_json::to_string(&normalized).unwrap())
         }
     })
+}
+
+fn parse_tags_json(tags: &Option<String>) -> Vec<String> {
+    tags.as_ref()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+        .unwrap_or_default()
 }
 
 fn clamp_importance(value: i32) -> i32 {
@@ -565,4 +576,304 @@ pub async fn update_source_count(db: &Database, id: i64, source_count: i32, user
         params![source_count, id, user_id],
     ).await?;
     Ok(())
+}
+
+pub async fn list_all_tags(db: &Database, user_id: i64) -> Result<Vec<TagCount>> {
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT tags FROM memories
+             WHERE user_id = ?1
+               AND is_forgotten = 0
+               AND is_latest = 1
+               AND tags IS NOT NULL
+               AND tags != '[]'",
+            params![user_id],
+        )
+        .await?;
+
+    let mut counts: HashMap<String, i64> = HashMap::new();
+    while let Some(row) = rows.next().await? {
+        let raw_tags = row.get::<Option<String>>(0)?;
+        for tag in parse_tags_json(&raw_tags) {
+            *counts.entry(tag).or_insert(0) += 1;
+        }
+    }
+
+    let mut tags: Vec<TagCount> = counts
+        .into_iter()
+        .map(|(tag, count)| TagCount { tag, count })
+        .collect();
+    tags.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(&b.tag)));
+    Ok(tags)
+}
+
+pub async fn search_by_tags(
+    db: &Database,
+    user_id: i64,
+    tags: &[String],
+    match_all: bool,
+    limit: usize,
+) -> Result<Vec<Memory>> {
+    let normalized: Vec<String> = tags
+        .iter()
+        .map(|tag| tag.trim().to_lowercase())
+        .filter(|tag| !tag.is_empty())
+        .collect();
+
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let wanted: HashSet<&str> = normalized.iter().map(String::as_str).collect();
+    let sql = format!(
+        "SELECT {} FROM memories
+         WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1
+         ORDER BY created_at DESC",
+        MEMORY_COLUMNS
+    );
+    let mut rows = db.conn.query(&sql, params![user_id]).await?;
+    let mut memories = Vec::new();
+
+    while let Some(row) = rows.next().await? {
+        let memory = row_to_memory(&row)?;
+        let memory_tags: HashSet<String> = parse_tags_json(&memory.tags).into_iter().collect();
+        let matched = if match_all {
+            wanted.iter().all(|tag| memory_tags.contains(*tag))
+        } else {
+            wanted.iter().any(|tag| memory_tags.contains(*tag))
+        };
+
+        if matched {
+            memories.push(memory);
+            if memories.len() >= limit {
+                break;
+            }
+        }
+    }
+
+    Ok(memories)
+}
+
+pub async fn update_memory_tags(
+    db: &Database,
+    memory_id: i64,
+    user_id: i64,
+    tags: &[String],
+) -> Result<()> {
+    let _ = get(db, memory_id, user_id).await?;
+    let normalized = if tags.is_empty() {
+        None
+    } else {
+        let owned_tags = Some(tags.to_vec());
+        normalize_tags(&owned_tags)
+    };
+
+    db.conn
+        .execute(
+            "UPDATE memories SET tags = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
+            params![normalized, memory_id, user_id],
+        )
+        .await?;
+    Ok(())
+}
+
+pub async fn get_links_for(db: &Database, memory_id: i64, user_id: i64) -> Result<Vec<LinkedMemory>> {
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT ml.target_id, ml.similarity, ml.type,
+                    m.content, m.category, m.is_forgotten
+             FROM memory_links ml
+             JOIN memories m ON m.id = ml.target_id
+             WHERE ml.source_id = ?1 AND m.user_id = ?2
+             UNION
+             SELECT ml.source_id, ml.similarity, ml.type,
+                    m.content, m.category, m.is_forgotten
+             FROM memory_links ml
+             JOIN memories m ON m.id = ml.source_id
+             WHERE ml.target_id = ?1 AND m.user_id = ?2",
+            params![memory_id, user_id],
+        )
+        .await?;
+
+    let mut links = Vec::new();
+    while let Some(row) = rows.next().await? {
+        if row.get::<i32>(5).unwrap_or(0) != 0 {
+            continue;
+        }
+        links.push(LinkedMemory {
+            id: row.get(0)?,
+            similarity: row.get(1)?,
+            link_type: row.get(2)?,
+            content: row.get(3)?,
+            category: row.get(4)?,
+        });
+    }
+    Ok(links)
+}
+
+pub async fn get_version_chain(
+    db: &Database,
+    memory_id: i64,
+    user_id: i64,
+) -> Result<Vec<VersionChainEntry>> {
+    let memory = get(db, memory_id, user_id).await?;
+    let root_id = memory.root_memory_id.unwrap_or(memory.id);
+
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT id, content, version, is_latest
+             FROM memories
+             WHERE (root_memory_id = ?1 OR id = ?1)
+               AND user_id = ?2
+             ORDER BY version ASC",
+            params![root_id, user_id],
+        )
+        .await?;
+
+    let mut chain = Vec::new();
+    while let Some(row) = rows.next().await? {
+        chain.push(VersionChainEntry {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            version: row.get(2)?,
+            is_latest: row.get::<i32>(3)? != 0,
+        });
+    }
+    Ok(chain)
+}
+
+async fn count_user_rows(db: &Database, sql: &str, user_id: i64) -> Result<i64> {
+    let mut rows = db.conn.query(sql, params![user_id]).await?;
+    match rows.next().await? {
+        Some(row) => Ok(row.get(0).unwrap_or(0)),
+        None => Ok(0),
+    }
+}
+
+pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile> {
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT COUNT(*), MIN(created_at), MAX(created_at), AVG(importance)
+             FROM memories
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1",
+            params![user_id],
+        )
+        .await?;
+
+    let (memory_count, oldest_memory, newest_memory, avg_importance) = match rows.next().await? {
+        Some(row) => (
+            row.get::<i64>(0).unwrap_or(0),
+            row.get::<Option<String>>(1).unwrap_or(None),
+            row.get::<Option<String>>(2).unwrap_or(None),
+            row.get::<Option<f64>>(3).unwrap_or(None).unwrap_or(0.0),
+        ),
+        None => (0, None, None, 0.0),
+    };
+
+    let mut category_rows = db
+        .conn
+        .query(
+            "SELECT category, COUNT(*)
+             FROM memories
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1
+             GROUP BY category
+             ORDER BY COUNT(*) DESC, category ASC
+             LIMIT 10",
+            params![user_id],
+        )
+        .await?;
+
+    let mut top_categories = Vec::new();
+    while let Some(row) = category_rows.next().await? {
+        top_categories.push(CategoryCount {
+            category: row.get(0)?,
+            count: row.get(1)?,
+        });
+    }
+
+    let top_tags = list_all_tags(db, user_id).await?.into_iter().take(10).collect();
+    let personality_traits = personality::get_profile(db, user_id)
+        .await
+        .map(|profile| profile.traits)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let personality_summary = personality::get_profile_for_injection(db, user_id)
+        .await?
+        .and_then(|(profile, _)| {
+            let trimmed = profile.trim().to_string();
+            if trimmed.is_empty() || trimmed == "{}" {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+
+    Ok(UserProfile {
+        user_id,
+        personality_traits,
+        personality_summary,
+        memory_count,
+        oldest_memory,
+        newest_memory,
+        avg_importance,
+        top_categories,
+        top_tags,
+    })
+}
+
+pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
+    let memories = count_user_rows(
+        db,
+        "SELECT COUNT(*) FROM memories WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1",
+        user_id,
+    )
+    .await?;
+    let archived = count_user_rows(
+        db,
+        "SELECT COUNT(*) FROM memories WHERE user_id = ?1 AND is_archived = 1 AND is_latest = 1",
+        user_id,
+    )
+    .await?;
+    let conversations =
+        count_user_rows(db, "SELECT COUNT(*) FROM conversations WHERE user_id = ?1", user_id)
+            .await?;
+    let episodes = count_user_rows(db, "SELECT COUNT(*) FROM episodes WHERE user_id = ?1", user_id)
+        .await?;
+    let entities = count_user_rows(db, "SELECT COUNT(*) FROM entities WHERE user_id = ?1", user_id)
+        .await?;
+    let skills = count_user_rows(
+        db,
+        "SELECT COUNT(*) FROM skill_records WHERE user_id = ?1",
+        user_id,
+    )
+    .await?;
+
+    let mut category_rows = db
+        .conn
+        .query(
+            "SELECT category, COUNT(*)
+             FROM memories
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1
+             GROUP BY category
+             ORDER BY COUNT(*) DESC, category ASC",
+            params![user_id],
+        )
+        .await?;
+    let mut categories = BTreeMap::new();
+    while let Some(row) = category_rows.next().await? {
+        categories.insert(row.get::<String>(0)?, row.get::<i64>(1)?);
+    }
+
+    Ok(UserStats {
+        memories,
+        archived,
+        conversations,
+        episodes,
+        entities,
+        skills,
+        categories,
+    })
 }

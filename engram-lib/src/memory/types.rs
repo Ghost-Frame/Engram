@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const VALID_FEEDBACK_SIGNALS: &[&str] = &["used", "ignored", "corrected", "irrelevant", "helpful"];
 pub const DEFAULT_IMPORTANCE: i32 = 5;
@@ -125,8 +126,45 @@ pub struct LinkedMemory {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagCount {
+    pub tag: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoryCount {
+    pub category: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionChainEntry {
     pub id: i64, pub content: String, pub version: i32, pub is_latest: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserProfile {
+    pub user_id: i64,
+    pub personality_traits: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub personality_summary: Option<String>,
+    pub memory_count: i64,
+    pub oldest_memory: Option<String>,
+    pub newest_memory: Option<String>,
+    pub avg_importance: f64,
+    pub top_categories: Vec<CategoryCount>,
+    pub top_tags: Vec<TagCount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserStats {
+    pub memories: i64,
+    pub archived: i64,
+    pub conversations: i64,
+    pub episodes: i64,
+    pub entities: i64,
+    pub skills: i64,
+    pub categories: BTreeMap<String, i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

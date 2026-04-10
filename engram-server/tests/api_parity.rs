@@ -485,6 +485,148 @@ async fn list_memories_returns_results_array() {
     );
 }
 
+#[tokio::test]
+async fn tags_endpoints_list_search_and_update() {
+    let app = TestApp::new().await;
+    let (_status, stored) = app
+        .post(
+            "/store",
+            json!({ "content": "tagged memory one", "category": "test", "tags": ["Rust", "Systems"] }),
+        )
+        .await;
+    let id = stored["id"].as_i64().unwrap();
+
+    app.post(
+        "/store",
+        json!({ "content": "tagged memory two", "category": "test", "tags": ["rust", "Backend"] }),
+    )
+    .await;
+
+    let (tags_status, tags_body) = app.get("/tags").await;
+    assert!(tags_status.is_success(), "GET /tags should succeed");
+    let tags = tags_body["tags"].as_array().expect("tags should be an array");
+    assert!(
+        tags.iter().any(|tag| tag["tag"] == "rust" && tag["count"] == 2),
+        "expected rust tag count in {tags_body}"
+    );
+
+    let (search_status, search_body) = app
+        .post("/tags/search", json!({ "tags": ["rust"], "limit": 10 }))
+        .await;
+    assert!(search_status.is_success(), "POST /tags/search should succeed");
+    let results = search_body["results"].as_array().expect("results should be an array");
+    assert_eq!(results.len(), 2, "expected both rust-tagged memories");
+
+    let (update_status, update_body) = app
+        .put(&format!("/memory/{id}/tags"), json!({ "tags": ["updated", "fresh"] }))
+        .await;
+    assert!(update_status.is_success(), "PUT /memory/{{id}}/tags should succeed");
+    assert_eq!(update_body["tags"], json!(["updated", "fresh"]));
+}
+
+#[tokio::test]
+async fn profile_endpoint_returns_combined_profile_shape() {
+    let app = TestApp::new().await;
+    app.post(
+        "/store",
+        json!({ "content": "profile memory", "category": "journal", "tags": ["alpha"] }),
+    )
+    .await;
+
+    let (status, body) = app.get("/profile").await;
+    assert!(status.is_success(), "GET /profile should succeed");
+    assert!(body.get("user_id").and_then(|v| v.as_i64()).is_some());
+    assert!(body.get("memory_count").and_then(|v| v.as_i64()).is_some());
+    assert!(body["top_categories"].is_array(), "top_categories should be an array");
+    assert!(body["top_tags"].is_array(), "top_tags should be an array");
+    assert!(body.get("personality_traits").is_some(), "missing personality_traits");
+}
+
+#[tokio::test]
+async fn profile_synthesize_returns_summary() {
+    let app = TestApp::new().await;
+    app.post(
+        "/store",
+        json!({
+            "content": "I love building Rust systems, I value clarity in code, and I want to learn distributed systems because it matters deeply to me.",
+            "category": "journal"
+        }),
+    )
+    .await;
+
+    let (status, body) = app.post("/profile/synthesize", json!({})).await;
+    assert!(status.is_success(), "POST /profile/synthesize should succeed");
+    assert!(
+        body["personality_summary"].as_str().is_some(),
+        "expected synthesized personality summary, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn user_stats_endpoint_returns_user_scoped_counts() {
+    let app = TestApp::new().await;
+    app.post("/store", json!({ "content": "stats memory", "category": "metrics" }))
+        .await;
+
+    let (status, body) = app.get("/me/stats").await;
+    assert!(status.is_success(), "GET /me/stats should succeed");
+    assert!(body["memories"].as_i64().unwrap_or(0) >= 1);
+    assert!(body["categories"].is_object(), "categories should be an object");
+}
+
+#[tokio::test]
+async fn archive_unarchive_and_forget_endpoints_work() {
+    let app = TestApp::new().await;
+    let (_status, stored) = app
+        .post("/store", json!({ "content": "lifecycle memory", "category": "ops" }))
+        .await;
+    let id = stored["id"].as_i64().unwrap();
+
+    let (archive_status, archive_body) = app.post(&format!("/memory/{id}/archive"), json!({})).await;
+    assert!(archive_status.is_success(), "archive should succeed");
+    assert_eq!(archive_body["status"], "archived");
+
+    let (unarchive_status, unarchive_body) = app.post(&format!("/memory/{id}/unarchive"), json!({})).await;
+    assert!(unarchive_status.is_success(), "unarchive should succeed");
+    assert_eq!(unarchive_body["status"], "active");
+
+    let (forget_status, forget_body) = app
+        .post(&format!("/memory/{id}/forget"), json!({ "reason": "cleanup" }))
+        .await;
+    assert!(forget_status.is_success(), "forget should succeed");
+    assert_eq!(forget_body["status"], "forgotten");
+
+    let (read_status, _read_body) = app.get(&format!("/memory/{id}")).await;
+    assert_eq!(read_status, StatusCode::NOT_FOUND, "forgotten memory should not be readable");
+}
+
+#[tokio::test]
+async fn links_and_versions_endpoints_return_arrays() {
+    let app = TestApp::new().await;
+    let (_status, stored) = app
+        .post("/store", json!({ "content": "version root", "category": "test" }))
+        .await;
+    let id = stored["id"].as_i64().unwrap();
+
+    let (update_status, updated) = app
+        .post(
+            &format!("/memory/{id}/update"),
+            json!({ "content": "version root updated" }),
+        )
+        .await;
+    assert!(update_status.is_success(), "update should succeed");
+    let latest_id = updated["id"].as_i64().unwrap();
+
+    let (links_status, links_body) = app.get(&format!("/links/{latest_id}")).await;
+    assert!(links_status.is_success(), "GET /links/{{id}} should succeed");
+    assert!(links_body["links"].is_array(), "links should be an array");
+
+    let (versions_status, versions_body) = app.get(&format!("/versions/{latest_id}")).await;
+    assert!(versions_status.is_success(), "GET /versions/{{id}} should succeed");
+    let versions = versions_body["versions"].as_array().expect("versions should be an array");
+    assert!(versions.len() >= 2, "expected version chain, got {versions_body}");
+}
+
 // ---------------------------------------------------------------------------
 // SEARCH
 // ---------------------------------------------------------------------------
@@ -1082,6 +1224,27 @@ async fn multi_tenant_list_is_scoped_to_user() {
     assert!(
         !cross_tenant,
         "user B list should not include user A's memories"
+    );
+}
+
+#[tokio::test]
+async fn multi_tenant_tags_are_scoped_to_user() {
+    let app = TestApp::new().await;
+
+    app.post(
+        "/store",
+        json!({ "content": "tag isolation memory", "category": "test", "tags": ["tenant-a-only"] }),
+    )
+    .await;
+
+    let user2_key = create_user2_key(&app).await;
+
+    let (status, body) = app.get_as("/tags", &user2_key).await;
+    assert!(status.is_success(), "user 2 tags request should succeed");
+    let tags = body["tags"].as_array().expect("tags should be an array");
+    assert!(
+        !tags.iter().any(|tag| tag["tag"] == "tenant-a-only"),
+        "user B should not see user A tags, got {body}"
     );
 }
 

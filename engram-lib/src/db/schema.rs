@@ -604,19 +604,16 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
         -- Tier4: scratchpad
         CREATE TABLE IF NOT EXISTS scratchpad (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent TEXT NOT NULL,
-            key TEXT NOT NULL,
-            content TEXT NOT NULL,
-            session TEXT,
-            model TEXT,
-            entry_key TEXT,
-            value TEXT,
-            ttl_seconds INTEGER,
+            agent TEXT NOT NULL DEFAULT 'unknown',
+            session TEXT NOT NULL DEFAULT 'default',
+            model TEXT NOT NULL DEFAULT '',
+            entry_key TEXT NOT NULL,
+            value TEXT NOT NULL DEFAULT '',
             expires_at TEXT,
             user_id INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(agent, key, user_id)
+            UNIQUE(user_id, session, entry_key)
         );
         CREATE INDEX IF NOT EXISTS idx_scratchpad_agent ON scratchpad(agent);
         CREATE INDEX IF NOT EXISTS idx_scratchpad_expires ON scratchpad(expires_at) WHERE expires_at IS NOT NULL;
@@ -976,6 +973,42 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_loom_run_logs_run ON loom_run_logs(run_id);
+
+        -- Sessions
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            agent TEXT NOT NULL,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent);
+
+        -- Session output lines
+        CREATE TABLE IF NOT EXISTS session_output (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            line TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_output_session ON session_output(session_id);
+
+        -- Gate requests
+        CREATE TABLE IF NOT EXISTS gate_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            agent TEXT NOT NULL,
+            command TEXT NOT NULL,
+            context TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reason TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_gate_requests_user ON gate_requests(user_id);
+        CREATE INDEX IF NOT EXISTS idx_gate_requests_status ON gate_requests(status);
         ",
     )
     .await?;
