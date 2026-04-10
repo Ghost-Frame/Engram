@@ -23,5 +23,6 @@ reqwest = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+engram-lib = { path = "../engram-lib", features = ["test-utils"] }
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true }
