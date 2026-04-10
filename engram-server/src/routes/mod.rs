@@ -25,6 +25,7 @@ pub mod onboard;
 pub mod pack;
 pub mod personality;
 pub mod platform;
+pub mod portability;
 pub mod projects;
 pub mod prompts;
 pub mod scratchpad;
