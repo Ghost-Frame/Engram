@@ -14,6 +14,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/export", get(export_handler))
         .route("/import", axum::routing::post(import_handler))
+        // NOTE: /import/mem0 is in ingestion.rs to avoid duplicate routes
         .route("/state", get(get_state_handler).delete(delete_state_handler))
         .route("/preferences", get(list_preferences_handler).put(put_preferences_handler).delete(delete_all_preferences_handler))
         .route("/preferences/{key}", get(get_preference_handler).delete(delete_preference_handler))
