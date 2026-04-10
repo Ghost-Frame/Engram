@@ -26,6 +26,12 @@ regex = { workspace = true }
 zip = { workspace = true }
 pdf-extract = { workspace = true }
 rand = { workspace = true }
+async-trait = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+futures = { workspace = true }
+lancedb = { workspace = true }
+protoc-bin-vendored-linux-x86_64 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
