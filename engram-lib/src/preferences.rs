@@ -90,6 +90,18 @@ pub async fn list_preferences(db: &Database, user_id: i64) -> Result<Vec<UserPre
     Ok(prefs)
 }
 
+/// Delete all preferences for a user. Returns count deleted.
+pub async fn delete_all_preferences(db: &Database, user_id: i64) -> Result<u64> {
+    let affected = db
+        .conn
+        .execute(
+            "DELETE FROM user_preferences WHERE user_id = ?1",
+            params![user_id],
+        )
+        .await?;
+    Ok(affected)
+}
+
 /// Delete a preference by user/key. Returns NotFound if it does not exist.
 pub async fn delete_preference(db: &Database, user_id: i64, key: &str) -> Result<()> {
     let affected = db
