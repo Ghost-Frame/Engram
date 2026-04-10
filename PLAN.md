@@ -14,7 +14,19 @@ Current `engram-lib/src/db/mod.rs` holds a single `libsql::Connection` behind a 
 
 ## Goal
 
-Replace the single-handle libsql setup with a real connection pool. Two pools: one for readers, one for the single writer. Drop the libsql dependency entirely.
+Replace the single-handle libsql setup with a real connection pool. Two pools: one for readers, one for the single writer. Drop the libsql dependency from `engram-lib` and `engram-server`. libsql stays available ONLY to the `engram-migrate` tool (Phase 5) as the one-time read bridge for existing data.
+
+## libsql Handoff to Phase 5
+
+IMPORTANT: do NOT remove libsql from the workspace `Cargo.lock` in the final commit of this phase. Instead:
+
+- Remove libsql from `engram-lib/Cargo.toml`.
+- Remove libsql from `engram-server/Cargo.toml`.
+- Leave libsql available as a dependency of `engram-cli` (or a new `engram-migrate` crate under the CLI).
+- Phase 5 will use libsql inside `engram-migrate` to read the old monolithic database while writing the new sharded layout with rusqlite.
+- After Phase 5 ships and users have had a release or two to migrate, a later cleanup commit can remove libsql entirely.
+
+This matters because existing deployments have libsql-format databases with the `memories_vec_1024_idx` virtual table in their schema. rusqlite cannot open a schema that references libsql-specific virtual tables without errors. The migration tool (Phase 5) handles the conversion. Without the bridge, existing users would have no upgrade path.
 
 ## Decision
 
@@ -77,6 +89,8 @@ impl Database {
 ## Files to Modify
 
 - `engram-lib/Cargo.toml` -- add `rusqlite = "0.31"`, `tokio-rusqlite = "0.5"`, `deadpool-sqlite = "0.8"`, remove `libsql` once all paths ported
+- `engram-server/Cargo.toml` -- remove libsql if present
+- `engram-cli/Cargo.toml` -- KEEP libsql (Phase 5 migration tool needs it)
 - `engram-lib/src/db/mod.rs` -- swap Database to hold two pools
 - `engram-lib/src/db/schema.rs` -- migrations run against writer pool
 - Every file under `engram-lib/src/memory/`, `intelligence/`, `ingestion/`, `export/`, `consolidation/` that uses `db.conn.query` or `db.conn.execute` -- convert to `db.read(|c| ...)` or `db.write(|c| ...)` closures
@@ -175,13 +189,15 @@ for attempt in 0..5 {
 
 ## Verification
 
-- [ ] `libsql` removed from Cargo.toml
+- [ ] `libsql` removed from `engram-lib/Cargo.toml` and `engram-server/Cargo.toml`
+- [ ] `libsql` KEPT in `engram-cli/Cargo.toml` for Phase 5 migration tool
 - [ ] All tests pass against pooled backend
 - [ ] 50-reader load test shows flat latency
 - [ ] Pool metrics exposed via `/metrics`
 - [ ] Writer BUSY retry path tested and working
 - [ ] No deadlocks under load
 - [ ] Connection pragmas verified via `PRAGMA ...` sanity check at pool init
+- [ ] Workspace still compiles with libsql only in engram-cli
 
 ## Risks
 
