@@ -75,6 +75,9 @@ async fn main() {
     let data_dir = config.data_dir.clone();
     let brain = create_brain_backend(Arc::clone(&db_arc), &data_dir, 1).await;
 
+    // Approval notification channel for TUI clients
+    let (approval_tx, _) = tokio::sync::watch::channel(());
+
     let state = AppState {
         db: db_arc,
         config: Arc::new(config),
@@ -84,6 +87,7 @@ async fn main() {
         llm,
         sessions: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         eidolon_config: None,
+        approval_notify: Some(approval_tx),
     };
 
     // Start background PageRank refresh job if enabled.

@@ -123,6 +123,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::search::router())
         .merge(routes::onboard::router())
         .merge(routes::portability::router())
+        .merge(routes::approvals::router())
         // Rate limit runs after auth (inner layer), then auth sets context (outer layer)
         .layer(axum_mw::from_fn_with_state(
             state.clone(),
