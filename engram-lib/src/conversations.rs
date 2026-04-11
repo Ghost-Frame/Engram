@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::db::Database;
+use crate::sessions::scrub::scrub_message;
 use crate::{EngError, Result};
 use libsql::params;
 
@@ -344,11 +345,12 @@ pub async fn add_message(
     // Defense-in-depth: verify conversation ownership at the library layer
     // so callers that skip the route-level check cannot write to another
     // tenant's conversation.
-    get_conversation_for_user(db, conversation_id, user_id).await?;
+    let conversation = get_conversation_for_user(db, conversation_id, user_id).await?;
     let meta_str = metadata_to_string(&req.metadata);
+    let content = scrub_message(db, user_id, &conversation.agent, &req.content).await?;
     db.conn.execute(
         "INSERT INTO messages (conversation_id, role, content, metadata) VALUES (?1, ?2, ?3, ?4)",
-        params![conversation_id, req.role.clone(), req.content.clone(), meta_str],
+        params![conversation_id, req.role.clone(), content, meta_str],
     ).await?;
     let mut id_rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
     let new_id: i64 = match id_rows.next().await? {
@@ -483,12 +485,18 @@ pub async fn bulk_insert_conversation(
             ))
         }
     };
-    for msg in &req.messages {
-        let msg_meta = metadata_to_string(&msg.metadata);
-        db.conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, metadata) VALUES (?1, ?2, ?3, ?4)",
-            params![conv_id, msg.role.clone(), msg.content.clone(), msg_meta],
-        ).await?;
+    for msg in req.messages {
+        add_message(
+            db,
+            conv_id,
+            user_id,
+            AddMessageRequest {
+                role: msg.role,
+                content: msg.content,
+                metadata: msg.metadata,
+            },
+        )
+        .await?;
     }
     get_conversation_for_user(db, conv_id, user_id).await
 }
@@ -533,11 +541,17 @@ pub async fn upsert_conversation(
     // Insert any messages
     if let Some(messages) = req.messages {
         for msg in messages {
-            let msg_meta = metadata_to_string(&msg.metadata);
-            db.conn.execute(
-                "INSERT INTO messages (conversation_id, role, content, metadata) VALUES (?1, ?2, ?3, ?4)",
-                params![conv.id, msg.role.clone(), msg.content.clone(), msg_meta],
-            ).await?;
+            add_message(
+                db,
+                conv.id,
+                user_id,
+                AddMessageRequest {
+                    role: msg.role,
+                    content: msg.content,
+                    metadata: msg.metadata,
+                },
+            )
+            .await?;
         }
         let _ = touch_conversation(db, conv.id, user_id).await;
     }
@@ -551,6 +565,7 @@ pub async fn upsert_conversation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sessions::scrub::apply_scrub;
 
     #[test]
     fn test_sanitize_fts_query() {
@@ -568,5 +583,18 @@ mod tests {
         let result = metadata_to_string(&some);
         assert!(result.is_some());
         assert!(result.unwrap().contains("key"));
+    }
+
+    #[test]
+    fn test_apply_scrub_redacts_known_secret() {
+        let result = apply_scrub("token alpha-secret seen", &["alpha-secret".to_string()]);
+        assert_eq!(result, "token [REDACTED] seen");
+    }
+
+    #[test]
+    fn test_apply_scrub_leaves_clean_text_unchanged() {
+        let input = "normal conversation text";
+        let result = apply_scrub(input, &["alpha-secret".to_string()]);
+        assert_eq!(result, input);
     }
 }

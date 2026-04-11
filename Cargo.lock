@@ -2113,6 +2113,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "async-trait",
+ "axum 0.8.8",
  "chrono",
  "deadpool-sqlite",
  "dirs 6.0.0",

@@ -12,6 +12,8 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use axum::Json;
+use axum::routing::get;
 use axum::Router;
 use engram_lib::config::Config;
 use engram_lib::db::Database;
@@ -19,6 +21,7 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
 
+use engram_lib::cred::CreddClient;
 use engram_server::server::build_router;
 use engram_server::state::AppState;
 
@@ -43,11 +46,23 @@ impl TestApp {
         // /bootstrap now requires a shared secret; set a known test value so
         // the harness can authenticate exactly once to create the admin key.
         std::env::set_var("ENGRAM_BOOTSTRAP_SECRET", "test-bootstrap-secret");
+        std::env::set_var("CREDD_AGENT_KEY", "test-agent-key");
+        std::env::set_var("CREDD_URL", &config.eidolon.credd.url);
+        std::env::set_var(
+            "ENGRAM_EIDOLON_SESSIONS_SCRUB_SECRETS",
+            if config.eidolon.sessions.scrub_secrets {
+                "true"
+            } else {
+                "false"
+            },
+        );
 
         let db = Arc::new(Database::connect_memory().await.expect("in-memory db"));
+        let credd = Arc::new(CreddClient::from_config(&config));
         let state = AppState {
             db: Arc::clone(&db),
             config: Arc::new(config),
+            credd,
             embedder: None,
             reranker: None,
             brain: None,
@@ -297,10 +312,15 @@ async fn health_returns_version_field() {
 #[tokio::test]
 async fn bootstrap_returns_api_key() {
     std::env::set_var("ENGRAM_BOOTSTRAP_SECRET", "test-bootstrap-secret");
+    let config = Config::default();
+    std::env::set_var("CREDD_AGENT_KEY", "test-agent-key");
+    std::env::set_var("CREDD_URL", &config.eidolon.credd.url);
     let db = Database::connect_memory().await.expect("db");
+    let credd = Arc::new(CreddClient::from_config(&config));
     let state = AppState {
         db: Arc::new(db),
-        config: Arc::new(Config::default()),
+        config: Arc::new(config),
+        credd,
         embedder: None,
         reranker: None,
         brain: None,
@@ -1003,6 +1023,80 @@ async fn add_message_to_conversation() {
 }
 
 #[tokio::test]
+async fn admin_cred_resolve_substitutes_secret() {
+    let (credd_url, _handle) = spawn_mock_credd().await;
+    let mut config = Config::default();
+    config.eidolon.credd.url = credd_url;
+
+    let app = TestApp::with_config(config).await;
+
+    let (status, body) = app
+        .post(
+            "/admin/cred/resolve",
+            json!({ "text": "value={{secret:foo/bar}}" }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["text"], "value=alpha-secret");
+}
+
+#[tokio::test]
+async fn gate_check_blocks_on_resolved_secret_pattern() {
+    let (credd_url, _handle) = spawn_mock_credd().await;
+    let mut config = Config::default();
+    config.eidolon.credd.url = credd_url;
+    config.eidolon.gate.blocked_patterns = vec!["{{secret:security/blocklist/0}}".to_string()];
+
+    let app = TestApp::with_config(config).await;
+
+    let (status, body) = app
+        .post(
+            "/gate/check",
+            json!({
+                "command": "curl https://blocked-domain.com",
+                "agent": "test-agent"
+            }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["allowed"], false);
+    assert!(body["reason"].as_str().unwrap_or_default().contains("blocked pattern"));
+}
+
+#[tokio::test]
+async fn conversations_scrub_known_credd_secret_before_store() {
+    let (credd_url, _handle) = spawn_mock_credd().await;
+    let mut config = Config::default();
+    config.eidolon.credd.url = credd_url;
+    config.eidolon.sessions.scrub_secrets = true;
+
+    let app = TestApp::with_config(config).await;
+    let (_status, created) = app
+        .post(
+            "/conversations",
+            json!({ "agent": "test-agent", "title": "Scrub Test" }),
+        )
+        .await;
+    let id = created["id"].as_i64().unwrap();
+
+    let (status, _body) = app
+        .post(
+            &format!("/conversations/{id}/messages"),
+            json!({ "role": "user", "content": "token=alpha-secret" }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = app.get(&format!("/conversations/{id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let content = body["messages"][0]["content"].as_str().unwrap_or_default();
+    assert_eq!(content, "token=[REDACTED]");
+}
+
+#[tokio::test]
 async fn delete_conversation_returns_deleted_true() {
     let app = TestApp::new().await;
     let (_s, created) = app
@@ -1482,4 +1576,55 @@ async fn multi_tenant_conversations_are_scoped() {
         status == StatusCode::NOT_FOUND || status == StatusCode::UNAUTHORIZED,
         "user B should not be able to access user A's conversation, got {status}"
     );
+}
+
+async fn spawn_mock_credd() -> (String, tokio::task::JoinHandle<()>) {
+    async fn secret_handler(
+        axum::extract::Path((service, key)): axum::extract::Path<(String, String)>,
+    ) -> Json<Value> {
+        let key = key.trim_start_matches('/');
+        let payload = match (service.as_str(), key) {
+            ("foo", "bar") => json!({
+                "service": "foo",
+                "key": "bar",
+                "type": "ApiKey",
+                "value": { "type": "api_key", "key": "alpha-secret" }
+            }),
+            ("security", "blocklist/0") => json!({
+                "service": "security",
+                "key": "blocklist/0",
+                "type": "Note",
+                "value": { "type": "note", "content": "blocked-domain.com" }
+            }),
+            _ => json!({
+                "service": service,
+                "key": key,
+                "type": "Note",
+                "value": { "type": "note", "content": "unknown-secret" }
+            }),
+        };
+        Json(payload)
+    }
+
+    async fn list_handler() -> Json<Value> {
+        Json(json!({
+            "secrets": [
+                { "service": "foo", "key": "bar" },
+                { "service": "security", "key": "blocklist/0" }
+            ]
+        }))
+    }
+
+    let app = Router::new()
+        .route("/secret/{service}/{*key}", get(secret_handler))
+        .route("/secrets", get(list_handler));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind credd mock");
+    let addr = listener.local_addr().expect("credd mock addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve credd mock");
+    });
+    (format!("http://{}", addr), handle)
 }

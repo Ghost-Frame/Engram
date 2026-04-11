@@ -37,9 +37,14 @@ async fn get_prompt(
     let format = q.format.as_deref().unwrap_or("raw");
     let budget = q.tokens.unwrap_or(4000).clamp(100, 128000);
     let context = q.context.as_deref().unwrap_or("");
-    let result =
+    let mut result =
         engram_lib::prompts::generate_prompt(&state.db, format, budget, context, auth.user_id)
             .await?;
+    result.prompt = state
+        .credd
+        .resolve_text(&state.db, auth.user_id, &auth.key.name, &result.prompt)
+        .await?;
+    result.tokens_estimated = estimate_tokens(&result.prompt);
     Ok(Json(json!({
         "prompt": result.prompt,
         "format": result.format,
@@ -181,7 +186,10 @@ async fn post_prompt_generate(
 
     sections.push(format!("## Task\n{task}"));
 
-    let mut prompt = sections.join("\n\n");
+    let mut prompt = state
+        .credd
+        .resolve_text(&state.db, auth.user_id, agent, &sections.join("\n\n"))
+        .await?;
     let mut tokens = estimate_tokens(&prompt);
     if tokens > max_tokens {
         let target_chars = max_tokens.saturating_mul(4);
