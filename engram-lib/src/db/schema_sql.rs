@@ -69,6 +69,7 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             fsrs_last_review_at TEXT,
             is_superseded INTEGER NOT NULL DEFAULT 0,
             is_consolidated INTEGER NOT NULL DEFAULT 0,
+            community_id INTEGER,
             -- Emotional valence
             valence REAL,
             arousal REAL,
@@ -97,6 +98,7 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         CREATE INDEX IF NOT EXISTS idx_memories_is_fact ON memories(is_fact) WHERE is_fact = 1;
         CREATE INDEX IF NOT EXISTS idx_memories_parent_fact ON memories(parent_memory_id) WHERE is_fact = 1;
         CREATE INDEX IF NOT EXISTS idx_memories_not_decomposed ON memories(is_decomposed) WHERE is_decomposed = 0 AND is_fact = 0;
+        CREATE INDEX IF NOT EXISTS idx_memories_community ON memories(community_id) WHERE community_id IS NOT NULL;
 
         -- Memory links
         CREATE TABLE IF NOT EXISTS memory_links (

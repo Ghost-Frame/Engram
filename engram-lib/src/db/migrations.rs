@@ -12,6 +12,7 @@ const MIGRATION_THYMUS_TENANT_SCOPE: i64 = 4;
 const MIGRATION_APP_STATE_TABLE: i64 = 5;
 const MIGRATION_BACKFILL_THYMUS_USER_ID: i64 = 6;
 const MIGRATION_VECTOR_SYNC_PENDING: i64 = 7;
+const MIGRATION_ADD_COMMUNITY_ID: i64 = 8;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -97,6 +98,15 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         record_migration(conn, MIGRATION_VECTOR_SYNC_PENDING, "vector_sync_pending").await?;
     }
 
+    // Migration 8: community_id column on memories. graph::communities reads
+    // and writes this column but earlier builds never created it; community
+    // detection and stats would fail at runtime.
+    if current_version < MIGRATION_ADD_COMMUNITY_ID {
+        info!("Running migration 8: add_community_id");
+        run_migration_add_community_id(conn).await?;
+        record_migration(conn, MIGRATION_ADD_COMMUNITY_ID, "add_community_id").await?;
+    }
+
     // Future migrations go here:
     // if current_version < MIGRATION_XXX { ... }
 
@@ -134,6 +144,46 @@ pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 2: add_missing_indexes");
         run_migration_add_missing_indexes_rusqlite(conn)?;
         record_migration_rusqlite(conn, MIGRATION_ADD_MISSING_INDEXES, "add_missing_indexes")?;
+    }
+
+    if current_version < MIGRATION_PAGERANK_TABLES {
+        info!("Running migration 3: add_pagerank_tables");
+        run_migration_pagerank_tables_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_PAGERANK_TABLES, "add_pagerank_tables")?;
+    }
+
+    if current_version < MIGRATION_THYMUS_TENANT_SCOPE {
+        info!("Running migration 4: thymus_tenant_scope");
+        run_migration_thymus_tenant_scope_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_THYMUS_TENANT_SCOPE, "thymus_tenant_scope")?;
+    }
+
+    if current_version < MIGRATION_APP_STATE_TABLE {
+        info!("Running migration 5: app_state_table");
+        run_migration_app_state_table_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_APP_STATE_TABLE, "app_state_table")?;
+    }
+
+    if current_version < MIGRATION_BACKFILL_THYMUS_USER_ID {
+        info!("Running migration 6: backfill_thymus_user_id");
+        run_migration_backfill_thymus_user_id_rusqlite(conn)?;
+        record_migration_rusqlite(
+            conn,
+            MIGRATION_BACKFILL_THYMUS_USER_ID,
+            "backfill_thymus_user_id",
+        )?;
+    }
+
+    if current_version < MIGRATION_VECTOR_SYNC_PENDING {
+        info!("Running migration 7: vector_sync_pending");
+        run_migration_vector_sync_pending_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_VECTOR_SYNC_PENDING, "vector_sync_pending")?;
+    }
+
+    if current_version < MIGRATION_ADD_COMMUNITY_ID {
+        info!("Running migration 8: add_community_id");
+        run_migration_add_community_id_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_ADD_COMMUNITY_ID, "add_community_id")?;
     }
 
     Ok(())
@@ -210,6 +260,18 @@ async fn run_migration_thymus_tenant_scope(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_session_quality_user ON session_quality(user_id);
          CREATE INDEX IF NOT EXISTS idx_behavioral_drift_user ON behavioral_drift_events(user_id);",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Migration 8: add community_id column to memories so Louvain community
+/// detection has a place to persist cluster assignments.
+async fn run_migration_add_community_id(conn: &Connection) -> Result<()> {
+    add_column_if_not_exists(conn, "memories", "community_id", "INTEGER").await?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_memories_community \
+            ON memories(community_id) WHERE community_id IS NOT NULL;",
     )
     .await?;
     Ok(())
@@ -337,6 +399,139 @@ fn run_migration_add_missing_indexes_rusqlite(conn: &rusqlite::Connection) -> Re
         ",
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(feature = "db_pool")]
+fn run_migration_pagerank_tables_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS memory_pagerank (
+            memory_id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            score REAL NOT NULL,
+            computed_at INTEGER NOT NULL,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_pagerank_user ON memory_pagerank(user_id);
+        CREATE INDEX IF NOT EXISTS idx_pagerank_score ON memory_pagerank(score DESC);
+
+        CREATE TABLE IF NOT EXISTS pagerank_dirty (
+            user_id INTEGER PRIMARY KEY,
+            dirty_count INTEGER NOT NULL DEFAULT 0,
+            last_refresh INTEGER NOT NULL DEFAULT 0
+        );
+        ",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(feature = "db_pool")]
+fn run_migration_thymus_tenant_scope_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    add_column_if_not_exists_rusqlite(
+        conn,
+        "session_quality",
+        "user_id",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    add_column_if_not_exists_rusqlite(
+        conn,
+        "behavioral_drift_events",
+        "user_id",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_session_quality_user ON session_quality(user_id);
+         CREATE INDEX IF NOT EXISTS idx_behavioral_drift_user ON behavioral_drift_events(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(feature = "db_pool")]
+fn run_migration_app_state_table_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS app_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(feature = "db_pool")]
+fn run_migration_backfill_thymus_user_id_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE session_quality SET user_id = 1 WHERE user_id = 0",
+        [],
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute(
+        "UPDATE behavioral_drift_events SET user_id = 1 WHERE user_id = 0",
+        [],
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(feature = "db_pool")]
+fn run_migration_vector_sync_pending_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS vector_sync_pending (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            op TEXT NOT NULL,
+            error TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_attempt_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_vector_sync_memory
+            ON vector_sync_pending(memory_id);
+        CREATE INDEX IF NOT EXISTS idx_vector_sync_user
+            ON vector_sync_pending(user_id);
+        ",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(feature = "db_pool")]
+fn run_migration_add_community_id_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    add_column_if_not_exists_rusqlite(conn, "memories", "community_id", "INTEGER")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_memories_community \
+            ON memories(community_id) WHERE community_id IS NOT NULL;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(feature = "db_pool")]
+fn add_column_if_not_exists_rusqlite(
+    conn: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+    column_def: &str,
+) -> Result<()> {
+    let check_sql = format!(
+        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1",
+        table
+    );
+    let exists: i64 = conn
+        .query_row(&check_sql, rusqlite::params![column], |row| row.get(0))
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if exists == 0 {
+        let alter_sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, column_def);
+        conn.execute(&alter_sql, [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Added column {}.{}", table, column);
+    }
     Ok(())
 }
 

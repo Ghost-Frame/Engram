@@ -218,22 +218,6 @@ pub async fn create_conversation(
     get_conversation_for_user(db, new_id, user_id).await
 }
 
-/// Unscoped conversation lookup. Only callers that have already confirmed the
-/// caller owns `id` (e.g. an immediately prior INSERT under a known tenant)
-/// may use this. For any external / route-level access use
-/// [`get_conversation_for_user`], which enforces user_id scoping.
-pub(crate) async fn get_conversation(db: &Database, id: i64) -> Result<Conversation> {
-    let sql = format!(
-        "SELECT {} FROM conversations WHERE id = ?1",
-        CONVERSATION_COLUMNS
-    );
-    let mut rows = db.conn.query(&sql, params![id]).await?;
-    match rows.next().await? {
-        Some(row) => row_to_conversation(&row),
-        None => Err(EngError::NotFound(format!("conversation {} not found", id))),
-    }
-}
-
 pub async fn get_conversation_for_user(
     db: &Database,
     id: i64,

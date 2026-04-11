@@ -260,17 +260,35 @@ CREATE INDEX IF NOT EXISTS idx_preferences_strength ON user_preferences(strength
 -- Artifacts
 CREATE TABLE IF NOT EXISTS artifacts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-    artifact_type TEXT NOT NULL,
-    content TEXT NOT NULL,
+    name TEXT NOT NULL,
+    memory_id INTEGER REFERENCES memories(id) ON DELETE CASCADE,
+    filename TEXT,
+    artifact_type TEXT NOT NULL DEFAULT 'file',
+    content TEXT,
+    content_hash TEXT,
     mime_type TEXT,
     size_bytes INTEGER,
-    hash TEXT,
+    sha256 TEXT,
+    storage_mode TEXT NOT NULL DEFAULT 'inline',
+    data BLOB,
+    disk_path TEXT,
+    is_indexed INTEGER NOT NULL DEFAULT 0,
+    is_encrypted INTEGER NOT NULL DEFAULT 0,
+    source_url TEXT,
+    agent TEXT,
+    session_id TEXT,
     metadata TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    user_id INTEGER NOT NULL DEFAULT 1,
+    space_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_artifacts_memory ON artifacts(memory_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_user ON artifacts(user_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_type ON artifacts(artifact_type);
+CREATE INDEX IF NOT EXISTS idx_artifacts_agent ON artifacts(agent);
+CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_memory ON artifacts(memory_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_hash ON artifacts(sha256);
 
 -- Full-text search
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(

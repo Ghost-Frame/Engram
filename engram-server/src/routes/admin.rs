@@ -79,6 +79,8 @@ pub fn router() -> Router<AppState> {
         )
         // PageRank
         .route("/admin/pagerank/rebuild", post(admin_pagerank_rebuild))
+        // Vector sync replay
+        .route("/admin/vector-sync/replay", post(admin_vector_sync_replay))
 }
 
 // ---------------------------------------------------------------------------
@@ -767,6 +769,23 @@ async fn rebuild_cooccurrences_handler(
 #[derive(Deserialize)]
 struct AdminPageRankQuery {
     user_id: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct VectorSyncReplayBody {
+    limit: Option<usize>,
+}
+
+async fn admin_vector_sync_replay(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    body: Option<Json<VectorSyncReplayBody>>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let limit = body.and_then(|Json(b)| b.limit).unwrap_or(200).min(5000);
+    let report = engram_lib::memory::replay_vector_sync_pending(&state.db, limit).await?;
+    to_json(report)
 }
 
 async fn admin_pagerank_rebuild(

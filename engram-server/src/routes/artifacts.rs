@@ -108,7 +108,7 @@ async fn download_artifact(
     }
 
     // Get artifact data (inline storage only for now)
-    let data = artifacts::get_artifact_data(&state.db, id)
+    let data = artifacts::get_artifact_data(&state.db, id, auth.user_id)
         .await?
         .ok_or_else(|| {
             AppError(engram_lib::EngError::Internal(
