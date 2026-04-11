@@ -146,8 +146,8 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
              fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, \
              fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
              valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated \
-             FROM memories WHERE id = ?1",
-            libsql::params![new_id],
+             FROM memories WHERE id = ?1 AND user_id = ?2",
+            libsql::params![new_id, user_id],
         )
         .await?;
 

@@ -133,7 +133,7 @@ pub async fn get_episode_summary(
 }
 
 pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<LinkedMemory>> {
-    let sql = "SELECT m.id, m.content, m.category, ml.weight, m.is_forgotten, m.model, m.source          FROM memory_links ml          JOIN memories m ON (m.id = CASE WHEN ml.source_id = ?1 THEN ml.target_id ELSE ml.source_id END)          WHERE (ml.source_id = ?1 OR ml.target_id = ?1)            AND m.user_id = ?2 AND m.is_latest = 1 AND m.is_consolidated = 0          ORDER BY ml.weight DESC LIMIT 10";
+    let sql = "SELECT m.id, m.content, m.category, ml.similarity, m.is_forgotten, m.model, m.source          FROM memory_links ml          JOIN memories m ON (m.id = CASE WHEN ml.source_id = ?1 THEN ml.target_id ELSE ml.source_id END)          WHERE (ml.source_id = ?1 OR ml.target_id = ?1)            AND m.user_id = ?2 AND m.is_latest = 1 AND m.is_consolidated = 0          ORDER BY ml.similarity DESC LIMIT 10";
     let mut rows = db.conn.query(sql, libsql::params![mem_id, user_id]).await?;
     let mut linked = Vec::new();
     while let Some(row) = rows.next().await? {
