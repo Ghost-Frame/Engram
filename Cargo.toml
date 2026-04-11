@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "agent-forge"]
+members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge"]
 
 [workspace.dependencies]
 libsql = "0.6"

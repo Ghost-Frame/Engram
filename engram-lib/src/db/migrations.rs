@@ -21,6 +21,7 @@ const MIGRATION_ERROR_EVENTS: i64 = 13;
 const MIGRATION_BRAIN_META: i64 = 14;
 const MIGRATION_PCA_MODELS: i64 = 15;
 const MIGRATION_BRAIN_DREAM_RUNS: i64 = 16;
+const MIGRATION_CRED_TABLES: i64 = 17;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -182,6 +183,13 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         record_migration(conn, MIGRATION_BRAIN_DREAM_RUNS, "brain_dream_runs").await?;
     }
 
+    // Migration 17: cred tables for credential management.
+    if current_version < MIGRATION_CRED_TABLES {
+        info!("Running migration 17: cred_tables");
+        run_migration_cred_tables(conn).await?;
+        record_migration(conn, MIGRATION_CRED_TABLES, "cred_tables").await?;
+    }
+
     // Future migrations go here:
     // if current_version < MIGRATION_XXX { ... }
 
@@ -307,6 +315,12 @@ pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 16: brain_dream_runs");
         run_migration_brain_dream_runs_rusqlite(conn)?;
         record_migration_rusqlite(conn, MIGRATION_BRAIN_DREAM_RUNS, "brain_dream_runs")?;
+    }
+
+    if current_version < MIGRATION_CRED_TABLES {
+        info!("Running migration 17: cred_tables");
+        run_migration_cred_tables_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_CRED_TABLES, "cred_tables")?;
     }
 
     Ok(())
@@ -929,6 +943,66 @@ fn run_migration_brain_dream_runs_rusqlite(conn: &rusqlite::Connection) -> Resul
     Ok(())
 }
 
+/// Migration 17 (rusqlite): cred tables for credential management.
+#[cfg(feature = "db_pool")]
+fn run_migration_cred_tables_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "-- Encrypted secrets storage
+        CREATE TABLE IF NOT EXISTS cred_secrets (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            secret_type TEXT NOT NULL,
+            encrypted_data BLOB NOT NULL,
+            nonce BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, category, name)
+        );
+
+        -- Agent keys for service authentication
+        CREATE TABLE IF NOT EXISTS cred_agent_keys (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            key_hash TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            permissions TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            revoked_at TEXT,
+            UNIQUE(user_id, name)
+        );
+
+        -- Audit log
+        CREATE TABLE IF NOT EXISTS cred_audit (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            agent_name TEXT,
+            action TEXT NOT NULL,
+            category TEXT NOT NULL,
+            secret_name TEXT NOT NULL,
+            access_tier TEXT,
+            success INTEGER NOT NULL,
+            timestamp TEXT NOT NULL
+        );
+
+        -- Recovery keys
+        CREATE TABLE IF NOT EXISTS cred_recovery (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL UNIQUE,
+            encrypted_master BLOB NOT NULL,
+            recovery_hint TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cred_secrets_user ON cred_secrets(user_id);
+        CREATE INDEX IF NOT EXISTS idx_cred_audit_user ON cred_audit(user_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_cred_agent_keys_user ON cred_agent_keys(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
 /// Add a new column to a table if it doesn't exist
 /// SQLite doesn't have IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check first
 async fn add_column_if_not_exists(
@@ -1025,6 +1099,65 @@ async fn run_migration_brain_dream_runs(conn: &Connection) -> Result<()> {
             ON brain_dream_runs(user_id);
         CREATE INDEX IF NOT EXISTS idx_brain_dream_runs_started
             ON brain_dream_runs(started_at);",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Migration 17: cred tables for credential management.
+async fn run_migration_cred_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "-- Encrypted secrets storage
+        CREATE TABLE IF NOT EXISTS cred_secrets (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            secret_type TEXT NOT NULL,
+            encrypted_data BLOB NOT NULL,
+            nonce BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, category, name)
+        );
+
+        -- Agent keys for service authentication
+        CREATE TABLE IF NOT EXISTS cred_agent_keys (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            key_hash TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            permissions TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            revoked_at TEXT,
+            UNIQUE(user_id, name)
+        );
+
+        -- Audit log
+        CREATE TABLE IF NOT EXISTS cred_audit (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            agent_name TEXT,
+            action TEXT NOT NULL,
+            category TEXT NOT NULL,
+            secret_name TEXT NOT NULL,
+            access_tier TEXT,
+            success INTEGER NOT NULL,
+            timestamp TEXT NOT NULL
+        );
+
+        -- Recovery keys
+        CREATE TABLE IF NOT EXISTS cred_recovery (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL UNIQUE,
+            encrypted_master BLOB NOT NULL,
+            recovery_hint TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cred_secrets_user ON cred_secrets(user_id);
+        CREATE INDEX IF NOT EXISTS idx_cred_audit_user ON cred_audit(user_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_cred_agent_keys_user ON cred_agent_keys(user_id);",
     )
     .await?;
     Ok(())
