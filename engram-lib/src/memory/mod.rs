@@ -749,6 +749,7 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
         if let Some(index) = db.vector_index.as_ref() {
             if let Err(e) = index.delete(id).await {
                 warn!("LanceDB vector delete failed for memory {}: {}", id, e);
+                record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
             }
         }
         return Ok(());
@@ -775,6 +776,7 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
     if let Some(index) = db.vector_index.as_ref() {
         if let Err(e) = index.delete(id).await {
             warn!("LanceDB vector delete failed for memory {}: {}", id, e);
+            record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
         }
     }
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
@@ -1234,6 +1236,7 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
                     "LanceDB vector delete failed for forgotten memory {}: {}",
                     id, e
                 );
+                record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
             }
         }
         return Ok(());
@@ -1252,6 +1255,7 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
                 "LanceDB vector delete failed for forgotten memory {}: {}",
                 id, e
             );
+            record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
         }
     }
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
