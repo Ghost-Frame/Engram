@@ -8,6 +8,8 @@ use tracing::info;
 const MIGRATION_CREATE_SCHEMA: i64 = 1;
 const MIGRATION_ADD_MISSING_INDEXES: i64 = 2;
 const MIGRATION_PAGERANK_TABLES: i64 = 3;
+const MIGRATION_THYMUS_TENANT_SCOPE: i64 = 4;
+const MIGRATION_APP_STATE_TABLE: i64 = 5;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -51,6 +53,22 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         info!("Running migration 3: add_pagerank_tables");
         run_migration_pagerank_tables(conn).await?;
         record_migration(conn, MIGRATION_PAGERANK_TABLES, "add_pagerank_tables").await?;
+    }
+
+    // Migration 4: Add user_id to thymus session_quality and
+    // behavioral_drift_events so cross-tenant BOLA is impossible.
+    if current_version < MIGRATION_THYMUS_TENANT_SCOPE {
+        info!("Running migration 4: thymus_tenant_scope");
+        run_migration_thymus_tenant_scope(conn).await?;
+        record_migration(conn, MIGRATION_THYMUS_TENANT_SCOPE, "thymus_tenant_scope").await?;
+    }
+
+    // Migration 5: app_state table for the bootstrap sentinel and other
+    // single-row flags the admin module already references.
+    if current_version < MIGRATION_APP_STATE_TABLE {
+        info!("Running migration 5: app_state_table");
+        run_migration_app_state_table(conn).await?;
+        record_migration(conn, MIGRATION_APP_STATE_TABLE, "app_state_table").await?;
     }
 
     // Future migrations go here:
@@ -142,6 +160,45 @@ async fn run_migration_add_missing_indexes(conn: &Connection) -> Result<()> {
 }
 
 
+/// Migration 4: Ensure session_quality and behavioral_drift_events carry user_id
+/// so every read/write enforces tenant ownership.
+async fn run_migration_thymus_tenant_scope(conn: &Connection) -> Result<()> {
+    add_column_if_not_exists(
+        conn,
+        "session_quality",
+        "user_id",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    add_column_if_not_exists(
+        conn,
+        "behavioral_drift_events",
+        "user_id",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_session_quality_user ON session_quality(user_id);
+         CREATE INDEX IF NOT EXISTS idx_behavioral_drift_user ON behavioral_drift_events(user_id);",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Migration 5: add the app_state key/value table used by admin settings and
+/// the atomic bootstrap claim sentinel.
+async fn run_migration_app_state_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS app_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )
+    .await?;
+    Ok(())
+}
+
 /// Migration 3: Create pagerank cache and dirty-tracking tables
 async fn run_migration_pagerank_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -211,7 +268,6 @@ fn run_migration_add_missing_indexes_rusqlite(conn: &rusqlite::Connection) -> Re
 
 /// Add a new column to a table if it doesn't exist
 /// SQLite doesn't have IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check first
-#[allow(dead_code)]
 async fn add_column_if_not_exists(
     conn: &Connection,
     table: &str,

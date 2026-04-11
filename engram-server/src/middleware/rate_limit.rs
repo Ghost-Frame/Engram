@@ -57,9 +57,22 @@ pub async fn rate_limit_middleware(
                 .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
         }
         Err(e) => {
-            // Fail open: log the error and allow the request through.
-            tracing::warn!("rate_limit check failed for {}: {}", key, e);
-            next.run(request).await
+            // SECURITY: fail CLOSED on backend errors for authenticated
+            // requests. Previously we passed the request through on error,
+            // which turned any flaky query into a rate-limit bypass: an
+            // attacker could intentionally poison the rate_limits table (e.g.
+            // via heavy write contention) to get unlimited throughput.
+            tracing::error!("rate_limit check failed for {}: {}", key, e);
+            let body = serde_json::json!({
+                "error": "Rate limit backend unavailable. Retry shortly.",
+                "retry_after": 5,
+            });
+            axum::response::Response::builder()
+                .status(axum::http::StatusCode::SERVICE_UNAVAILABLE)
+                .header("Content-Type", "application/json")
+                .header("Retry-After", "5")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
         }
     }
 }

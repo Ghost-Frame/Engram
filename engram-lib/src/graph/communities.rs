@@ -45,10 +45,19 @@ pub async fn detect_communities(
     user_id: i64,
     max_iterations: u32,
 ) -> Result<CommunitiesResult> {
+    // SECURITY/DoS: Louvain modularity optimization runs O(n^2)-ish over the
+    // node count and O(E) per pass over edges. Cap both so a large tenant
+    // cannot run the server out of CPU and memory in a single call. Callers
+    // hitting the cap still get a best-effort result over the top-N memories.
+    const MAX_NODES: i64 = 10_000;
+    const MAX_ITERATIONS: u32 = 100;
+    let max_iterations = max_iterations.clamp(1, MAX_ITERATIONS);
+
     let conn = db.connection();
     let mut mem_rows = conn.query(
-        "SELECT id FROM memories WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1",
-        libsql::params![user_id]).await?;
+        "SELECT id FROM memories WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+         ORDER BY importance DESC, id DESC LIMIT ?2",
+        libsql::params![user_id, MAX_NODES]).await?;
     let mut memory_ids: Vec<i64> = Vec::new();
     while let Some(row) = mem_rows.next().await? {
         memory_ids.push(row.get(0)?);

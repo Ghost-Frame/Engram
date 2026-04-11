@@ -140,12 +140,13 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
         .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let language = req.language.unwrap_or_else(|| "javascript".into());
 
-    // Determine version and root
+    // Determine version and root. Parent must belong to the same tenant.
     let (version, root_skill_id) = if let Some(parent_id) = req.parent_skill_id {
         let mut rows = conn
             .query(
-                "SELECT version, root_skill_id FROM skill_records WHERE id = ?1",
-                params![parent_id],
+                "SELECT version, root_skill_id FROM skill_records \
+                 WHERE id = ?1 AND user_id = ?2",
+                params![parent_id, user_id],
             )
             .await?;
         if let Some(row) = rows.next().await? {
@@ -153,35 +154,37 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
             let pr: Option<i64> = row.get(1)?;
             (pv + 1, pr.or(Some(parent_id)))
         } else {
-            (1, None)
+            return Err(EngError::NotFound(format!(
+                "parent skill {} not found",
+                parent_id
+            )));
         }
     } else {
         (1, None)
     };
 
-    conn.execute(
-        "INSERT INTO skill_records (name, agent, description, code, language, version, \
-         parent_skill_id, root_skill_id, user_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            req.name,
-            req.agent,
-            req.description,
-            req.code,
-            language,
-            version,
-            req.parent_skill_id,
-            root_skill_id,
-            user_id
-        ],
-    )
-    .await?;
-
-    let mut id_rows = conn.query("SELECT last_insert_rowid()", ()).await?;
+    let mut id_rows = conn
+        .query(
+            "INSERT INTO skill_records (name, agent, description, code, language, version, \
+             parent_skill_id, root_skill_id, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id",
+            params![
+                req.name,
+                req.agent,
+                req.description,
+                req.code,
+                language,
+                version,
+                req.parent_skill_id,
+                root_skill_id,
+                user_id
+            ],
+        )
+        .await?;
     let id: i64 = if let Some(row) = id_rows.next().await? {
         row.get(0)?
     } else {
-        return Err(EngError::Internal("failed to get skill id".into()));
+        return Err(EngError::Internal("failed to insert skill".into()));
     };
 
     // Record lineage
@@ -317,6 +320,7 @@ pub async fn delete_skill(db: &Database, id: i64, user_id: i64) -> Result<()> {
 pub async fn record_execution(
     db: &Database,
     skill_id: i64,
+    user_id: i64,
     success: bool,
     duration_ms: Option<f64>,
     error_type: Option<&str>,
@@ -324,25 +328,30 @@ pub async fn record_execution(
 ) -> Result<()> {
     let conn = db.connection();
 
+    // Fail closed if the skill does not belong to this tenant.
+    get_skill(db, skill_id, user_id).await?;
+
     conn.execute(
         "INSERT INTO execution_analyses (skill_id, success, duration_ms, error_type, error_message) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![skill_id, success as i32, duration_ms, error_type, error_message],
     ).await?;
 
-    // Update skill counters
+    // Update skill counters. Scope UPDATEs by user_id as defense in depth.
     if success {
         conn.execute(
             "UPDATE skill_records SET success_count = success_count + 1, \
-             execution_count = execution_count + 1, updated_at = datetime('now') WHERE id = ?1",
-            params![skill_id],
+             execution_count = execution_count + 1, updated_at = datetime('now') \
+             WHERE id = ?1 AND user_id = ?2",
+            params![skill_id, user_id],
         )
         .await?;
     } else {
         conn.execute(
             "UPDATE skill_records SET failure_count = failure_count + 1, \
-             execution_count = execution_count + 1, updated_at = datetime('now') WHERE id = ?1",
-            params![skill_id],
+             execution_count = execution_count + 1, updated_at = datetime('now') \
+             WHERE id = ?1 AND user_id = ?2",
+            params![skill_id, user_id],
         )
         .await?;
     }
@@ -352,8 +361,8 @@ pub async fn record_execution(
         conn.execute(
             "UPDATE skill_records SET avg_duration_ms = \
              COALESCE((avg_duration_ms * (execution_count - 1) + ?1) / execution_count, ?1), \
-             updated_at = datetime('now') WHERE id = ?2",
-            params![dur, skill_id],
+             updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
+            params![dur, skill_id, user_id],
         )
         .await?;
     }
@@ -365,15 +374,21 @@ pub async fn record_execution(
 pub async fn get_executions(
     db: &Database,
     skill_id: i64,
+    user_id: i64,
     limit: usize,
 ) -> Result<Vec<ExecutionRecord>> {
     let conn = db.connection();
+    // Fail closed if the skill does not belong to this tenant.
+    get_skill(db, skill_id, user_id).await?;
     let mut rows = conn
         .query(
-            "SELECT id, skill_id, success, duration_ms, error_type, error_message, \
-         input_hash, output_hash, metadata, created_at \
-         FROM execution_analyses WHERE skill_id = ?1 ORDER BY id DESC LIMIT ?2",
-            params![skill_id, limit as i64],
+            "SELECT ea.id, ea.skill_id, ea.success, ea.duration_ms, ea.error_type, ea.error_message, \
+         ea.input_hash, ea.output_hash, ea.metadata, ea.created_at \
+         FROM execution_analyses ea \
+         INNER JOIN skill_records sr ON sr.id = ea.skill_id \
+         WHERE ea.skill_id = ?1 AND sr.user_id = ?2 \
+         ORDER BY ea.id DESC LIMIT ?3",
+            params![skill_id, user_id, limit as i64],
         )
         .await?;
 
@@ -400,29 +415,34 @@ pub async fn get_executions(
 pub async fn add_judgment(
     db: &Database,
     skill_id: i64,
+    user_id: i64,
     judge_agent: &str,
     score: f64,
     rationale: Option<&str>,
 ) -> Result<SkillJudgment> {
     let conn = db.connection();
-    conn.execute(
-        "INSERT INTO skill_judgments (skill_id, judge_agent, score, rationale) VALUES (?1, ?2, ?3, ?4)",
-        params![skill_id, judge_agent, score, rationale],
-    ).await?;
+    // Fail closed if the skill does not belong to this tenant.
+    get_skill(db, skill_id, user_id).await?;
 
-    let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
+    let mut rows = conn
+        .query(
+            "INSERT INTO skill_judgments (skill_id, judge_agent, score, rationale) \
+             VALUES (?1, ?2, ?3, ?4) RETURNING id",
+            params![skill_id, judge_agent, score, rationale],
+        )
+        .await?;
     let id: i64 = if let Some(row) = rows.next().await? {
         row.get(0)?
     } else {
-        0
+        return Err(EngError::Internal("failed to insert judgment".into()));
     };
 
-    // Update trust_score as weighted average of all judgments
+    // Update trust_score as weighted average of all judgments. Scope update by user_id.
     conn.execute(
         "UPDATE skill_records SET trust_score = \
          (SELECT AVG(score) FROM skill_judgments WHERE skill_id = ?1), \
-         updated_at = datetime('now') WHERE id = ?1",
-        params![skill_id],
+         updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+        params![skill_id, user_id],
     )
     .await?;
 
@@ -436,13 +456,21 @@ pub async fn add_judgment(
     })
 }
 
-pub async fn get_judgments(db: &Database, skill_id: i64) -> Result<Vec<SkillJudgment>> {
+pub async fn get_judgments(
+    db: &Database,
+    skill_id: i64,
+    user_id: i64,
+) -> Result<Vec<SkillJudgment>> {
     let conn = db.connection();
+    get_skill(db, skill_id, user_id).await?;
     let mut rows = conn
         .query(
-            "SELECT id, skill_id, judge_agent, score, rationale, created_at \
-         FROM skill_judgments WHERE skill_id = ?1 ORDER BY id DESC",
-            params![skill_id],
+            "SELECT sj.id, sj.skill_id, sj.judge_agent, sj.score, sj.rationale, sj.created_at \
+         FROM skill_judgments sj \
+         INNER JOIN skill_records sr ON sr.id = sj.skill_id \
+         WHERE sj.skill_id = ?1 AND sr.user_id = ?2 \
+         ORDER BY sj.id DESC",
+            params![skill_id, user_id],
         )
         .await?;
 
@@ -509,12 +537,19 @@ pub async fn get_tool_quality(db: &Database, tool_name: &str) -> Result<serde_js
 
 // -- Skill tags --
 
-pub async fn get_skill_tags(db: &Database, skill_id: i64) -> Result<Vec<String>> {
+pub async fn get_skill_tags(
+    db: &Database,
+    skill_id: i64,
+    user_id: i64,
+) -> Result<Vec<String>> {
     let conn = db.connection();
+    get_skill(db, skill_id, user_id).await?;
     let mut rows = conn
         .query(
-            "SELECT tag FROM skill_tags WHERE skill_id = ?1",
-            params![skill_id],
+            "SELECT st.tag FROM skill_tags st \
+             INNER JOIN skill_records sr ON sr.id = st.skill_id \
+             WHERE st.skill_id = ?1 AND sr.user_id = ?2",
+            params![skill_id, user_id],
         )
         .await?;
     let mut tags = Vec::new();
@@ -526,12 +561,19 @@ pub async fn get_skill_tags(db: &Database, skill_id: i64) -> Result<Vec<String>>
 
 // -- Tool deps --
 
-pub async fn get_tool_deps(db: &Database, skill_id: i64) -> Result<Vec<String>> {
+pub async fn get_tool_deps(
+    db: &Database,
+    skill_id: i64,
+    user_id: i64,
+) -> Result<Vec<String>> {
     let conn = db.connection();
+    get_skill(db, skill_id, user_id).await?;
     let mut rows = conn
         .query(
-            "SELECT tool_name FROM skill_tool_deps WHERE skill_id = ?1",
-            params![skill_id],
+            "SELECT std.tool_name FROM skill_tool_deps std \
+             INNER JOIN skill_records sr ON sr.id = std.skill_id \
+             WHERE std.skill_id = ?1 AND sr.user_id = ?2",
+            params![skill_id, user_id],
         )
         .await?;
     let mut deps = Vec::new();
@@ -548,12 +590,17 @@ pub fn check_tool_safety(required_tools: &[String], available_tools: &[String]) 
 
 // -- Skill lineage --
 
-pub async fn get_lineage(db: &Database, skill_id: i64) -> Result<Vec<i64>> {
+pub async fn get_lineage(db: &Database, skill_id: i64, user_id: i64) -> Result<Vec<i64>> {
     let conn = db.connection();
+    get_skill(db, skill_id, user_id).await?;
+    // Only return parents that also belong to the caller; filter out any foreign-tenant ids
+    // even if the lineage table ever held one from a pre-patch row.
     let mut rows = conn
         .query(
-            "SELECT parent_id FROM skill_lineage_parents WHERE skill_id = ?1",
-            params![skill_id],
+            "SELECT slp.parent_id FROM skill_lineage_parents slp \
+             INNER JOIN skill_records psr ON psr.id = slp.parent_id \
+             WHERE slp.skill_id = ?1 AND psr.user_id = ?2",
+            params![skill_id, user_id],
         )
         .await?;
     let mut parents = Vec::new();

@@ -107,40 +107,29 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
 
     let conn = &db.conn;
 
-    conn.execute(
-        "INSERT INTO action_log (agent, action, summary, project, metadata, user_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        libsql::params![
-            req.agent,
-            req.action,
-            req.summary,
-            req.project,
-            metadata_str,
-            user_id,
-        ],
-    )
-    .await?;
-
-    let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id_row = rows
-        .next()
-        .await?
-        .ok_or_else(|| EngError::Internal("no rowid".into()))?;
-    let id: i64 = id_row.get(0)?;
-
-    // Fetch back the inserted row
+    // INSERT ... RETURNING is atomic per statement and keeps the fetch scoped to
+    // the row we just wrote, eliminating the cross-connection last_insert_rowid
+    // race that could otherwise hand back another tenant's row.
     let mut rows = conn
         .query(
-            "SELECT id, agent, action, summary, metadata, project, user_id, created_at
-         FROM action_log WHERE id = ?1",
-            libsql::params![id],
+            "INSERT INTO action_log (agent, action, summary, project, metadata, user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             RETURNING id, agent, action, summary, metadata, project, user_id, created_at",
+            libsql::params![
+                req.agent,
+                req.action,
+                req.summary,
+                req.project,
+                metadata_str,
+                user_id,
+            ],
         )
         .await?;
 
     let row = rows
         .next()
         .await?
-        .ok_or_else(|| EngError::Internal("action_log row vanished".into()))?;
+        .ok_or_else(|| EngError::Internal("action_log RETURNING row was empty".into()))?;
 
     row_to_action_entry(&row)
 }

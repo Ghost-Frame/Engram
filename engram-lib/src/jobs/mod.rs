@@ -252,11 +252,19 @@ pub async fn retry_failed_job(conn: &Connection, id: i64) -> Result<bool> {
 }
 
 pub async fn purge_failed_jobs(conn: &Connection, older_than_days: i64) -> Result<u64> {
-    let sql = format!(
-        "DELETE FROM jobs WHERE status = 'failed' AND completed_at < datetime('now', '-{} days')",
-        older_than_days
-    );
-    Ok(conn.execute(&sql, ()).await?)
+    // Reject negatives defensively so we never expand the purge window to a
+    // future timestamp and mass-delete completed jobs.
+    let days = older_than_days.max(0);
+    // Build the SQLite datetime modifier from a bound parameter instead of
+    // format!() string concatenation; SQLite's `||` operator concatenates the
+    // parameter value into the modifier at evaluation time.
+    let modifier = format!("-{} days", days);
+    Ok(conn
+        .execute(
+            "DELETE FROM jobs WHERE status = 'failed' AND completed_at < datetime('now', ?1)",
+            libsql::params![modifier],
+        )
+        .await?)
 }
 
 pub async fn register_job_handler<F, Fut>(job_type: &str, handler: F)

@@ -38,9 +38,21 @@ impl RateLimiter {
     }
 
     /// Check rate limit for a key. Returns Ok(count) or Err(retry_after_secs).
+    ///
+    /// SECURITY: if the inner RwLock is poisoned by a panicking writer we fail
+    /// closed (return the smallest retry-after > 0) instead of unwrapping and
+    /// taking down the whole process, and we refuse to count that request
+    /// against the caller so we cannot be turned into a free amplifier.
     pub fn check(&self, key_id: i64, limit: u32) -> std::result::Result<u32, u64> {
         let now = Self::now_ms();
-        let mut map = self.entries.write().unwrap();
+        let mut map = match self.entries.write() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                tracing::error!("rate limiter lock poisoned; failing closed");
+                // Recover the guard so subsequent requests can make progress.
+                poisoned.into_inner()
+            }
+        };
         let entry = map.entry(key_id).or_insert(RateLimitEntry {
             count: 0,
             reset: now + RATE_WINDOW_MS,
@@ -65,7 +77,10 @@ impl RateLimiter {
     /// Prune expired entries to prevent unbounded growth.
     pub fn prune(&self) {
         let now = Self::now_ms();
-        let mut map = self.entries.write().unwrap();
+        let mut map = match self.entries.write() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         map.retain(|_, entry| now <= entry.reset);
     }
 }

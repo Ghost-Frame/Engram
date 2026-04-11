@@ -103,6 +103,7 @@ pub struct SessionQuality {
     pub rules_drifted: serde_json::Value,
     pub personality_score: Option<f64>,
     pub rule_compliance_rate: Option<f64>,
+    pub user_id: i64,
     pub created_at: String,
 }
 
@@ -115,6 +116,7 @@ pub struct RecordSessionQualityRequest {
     pub rules_drifted: Option<Vec<String>>,
     pub personality_score: Option<f64>,
     pub rule_compliance_rate: Option<f64>,
+    pub user_id: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +131,7 @@ pub struct DriftEvent {
     pub drift_type: String,
     pub severity: String,
     pub signal: String,
+    pub user_id: i64,
     pub created_at: String,
 }
 
@@ -139,6 +142,7 @@ pub struct RecordDriftEventRequest {
     pub drift_type: String,
     pub severity: Option<String>,
     pub signal: String,
+    pub user_id: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +260,8 @@ fn row_to_session_quality(row: &libsql::Row) -> Result<SessionQuality> {
         rules_drifted,
         personality_score: row.get(6)?,
         rule_compliance_rate: row.get(7)?,
-        created_at: row.get(8)?,
+        user_id: row.get(8)?,
+        created_at: row.get(9)?,
     })
 }
 
@@ -268,7 +273,8 @@ fn row_to_drift_event(row: &libsql::Row) -> Result<DriftEvent> {
         drift_type: row.get(3)?,
         severity: row.get(4)?,
         signal: row.get(5)?,
-        created_at: row.get(6)?,
+        user_id: row.get(6)?,
+        created_at: row.get(7)?,
     })
 }
 
@@ -821,66 +827,66 @@ pub async fn record_session_quality(
     req: RecordSessionQualityRequest,
 ) -> Result<SessionQuality> {
     let conn = &db.conn;
+    let user_id = req
+        .user_id
+        .ok_or_else(|| EngError::InvalidInput("user_id required".into()))?;
     let turn_count = req.turn_count.unwrap_or(0);
     let rules_followed = req.rules_followed.unwrap_or_default();
     let rules_drifted = req.rules_drifted.unwrap_or_default();
     let rules_followed_json = serde_json::to_string(&rules_followed)?;
     let rules_drifted_json = serde_json::to_string(&rules_drifted)?;
 
-    conn.execute(
-        "INSERT INTO session_quality (session_id, agent, turn_count, rules_followed, rules_drifted, personality_score, rule_compliance_rate)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        libsql::params![
-            req.session_id,
-            req.agent,
-            turn_count,
-            rules_followed_json,
-            rules_drifted_json,
-            req.personality_score,
-            req.rule_compliance_rate,
-        ],
-    )
-    .await?;
-
-    let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id_row = rows
-        .next()
-        .await?
-        .ok_or_else(|| EngError::Internal("no rowid".into()))?;
-    let id: i64 = id_row.get(0)?;
-
+    // INSERT ... RETURNING avoids the cross-connection last_insert_rowid race
+    // and keeps the write + read-back atomic to this statement.
     let mut sq_rows = conn
         .query(
-            "SELECT id, session_id, agent, turn_count, rules_followed, rules_drifted,
-                    personality_score, rule_compliance_rate, created_at
-             FROM session_quality WHERE id = ?1",
-            libsql::params![id],
+            "INSERT INTO session_quality (session_id, agent, turn_count, rules_followed, rules_drifted, personality_score, rule_compliance_rate, user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             RETURNING id, session_id, agent, turn_count, rules_followed, rules_drifted,
+                       personality_score, rule_compliance_rate, user_id, created_at",
+            libsql::params![
+                req.session_id,
+                req.agent,
+                turn_count,
+                rules_followed_json,
+                rules_drifted_json,
+                req.personality_score,
+                req.rule_compliance_rate,
+                user_id,
+            ],
         )
         .await?;
 
     let row = sq_rows
         .next()
         .await?
-        .ok_or_else(|| EngError::Internal("session_quality not found after insert".into()))?;
+        .ok_or_else(|| EngError::Internal("session_quality RETURNING row was empty".into()))?;
 
     row_to_session_quality(&row)
 }
 
 pub async fn get_session_quality(
     db: &Database,
+    user_id: i64,
     agent: &str,
     since: Option<&str>,
     limit: usize,
 ) -> Result<Vec<SessionQuality>> {
     let conn = &db.conn;
 
+    // SECURITY: cap the limit so a caller cannot ask for a trillion rows.
+    let capped_limit = limit.min(1_000);
+
     let mut sql = String::from(
         "SELECT id, session_id, agent, turn_count, rules_followed, rules_drifted,
-                personality_score, rule_compliance_rate, created_at
-         FROM session_quality WHERE agent = ?1",
+                personality_score, rule_compliance_rate, user_id, created_at
+         FROM session_quality WHERE user_id = ?1 AND agent = ?2",
     );
-    let mut params_vec: Vec<libsql::Value> = vec![libsql::Value::Text(agent.to_string())];
-    let mut idx = 2usize;
+    let mut params_vec: Vec<libsql::Value> = vec![
+        libsql::Value::Integer(user_id),
+        libsql::Value::Text(agent.to_string()),
+    ];
+    let mut idx = 3usize;
 
     if let Some(s) = since {
         sql.push_str(&format!(" AND created_at >= ?{}", idx));
@@ -889,7 +895,7 @@ pub async fn get_session_quality(
     }
 
     sql.push_str(&format!(" ORDER BY created_at DESC LIMIT ?{}", idx));
-    params_vec.push(libsql::Value::Integer(limit as i64));
+    params_vec.push(libsql::Value::Integer(capped_limit as i64));
 
     let mut rows = conn
         .query(&sql, libsql::params_from_iter(params_vec))
@@ -917,6 +923,10 @@ const VALID_DRIFT_TYPES: &[&str] = &[
 const VALID_SEVERITIES: &[&str] = &["low", "medium", "high", "critical"];
 
 pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> Result<DriftEvent> {
+    let user_id = req
+        .user_id
+        .ok_or_else(|| EngError::InvalidInput("user_id required".into()))?;
+
     // Validate drift_type
     if !VALID_DRIFT_TYPES.contains(&req.drift_type.as_str()) {
         return Err(EngError::InvalidInput(format!(
@@ -939,50 +949,45 @@ pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> 
 
     let conn = &db.conn;
 
-    conn.execute(
-        "INSERT INTO behavioral_drift_events (agent, session_id, drift_type, severity, signal)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        libsql::params![
-            req.agent,
-            req.session_id,
-            req.drift_type,
-            severity,
-            req.signal
-        ],
-    )
-    .await?;
-
-    let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id_row = rows
-        .next()
-        .await?
-        .ok_or_else(|| EngError::Internal("no rowid".into()))?;
-    let id: i64 = id_row.get(0)?;
-
+    // INSERT ... RETURNING avoids the cross-connection last_insert_rowid race.
     let mut drift_rows = conn
         .query(
-            "SELECT id, agent, session_id, drift_type, severity, signal, created_at
-             FROM behavioral_drift_events WHERE id = ?1",
-            libsql::params![id],
+            "INSERT INTO behavioral_drift_events (agent, session_id, drift_type, severity, signal, user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             RETURNING id, agent, session_id, drift_type, severity, signal, user_id, created_at",
+            libsql::params![
+                req.agent,
+                req.session_id,
+                req.drift_type,
+                severity,
+                req.signal,
+                user_id,
+            ],
         )
         .await?;
 
     let row = drift_rows
         .next()
         .await?
-        .ok_or_else(|| EngError::Internal("drift event not found after insert".into()))?;
+        .ok_or_else(|| EngError::Internal("drift event RETURNING row was empty".into()))?;
 
     row_to_drift_event(&row)
 }
 
-pub async fn get_drift_events(db: &Database, agent: &str, limit: usize) -> Result<Vec<DriftEvent>> {
+pub async fn get_drift_events(
+    db: &Database,
+    user_id: i64,
+    agent: &str,
+    limit: usize,
+) -> Result<Vec<DriftEvent>> {
     let conn = &db.conn;
+    let capped = limit.min(1_000);
     let mut rows = conn
         .query(
-            "SELECT id, agent, session_id, drift_type, severity, signal, created_at
-             FROM behavioral_drift_events WHERE agent = ?1
-             ORDER BY created_at DESC LIMIT ?2",
-            libsql::params![agent, limit as i64],
+            "SELECT id, agent, session_id, drift_type, severity, signal, user_id, created_at
+             FROM behavioral_drift_events WHERE user_id = ?1 AND agent = ?2
+             ORDER BY created_at DESC LIMIT ?3",
+            libsql::params![user_id, agent, capped as i64],
         )
         .await?;
 
@@ -993,15 +998,19 @@ pub async fn get_drift_events(db: &Database, agent: &str, limit: usize) -> Resul
     Ok(results)
 }
 
-pub async fn get_drift_summary(db: &Database, agent: &str) -> Result<Vec<DriftSummaryEntry>> {
+pub async fn get_drift_summary(
+    db: &Database,
+    user_id: i64,
+    agent: &str,
+) -> Result<Vec<DriftSummaryEntry>> {
     let conn = &db.conn;
     let mut rows = conn
         .query(
             "SELECT drift_type, severity, COUNT(*) as count
-             FROM behavioral_drift_events WHERE agent = ?1
+             FROM behavioral_drift_events WHERE user_id = ?1 AND agent = ?2
              GROUP BY drift_type, severity
              ORDER BY count DESC",
-            libsql::params![agent],
+            libsql::params![user_id, agent],
         )
         .await?;
 
@@ -1020,11 +1029,16 @@ pub async fn get_drift_summary(db: &Database, agent: &str) -> Result<Vec<DriftSu
 // Stats
 // ---------------------------------------------------------------------------
 
-pub async fn get_stats(db: &Database) -> Result<ThymusStats> {
+pub async fn get_stats(db: &Database, user_id: i64) -> Result<ThymusStats> {
     let conn = &db.conn;
 
     let rubrics = {
-        let mut rows = conn.query("SELECT COUNT(*) FROM rubrics", ()).await?;
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*) FROM rubrics WHERE user_id = ?1",
+                libsql::params![user_id],
+            )
+            .await?;
         let row = rows
             .next()
             .await?
@@ -1034,7 +1048,12 @@ pub async fn get_stats(db: &Database) -> Result<ThymusStats> {
     };
 
     let evaluations = {
-        let mut rows = conn.query("SELECT COUNT(*) FROM evaluations", ()).await?;
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*) FROM evaluations WHERE user_id = ?1",
+                libsql::params![user_id],
+            )
+            .await?;
         let row = rows
             .next()
             .await?
@@ -1045,7 +1064,10 @@ pub async fn get_stats(db: &Database) -> Result<ThymusStats> {
 
     let metrics = {
         let mut rows = conn
-            .query("SELECT COUNT(*) FROM quality_metrics", ())
+            .query(
+                "SELECT COUNT(*) FROM quality_metrics WHERE user_id = ?1",
+                libsql::params![user_id],
+            )
             .await?;
         let row = rows
             .next()
@@ -1057,7 +1079,10 @@ pub async fn get_stats(db: &Database) -> Result<ThymusStats> {
 
     let agent_count = {
         let mut rows = conn
-            .query("SELECT COUNT(DISTINCT agent) FROM evaluations", ())
+            .query(
+                "SELECT COUNT(DISTINCT agent) FROM evaluations WHERE user_id = ?1",
+                libsql::params![user_id],
+            )
             .await?;
         let row = rows
             .next()

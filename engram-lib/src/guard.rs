@@ -1,7 +1,6 @@
 use crate::db::Database;
 use crate::Result;
 use chrono::{DateTime, Utc};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -48,7 +47,23 @@ pub async fn evaluate(db: &Database, content: &str) -> Result<GuardResult> {
             continue;
         }
 
-        let re = match Regex::new(&rule.pattern) {
+        // SECURITY/DoS: bound pattern length and compile with explicit size
+        // limits so a hostile rule cannot blow up regex compilation or match
+        // cost. Any pattern that exceeds these limits is skipped.
+        const MAX_PATTERN_CHARS: usize = 4_096;
+        if rule.pattern.len() > MAX_PATTERN_CHARS {
+            tracing::warn!(
+                rule = %rule.name,
+                len = rule.pattern.len(),
+                "guard pattern exceeds length cap; skipping"
+            );
+            continue;
+        }
+        let re = match regex::RegexBuilder::new(&rule.pattern)
+            .size_limit(1 << 20)
+            .dfa_size_limit(1 << 20)
+            .build()
+        {
             Ok(r) => r,
             Err(_) => continue, // Skip invalid patterns
         };
@@ -89,8 +104,22 @@ pub async fn evaluate(db: &Database, content: &str) -> Result<GuardResult> {
 pub async fn create_rule(db: &Database, rule: GuardRule) -> Result<GuardRule> {
     let conn = db.connection();
 
-    // Validate the regex pattern
-    if Regex::new(&rule.pattern).is_err() {
+    // SECURITY: reject over-long patterns at create time so they can never
+    // reach the hot evaluate() path and starve CPU.
+    const MAX_PATTERN_CHARS: usize = 4_096;
+    if rule.pattern.len() > MAX_PATTERN_CHARS {
+        return Err(crate::EngError::InvalidInput(format!(
+            "guard pattern exceeds {} character cap",
+            MAX_PATTERN_CHARS
+        )));
+    }
+    // Validate the regex pattern (with bounded compile size).
+    if regex::RegexBuilder::new(&rule.pattern)
+        .size_limit(1 << 20)
+        .dfa_size_limit(1 << 20)
+        .build()
+        .is_err()
+    {
         return Err(crate::EngError::InvalidInput(format!(
             "invalid regex pattern: {}",
             rule.pattern
@@ -247,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_regex_redaction() {
-        let re = Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap();
+        let re = regex::Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap();
         let content = "My SSN is 123-45-6789 and that's private";
         let redacted = re.replace_all(content, "[REDACTED]").to_string();
         assert!(redacted.contains("[REDACTED]"));
