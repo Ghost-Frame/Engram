@@ -71,9 +71,10 @@ async fn get_one(
     Query(params): Query<GetConversationParams>,
 ) -> Result<Json<Value>, AppError> {
     let conv = conversations::get_conversation_for_user(&state.db, id, auth.user_id).await?;
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
-    let messages = conversations::list_messages(&state.db, id, limit, offset).await?;
+    let messages =
+        conversations::list_messages(&state.db, id, auth.user_id, limit, offset).await?;
     Ok(Json(json!({
         "id": conv.id, "agent": conv.agent, "session_id": conv.session_id,
         "title": conv.title, "metadata": conv.metadata,
@@ -149,9 +150,10 @@ async fn list_msgs(
 ) -> Result<Json<Value>, AppError> {
     // Verify conversation ownership before accessing messages
     conversations::get_conversation_for_user(&state.db, id, auth.user_id).await?;
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
-    let messages = conversations::list_messages(&state.db, id, limit, offset).await?;
+    let messages =
+        conversations::list_messages(&state.db, id, auth.user_id, limit, offset).await?;
     Ok(Json(json!({ "messages": messages })))
 }
 

@@ -36,14 +36,19 @@ pub async fn store_pattern(_db: &Database, _pattern: &TemporalPattern) -> Result
 // VALID_AT POPULATION
 // ============================================================================
 
-/// Set valid_at on a newly inserted structured_fact.
+/// Set valid_at on a newly inserted structured_fact (tenant-scoped).
 /// Priority: date_approx > date_ref resolved > created_at of memory
-pub async fn set_fact_validity(db: &Database, fact_id: i64, memory_created_at: &str) -> Result<()> {
+pub async fn set_fact_validity(
+    db: &Database,
+    fact_id: i64,
+    memory_created_at: &str,
+    user_id: i64,
+) -> Result<()> {
     let mut rows = db
         .conn
         .query(
-            "SELECT date_approx, date_ref FROM structured_facts WHERE id = ?1",
-            libsql::params![fact_id],
+            "SELECT date_approx, date_ref FROM structured_facts WHERE id = ?1 AND user_id = ?2",
+            libsql::params![fact_id, user_id],
         )
         .await?;
 
@@ -68,8 +73,8 @@ pub async fn set_fact_validity(db: &Database, fact_id: i64, memory_created_at: &
 
     db.conn
         .execute(
-            "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2",
-            libsql::params![valid_at.clone(), fact_id],
+            "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2 AND user_id = ?3",
+            libsql::params![valid_at.clone(), fact_id, user_id],
         )
         .await?;
 
@@ -318,10 +323,11 @@ pub async fn detect_fact_contradictions(
     Ok(contradictions)
 }
 
-/// Invalidate old facts that have been contradicted by a newer fact.
+/// Invalidate old facts that have been contradicted by a newer fact (tenant-scoped).
 pub async fn invalidate_contradicted_facts(
     db: &Database,
     contradictions: &[FactContradiction],
+    user_id: i64,
 ) -> Result<i32> {
     if contradictions.is_empty() {
         return Ok(0);
@@ -330,8 +336,8 @@ pub async fn invalidate_contradicted_facts(
     let mut invalidated = 0i32;
     for c in contradictions {
         let affected = db.conn.execute(
-            "UPDATE structured_facts SET invalid_at = datetime('now'), invalidated_by = ?1 WHERE id = ?2 AND invalid_at IS NULL",
-            libsql::params![c.new_fact_id, c.old_fact_id],
+            "UPDATE structured_facts SET invalid_at = datetime('now'), invalidated_by = ?1 WHERE id = ?2 AND user_id = ?3 AND invalid_at IS NULL",
+            libsql::params![c.new_fact_id, c.old_fact_id, user_id],
         ).await?;
         if affected > 0 {
             invalidated += 1;
@@ -357,12 +363,12 @@ pub async fn invalidate_contradicted_facts(
 /// 1. Set valid_at based on date info
 /// 2. Detect and invalidate contradictions
 pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64) -> Result<()> {
-    // Get the memory created_at for date resolution
+    // Get the memory created_at for date resolution (tenant-scoped)
     let mut mem_rows = db
         .conn
         .query(
-            "SELECT created_at FROM memories WHERE id = ?1",
-            libsql::params![memory_id],
+            "SELECT created_at FROM memories WHERE id = ?1 AND user_id = ?2",
+            libsql::params![memory_id, user_id],
         )
         .await?;
 
@@ -395,8 +401,8 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
     }
 
     for (fact_id, subject, verb, object, quantity) in &facts {
-        // Set temporal validity
-        if let Err(e) = set_fact_validity(db, *fact_id, &created_at).await {
+        // Set temporal validity (tenant-scoped)
+        if let Err(e) = set_fact_validity(db, *fact_id, &created_at, user_id).await {
             warn!(msg = "set_fact_validity_failed", fact_id, error = %e);
         }
 
@@ -414,7 +420,7 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
         .await
         {
             Ok(contradictions) if !contradictions.is_empty() => {
-                if let Err(e) = invalidate_contradicted_facts(db, &contradictions).await {
+                if let Err(e) = invalidate_contradicted_facts(db, &contradictions, user_id).await {
                     warn!(msg = "fact_invalidation_failed", error = %e);
                 }
             }
@@ -429,23 +435,14 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
 }
 
 /// Backfill valid_at for existing facts that do not have it yet.
-pub async fn backfill_fact_validity(db: &Database, user_id: Option<i64>) -> Result<i32> {
-    let (query, rows_result) = if let Some(uid) = user_id {
-        let q = "SELECT sf.id, sf.date_approx, sf.date_ref, m.created_at as memory_created_at
-                  FROM structured_facts sf
-                  JOIN memories m ON m.id = sf.memory_id
-                  WHERE sf.valid_at IS NULL AND sf.user_id = ?1";
-        (q, db.conn.query(q, libsql::params![uid]).await)
-    } else {
-        let q = "SELECT sf.id, sf.date_approx, sf.date_ref, m.created_at as memory_created_at
-                  FROM structured_facts sf
-                  JOIN memories m ON m.id = sf.memory_id
-                  WHERE sf.valid_at IS NULL";
-        (q, db.conn.query(q, libsql::params![]).await)
-    };
-
-    let _ = query; // suppress unused warning
-    let mut rows = rows_result?;
+/// SECURITY: user_id is required so writes stay tenant-scoped. Admin-level
+/// backfill should iterate users rather than passing a wildcard.
+pub async fn backfill_fact_validity(db: &Database, user_id: i64) -> Result<i32> {
+    let q = "SELECT sf.id, sf.date_approx, sf.date_ref, m.created_at as memory_created_at
+              FROM structured_facts sf
+              JOIN memories m ON m.id = sf.memory_id
+              WHERE sf.valid_at IS NULL AND sf.user_id = ?1 AND m.user_id = ?1";
+    let mut rows = db.conn.query(q, libsql::params![user_id]).await?;
 
     let mut pending = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -469,15 +466,15 @@ pub async fn backfill_fact_validity(db: &Database, user_id: Option<i64>) -> Resu
 
         db.conn
             .execute(
-                "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2",
-                libsql::params![valid_at.clone(), *id],
+                "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2 AND user_id = ?3",
+                libsql::params![valid_at.clone(), *id, user_id],
             )
             .await?;
         filled += 1;
     }
 
     if filled > 0 {
-        info!(msg = "fact_validity_backfilled", count = filled);
+        info!(msg = "fact_validity_backfilled", count = filled, user_id);
     }
 
     Ok(filled)

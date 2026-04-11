@@ -8,10 +8,37 @@ use serde_json::{json, Value};
 use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
+use engram_lib::auth::Scope;
 use engram_lib::skills::{
     self, analyzer, cloud, dashboard, evolver, search::search_skills, CreateSkillRequest,
     UpdateSkillRequest,
 };
+
+/// Read the skill-sync allowlist from env. Empty means sync is disabled.
+/// Each entry is canonicalized once at check time.
+fn skill_sync_allowlist() -> Vec<std::path::PathBuf> {
+    std::env::var("ENGRAM_SKILL_SYNC_PATHS")
+        .ok()
+        .map(|raw| {
+            raw.split(':')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| std::fs::canonicalize(s).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// SECURITY: prevents an authenticated caller from pointing /skills/sync at
+/// arbitrary directories on disk. Canonicalizes `dir` and checks it is a
+/// descendant of (or equal to) any allowlisted root.
+fn is_path_allowed(dir: &str, allowlist: &[std::path::PathBuf]) -> bool {
+    let canon = match std::fs::canonicalize(dir) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    allowlist.iter().any(|root| canon.starts_with(root))
+}
 
 // ---------------------------------------------------------------------------
 // Router
@@ -503,6 +530,21 @@ async fn sync_skills_handler(
     Auth(auth): Auth,
     Json(body): Json<SyncSkillsBody>,
 ) -> Result<Json<Value>, AppError> {
+    // SECURITY: /skills/sync walks arbitrary filesystem paths and reads their
+    // contents into the DB. Gate it to admin scope and enforce an env-driven
+    // allowlist so a compromised read/write key cannot exfiltrate files.
+    if !auth.has_scope(&Scope::Admin) {
+        return Err(AppError(engram_lib::EngError::Auth(
+            "admin scope required for skill sync".into(),
+        )));
+    }
+    let allowlist = skill_sync_allowlist();
+    if allowlist.is_empty() {
+        return Err(AppError(engram_lib::EngError::InvalidInput(
+            "skill sync disabled: set ENGRAM_SKILL_SYNC_PATHS to a colon-separated list of allowed roots".into(),
+        )));
+    }
+
     let dirs = body.dirs.unwrap_or_default();
     if dirs.is_empty() {
         return Ok(Json(json!({
@@ -515,6 +557,10 @@ async fn sync_skills_handler(
     let mut errors = Vec::new();
 
     for dir in &dirs {
+        if !is_path_allowed(dir, &allowlist) {
+            errors.push(format!("Directory not in allowlist: {}", dir));
+            continue;
+        }
         let path = std::path::Path::new(dir);
         if !path.exists() || !path.is_dir() {
             errors.push(format!("Directory not found: {}", dir));

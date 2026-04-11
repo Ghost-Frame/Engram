@@ -6,6 +6,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use engram_lib::auth::Scope;
 use engram_lib::grounding::{BackendType, GroundingClient, SessionConfig};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -133,9 +134,17 @@ struct ExecuteBody {
 }
 
 async fn execute_tool(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(body): Json<ExecuteBody>,
 ) -> Result<Json<Value>, AppError> {
+    // SECURITY: grounding execution exposes shell-backed tools (shell_exec, file
+    // read/write, etc). Restrict to admin-scoped callers so a leaked read/write
+    // key cannot become RCE on the API host.
+    if !auth.has_scope(&Scope::Admin) {
+        return Err(AppError::from(engram_lib::EngError::Auth(
+            "admin scope required for grounding execution".into(),
+        )));
+    }
     let tool_name = body.tool.trim();
     if tool_name.is_empty() {
         return Err(AppError(engram_lib::EngError::InvalidInput(

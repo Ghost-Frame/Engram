@@ -41,7 +41,16 @@ impl IntoResponse for AppError {
                     "Internal error".to_string(),
                 )
             }
-            EngError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            EngError::Internal(msg) => {
+                // SECURITY: internal errors may carry filesystem paths, library
+                // version strings, or database row details. Log server-side at
+                // error level and return a generic message to the client.
+                tracing::error!("Internal error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
+            }
         };
         (status, Json(json!({ "error": message }))).into_response()
     }

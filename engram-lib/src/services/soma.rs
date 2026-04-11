@@ -65,7 +65,9 @@ fn row_to_agent(row: &libsql::Row) -> Result<Agent> {
 
 pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<Agent> {
     let conn = &db.conn;
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
 
     // INSERT OR IGNORE -- if already exists (user_id+name conflict), just skip
     conn.execute(

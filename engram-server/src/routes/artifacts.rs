@@ -59,7 +59,8 @@ async fn list_for_memory(
         return Err(AppError(engram_lib::EngError::NotFound("Not found".into())));
     }
 
-    let artifacts = artifacts::get_artifacts_by_memory(&state.db, memory_id).await?;
+    let artifacts =
+        artifacts::get_artifacts_by_memory(&state.db, memory_id, auth.user_id).await?;
     Ok(Json(
         json!({ "artifacts": artifacts, "memory_id": memory_id }),
     ))
@@ -70,7 +71,7 @@ async fn download_artifact(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let artifact = artifacts::get_artifact_by_id(&state.db, id)
+    let artifact = artifacts::get_artifact_by_id(&state.db, id, auth.user_id)
         .await?
         .ok_or_else(|| AppError(engram_lib::EngError::NotFound("Artifact not found".into())))?;
 

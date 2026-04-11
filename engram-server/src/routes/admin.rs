@@ -106,7 +106,50 @@ async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-async fn bootstrap(State(state): State<AppState>) -> Result<(StatusCode, Json<Value>), AppError> {
+#[derive(Debug, serde::Deserialize, Default)]
+struct BootstrapBody {
+    #[serde(default)]
+    secret: Option<String>,
+}
+
+async fn bootstrap(
+    State(state): State<AppState>,
+    body: Option<Json<BootstrapBody>>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    // SECURITY: previously POST /bootstrap was unauthenticated with only a
+    // "no active keys exist" guard. On fresh deployments an attacker could
+    // race the legitimate admin to obtain the first admin key. We now require
+    // a pre-shared ENGRAM_BOOTSTRAP_SECRET, fed either via an Authorization
+    // header or the request body. If the env var is unset, bootstrap is
+    // disabled entirely and must be performed out-of-band.
+    let Ok(expected) = std::env::var("ENGRAM_BOOTSTRAP_SECRET") else {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "bootstrap disabled: set ENGRAM_BOOTSTRAP_SECRET to enable"
+            })),
+        ));
+    };
+    if expected.is_empty() {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "bootstrap disabled: ENGRAM_BOOTSTRAP_SECRET is empty" })),
+        ));
+    }
+
+    let supplied = body
+        .as_ref()
+        .and_then(|Json(b)| b.secret.as_deref())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    use subtle::ConstantTimeEq;
+    if supplied.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() != 1 {
+        return Ok((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "invalid bootstrap secret" })),
+        ));
+    }
+
     let existing_count =
         count_rows(&state, "SELECT COUNT(*) FROM api_keys WHERE is_active = 1").await?;
 

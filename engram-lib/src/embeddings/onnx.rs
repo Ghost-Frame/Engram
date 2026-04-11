@@ -7,19 +7,28 @@ use crate::{EngError, Result};
 use ort::session::Session;
 use ort::value::Tensor;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokenizers::Tokenizer;
 use tracing::info;
 
 /// Local ONNX-based embedding provider using bge-m3 (or compatible model).
+///
+/// The heavy state (ONNX session, tokenizer, model dimensions) is held behind
+/// an `Arc` so that blocking work can be scheduled on `spawn_blocking` with a
+/// cheap clone instead of a raw-pointer cast. This removes the previous
+/// use-after-free risk if the provider was dropped mid-inference.
 pub struct OnnxProvider {
+    inner: Arc<OnnxInner>,
+    chunk_max_chars: usize,
+    chunk_overlap: usize,
+    chunk_max_chunks: usize,
+}
+
+struct OnnxInner {
     session: Mutex<Session>,
     tokenizer: Tokenizer,
     dim: usize,
     max_seq: usize,
-    chunk_max_chars: usize,
-    chunk_overlap: usize,
-    chunk_max_chunks: usize,
 }
 
 impl OnnxProvider {
@@ -82,16 +91,20 @@ impl OnnxProvider {
         );
 
         Ok(Self {
-            session: Mutex::new(session),
-            tokenizer,
-            dim,
-            max_seq,
+            inner: Arc::new(OnnxInner {
+                session: Mutex::new(session),
+                tokenizer,
+                dim,
+                max_seq,
+            }),
             chunk_max_chars,
             chunk_overlap,
             chunk_max_chunks,
         })
     }
+}
 
+impl OnnxInner {
     /// Embed a single text string (no chunking).
     fn embed_single(&self, text: &str) -> Result<Vec<f32>> {
         // 1. Tokenize
@@ -181,30 +194,29 @@ impl EmbeddingProvider for OnnxProvider {
         &'a self,
         text: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<f32>>> + Send + 'a>> {
+        let chunk_max_chars = self.chunk_max_chars;
+        let chunk_overlap = self.chunk_overlap;
+        let chunk_max_chunks = self.chunk_max_chunks;
+        let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let text = text.to_string();
 
-            // Short text: embed directly on blocking thread
-            if text.len() <= self.chunk_max_chars {
-                // SAFETY: OnnxProvider is Send+Sync (Session is, Tokenizer is, Mutex is).
-                // We pass a raw pointer to avoid lifetime conflicts with spawn_blocking's 'static bound.
-                let provider = self as *const OnnxProvider as usize;
-                let result = tokio::task::spawn_blocking(move || {
-                    let provider = unsafe { &*(provider as *const OnnxProvider) };
-                    provider.embed_single(&text)
-                })
-                .await
-                .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))?;
+            // Short text: embed directly on blocking thread. Cloning the Arc
+            // keeps OnnxInner alive for the full duration of the blocking task,
+            // so dropping the OnnxProvider mid-inference is safe.
+            if text.len() <= chunk_max_chars {
+                let inner_cloned = Arc::clone(&inner);
+                let result = tokio::task::spawn_blocking(move || inner_cloned.embed_single(&text))
+                    .await
+                    .map_err(|e| {
+                        EngError::Internal(format!("spawn_blocking join error: {}", e))
+                    })?;
                 return result;
             }
 
             // Long text: chunk, embed each, weighted mean pool
-            let chunks = chunk_text_with_limit(
-                &text,
-                self.chunk_max_chars,
-                self.chunk_overlap,
-                self.chunk_max_chunks,
-            );
+            let chunks =
+                chunk_text_with_limit(&text, chunk_max_chars, chunk_overlap, chunk_max_chunks);
 
             if chunks.is_empty() {
                 return Err(EngError::InvalidInput(
@@ -214,13 +226,12 @@ impl EmbeddingProvider for OnnxProvider {
 
             if chunks.len() == 1 {
                 let chunk = chunks.into_iter().next().unwrap();
-                let provider = self as *const OnnxProvider as usize;
-                let result = tokio::task::spawn_blocking(move || {
-                    let provider = unsafe { &*(provider as *const OnnxProvider) };
-                    provider.embed_single(&chunk)
-                })
-                .await
-                .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))?;
+                let inner_cloned = Arc::clone(&inner);
+                let result = tokio::task::spawn_blocking(move || inner_cloned.embed_single(&chunk))
+                    .await
+                    .map_err(|e| {
+                        EngError::Internal(format!("spawn_blocking join error: {}", e))
+                    })?;
                 return result;
             }
 
@@ -228,13 +239,12 @@ impl EmbeddingProvider for OnnxProvider {
             let mut embeddings = Vec::with_capacity(chunks.len());
 
             for chunk in chunks {
-                let provider = self as *const OnnxProvider as usize;
-                let emb = tokio::task::spawn_blocking(move || {
-                    let provider = unsafe { &*(provider as *const OnnxProvider) };
-                    provider.embed_single(&chunk)
-                })
-                .await
-                .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))??;
+                let inner_cloned = Arc::clone(&inner);
+                let emb = tokio::task::spawn_blocking(move || inner_cloned.embed_single(&chunk))
+                    .await
+                    .map_err(|e| {
+                        EngError::Internal(format!("spawn_blocking join error: {}", e))
+                    })??;
                 embeddings.push(emb);
             }
 
@@ -242,8 +252,3 @@ impl EmbeddingProvider for OnnxProvider {
         })
     }
 }
-
-// OnnxProvider is Send+Sync: Mutex<Session> is Send+Sync, Tokenizer is Send+Sync.
-// Session already has unsafe impl Send+Sync in ort. Tokenizer is Send+Sync.
-unsafe impl Send for OnnxProvider {}
-unsafe impl Sync for OnnxProvider {}

@@ -159,6 +159,52 @@ pub async fn increment_counter(db: &Database, key: &str) -> Result<()> {
     Ok(())
 }
 
+/// Atomically increment the request counter and return whether the request
+/// is within the limit. Resets the window in-place when it has expired.
+///
+/// SECURITY: the previous `check_rate_limit` + `increment_counter` sequence
+/// had a time-of-check-to-time-of-use race. Two concurrent requests could
+/// both read `count < limit`, both pass, and both increment -- bursting past
+/// the limit. This collapses the check and the increment into one SQL
+/// statement so the atomicity of a single UPDATE under SQLite's writer lock
+/// provides the needed serialization.
+pub async fn check_and_increment(
+    db: &Database,
+    key: &str,
+    max_requests: i64,
+    window_seconds: i64,
+) -> Result<bool> {
+    // Upsert and reset the window atomically. Returns the post-increment count.
+    let mut rows = db
+        .conn
+        .query(
+            "INSERT INTO rate_limits (key, count, window_start, updated_at)
+             VALUES (?1, 1, datetime('now'), datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET
+                 count = CASE
+                     WHEN (strftime('%s','now') - strftime('%s', window_start)) > ?2 THEN 1
+                     ELSE count + 1
+                 END,
+                 window_start = CASE
+                     WHEN (strftime('%s','now') - strftime('%s', window_start)) > ?2 THEN datetime('now')
+                     ELSE window_start
+                 END,
+                 updated_at = datetime('now')
+             RETURNING count",
+            libsql::params![key, window_seconds],
+        )
+        .await?;
+
+    let count: i64 = if let Some(row) = rows.next().await? {
+        row.get(0)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?
+    } else {
+        1
+    };
+
+    Ok(count <= max_requests)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

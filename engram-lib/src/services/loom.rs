@@ -387,7 +387,9 @@ pub async fn create_workflow(db: &Database, req: CreateWorkflowRequest) -> Resul
         }
     }
 
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let steps_json = serde_json::to_string(&req.steps)?;
 
     db.conn
@@ -591,19 +593,24 @@ pub async fn delete_workflow(db: &Database, id: i64, user_id: i64) -> Result<boo
 // ---------------------------------------------------------------------------
 
 pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let input = req
         .input
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
     let input_str = serde_json::to_string(&input)?;
 
-    // Fetch workflow and validate it has steps
+    // Fetch workflow and validate it has steps (tenant-scoped).
+    // SECURITY: previously any caller could trigger runs against another
+    // tenant's workflow by supplying its id. Filter by user_id so cross-tenant
+    // workflow execution returns NotFound.
     let mut wf_rows = db
         .conn
         .query(
             "SELECT id, name, description, steps, user_id, created_at, updated_at
-             FROM loom_workflows WHERE id = ?1",
-            libsql::params![req.workflow_id],
+             FROM loom_workflows WHERE id = ?1 AND user_id = ?2",
+            libsql::params![req.workflow_id, user_id],
         )
         .await?;
 

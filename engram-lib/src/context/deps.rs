@@ -194,16 +194,21 @@ pub async fn get_user_preferences(db: &Database, user_id: i64) -> Result<Vec<Pre
     Ok(prefs)
 }
 
-pub async fn get_structured_facts(db: &Database, mem_ids: &[i64]) -> Result<Vec<StructuredFact>> {
+pub async fn get_structured_facts(
+    db: &Database,
+    mem_ids: &[i64],
+    user_id: i64,
+) -> Result<Vec<StructuredFact>> {
     if mem_ids.is_empty() {
         return Ok(vec![]);
     }
+    // SECURITY: user_id is always scoped; memory IDs are i64 so format! is safe.
     let placeholders: Vec<String> = mem_ids.iter().map(|id| id.to_string()).collect();
     let sql = format!(
-        "SELECT subject, verb, object, quantity, unit, date_ref, date_approx, valid_at, invalid_at          FROM structured_facts WHERE memory_id IN ({}) AND invalid_at IS NULL          ORDER BY valid_at DESC NULLS LAST, date_approx DESC NULLS LAST",
+        "SELECT subject, verb, object, quantity, unit, date_ref, date_approx, valid_at, invalid_at          FROM structured_facts WHERE user_id = ?1 AND memory_id IN ({}) AND invalid_at IS NULL          ORDER BY valid_at DESC NULLS LAST, date_approx DESC NULLS LAST",
         placeholders.join(",")
     );
-    let mut rows = db.conn.query(&sql, ()).await?;
+    let mut rows = db.conn.query(&sql, libsql::params![user_id]).await?;
     let mut facts = Vec::new();
     while let Some(row) = rows.next().await? {
         facts.push(StructuredFact {

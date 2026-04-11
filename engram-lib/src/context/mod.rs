@@ -878,7 +878,7 @@ pub async fn assemble_context(
     if flags.include_structured_facts {
         let mem_ids: Vec<i64> = blocks.iter().map(|b| b.id).collect();
         if !mem_ids.is_empty() {
-            if let Ok(sf_rows) = get_structured_facts(db, &mem_ids).await {
+            if let Ok(sf_rows) = get_structured_facts(db, &mem_ids, user_id).await {
                 if !sf_rows.is_empty() {
                     let now = chrono::Utc::now().timestamp_millis();
                     let stale_ms: i64 = 90 * 24 * 60 * 60 * 1000;
