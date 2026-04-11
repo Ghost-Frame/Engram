@@ -218,22 +218,6 @@ pub async fn create_conversation(
     get_conversation_for_user(db, new_id, user_id).await
 }
 
-/// Unscoped conversation lookup. Only callers that have already confirmed the
-/// caller owns `id` (e.g. an immediately prior INSERT under a known tenant)
-/// may use this. For any external / route-level access use
-/// [`get_conversation_for_user`], which enforces user_id scoping.
-pub(crate) async fn get_conversation(db: &Database, id: i64) -> Result<Conversation> {
-    let sql = format!(
-        "SELECT {} FROM conversations WHERE id = ?1",
-        CONVERSATION_COLUMNS
-    );
-    let mut rows = db.conn.query(&sql, params![id]).await?;
-    match rows.next().await? {
-        Some(row) => row_to_conversation(&row),
-        None => Err(EngError::NotFound(format!("conversation {} not found", id))),
-    }
-}
-
 pub async fn get_conversation_for_user(
     db: &Database,
     id: i64,
@@ -337,11 +321,11 @@ pub async fn delete_conversation(db: &Database, id: i64, user_id: i64) -> Result
     Ok(())
 }
 
-pub async fn touch_conversation(db: &Database, id: i64) -> Result<()> {
+pub async fn touch_conversation(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.conn
         .execute(
-            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
-            params![id],
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
         )
         .await?;
     Ok(())
@@ -354,8 +338,13 @@ pub async fn touch_conversation(db: &Database, id: i64) -> Result<()> {
 pub async fn add_message(
     db: &Database,
     conversation_id: i64,
+    user_id: i64,
     req: AddMessageRequest,
 ) -> Result<Message> {
+    // Defense-in-depth: verify conversation ownership at the library layer
+    // so callers that skip the route-level check cannot write to another
+    // tenant's conversation.
+    get_conversation_for_user(db, conversation_id, user_id).await?;
     let meta_str = metadata_to_string(&req.metadata);
     db.conn.execute(
         "INSERT INTO messages (conversation_id, role, content, metadata) VALUES (?1, ?2, ?3, ?4)",
@@ -370,10 +359,20 @@ pub async fn add_message(
             ))
         }
     };
-    // Touch the conversation updated_at
-    let _ = touch_conversation(db, conversation_id).await;
-    let sql = format!("SELECT {} FROM messages WHERE id = ?1", MESSAGE_COLUMNS);
-    let mut rows = db.conn.query(&sql, params![new_id]).await?;
+    // Touch the conversation updated_at (scoped by user_id).
+    let _ = touch_conversation(db, conversation_id, user_id).await;
+    let qualified_cols = MESSAGE_COLUMNS
+        .split(", ")
+        .map(|c| format!("m.{}", c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {} FROM messages m \
+         INNER JOIN conversations c ON m.conversation_id = c.id \
+         WHERE m.id = ?1 AND c.user_id = ?2",
+        qualified_cols
+    );
+    let mut rows = db.conn.query(&sql, params![new_id, user_id]).await?;
     match rows.next().await? {
         Some(row) => row_to_message(&row),
         None => Err(EngError::Internal(
@@ -540,7 +539,7 @@ pub async fn upsert_conversation(
                 params![conv.id, msg.role.clone(), msg.content.clone(), msg_meta],
             ).await?;
         }
-        let _ = touch_conversation(db, conv.id).await;
+        let _ = touch_conversation(db, conv.id, user_id).await;
     }
     get_conversation_for_user(db, conv.id, user_id).await
 }

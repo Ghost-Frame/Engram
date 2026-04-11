@@ -67,7 +67,13 @@ pub fn is_indexable_mime_type(mime: &str) -> bool {
     INDEXABLE_APP_TYPES.contains(&mime)
 }
 
-pub async fn index_artifact(db: &Database, artifact_id: i64, mime_type: &str, data: &[u8]) -> bool {
+pub async fn index_artifact(
+    db: &Database,
+    artifact_id: i64,
+    user_id: i64,
+    mime_type: &str,
+    data: &[u8],
+) -> bool {
     if !is_indexable_mime_type(mime_type) {
         return false;
     }
@@ -75,6 +81,23 @@ pub async fn index_artifact(db: &Database, artifact_id: i64, mime_type: &str, da
         Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
         _ => return false,
     };
+    let owned = match db
+        .conn
+        .query(
+            "SELECT 1 FROM artifacts a \
+             INNER JOIN memories m ON a.memory_id = m.id \
+             WHERE a.id = ?1 AND m.user_id = ?2",
+            libsql::params![artifact_id, user_id],
+        )
+        .await
+    {
+        Ok(mut rows) => matches!(rows.next().await, Ok(Some(_))),
+        Err(_) => false,
+    };
+    if !owned {
+        tracing::warn!(artifact_id, user_id, "artifact FTS index rejected: not owned");
+        return false;
+    }
     if db
         .conn
         .execute(
@@ -209,12 +232,18 @@ pub async fn enrich_with_artifacts(
     Ok(map)
 }
 
-pub async fn get_artifact_data(db: &Database, artifact_id: i64) -> Result<Option<Vec<u8>>> {
+pub async fn get_artifact_data(
+    db: &Database,
+    artifact_id: i64,
+    user_id: i64,
+) -> Result<Option<Vec<u8>>> {
     let mut rows = db
         .conn
         .query(
-            "SELECT data FROM artifacts WHERE id = ?1",
-            libsql::params![artifact_id],
+            "SELECT a.data FROM artifacts a \
+             INNER JOIN memories m ON a.memory_id = m.id \
+             WHERE a.id = ?1 AND m.user_id = ?2",
+            libsql::params![artifact_id, user_id],
         )
         .await?;
     match rows.next().await? {

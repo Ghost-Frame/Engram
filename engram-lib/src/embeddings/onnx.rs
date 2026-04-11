@@ -35,8 +35,12 @@ impl OnnxProvider {
     /// Create a new OnnxProvider. Downloads model files if needed.
     pub async fn new(config: &Config) -> Result<Self> {
         let model_dir = config.model_dir("bge-m3");
-        let (tokenizer_path, model_path) =
-            ensure_embedding_model(&model_dir, &config.embedding_onnx_file).await?;
+        let (tokenizer_path, model_path) = ensure_embedding_model(
+            &model_dir,
+            &config.embedding_onnx_file,
+            config.embedding_offline_only,
+        )
+        .await?;
 
         Self::from_files(
             &tokenizer_path,

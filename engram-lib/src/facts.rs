@@ -81,6 +81,22 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
         .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let confidence = req.confidence.unwrap_or(1.0);
 
+    if let Some(mid) = req.memory_id {
+        let mut rows = db
+            .conn
+            .query(
+                "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+                params![mid, user_id],
+            )
+            .await?;
+        if rows.next().await?.is_none() {
+            return Err(EngError::NotFound(format!(
+                "memory {} not found for user",
+                mid
+            )));
+        }
+    }
+
     db.conn
         .execute(
             "INSERT INTO structured_facts \

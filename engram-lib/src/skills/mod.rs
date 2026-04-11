@@ -234,6 +234,13 @@ pub async fn get_skill(db: &Database, id: i64, user_id: i64) -> Result<Skill> {
         .ok_or_else(|| EngError::NotFound(format!("skill {} not found", id)))
 }
 
+/// Hard upper bound on how many skill rows `list_skills` will ever return in
+/// a single call, regardless of what the caller asks for. Route handlers
+/// apply their own clamp, but library consumers (other modules, tests,
+/// scripts) must not be trusted to pass sensible values; a bug or a compromised
+/// caller could otherwise OOM the process by loading every row.
+pub const MAX_SKILLS_LIMIT: usize = 500;
+
 pub async fn list_skills(
     db: &Database,
     user_id: i64,
@@ -241,6 +248,7 @@ pub async fn list_skills(
     limit: usize,
     offset: usize,
 ) -> Result<Vec<Skill>> {
+    let limit = limit.clamp(1, MAX_SKILLS_LIMIT);
     let conn = db.connection();
     let (sql, has_agent) = if agent.is_some() {
         (format!(
