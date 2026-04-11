@@ -11,6 +11,7 @@ test-utils = []
 tenant-sharding = []
 # Enable the deadpool-sqlite-backed connection pool backend.
 db_pool = ["dep:deadpool-sqlite"]
+credd-raw = []
 
 [dependencies]
 libsql = { workspace = true }
@@ -46,3 +47,4 @@ protoc-bin-vendored-linux-x86_64 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+axum = { workspace = true }

@@ -11,6 +11,7 @@ pub mod audit;
 pub mod auth;
 pub mod cognithor;
 pub mod config;
+pub mod cred;
 pub mod context;
 pub mod conversations;
 pub mod db;

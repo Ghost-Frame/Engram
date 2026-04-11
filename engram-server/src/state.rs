@@ -1,4 +1,5 @@
 use kleos_lib::config::{Config, EidolonConfig};
+use kleos_lib::cred::CreddClient;
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::EmbeddingProvider;
 use kleos_lib::llm::local::LocalModelClient;
@@ -34,6 +35,7 @@ impl Default for SessionBroadcast {
 pub struct AppState {
     pub db: Arc<Database>,
     pub config: Arc<Config>,
+    pub credd: Arc<CreddClient>,
     pub embedder: Option<Arc<dyn EmbeddingProvider>>,
     pub reranker: Option<Arc<Reranker>>,
     pub brain: Option<Arc<dyn BrainBackend>>,

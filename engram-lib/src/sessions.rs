@@ -1,3 +1,5 @@
+pub mod scrub;
+
 use crate::db::Database;
 use crate::Result;
 use libsql::params;

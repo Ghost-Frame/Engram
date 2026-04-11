@@ -1,4 +1,5 @@
 use kleos_lib::config::Config;
+use kleos_lib::cred::CreddClient;
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::onnx::OnnxProvider;
 use kleos_lib::embeddings::EmbeddingProvider;
@@ -98,6 +99,7 @@ async fn main() {
 
     let state = AppState {
         db: db_arc,
+        credd: Arc::new(CreddClient::from_config(&config)),
         config: Arc::new(config),
         embedder,
         reranker,

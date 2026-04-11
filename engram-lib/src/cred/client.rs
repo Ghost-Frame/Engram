@@ -1,0 +1,469 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use reqwest::Url;
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+use crate::config::Config;
+use crate::cred::pattern::{has_secret_patterns, resolve_patterns, SecretPatternKind};
+use crate::db::Database;
+use crate::services::broca::{log_action, LogActionRequest};
+use crate::{EngError, Result};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretAccessMode {
+    Resolved,
+    Raw,
+    Scrub,
+}
+
+impl SecretAccessMode {
+    fn tier(self) -> &'static str {
+        match self {
+            Self::Resolved => "resolved",
+            Self::Raw => "raw",
+            Self::Scrub => "scrub",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedSecret {
+    value: String,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FetchSecretRequest<'a> {
+    pub service: &'a str,
+    pub key: &'a str,
+    pub mode: SecretAccessMode,
+    pub use_cache: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreddSecretDocument {
+    service: String,
+    key: String,
+    value: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreddClient {
+    http: reqwest::Client,
+    base_url: String,
+    agent_key: Option<String>,
+    agent_key_env: String,
+    allow_raw: bool,
+    cache_ttl: Duration,
+    cache: Arc<Mutex<HashMap<String, CachedSecret>>>,
+}
+
+impl CreddClient {
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            base_url: config.eidolon.credd.url.clone(),
+            agent_key: None,
+            agent_key_env: config.eidolon.credd.agent_key_env.clone(),
+            allow_raw: config.eidolon.credd.allow_raw,
+            cache_ttl: Duration::from_secs(config.eidolon.credd.cache_ttl_secs.max(1)),
+            cache: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn for_testing(
+        base_url: impl Into<String>,
+        agent_key: impl Into<String>,
+        allow_raw: bool,
+        cache_ttl_secs: u64,
+    ) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            base_url: base_url.into(),
+            agent_key: Some(agent_key.into()),
+            agent_key_env: "CREDD_AGENT_KEY".to_string(),
+            allow_raw,
+            cache_ttl: Duration::from_secs(cache_ttl_secs.max(1)),
+            cache: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn allow_raw(&self) -> bool {
+        self.allow_raw
+    }
+
+    pub fn invalidate(&self, service: &str, key: &str) {
+        let mut cache = self.cache.lock().expect("credd cache mutex poisoned");
+        cache.remove(&cache_key(service, key));
+    }
+
+    pub fn invalidate_all(&self) {
+        let mut cache = self.cache.lock().expect("credd cache mutex poisoned");
+        cache.clear();
+    }
+
+    pub async fn resolve_text(
+        &self,
+        db: &Database,
+        user_id: i64,
+        agent: &str,
+        text: &str,
+    ) -> Result<String> {
+        self.resolve_text_with_options(db, user_id, agent, text, false)
+            .await
+    }
+
+    pub async fn resolve_text_with_options(
+        &self,
+        db: &Database,
+        user_id: i64,
+        agent: &str,
+        text: &str,
+        allow_raw: bool,
+    ) -> Result<String> {
+        if !has_secret_patterns(text) {
+            return Ok(text.to_string());
+        }
+
+        resolve_patterns(text, |pattern| async move {
+            match pattern.kind {
+                SecretPatternKind::Secret => {
+                    self.fetch_secret_value(
+                        db,
+                        user_id,
+                        agent,
+                        FetchSecretRequest {
+                            service: &pattern.service,
+                            key: &pattern.key,
+                            mode: SecretAccessMode::Resolved,
+                            use_cache: true,
+                        },
+                    )
+                    .await
+                }
+                SecretPatternKind::Raw => {
+                    if !allow_raw {
+                        return Err(EngError::Auth(
+                            "raw secret placeholders are only allowed on admin-gated flows".into(),
+                        ));
+                    }
+                    self.get_raw(db, user_id, agent, &pattern.service, &pattern.key)
+                        .await
+                }
+            }
+        })
+        .await
+    }
+
+    pub async fn list_secret_values(
+        &self,
+        db: &Database,
+        user_id: i64,
+        agent: &str,
+    ) -> Result<Vec<String>> {
+        let url = self.build_url(&["secrets"])?;
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(self.agent_key()?)
+            .send()
+            .await
+            .map_err(|e| EngError::Internal(format!("credd list request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(EngError::Internal(format!(
+                "credd list request failed with status {}",
+                response.status()
+            )));
+        }
+
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|e| EngError::Internal(format!("invalid credd list response: {}", e)))?;
+        let refs = parse_secret_refs(&payload)?;
+
+        let mut secrets = Vec::new();
+        for (service, key) in refs {
+            secrets.push(
+                self.fetch_secret_value(
+                    db,
+                    user_id,
+                    agent,
+                    FetchSecretRequest {
+                        service: &service,
+                        key: &key,
+                        mode: SecretAccessMode::Scrub,
+                        use_cache: true,
+                    },
+                )
+                .await?,
+            );
+        }
+
+        Ok(secrets)
+    }
+
+    #[cfg(feature = "credd-raw")]
+    pub async fn get_raw(
+        &self,
+        db: &Database,
+        user_id: i64,
+        agent: &str,
+        service: &str,
+        key: &str,
+    ) -> Result<String> {
+        if !self.allow_raw {
+            return Err(EngError::Auth(
+                "credd raw fetch disabled by runtime config".into(),
+            ));
+        }
+
+        self.fetch_secret_value(
+            db,
+            user_id,
+            agent,
+            FetchSecretRequest {
+                service,
+                key,
+                mode: SecretAccessMode::Raw,
+                use_cache: false,
+            },
+        )
+        .await
+    }
+
+    #[cfg(not(feature = "credd-raw"))]
+    pub async fn get_raw(
+        &self,
+        _db: &Database,
+        _user_id: i64,
+        _agent: &str,
+        _service: &str,
+        _key: &str,
+    ) -> Result<String> {
+        Err(EngError::NotImplemented(
+            "credd raw fetch disabled at compile time".into(),
+        ))
+    }
+
+    pub(crate) async fn fetch_secret_value(
+        &self,
+        db: &Database,
+        user_id: i64,
+        agent: &str,
+        request: FetchSecretRequest<'_>,
+    ) -> Result<String> {
+        if request.use_cache {
+            if let Some(value) = self.cached_value(request.service, request.key) {
+                self.audit_resolution(
+                    db,
+                    user_id,
+                    agent,
+                    request.service,
+                    request.key,
+                    request.mode,
+                )
+                    .await?;
+                return Ok(value);
+            }
+        }
+
+        let document = self
+            .fetch_secret_document(request.service, request.key)
+            .await?;
+        let secret = extract_secret_value(&document.value)?;
+
+        if request.use_cache {
+            self.store_cache(request.service, request.key, &secret);
+        }
+
+        self.audit_resolution(
+            db,
+            user_id,
+            agent,
+            &document.service,
+            &document.key,
+            request.mode,
+        )
+        .await?;
+        Ok(secret)
+    }
+
+    async fn audit_resolution(
+        &self,
+        db: &Database,
+        user_id: i64,
+        agent: &str,
+        service: &str,
+        key: &str,
+        mode: SecretAccessMode,
+    ) -> Result<()> {
+        let _ = log_action(
+            db,
+            LogActionRequest {
+                agent: agent.to_string(),
+                service: Some("cred".to_string()),
+                action: "resolve".to_string(),
+                narrative: None,
+                payload: Some(json!({
+                    "svc": service,
+                    "key": key,
+                    "agent": agent,
+                    "tier": mode.tier(),
+                })),
+                axon_event_id: None,
+                user_id: Some(user_id),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn fetch_secret_document(&self, service: &str, key: &str) -> Result<CreddSecretDocument> {
+        let url = self.build_url(&["secret", service, key])?;
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(self.agent_key()?)
+            .send()
+            .await
+            .map_err(|e| EngError::Internal(format!("credd request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(EngError::Internal(format!(
+                "credd request failed with status {}",
+                response.status()
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| EngError::Internal(format!("invalid credd response: {}", e)))
+    }
+
+    fn build_url(&self, segments: &[&str]) -> Result<Url> {
+        let mut url = Url::parse(&self.base_url)
+            .map_err(|e| EngError::InvalidInput(format!("invalid credd url: {}", e)))?;
+        {
+            let mut path_segments = url
+                .path_segments_mut()
+                .map_err(|_| EngError::InvalidInput("credd url cannot be a base".into()))?;
+            path_segments.clear();
+            for segment in segments {
+                path_segments.push(segment);
+            }
+        }
+        Ok(url)
+    }
+
+    pub(crate) fn request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
+        self.http.request(method, url)
+    }
+
+    fn agent_key(&self) -> Result<String> {
+        if let Some(value) = &self.agent_key {
+            return Ok(value.clone());
+        }
+
+        std::env::var(&self.agent_key_env).map_err(|_| {
+            EngError::Auth(format!(
+                "missing credd agent key env {}",
+                self.agent_key_env
+            ))
+        })
+    }
+
+    fn cached_value(&self, service: &str, key: &str) -> Option<String> {
+        let cache = self.cache.lock().expect("credd cache mutex poisoned");
+        let entry = cache.get(&cache_key(service, key))?;
+        if entry.expires_at <= Instant::now() {
+            return None;
+        }
+        Some(entry.value.clone())
+    }
+
+    fn store_cache(&self, service: &str, key: &str, value: &str) {
+        let mut cache = self.cache.lock().expect("credd cache mutex poisoned");
+        cache.insert(
+            cache_key(service, key),
+            CachedSecret {
+                value: value.to_string(),
+                expires_at: Instant::now() + self.cache_ttl,
+            },
+        );
+    }
+}
+
+fn cache_key(service: &str, key: &str) -> String {
+    format!("{service}/{key}")
+}
+
+fn parse_secret_refs(payload: &Value) -> Result<Vec<(String, String)>> {
+    let array = match payload {
+        Value::Array(items) => items,
+        Value::Object(map) => map
+            .get("secrets")
+            .and_then(Value::as_array)
+            .ok_or_else(|| EngError::Internal("credd list response missing secrets array".into()))?,
+        _ => {
+            return Err(EngError::Internal(
+                "credd list response has unsupported shape".into(),
+            ))
+        }
+    };
+
+    let mut refs = Vec::new();
+    for item in array {
+        let Some(service) = item.get("service").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(key) = item.get("key").and_then(Value::as_str) else {
+            continue;
+        };
+        refs.push((service.to_string(), key.to_string()));
+    }
+    Ok(refs)
+}
+
+fn extract_secret_value(value: &Value) -> Result<String> {
+    match value {
+        Value::String(text) => Ok(text.clone()),
+        Value::Object(map) => {
+            for key in [
+                "value",
+                "key",
+                "password",
+                "token",
+                "secret",
+                "private_key",
+                "content",
+            ] {
+                if let Some(text) = map.get(key).and_then(Value::as_str) {
+                    return Ok(text.to_string());
+                }
+            }
+
+            let non_type_fields: Vec<&Value> = map
+                .iter()
+                .filter(|(key, _)| key.as_str() != "type")
+                .map(|(_, value)| value)
+                .collect();
+            if non_type_fields.len() == 1 {
+                return match non_type_fields[0] {
+                    Value::String(text) => Ok(text.clone()),
+                    other => serde_json::to_string(other).map_err(EngError::Serialization),
+                };
+            }
+
+            Err(EngError::Internal(
+                "credd secret response did not contain a usable string value".into(),
+            ))
+        }
+        other => serde_json::to_string(other).map_err(EngError::Serialization),
+    }
+}
