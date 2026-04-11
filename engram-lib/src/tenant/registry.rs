@@ -155,7 +155,7 @@ impl TenantRegistry {
             last_access: now,
         };
 
-        self.registry_db.insert(&row)?;
+        let row = self.registry_db.insert_or_get(&row)?;
         info!("created tenant: {} for user: {}", tenant_id, user_id);
 
         Ok(row)
