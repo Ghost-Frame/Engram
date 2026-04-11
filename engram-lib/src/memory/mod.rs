@@ -86,7 +86,8 @@ fn embedding_to_json(embedding: &[f32]) -> String {
 }
 
 /// Map a libsql Row to a Memory struct.
-/// Column order must match the SELECT in query_memories and related queries.
+/// Column order must match the MEMORY_COLUMNS constant below and any
+/// hand-rolled SELECT (currently only intelligence::consolidation).
 /// Order: id, content, category, source, session_id, importance, version,
 ///   is_latest, parent_memory_id, root_memory_id, source_count, is_static,
 ///   is_forgotten, is_archived, is_inference, is_fact, is_decomposed,
@@ -96,7 +97,7 @@ fn embedding_to_json(embedding: &[f32]) -> String {
 ///   fsrs_stability, fsrs_difficulty, fsrs_storage_strength,
 ///   fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses,
 ///   fsrs_last_review_at, valence, arousal, dominant_emotion,
-///   created_at, updated_at
+///   created_at, updated_at, is_superseded, is_consolidated
 pub(crate) fn row_to_memory(row: &libsql::Row) -> Result<Memory> {
     Ok(Memory {
         id: row.get::<i64>(0)?,
@@ -148,6 +149,7 @@ pub(crate) fn row_to_memory(row: &libsql::Row) -> Result<Memory> {
         created_at: row.get::<String>(45)?,
         updated_at: row.get::<String>(46)?,
         is_superseded: row.get::<i32>(47).map(|v| v != 0)?,
+        is_consolidated: row.get::<i32>(48).map(|v| v != 0)?,
     })
 }
 
@@ -203,6 +205,7 @@ fn row_to_memory_rusqlite(row: &rusqlite::Row<'_>) -> Result<Memory> {
         created_at: row.get(45).map_err(rusqlite_to_eng_error)?,
         updated_at: row.get(46).map_err(rusqlite_to_eng_error)?,
         is_superseded: row.get::<_, i32>(47).map_err(rusqlite_to_eng_error)? != 0,
+        is_consolidated: row.get::<_, i32>(48).map_err(rusqlite_to_eng_error)? != 0,
     })
 }
 
@@ -236,7 +239,7 @@ pub(crate) const MEMORY_COLUMNS: &str = "id, content, category, source, session_
     episode_id, decay_score, confidence, sync_id, status, user_id, space_id, \
     fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, \
     fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
-    valence, arousal, dominant_emotion, created_at, updated_at, is_superseded";
+    valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated";
 
 // -- Public CRUD functions ---
 
@@ -266,9 +269,11 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
     // 2. Compute simhash of content
     let content_hash = simhash::simhash(&content);
 
-    // 3. Check for duplicates -- query last 1000 memories for this user
+    // 3. Check for duplicates -- query last 1000 memories for this user.
+    // Skip consolidated sources so new similar content is not pointed at
+    // a memory that has been hidden from active search.
     let dup_sql = "SELECT id, content FROM memories \
-        WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 \
+        WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
         ORDER BY id DESC LIMIT 1000";
 
     #[cfg(feature = "db_pool")]
@@ -655,8 +660,9 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     if !opts.include_archived {
         conditions.push("is_archived = 0".to_string());
     }
-    // Always filter to latest version
+    // Always filter to latest version and hide consolidated sources
     conditions.push("is_latest = 1".to_string());
+    conditions.push("is_consolidated = 0".to_string());
 
     if let Some(ref cat) = opts.category {
         conditions.push(format!("category = ?{}", param_idx));

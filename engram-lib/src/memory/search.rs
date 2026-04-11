@@ -228,7 +228,8 @@ async fn fetch_graph_neighbors(
 async fn fetch_memory_for_search(db: &Database, id: i64, user_id: i64) -> Result<Option<crate::memory::types::Memory>> {
     let fetch_sql = format!(
         "SELECT {} FROM memories \
-         WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_latest = 1",
+         WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_latest = 1 \
+           AND is_consolidated = 0",
         MEMORY_COLUMNS
     );
 

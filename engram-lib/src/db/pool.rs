@@ -231,9 +231,11 @@ mod tests {
     #[tokio::test]
     async fn database_transaction_rolls_back_on_error() -> Result<()> {
         let db_path = temp_db_path("engram-pool-rollback");
-        let mut config = Config::default();
-        config.db_path = db_path.clone();
-        config.use_lance_index = false;
+        let config = Config {
+            db_path: db_path.clone(),
+            use_lance_index: false,
+            ..Config::default()
+        };
 
         let db = Database::connect_with_pool_config(&config, DbPoolConfig::default()).await?;
 

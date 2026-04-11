@@ -198,10 +198,12 @@ mod tests {
             }
         }
 
-        let mut config = Config::default();
-        config.pagerank_dirty_threshold = 100;
-        config.pagerank_refresh_interval_secs = 300;
-        config.pagerank_max_concurrent = 2;
+        let config = Config {
+            pagerank_dirty_threshold: 100,
+            pagerank_refresh_interval_secs: 300,
+            pagerank_max_concurrent: 2,
+            ..Config::default()
+        };
 
         let refreshed = run_once(&db, &config).await.expect("run refresh cycle");
 

@@ -102,12 +102,21 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
         ));
     };
 
-    // Link source memories to the consolidated memory
+    // Link source memories to the consolidated memory and mark them
+    // consolidated so read paths (hybrid/FTS/vector search) filter them
+    // out. Scoped by user_id as defense in depth even though sources were
+    // already fetched under the same user.
     for &(source_id, _, _, _) in &sources {
         conn.execute(
             "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) \
              VALUES (?1, ?2, 1.0, 'consolidates')",
             libsql::params![new_id, source_id],
+        )
+        .await?;
+        conn.execute(
+            "UPDATE memories SET is_consolidated = 1, updated_at = datetime('now') \
+             WHERE id = ?1 AND user_id = ?2",
+            libsql::params![source_id, user_id],
         )
         .await?;
     }
@@ -136,7 +145,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
              episode_id, decay_score, confidence, sync_id, status, user_id, space_id, \
              fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, \
              fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
-             valence, arousal, dominant_emotion, created_at, updated_at, is_superseded \
+             valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated \
              FROM memories WHERE id = ?1",
             libsql::params![new_id],
         )
@@ -351,6 +360,7 @@ fn row_to_memory(row: &libsql::Row) -> crate::Result<Memory> {
         created_at: row.get(45)?,
         updated_at: row.get(46)?,
         is_superseded: row.get::<i64>(47).map(|v| v != 0)?,
+        is_consolidated: row.get::<i64>(48).map(|v| v != 0)?,
     })
 }
 
