@@ -125,8 +125,10 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
                 RegisterAgentRequest {
                     user_id: Some(user_id),
                     name: report.agent.clone(),
-                    category: Some("cli".to_string()),
+                    type_: "cli".to_string(),
                     description: None,
+                    capabilities: None,
+                    config: None,
                 },
             )
             .await?
