@@ -11,6 +11,7 @@ const MIGRATION_PAGERANK_TABLES: i64 = 3;
 const MIGRATION_THYMUS_TENANT_SCOPE: i64 = 4;
 const MIGRATION_APP_STATE_TABLE: i64 = 5;
 const MIGRATION_BACKFILL_THYMUS_USER_ID: i64 = 6;
+const MIGRATION_VECTOR_SYNC_PENDING: i64 = 7;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -85,6 +86,15 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
             "backfill_thymus_user_id",
         )
         .await?;
+    }
+
+    // Migration 7: vector_sync_pending table used by memory::store and
+    // memory::update to record LanceDB inserts/deletes that failed at write
+    // time. A sweep task can replay rows and mark them resolved.
+    if current_version < MIGRATION_VECTOR_SYNC_PENDING {
+        info!("Running migration 7: vector_sync_pending");
+        run_migration_vector_sync_pending(conn).await?;
+        record_migration(conn, MIGRATION_VECTOR_SYNC_PENDING, "vector_sync_pending").await?;
     }
 
     // Future migrations go here:
@@ -199,6 +209,32 @@ async fn run_migration_thymus_tenant_scope(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_session_quality_user ON session_quality(user_id);
          CREATE INDEX IF NOT EXISTS idx_behavioral_drift_user ON behavioral_drift_events(user_id);",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Migration 7: track failed LanceDB writes so they can be replayed.
+/// The table is intentionally append-only; a sweeper deletes rows after a
+/// successful replay.
+async fn run_migration_vector_sync_pending(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS vector_sync_pending (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            op TEXT NOT NULL,
+            error TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_attempt_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_vector_sync_memory
+            ON vector_sync_pending(memory_id);
+        CREATE INDEX IF NOT EXISTS idx_vector_sync_user
+            ON vector_sync_pending(user_id);
+        ",
     )
     .await?;
     Ok(())
