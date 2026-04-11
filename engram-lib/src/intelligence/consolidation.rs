@@ -102,12 +102,21 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
         ));
     };
 
-    // Link source memories to the consolidated memory
+    // Link source memories to the consolidated memory and mark them
+    // consolidated so read paths (hybrid/FTS/vector search) filter them
+    // out. Scoped by user_id as defense in depth even though sources were
+    // already fetched under the same user.
     for &(source_id, _, _, _) in &sources {
         conn.execute(
             "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) \
              VALUES (?1, ?2, 1.0, 'consolidates')",
             libsql::params![new_id, source_id],
+        )
+        .await?;
+        conn.execute(
+            "UPDATE memories SET is_consolidated = 1, updated_at = datetime('now') \
+             WHERE id = ?1 AND user_id = ?2",
+            libsql::params![source_id, user_id],
         )
         .await?;
     }
@@ -130,15 +139,15 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
         .query(
             "SELECT id, content, category, source, session_id, importance, version, \
              is_latest, parent_memory_id, root_memory_id, source_count, is_static, \
-             is_forgotten, is_archived, is_inference, is_fact, is_decomposed, \
+             is_forgotten, is_archived, is_fact, is_decomposed, \
              forget_after, forget_reason, model, recall_hits, recall_misses, \
              adaptive_score, pagerank_score, last_accessed_at, access_count, tags, \
              episode_id, decay_score, confidence, sync_id, status, user_id, space_id, \
              fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, \
              fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
-             valence, arousal, dominant_emotion, created_at, updated_at, is_superseded \
-             FROM memories WHERE id = ?1",
-            libsql::params![new_id],
+             valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated \
+             FROM memories WHERE id = ?1 AND user_id = ?2",
+            libsql::params![new_id, user_id],
         )
         .await?;
 
@@ -317,40 +326,40 @@ fn row_to_memory(row: &libsql::Row) -> crate::Result<Memory> {
         is_static: row.get::<i64>(11).map(|v| v != 0)?,
         is_forgotten: row.get::<i64>(12).map(|v| v != 0)?,
         is_archived: row.get::<i64>(13).map(|v| v != 0)?,
-        is_inference: row.get::<i64>(14).map(|v| v != 0)?,
-        is_fact: row.get::<i64>(15).map(|v| v != 0)?,
-        is_decomposed: row.get::<i64>(16).map(|v| v != 0)?,
-        forget_after: row.get(17)?,
-        forget_reason: row.get(18)?,
-        model: row.get(19)?,
-        recall_hits: row.get(20)?,
-        recall_misses: row.get(21)?,
-        adaptive_score: row.get(22)?,
-        pagerank_score: row.get(23)?,
-        last_accessed_at: row.get(24)?,
-        access_count: row.get(25)?,
-        tags: row.get(26)?,
-        episode_id: row.get(27)?,
-        decay_score: row.get(28)?,
-        confidence: row.get(29)?,
-        sync_id: row.get(30)?,
-        status: row.get(31)?,
-        user_id: row.get(32)?,
-        space_id: row.get(33)?,
-        fsrs_stability: row.get(34)?,
-        fsrs_difficulty: row.get(35)?,
-        fsrs_storage_strength: row.get(36)?,
-        fsrs_retrieval_strength: row.get(37)?,
-        fsrs_learning_state: row.get(38)?,
-        fsrs_reps: row.get(39)?,
-        fsrs_lapses: row.get(40)?,
-        fsrs_last_review_at: row.get(41)?,
-        valence: row.get(42)?,
-        arousal: row.get(43)?,
-        dominant_emotion: row.get(44)?,
-        created_at: row.get(45)?,
-        updated_at: row.get(46)?,
-        is_superseded: row.get::<i64>(47).map(|v| v != 0)?,
+        is_fact: row.get::<i64>(14).map(|v| v != 0)?,
+        is_decomposed: row.get::<i64>(15).map(|v| v != 0)?,
+        forget_after: row.get(16)?,
+        forget_reason: row.get(17)?,
+        model: row.get(18)?,
+        recall_hits: row.get(19)?,
+        recall_misses: row.get(20)?,
+        adaptive_score: row.get(21)?,
+        pagerank_score: row.get(22)?,
+        last_accessed_at: row.get(23)?,
+        access_count: row.get(24)?,
+        tags: row.get(25)?,
+        episode_id: row.get(26)?,
+        decay_score: row.get(27)?,
+        confidence: row.get(28)?,
+        sync_id: row.get(29)?,
+        status: row.get(30)?,
+        user_id: row.get(31)?,
+        space_id: row.get(32)?,
+        fsrs_stability: row.get(33)?,
+        fsrs_difficulty: row.get(34)?,
+        fsrs_storage_strength: row.get(35)?,
+        fsrs_retrieval_strength: row.get(36)?,
+        fsrs_learning_state: row.get(37)?,
+        fsrs_reps: row.get(38)?,
+        fsrs_lapses: row.get(39)?,
+        fsrs_last_review_at: row.get(40)?,
+        valence: row.get(41)?,
+        arousal: row.get(42)?,
+        dominant_emotion: row.get(43)?,
+        created_at: row.get(44)?,
+        updated_at: row.get(45)?,
+        is_superseded: row.get::<i64>(46).map(|v| v != 0)?,
+        is_consolidated: row.get::<i64>(47).map(|v| v != 0)?,
     })
 }
 

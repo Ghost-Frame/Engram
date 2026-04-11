@@ -8,7 +8,9 @@ use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::db::Database;
-use crate::graph::pagerank::{compute_pagerank_for_user, persist_pagerank};
+use crate::graph::pagerank::{
+    compute_pagerank_for_user, persist_pagerank_with_snapshot, snapshot_pagerank_dirty,
+};
 
 /// Query users whose pagerank cache needs refreshing based on dirty_count or
 /// elapsed time since last_refresh.
@@ -57,9 +59,27 @@ async fn run_once(db: &Arc<Database>, config: &Config) -> crate::Result<usize> {
         handles.push(tokio::spawn(async move {
             // Acquire before doing work so at most max_concurrent tasks compute at once.
             let _permit = sem_arc.acquire_owned().await;
+            // Snapshot dirty_count BEFORE compute. Any mark_pagerank_dirty
+            // that fires while compute is in flight will not be cleared by
+            // persist_pagerank_with_snapshot below, so the next refresh
+            // cycle picks it up instead of silently dropping it.
+            let dirty_snapshot = match snapshot_pagerank_dirty(db_arc.as_ref(), user_id).await {
+                Ok(n) => n,
+                Err(e) => {
+                    warn!(user_id, error = %e, "pagerank dirty snapshot failed");
+                    return false;
+                }
+            };
             match compute_pagerank_for_user(db_arc.as_ref(), user_id).await {
                 Ok(scores) => {
-                    if let Err(e) = persist_pagerank(db_arc.as_ref(), user_id, &scores).await {
+                    if let Err(e) = persist_pagerank_with_snapshot(
+                        db_arc.as_ref(),
+                        user_id,
+                        &scores,
+                        dirty_snapshot,
+                    )
+                    .await
+                    {
                         warn!(user_id, error = %e, "pagerank persist failed");
                         return false;
                     }
@@ -178,10 +198,12 @@ mod tests {
             }
         }
 
-        let mut config = Config::default();
-        config.pagerank_dirty_threshold = 100;
-        config.pagerank_refresh_interval_secs = 300;
-        config.pagerank_max_concurrent = 2;
+        let config = Config {
+            pagerank_dirty_threshold: 100,
+            pagerank_refresh_interval_secs: 300,
+            pagerank_max_concurrent: 2,
+            ..Config::default()
+        };
 
         let refreshed = run_once(&db, &config).await.expect("run refresh cycle");
 

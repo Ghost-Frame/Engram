@@ -77,11 +77,11 @@ pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
     };
     let expired = match user_id {
         Some(uid) => db.conn.execute(
-            "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now') AND user_id = ?1",
+            "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now') AND user_id = ?1",
             libsql::params![uid],
         ).await? as i64,
         None => db.conn.execute(
-            "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+            "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now')",
             (),
         ).await? as i64,
     };
@@ -460,9 +460,9 @@ pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport>
     .await?;
     let facts = export_table_user(
         db,
-        "SELECT f.id, f.memory_id, f.content, f.fact_type, f.confidence, f.created_at \
-         FROM facts f JOIN memories m ON f.memory_id = m.id \
-         WHERE m.user_id = ?1 ORDER BY f.created_at DESC",
+        "SELECT id, memory_id, subject, predicate, object, confidence, created_at \
+         FROM structured_facts \
+         WHERE user_id = ?1 ORDER BY created_at DESC",
         user_id,
     )
     .await?;
@@ -556,12 +556,18 @@ async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>
 // Re-embed: clear embeddings so they get regenerated
 // ---------------------------------------------------------------------------
 
+/// Clear embeddings on every live memory so ingestion regenerates them on
+/// next access. Both the legacy `embedding` BLOB column and the active
+/// `embedding_vec_1024` column are cleared; clearing only the legacy
+/// column would leave the live index serving stale vectors and is the
+/// bug pre-round-5 callers hit when swapping models.
 pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
     let affected = match user_id {
         Some(uid) => {
             db.conn
                 .execute(
-                    "UPDATE memories SET embedding = NULL WHERE user_id = ?1 AND is_forgotten = 0",
+                    "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
+                     WHERE user_id = ?1 AND is_forgotten = 0",
                     libsql::params![uid],
                 )
                 .await?
@@ -569,7 +575,8 @@ pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
         None => {
             db.conn
                 .execute(
-                    "UPDATE memories SET embedding = NULL WHERE is_forgotten = 0",
+                    "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
+                     WHERE is_forgotten = 0",
                     (),
                 )
                 .await?

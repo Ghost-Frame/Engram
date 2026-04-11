@@ -47,7 +47,7 @@ pub async fn pack_memories(
 
     // Layer 1: Static facts
     let mut rows = db.conn.query(
-        "SELECT id, content, category, importance FROM memories WHERE is_static = 1 AND is_forgotten = 0 AND is_archived = 0 AND user_id = ?1",
+        "SELECT id, content, category, importance FROM memories WHERE is_static = 1 AND is_forgotten = 0 AND is_archived = 0 AND is_consolidated = 0 AND user_id = ?1",
         libsql::params![user_id],
     ).await?;
     while let Some(row) = rows.next().await? {
@@ -74,7 +74,7 @@ pub async fn pack_memories(
 
     // Layer 2: High-importance memories
     let mut rows = db.conn.query(
-        "SELECT id, content, category, importance, COALESCE(decay_score, importance) as ds FROM memories WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 AND user_id = ?1 ORDER BY ds DESC LIMIT 30",
+        "SELECT id, content, category, importance, COALESCE(decay_score, importance) as ds FROM memories WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 AND is_consolidated = 0 AND user_id = ?1 ORDER BY ds DESC LIMIT 30",
         libsql::params![user_id],
     ).await?;
     while let Some(row) = rows.next().await? {

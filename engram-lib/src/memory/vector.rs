@@ -36,6 +36,7 @@ pub async fn vector_search(
         JOIN memories ON memories.rowid = id
         WHERE memories.is_forgotten = 0
           AND memories.is_latest = 1
+          AND memories.is_consolidated = 0
           AND memories.user_id = ?3
     ";
 

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS memories (
     session_id TEXT,
     importance INTEGER NOT NULL DEFAULT 5,
     embedding BLOB,
+    embedding_vec_1024 FLOAT32(1024),
     version INTEGER NOT NULL DEFAULT 1,
     is_latest BOOLEAN NOT NULL DEFAULT 1,
     parent_memory_id INTEGER REFERENCES memories(id),
@@ -25,7 +26,6 @@ CREATE TABLE IF NOT EXISTS memories (
     is_static BOOLEAN NOT NULL DEFAULT 0,
     is_forgotten BOOLEAN NOT NULL DEFAULT 0,
     is_archived BOOLEAN NOT NULL DEFAULT 0,
-    is_inference BOOLEAN NOT NULL DEFAULT 0,
     is_fact INTEGER DEFAULT 0,
     is_decomposed INTEGER DEFAULT 0,
     forget_after TEXT,
@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS memories (
     fsrs_lapses INTEGER DEFAULT 0,
     fsrs_last_review_at TEXT,
     is_superseded INTEGER NOT NULL DEFAULT 0,
+    is_consolidated INTEGER NOT NULL DEFAULT 0,
     valence REAL,
     arousal REAL,
     dominant_emotion TEXT,
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 CREATE INDEX IF NOT EXISTS idx_memories_root ON memories(root_memory_id);
 CREATE INDEX IF NOT EXISTS idx_memories_superseded ON memories(is_superseded) WHERE is_superseded = 1;
+CREATE INDEX IF NOT EXISTS idx_memories_consolidated ON memories(is_consolidated) WHERE is_consolidated = 1;
 CREATE INDEX IF NOT EXISTS idx_memories_parent ON memories(parent_memory_id);
 CREATE INDEX IF NOT EXISTS idx_memories_latest ON memories(is_latest) WHERE is_latest = 1;
 CREATE INDEX IF NOT EXISTS idx_memories_forgotten ON memories(is_forgotten);
@@ -257,17 +259,35 @@ CREATE INDEX IF NOT EXISTS idx_preferences_strength ON user_preferences(strength
 -- Artifacts
 CREATE TABLE IF NOT EXISTS artifacts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-    artifact_type TEXT NOT NULL,
-    content TEXT NOT NULL,
+    name TEXT NOT NULL,
+    memory_id INTEGER REFERENCES memories(id) ON DELETE CASCADE,
+    filename TEXT,
+    artifact_type TEXT NOT NULL DEFAULT 'file',
+    content TEXT,
+    content_hash TEXT,
     mime_type TEXT,
     size_bytes INTEGER,
-    hash TEXT,
+    sha256 TEXT,
+    storage_mode TEXT NOT NULL DEFAULT 'inline',
+    data BLOB,
+    disk_path TEXT,
+    is_indexed INTEGER NOT NULL DEFAULT 0,
+    is_encrypted INTEGER NOT NULL DEFAULT 0,
+    source_url TEXT,
+    agent TEXT,
+    session_id TEXT,
     metadata TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    user_id INTEGER NOT NULL DEFAULT 1,
+    space_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_artifacts_memory ON artifacts(memory_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_user ON artifacts(user_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_type ON artifacts(artifact_type);
+CREATE INDEX IF NOT EXISTS idx_artifacts_agent ON artifacts(agent);
+CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_memory ON artifacts(memory_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_hash ON artifacts(sha256);
 
 -- Full-text search
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(

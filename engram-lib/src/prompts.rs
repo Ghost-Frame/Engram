@@ -34,7 +34,7 @@ pub async fn generate_prompt(
 
     // Static facts
     let mut rows = db.conn.query(
-        "SELECT id, content, category, importance FROM memories WHERE is_static = 1 AND is_forgotten = 0 AND user_id = ?1",
+        "SELECT id, content, category, importance FROM memories WHERE is_static = 1 AND is_forgotten = 0 AND is_consolidated = 0 AND user_id = ?1",
         libsql::params![user_id],
     ).await?;
     while let Some(row) = rows.next().await? {
@@ -53,7 +53,7 @@ pub async fn generate_prompt(
 
     // Important memories
     let mut rows = db.conn.query(
-        "SELECT id, content, category, importance, COALESCE(decay_score, importance) as ds FROM memories WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 AND user_id = ?1 ORDER BY ds DESC LIMIT 1000",
+        "SELECT id, content, category, importance, COALESCE(decay_score, importance) as ds FROM memories WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 AND is_consolidated = 0 AND user_id = ?1 ORDER BY ds DESC LIMIT 1000",
         libsql::params![user_id],
     ).await?;
     while let Some(row) = rows.next().await? {
@@ -111,7 +111,7 @@ pub async fn generate_header(
     user_id: i64,
 ) -> Result<HeaderResult> {
     let mut rows = db.conn.query(
-        "SELECT id, content, category, source, model, created_at, importance FROM memories WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 AND user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+        "SELECT id, content, category, source, model, created_at, importance FROM memories WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 AND is_consolidated = 0 AND user_id = ?1 ORDER BY created_at DESC LIMIT ?2",
         libsql::params![user_id, (limit * 3) as i64],
     ).await?;
     let mut prior_models = std::collections::HashSet::new();

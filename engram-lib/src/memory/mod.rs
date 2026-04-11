@@ -50,6 +50,55 @@ fn clamp_importance(value: i32) -> i32 {
     value.clamp(1, 10)
 }
 
+/// Record a failed LanceDB write into the vector_sync_pending table so a
+/// sweeper (or the admin replay endpoint) can retry it. Intentionally
+/// best-effort: if the sync-pending insert itself fails, log and move on.
+async fn record_vector_sync_failure(
+    db: &Database,
+    memory_id: i64,
+    user_id: i64,
+    op: &str,
+    err: &str,
+) {
+    let sql = "INSERT INTO vector_sync_pending (memory_id, user_id, op, error) \
+               VALUES (?1, ?2, ?3, ?4)";
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        let op_owned = op.to_string();
+        let err_owned = err.to_string();
+        let op_for_log = op_owned.clone();
+        let result = db
+            .write(move |conn| {
+                conn.execute(
+                    sql,
+                    rusqlite::params![memory_id, user_id, op_owned, err_owned],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                Ok(())
+            })
+            .await;
+        if let Err(e) = result {
+            warn!(
+                "failed to record vector_sync_pending for memory {} ({}) on pool backend: {}",
+                memory_id, op_for_log, e
+            );
+        }
+        return;
+    }
+
+    if let Err(e) = db
+        .conn
+        .execute(sql, params![memory_id, user_id, op, err])
+        .await
+    {
+        warn!(
+            "failed to record vector_sync_pending for memory {} ({}): {}",
+            memory_id, op, e
+        );
+    }
+}
+
 fn embedding_to_json(embedding: &[f32]) -> String {
     format!(
         "[{}]",
@@ -62,17 +111,18 @@ fn embedding_to_json(embedding: &[f32]) -> String {
 }
 
 /// Map a libsql Row to a Memory struct.
-/// Column order must match the SELECT in query_memories and related queries.
+/// Column order must match the MEMORY_COLUMNS constant below and any
+/// hand-rolled SELECT (currently only intelligence::consolidation).
 /// Order: id, content, category, source, session_id, importance, version,
 ///   is_latest, parent_memory_id, root_memory_id, source_count, is_static,
-///   is_forgotten, is_archived, is_inference, is_fact, is_decomposed,
+///   is_forgotten, is_archived, is_fact, is_decomposed,
 ///   forget_after, forget_reason, model, recall_hits, recall_misses,
 ///   adaptive_score, pagerank_score, last_accessed_at, access_count, tags,
 ///   episode_id, decay_score, confidence, sync_id, status, user_id, space_id,
 ///   fsrs_stability, fsrs_difficulty, fsrs_storage_strength,
 ///   fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses,
 ///   fsrs_last_review_at, valence, arousal, dominant_emotion,
-///   created_at, updated_at
+///   created_at, updated_at, is_superseded, is_consolidated
 pub(crate) fn row_to_memory(row: &libsql::Row) -> Result<Memory> {
     Ok(Memory {
         id: row.get::<i64>(0)?,
@@ -90,40 +140,40 @@ pub(crate) fn row_to_memory(row: &libsql::Row) -> Result<Memory> {
         is_static: row.get::<i32>(11)? != 0,
         is_forgotten: row.get::<i32>(12)? != 0,
         is_archived: row.get::<i32>(13)? != 0,
-        is_inference: row.get::<i32>(14)? != 0,
-        is_fact: row.get::<i32>(15)? != 0,
-        is_decomposed: row.get::<i32>(16)? != 0,
-        forget_after: row.get::<Option<String>>(17)?,
-        forget_reason: row.get::<Option<String>>(18)?,
-        model: row.get::<Option<String>>(19)?,
-        recall_hits: row.get::<i32>(20)?,
-        recall_misses: row.get::<i32>(21)?,
-        adaptive_score: row.get::<Option<f64>>(22)?,
-        pagerank_score: row.get::<Option<f64>>(23)?,
-        last_accessed_at: row.get::<Option<String>>(24)?,
-        access_count: row.get::<i32>(25)?,
-        tags: row.get::<Option<String>>(26)?,
-        episode_id: row.get::<Option<i64>>(27)?,
-        decay_score: row.get::<Option<f64>>(28)?,
-        confidence: row.get::<f64>(29)?,
-        sync_id: row.get::<Option<String>>(30)?,
-        status: row.get::<String>(31)?,
-        user_id: row.get::<i64>(32)?,
-        space_id: row.get::<Option<i64>>(33)?,
-        fsrs_stability: row.get::<Option<f64>>(34)?,
-        fsrs_difficulty: row.get::<Option<f64>>(35)?,
-        fsrs_storage_strength: row.get::<Option<f64>>(36)?,
-        fsrs_retrieval_strength: row.get::<Option<f64>>(37)?,
-        fsrs_learning_state: row.get::<Option<i32>>(38)?,
-        fsrs_reps: row.get::<Option<i32>>(39)?,
-        fsrs_lapses: row.get::<Option<i32>>(40)?,
-        fsrs_last_review_at: row.get::<Option<String>>(41)?,
-        valence: row.get::<Option<f64>>(42)?,
-        arousal: row.get::<Option<f64>>(43)?,
-        dominant_emotion: row.get::<Option<String>>(44)?,
-        created_at: row.get::<String>(45)?,
-        updated_at: row.get::<String>(46)?,
-        is_superseded: row.get::<i32>(47).map(|v| v != 0)?,
+        is_fact: row.get::<i32>(14)? != 0,
+        is_decomposed: row.get::<i32>(15)? != 0,
+        forget_after: row.get::<Option<String>>(16)?,
+        forget_reason: row.get::<Option<String>>(17)?,
+        model: row.get::<Option<String>>(18)?,
+        recall_hits: row.get::<i32>(19)?,
+        recall_misses: row.get::<i32>(20)?,
+        adaptive_score: row.get::<Option<f64>>(21)?,
+        pagerank_score: row.get::<Option<f64>>(22)?,
+        last_accessed_at: row.get::<Option<String>>(23)?,
+        access_count: row.get::<i32>(24)?,
+        tags: row.get::<Option<String>>(25)?,
+        episode_id: row.get::<Option<i64>>(26)?,
+        decay_score: row.get::<Option<f64>>(27)?,
+        confidence: row.get::<f64>(28)?,
+        sync_id: row.get::<Option<String>>(29)?,
+        status: row.get::<String>(30)?,
+        user_id: row.get::<i64>(31)?,
+        space_id: row.get::<Option<i64>>(32)?,
+        fsrs_stability: row.get::<Option<f64>>(33)?,
+        fsrs_difficulty: row.get::<Option<f64>>(34)?,
+        fsrs_storage_strength: row.get::<Option<f64>>(35)?,
+        fsrs_retrieval_strength: row.get::<Option<f64>>(36)?,
+        fsrs_learning_state: row.get::<Option<i32>>(37)?,
+        fsrs_reps: row.get::<Option<i32>>(38)?,
+        fsrs_lapses: row.get::<Option<i32>>(39)?,
+        fsrs_last_review_at: row.get::<Option<String>>(40)?,
+        valence: row.get::<Option<f64>>(41)?,
+        arousal: row.get::<Option<f64>>(42)?,
+        dominant_emotion: row.get::<Option<String>>(43)?,
+        created_at: row.get::<String>(44)?,
+        updated_at: row.get::<String>(45)?,
+        is_superseded: row.get::<i32>(46).map(|v| v != 0)?,
+        is_consolidated: row.get::<i32>(47).map(|v| v != 0)?,
     })
 }
 
@@ -145,40 +195,40 @@ fn row_to_memory_rusqlite(row: &rusqlite::Row<'_>) -> Result<Memory> {
         is_static: row.get::<_, i32>(11).map_err(rusqlite_to_eng_error)? != 0,
         is_forgotten: row.get::<_, i32>(12).map_err(rusqlite_to_eng_error)? != 0,
         is_archived: row.get::<_, i32>(13).map_err(rusqlite_to_eng_error)? != 0,
-        is_inference: row.get::<_, i32>(14).map_err(rusqlite_to_eng_error)? != 0,
-        is_fact: row.get::<_, i32>(15).map_err(rusqlite_to_eng_error)? != 0,
-        is_decomposed: row.get::<_, i32>(16).map_err(rusqlite_to_eng_error)? != 0,
-        forget_after: row.get(17).map_err(rusqlite_to_eng_error)?,
-        forget_reason: row.get(18).map_err(rusqlite_to_eng_error)?,
-        model: row.get(19).map_err(rusqlite_to_eng_error)?,
-        recall_hits: row.get(20).map_err(rusqlite_to_eng_error)?,
-        recall_misses: row.get(21).map_err(rusqlite_to_eng_error)?,
-        adaptive_score: row.get(22).map_err(rusqlite_to_eng_error)?,
-        pagerank_score: row.get(23).map_err(rusqlite_to_eng_error)?,
-        last_accessed_at: row.get(24).map_err(rusqlite_to_eng_error)?,
-        access_count: row.get(25).map_err(rusqlite_to_eng_error)?,
-        tags: row.get(26).map_err(rusqlite_to_eng_error)?,
-        episode_id: row.get(27).map_err(rusqlite_to_eng_error)?,
-        decay_score: row.get(28).map_err(rusqlite_to_eng_error)?,
-        confidence: row.get(29).map_err(rusqlite_to_eng_error)?,
-        sync_id: row.get(30).map_err(rusqlite_to_eng_error)?,
-        status: row.get(31).map_err(rusqlite_to_eng_error)?,
-        user_id: row.get(32).map_err(rusqlite_to_eng_error)?,
-        space_id: row.get(33).map_err(rusqlite_to_eng_error)?,
-        fsrs_stability: row.get(34).map_err(rusqlite_to_eng_error)?,
-        fsrs_difficulty: row.get(35).map_err(rusqlite_to_eng_error)?,
-        fsrs_storage_strength: row.get(36).map_err(rusqlite_to_eng_error)?,
-        fsrs_retrieval_strength: row.get(37).map_err(rusqlite_to_eng_error)?,
-        fsrs_learning_state: row.get(38).map_err(rusqlite_to_eng_error)?,
-        fsrs_reps: row.get(39).map_err(rusqlite_to_eng_error)?,
-        fsrs_lapses: row.get(40).map_err(rusqlite_to_eng_error)?,
-        fsrs_last_review_at: row.get(41).map_err(rusqlite_to_eng_error)?,
-        valence: row.get(42).map_err(rusqlite_to_eng_error)?,
-        arousal: row.get(43).map_err(rusqlite_to_eng_error)?,
-        dominant_emotion: row.get(44).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(45).map_err(rusqlite_to_eng_error)?,
-        updated_at: row.get(46).map_err(rusqlite_to_eng_error)?,
-        is_superseded: row.get::<_, i32>(47).map_err(rusqlite_to_eng_error)? != 0,
+        is_fact: row.get::<_, i32>(14).map_err(rusqlite_to_eng_error)? != 0,
+        is_decomposed: row.get::<_, i32>(15).map_err(rusqlite_to_eng_error)? != 0,
+        forget_after: row.get(16).map_err(rusqlite_to_eng_error)?,
+        forget_reason: row.get(17).map_err(rusqlite_to_eng_error)?,
+        model: row.get(18).map_err(rusqlite_to_eng_error)?,
+        recall_hits: row.get(19).map_err(rusqlite_to_eng_error)?,
+        recall_misses: row.get(20).map_err(rusqlite_to_eng_error)?,
+        adaptive_score: row.get(21).map_err(rusqlite_to_eng_error)?,
+        pagerank_score: row.get(22).map_err(rusqlite_to_eng_error)?,
+        last_accessed_at: row.get(23).map_err(rusqlite_to_eng_error)?,
+        access_count: row.get(24).map_err(rusqlite_to_eng_error)?,
+        tags: row.get(25).map_err(rusqlite_to_eng_error)?,
+        episode_id: row.get(26).map_err(rusqlite_to_eng_error)?,
+        decay_score: row.get(27).map_err(rusqlite_to_eng_error)?,
+        confidence: row.get(28).map_err(rusqlite_to_eng_error)?,
+        sync_id: row.get(29).map_err(rusqlite_to_eng_error)?,
+        status: row.get(30).map_err(rusqlite_to_eng_error)?,
+        user_id: row.get(31).map_err(rusqlite_to_eng_error)?,
+        space_id: row.get(32).map_err(rusqlite_to_eng_error)?,
+        fsrs_stability: row.get(33).map_err(rusqlite_to_eng_error)?,
+        fsrs_difficulty: row.get(34).map_err(rusqlite_to_eng_error)?,
+        fsrs_storage_strength: row.get(35).map_err(rusqlite_to_eng_error)?,
+        fsrs_retrieval_strength: row.get(36).map_err(rusqlite_to_eng_error)?,
+        fsrs_learning_state: row.get(37).map_err(rusqlite_to_eng_error)?,
+        fsrs_reps: row.get(38).map_err(rusqlite_to_eng_error)?,
+        fsrs_lapses: row.get(39).map_err(rusqlite_to_eng_error)?,
+        fsrs_last_review_at: row.get(40).map_err(rusqlite_to_eng_error)?,
+        valence: row.get(41).map_err(rusqlite_to_eng_error)?,
+        arousal: row.get(42).map_err(rusqlite_to_eng_error)?,
+        dominant_emotion: row.get(43).map_err(rusqlite_to_eng_error)?,
+        created_at: row.get(44).map_err(rusqlite_to_eng_error)?,
+        updated_at: row.get(45).map_err(rusqlite_to_eng_error)?,
+        is_superseded: row.get::<_, i32>(46).map_err(rusqlite_to_eng_error)? != 0,
+        is_consolidated: row.get::<_, i32>(47).map_err(rusqlite_to_eng_error)? != 0,
     })
 }
 
@@ -206,13 +256,13 @@ pub(crate) fn libsql_value_to_rusqlite_value(value: &libsql::Value) -> rusqlite:
 /// Standard SELECT column list -- matches row_to_memory index order.
 pub(crate) const MEMORY_COLUMNS: &str = "id, content, category, source, session_id, importance, \
     version, is_latest, parent_memory_id, root_memory_id, source_count, is_static, \
-    is_forgotten, is_archived, is_inference, is_fact, is_decomposed, \
+    is_forgotten, is_archived, is_fact, is_decomposed, \
     forget_after, forget_reason, model, recall_hits, recall_misses, \
     adaptive_score, pagerank_score, last_accessed_at, access_count, tags, \
     episode_id, decay_score, confidence, sync_id, status, user_id, space_id, \
     fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, \
     fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
-    valence, arousal, dominant_emotion, created_at, updated_at, is_superseded";
+    valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated";
 
 // -- Public CRUD functions ---
 
@@ -242,9 +292,11 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
     // 2. Compute simhash of content
     let content_hash = simhash::simhash(&content);
 
-    // 3. Check for duplicates -- query last 1000 memories for this user
+    // 3. Check for duplicates -- query last 1000 memories for this user.
+    // Skip consolidated sources so new similar content is not pointed at
+    // a memory that has been hidden from active search.
     let dup_sql = "SELECT id, content FROM memories \
-        WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 \
+        WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
         ORDER BY id DESC LIMIT 1000";
 
     #[cfg(feature = "db_pool")]
@@ -297,8 +349,14 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
             if let Some(index) = db.vector_index.as_ref() {
                 if let Err(e) = index.insert(new_id, user_id, emb).await {
                     warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+                    record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string())
+                        .await;
                 }
             }
+        }
+
+        if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+            warn!("pagerank dirty mark failed on store (pool): {}", e);
         }
 
         return Ok(StoreResult {
@@ -334,11 +392,15 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
         Ok(new_id) => {
             db.conn.execute("COMMIT", ()).await?;
 
-            // LanceDB insert is outside transaction (external system, best-effort)
+            // LanceDB insert is outside transaction (external system,
+            // best-effort). Failures are recorded in vector_sync_pending so a
+            // sweep or admin replay can recover without data loss.
             if let Some(ref emb) = req.embedding {
                 if let Some(index) = db.vector_index.as_ref() {
                     if let Err(e) = index.insert(new_id, user_id, emb).await {
                         warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+                        record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string())
+                            .await;
                     }
                 }
             }
@@ -625,8 +687,9 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     if !opts.include_archived {
         conditions.push("is_archived = 0".to_string());
     }
-    // Always filter to latest version
+    // Always filter to latest version and hide consolidated sources
     conditions.push("is_latest = 1".to_string());
+    conditions.push("is_consolidated = 0".to_string());
 
     if let Some(ref cat) = opts.category {
         conditions.push(format!("category = ?{}", param_idx));
@@ -719,7 +782,14 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
         if let Some(index) = db.vector_index.as_ref() {
             if let Err(e) = index.delete(id).await {
                 warn!("LanceDB vector delete failed for memory {}: {}", id, e);
+                record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
             }
+        }
+        if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+            warn!(
+                "mark_pagerank_dirty failed after delete (pool) for user {}: {}",
+                user_id, e
+            );
         }
         return Ok(());
     }
@@ -745,6 +815,7 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
     if let Some(index) = db.vector_index.as_ref() {
         if let Err(e) = index.delete(id).await {
             warn!("LanceDB vector delete failed for memory {}: {}", id, e);
+            record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
         }
     }
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
@@ -838,14 +909,21 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
             if let Some(index) = db.vector_index.as_ref() {
                 if let Err(e) = index.insert(new_id, user_id, emb).await {
                     warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+                    record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string())
+                        .await;
                 }
                 if let Err(e) = index.delete(id).await {
                     warn!(
                         "LanceDB vector delete failed for superseded memory {}: {}",
                         id, e
                     );
+                    record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
                 }
             }
+        }
+
+        if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+            warn!("pagerank dirty mark failed on update (pool): {}", e);
         }
 
         let new_sql = format!(
@@ -935,17 +1013,24 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
         Ok(new_id) => {
             db.conn.execute("COMMIT", ()).await?;
 
-            // LanceDB operations outside transaction (external system, best-effort)
+            // LanceDB operations outside transaction (external system,
+            // best-effort). Failures queue into vector_sync_pending so the
+            // old row's vector does not leak and the new row's vector can
+            // be replayed later.
             if let Some(ref emb) = req.embedding {
                 if let Some(index) = db.vector_index.as_ref() {
                     if let Err(e) = index.insert(new_id, user_id, emb).await {
                         warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+                        record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string())
+                            .await;
                     }
                     if let Err(e) = index.delete(id).await {
                         warn!(
                             "LanceDB vector delete failed for superseded memory {}: {}",
                             id, e
                         );
+                        record_vector_sync_failure(db, id, user_id, "delete", &e.to_string())
+                            .await;
                     }
                 }
             }
@@ -975,7 +1060,12 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
     }
 }
 
-/// Internal transactional helper for update - returns new_id
+/// Internal transactional helper for update - returns new_id.
+///
+/// The is_latest flip is guarded with `AND is_latest = 1` and the affected
+/// row count is checked. If a concurrent update already superseded this
+/// version the UPDATE matches 0 rows and we abort so the version chain
+/// never ends up with two rows sharing `is_latest = 1` for the same root.
 #[allow(clippy::too_many_arguments)]
 async fn update_transactional(
     db: &Database,
@@ -992,13 +1082,23 @@ async fn update_transactional(
     new_version: i32,
     embedding: Option<&Vec<f32>>,
 ) -> Result<i64> {
-    // Mark old as not latest
-    db.conn
+    // Mark old as not latest, but only if it still is. A concurrent update
+    // may have already flipped is_latest to 0 between the pre-transaction
+    // SELECT and BEGIN IMMEDIATE. If that happened we have to abort.
+    let affected = db
+        .conn
         .execute(
-            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') \
+             WHERE id = ?1 AND user_id = ?2 AND is_latest = 1",
             params![old_id, user_id],
         )
         .await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!(
+            "memory {} is no longer the latest version (concurrent update)",
+            old_id
+        )));
+    }
 
     // INSERT new row
     let insert_sql = "INSERT INTO memories (
@@ -1088,11 +1188,19 @@ fn update_transactional_rusqlite(
     new_version: i32,
     embedding: Option<&Vec<f32>>,
 ) -> Result<i64> {
-    tx.execute(
-        "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-        rusqlite::params![old_id, user_id],
-    )
-    .map_err(rusqlite_to_eng_error)?;
+    let affected = tx
+        .execute(
+            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') \
+             WHERE id = ?1 AND user_id = ?2 AND is_latest = 1",
+            rusqlite::params![old_id, user_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!(
+            "memory {} is no longer the latest version (concurrent update)",
+            old_id
+        )));
+    }
 
     tx.execute(
         "INSERT INTO memories (
@@ -1174,7 +1282,11 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
                     "LanceDB vector delete failed for forgotten memory {}: {}",
                     id, e
                 );
+                record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
             }
+        }
+        if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+            warn!("mark_pagerank_dirty failed after mark_forgotten for user {}: {}", user_id, e);
         }
         return Ok(());
     }
@@ -1192,6 +1304,7 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
                 "LanceDB vector delete failed for forgotten memory {}: {}",
                 id, e
             );
+            record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
         }
     }
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
@@ -1214,6 +1327,9 @@ pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
             .await?;
         if affected == 0 {
             return Err(EngError::NotFound(format!("memory {} not found", id)));
+        }
+        if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+            warn!("mark_pagerank_dirty failed after mark_archived for user {}: {}", user_id, e);
         }
         return Ok(());
     }
@@ -1248,6 +1364,9 @@ pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()>
             .await?;
         if affected == 0 {
             return Err(EngError::NotFound(format!("memory {} not found", id)));
+        }
+        if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+            warn!("mark_pagerank_dirty failed after mark_unarchived for user {}: {}", user_id, e);
         }
         return Ok(());
     }
@@ -1349,29 +1468,32 @@ pub async fn insert_link(
     #[cfg(feature = "db_pool")]
     if uses_pool_backend(db) {
         let link_type = link_type.to_string();
-        return db
-            .write(move |conn| {
-                let count: i64 = conn
-                    .query_row(
-                        count_sql,
-                        rusqlite::params![source_id, target_id, user_id],
-                        |row| row.get(0),
-                    )
-                    .map_err(rusqlite_to_eng_error)?;
-                if count < 2 {
-                    return Err(EngError::NotFound(format!(
-                        "one or both memories ({}, {}) do not belong to user {}",
-                        source_id, target_id, user_id
-                    )));
-                }
-                conn.execute(
-                    "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![source_id, target_id, similarity, link_type],
+        db.write(move |conn| {
+            let count: i64 = conn
+                .query_row(
+                    count_sql,
+                    rusqlite::params![source_id, target_id, user_id],
+                    |row| row.get(0),
                 )
                 .map_err(rusqlite_to_eng_error)?;
-                Ok(())
-            })
-            .await;
+            if count < 2 {
+                return Err(EngError::NotFound(format!(
+                    "one or both memories ({}, {}) do not belong to user {}",
+                    source_id, target_id, user_id
+                )));
+            }
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![source_id, target_id, similarity, link_type],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
+        .await?;
+        if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+            warn!("mark_pagerank_dirty failed after insert_link for user {}: {}", user_id, e);
+        }
+        return Ok(());
     }
 
     let mut rows = db
@@ -1455,6 +1577,127 @@ pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
     }
 
     Ok(count)
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct VectorSyncReplayReport {
+    pub processed: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub skipped: usize,
+}
+
+/// Drain the vector_sync_pending ledger. For each row, retry the failed
+/// LanceDB op and remove the row on success. Rows whose underlying memory
+/// no longer has an embedding (or has been hard-deleted) are considered
+/// skipped and also removed.
+pub async fn replay_vector_sync_pending(
+    db: &Database,
+    limit: usize,
+) -> Result<VectorSyncReplayReport> {
+    let mut report = VectorSyncReplayReport::default();
+    let Some(index) = db.vector_index.as_ref() else {
+        return Ok(report);
+    };
+
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT id, memory_id, user_id, op FROM vector_sync_pending \
+             ORDER BY id ASC LIMIT ?1",
+            params![limit as i64],
+        )
+        .await?;
+
+    let mut pending: Vec<(i64, i64, i64, String)> = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let ledger_id: i64 = row.get(0)?;
+        let memory_id: i64 = row.get(1)?;
+        let user_id: i64 = row.get(2)?;
+        let op: String = row.get(3)?;
+        pending.push((ledger_id, memory_id, user_id, op));
+    }
+
+    for (ledger_id, memory_id, user_id, op) in pending {
+        report.processed += 1;
+        let outcome: std::result::Result<(), String> = match op.as_str() {
+            "delete" => index.delete(memory_id).await.map_err(|e| e.to_string()),
+            "insert" => {
+                let mut emb_rows = db
+                    .conn
+                    .query(
+                        "SELECT vector_extract(embedding_vec_1024), user_id \
+                         FROM memories WHERE id = ?1 AND user_id = ?2",
+                        params![memory_id, user_id],
+                    )
+                    .await?;
+                match emb_rows.next().await? {
+                    Some(erow) => {
+                        let embedding_json: Option<String> = erow.get(0).ok();
+                        match embedding_json {
+                            Some(json) => match serde_json::from_str::<Vec<f32>>(&json) {
+                                Ok(embedding) => index
+                                    .insert(memory_id, user_id, &embedding)
+                                    .await
+                                    .map_err(|e| e.to_string()),
+                                Err(e) => {
+                                    report.skipped += 1;
+                                    warn!(
+                                        "replay skipped memory {}: embedding decode failed: {}",
+                                        memory_id, e
+                                    );
+                                    Ok(())
+                                }
+                            },
+                            None => {
+                                report.skipped += 1;
+                                Ok(())
+                            }
+                        }
+                    }
+                    None => {
+                        report.skipped += 1;
+                        Ok(())
+                    }
+                }
+            }
+            other => {
+                report.skipped += 1;
+                warn!("replay skipped unknown vector_sync op '{}'", other);
+                Ok(())
+            }
+        };
+
+        match outcome {
+            Ok(()) => {
+                db.conn
+                    .execute(
+                        "DELETE FROM vector_sync_pending WHERE id = ?1",
+                        params![ledger_id],
+                    )
+                    .await?;
+                report.succeeded += 1;
+            }
+            Err(e) => {
+                report.failed += 1;
+                warn!(
+                    "replay failed for memory {} op {}: {}",
+                    memory_id, op, e
+                );
+                db.conn
+                    .execute(
+                        "UPDATE vector_sync_pending \
+                         SET error = ?1, attempts = attempts + 1, \
+                             last_attempt_at = datetime('now') \
+                         WHERE id = ?2",
+                        params![e, ledger_id],
+                    )
+                    .await?;
+            }
+        }
+    }
+
+    Ok(report)
 }
 
 pub async fn list_all_tags(db: &Database, user_id: i64) -> Result<Vec<TagCount>> {

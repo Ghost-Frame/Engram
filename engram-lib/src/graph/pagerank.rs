@@ -192,8 +192,37 @@ pub async fn compute_pagerank_for_user(db: &Database, user_id: i64) -> Result<Ve
         .collect())
 }
 
-/// Upsert computed scores into `memory_pagerank` and reset the dirty counter.
-pub async fn persist_pagerank(db: &Database, user_id: i64, scores: &[(i64, f64)]) -> Result<()> {
+/// Read the current dirty_count for a user. Returns 0 if no row exists.
+///
+/// Callers that want race-free dirty tracking should read this value BEFORE
+/// starting a PageRank compute, then pass it to
+/// [`persist_pagerank_with_snapshot`] so that only the counted mutations get
+/// cleared. Any increments that arrived while the compute was running stay
+/// behind, and the next refresh cycle picks them up.
+pub async fn snapshot_pagerank_dirty(db: &Database, user_id: i64) -> Result<i64> {
+    let mut rows = db
+        .connection()
+        .query(
+            "SELECT dirty_count FROM pagerank_dirty WHERE user_id = ?1",
+            libsql::params![user_id],
+        )
+        .await?;
+    match rows.next().await? {
+        Some(row) => Ok(row.get::<i64>(0)?),
+        None => Ok(0),
+    }
+}
+
+/// Upsert computed scores into `memory_pagerank` and subtract the supplied
+/// dirty snapshot from the counter (clamped at zero). See
+/// [`snapshot_pagerank_dirty`] for the usage pattern that avoids losing
+/// concurrent writes.
+pub async fn persist_pagerank_with_snapshot(
+    db: &Database,
+    user_id: i64,
+    scores: &[(i64, f64)],
+    dirty_snapshot: i64,
+) -> Result<()> {
     let conn = db.connection();
     let now = chrono::Utc::now().timestamp();
     for &(memory_id, score) in scores {
@@ -207,15 +236,35 @@ pub async fn persist_pagerank(db: &Database, user_id: i64, scores: &[(i64, f64)]
         )
         .await?;
     }
+    // Subtract only the increments we compensated for. Any concurrent
+    // mark_pagerank_dirty that fired while compute was running remains in
+    // the counter and schedules the next refresh cycle. Clamped at 0 so a
+    // spurious over-count cannot push the value negative.
     conn.execute(
         "INSERT INTO pagerank_dirty (user_id, dirty_count, last_refresh) \
          VALUES (?1, 0, ?2) \
-         ON CONFLICT(user_id) DO UPDATE SET dirty_count = 0, last_refresh = excluded.last_refresh",
-        libsql::params![user_id, now],
+         ON CONFLICT(user_id) DO UPDATE SET \
+           dirty_count = MAX(0, dirty_count - ?3), \
+           last_refresh = excluded.last_refresh",
+        libsql::params![user_id, now, dirty_snapshot],
     )
     .await?;
-    info!(user_id, scores = scores.len(), "pagerank_persisted");
+    info!(
+        user_id,
+        scores = scores.len(),
+        dirty_cleared = dirty_snapshot,
+        "pagerank_persisted"
+    );
     Ok(())
+}
+
+/// Upsert computed scores and reset the dirty counter. This takes the
+/// snapshot internally, which is correct for callers that compute and
+/// persist in a single await with no concurrent writers (admin rebuilds,
+/// tests). Background refresh workers should use the explicit snapshot API.
+pub async fn persist_pagerank(db: &Database, user_id: i64, scores: &[(i64, f64)]) -> Result<()> {
+    let snapshot = snapshot_pagerank_dirty(db, user_id).await?;
+    persist_pagerank_with_snapshot(db, user_id, scores, snapshot).await
 }
 
 /// Increment the dirty counter for a user. Called after memory/edge mutations.

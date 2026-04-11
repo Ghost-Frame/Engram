@@ -16,9 +16,23 @@ const GRANITE_MODEL_URL: &str =
 
 /// Ensure a file exists at `path`. If missing, download from `url`.
 /// Uses atomic write: downloads to .tmp, then renames.
-async fn ensure_file(path: &Path, url: &str) -> Result<()> {
+///
+/// When `offline_only` is true the function never contacts the network.
+/// A missing file returns a hard error pointing operators at
+/// `ENGRAM_EMBEDDING_MODEL_DIR`, which is the correct signal for
+/// air-gapped or locked-down deployments.
+async fn ensure_file(path: &Path, url: &str, offline_only: bool) -> Result<()> {
     if path.exists() {
         return Ok(());
+    }
+
+    if offline_only {
+        return Err(EngError::Internal(format!(
+            "model file {} is missing and ENGRAM_EMBEDDING_OFFLINE_ONLY is set; \
+             pre-stage the file (source: {}) into ENGRAM_EMBEDDING_MODEL_DIR",
+            path.display(),
+            url
+        )));
     }
 
     if let Some(parent) = path.parent() {
@@ -70,33 +84,37 @@ async fn ensure_file(path: &Path, url: &str) -> Result<()> {
 }
 
 /// Ensure all bge-m3 embedding model files are present in `model_dir`.
-/// Downloads from HuggingFace if missing.
+/// Downloads from HuggingFace if missing and `offline_only` is false.
 pub async fn ensure_embedding_model(
     model_dir: &Path,
     onnx_file: &str,
+    offline_only: bool,
 ) -> Result<(PathBuf, PathBuf)> {
     let tokenizer_path = model_dir.join("tokenizer.json");
     let model_path = model_dir.join(onnx_file);
 
-    ensure_file(&tokenizer_path, BGE_M3_TOKENIZER_URL).await?;
+    ensure_file(&tokenizer_path, BGE_M3_TOKENIZER_URL, offline_only).await?;
 
     let model_url = if onnx_file == "model.onnx" {
         BGE_M3_MODEL_FP32_URL
     } else {
         BGE_M3_MODEL_QUANTIZED_URL
     };
-    ensure_file(&model_path, model_url).await?;
+    ensure_file(&model_path, model_url, offline_only).await?;
 
     Ok((tokenizer_path, model_path))
 }
 
 /// Ensure all granite reranker model files are present in `model_dir`.
-pub async fn ensure_reranker_model(model_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+pub async fn ensure_reranker_model(
+    model_dir: &Path,
+    offline_only: bool,
+) -> Result<(PathBuf, PathBuf)> {
     let tokenizer_path = model_dir.join("tokenizer.json");
     let model_path = model_dir.join("model_quantized.onnx");
 
-    ensure_file(&tokenizer_path, GRANITE_TOKENIZER_URL).await?;
-    ensure_file(&model_path, GRANITE_MODEL_URL).await?;
+    ensure_file(&tokenizer_path, GRANITE_TOKENIZER_URL, offline_only).await?;
+    ensure_file(&model_path, GRANITE_MODEL_URL, offline_only).await?;
 
     Ok((tokenizer_path, model_path))
 }

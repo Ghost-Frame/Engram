@@ -311,7 +311,14 @@ pub async fn create_relationship(
     }
 }
 
-/// Return all relationships where the entity appears as source or target.
+/// Maximum number of relationships returned per entity. Hot entities
+/// (for example a person mentioned in many memories) can accumulate
+/// thousands of edges; without a cap the response would blow up memory
+/// and client parsing.
+pub const MAX_ENTITY_RELATIONSHIPS: i64 = 1000;
+
+/// Return relationships where the entity appears as source or target,
+/// ordered by strength, capped at [`MAX_ENTITY_RELATIONSHIPS`].
 pub async fn get_entity_relationships(
     db: &Database,
     entity_id: i64,
@@ -325,8 +332,9 @@ pub async fn get_entity_relationships(
              FROM entity_relationships \
              WHERE (source_entity_id = ?1 OR target_entity_id = ?1) \
                AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2) \
-             ORDER BY strength DESC",
-            libsql::params![entity_id, user_id],
+             ORDER BY strength DESC \
+             LIMIT ?3",
+            libsql::params![entity_id, user_id, MAX_ENTITY_RELATIONSHIPS],
         )
         .await?;
 

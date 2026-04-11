@@ -19,6 +19,11 @@ pub struct Config {
     pub embedding_max_seq: usize,
     pub embedding_model_dir: Option<String>,
     pub embedding_onnx_file: String,
+    /// When true, refuse to download model weights from HuggingFace at
+    /// boot. Files must already exist in `embedding_model_dir`. Use this
+    /// for air-gapped deployments or to stop a restart storm from
+    /// quietly pulling the wrong model.
+    pub embedding_offline_only: bool,
     pub embedding_chunk_max_chars: usize,
     pub embedding_chunk_overlap: usize,
     pub embedding_chunk_max_chunks: usize,
@@ -49,6 +54,7 @@ impl Default for Config {
             embedding_max_seq: 512,
             embedding_model_dir: None,
             embedding_onnx_file: "model_quantized.onnx".to_string(),
+            embedding_offline_only: false,
             embedding_chunk_max_chars: 1440,
             embedding_chunk_overlap: 160,
             embedding_chunk_max_chunks: 6,
@@ -108,6 +114,9 @@ impl Config {
         }
         if let Ok(v) = std::env::var("ENGRAM_ONNX_MODEL_FILE") {
             config.embedding_onnx_file = v;
+        }
+        if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_OFFLINE_ONLY") {
+            config.embedding_offline_only = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_CHUNK_MAX_CHARS") {
             if let Ok(n) = v.parse() {

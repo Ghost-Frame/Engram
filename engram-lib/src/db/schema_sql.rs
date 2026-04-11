@@ -38,7 +38,6 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             is_static BOOLEAN NOT NULL DEFAULT 0,
             is_forgotten BOOLEAN NOT NULL DEFAULT 0,
             is_archived BOOLEAN NOT NULL DEFAULT 0,
-            is_inference BOOLEAN NOT NULL DEFAULT 0,
             is_fact INTEGER DEFAULT 0,
             is_decomposed INTEGER DEFAULT 0,
             forget_after TEXT,
@@ -68,6 +67,8 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             fsrs_lapses INTEGER DEFAULT 0,
             fsrs_last_review_at TEXT,
             is_superseded INTEGER NOT NULL DEFAULT 0,
+            is_consolidated INTEGER NOT NULL DEFAULT 0,
+            community_id INTEGER,
             -- Emotional valence
             valence REAL,
             arousal REAL,
@@ -77,6 +78,7 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         );
         CREATE INDEX IF NOT EXISTS idx_memories_root ON memories(root_memory_id);
         CREATE INDEX IF NOT EXISTS idx_memories_superseded ON memories(is_superseded) WHERE is_superseded = 1;
+        CREATE INDEX IF NOT EXISTS idx_memories_consolidated ON memories(is_consolidated) WHERE is_consolidated = 1;
         CREATE INDEX IF NOT EXISTS idx_memories_parent ON memories(parent_memory_id);
         CREATE INDEX IF NOT EXISTS idx_memories_latest ON memories(is_latest) WHERE is_latest = 1;
         CREATE INDEX IF NOT EXISTS idx_memories_forgotten ON memories(is_forgotten);
@@ -95,6 +97,7 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         CREATE INDEX IF NOT EXISTS idx_memories_is_fact ON memories(is_fact) WHERE is_fact = 1;
         CREATE INDEX IF NOT EXISTS idx_memories_parent_fact ON memories(parent_memory_id) WHERE is_fact = 1;
         CREATE INDEX IF NOT EXISTS idx_memories_not_decomposed ON memories(is_decomposed) WHERE is_decomposed = 0 AND is_fact = 0;
+        CREATE INDEX IF NOT EXISTS idx_memories_community ON memories(community_id) WHERE community_id IS NOT NULL;
 
         -- Memory links
         CREATE TABLE IF NOT EXISTS memory_links (
