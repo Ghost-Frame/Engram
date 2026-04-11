@@ -14,6 +14,7 @@ const MIGRATION_BACKFILL_THYMUS_USER_ID: i64 = 6;
 const MIGRATION_VECTOR_SYNC_PENDING: i64 = 7;
 const MIGRATION_ADD_COMMUNITY_ID: i64 = 8;
 const MIGRATION_DROP_IS_INFERENCE: i64 = 9;
+const MIGRATION_SYNTHEOS_SERVICES: i64 = 10;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -117,6 +118,17 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         record_migration(conn, MIGRATION_DROP_IS_INFERENCE, "drop_is_inference").await?;
     }
 
+    // Migration 10: port the full syntheos services schema (axon pub/sub,
+    // broca action log, chiasm task tracking with history, soma agent
+    // registry and groups, jobs durable queue, scheduler leases). Matches
+    // the node production shape one-to-one so the engram-migrate ETL can
+    // copy rows via ATTACH + column intersection.
+    if current_version < MIGRATION_SYNTHEOS_SERVICES {
+        info!("Running migration 10: syntheos_services");
+        run_migration_syntheos_services(conn).await?;
+        record_migration(conn, MIGRATION_SYNTHEOS_SERVICES, "syntheos_services").await?;
+    }
+
     // Future migrations go here:
     // if current_version < MIGRATION_XXX { ... }
 
@@ -200,6 +212,12 @@ pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 9: drop_is_inference");
         run_migration_drop_is_inference_rusqlite(conn)?;
         record_migration_rusqlite(conn, MIGRATION_DROP_IS_INFERENCE, "drop_is_inference")?;
+    }
+
+    if current_version < MIGRATION_SYNTHEOS_SERVICES {
+        info!("Running migration 10: syntheos_services");
+        run_migration_syntheos_services_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_SYNTHEOS_SERVICES, "syntheos_services")?;
     }
 
     Ok(())
@@ -313,6 +331,19 @@ async fn run_migration_drop_is_inference(conn: &Connection) -> Result<()> {
             .await?;
         info!("Dropped memories.is_inference column");
     }
+    Ok(())
+}
+
+/// Migration 10: port the full syntheos services schema. Creates the 13
+/// tables (axon_channels, axon_events, axon_subscriptions, axon_cursors,
+/// broca_actions, chiasm_tasks, chiasm_task_updates, soma_agents,
+/// soma_groups, soma_agent_groups, soma_agent_logs, jobs, scheduler_leases)
+/// plus their indexes and seeds the five default axon channels. The SQL
+/// lives in schema_sql::SYNTHEOS_SERVICES_SQL and is fully idempotent
+/// (IF NOT EXISTS / INSERT OR IGNORE) so re-running is safe.
+async fn run_migration_syntheos_services(conn: &Connection) -> Result<()> {
+    conn.execute_batch(crate::db::schema_sql::SYNTHEOS_SERVICES_SQL)
+        .await?;
     Ok(())
 }
 
@@ -568,6 +599,16 @@ fn run_migration_drop_is_inference_rusqlite(conn: &rusqlite::Connection) -> Resu
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         info!("Dropped memories.is_inference column");
     }
+    Ok(())
+}
+
+/// Migration 10 (rusqlite): port the full syntheos services schema. Mirrors
+/// the async variant exactly by running the shared SYNTHEOS_SERVICES_SQL
+/// const through execute_batch.
+#[cfg(feature = "db_pool")]
+fn run_migration_syntheos_services_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(crate::db::schema_sql::SYNTHEOS_SERVICES_SQL)
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
 }
 

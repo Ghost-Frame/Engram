@@ -1144,3 +1144,182 @@ pub const LIBSQL_VECTOR_INDEX_STATEMENTS: &[&str] = &[
     r#"CREATE INDEX IF NOT EXISTS episodes_vec_1024_idx ON episodes(libsql_vector_idx(embedding_vec_1024))"#,
     r#"CREATE INDEX IF NOT EXISTS skill_records_vec_1024_idx ON skill_records(libsql_vector_idx(embedding_vec_1024))"#,
 ];
+
+/// Full syntheos services schema ported from the node production engram
+/// (axon pub/sub, broca action log, chiasm task tracking with history,
+/// soma agent registry and groups, jobs durable queue, scheduler leases).
+/// This is the authoritative shape the engram-migrate ETL targets.
+/// All statements are idempotent: safe to run on fresh installs and via
+/// migration 10 on existing databases.
+pub const SYNTHEOS_SERVICES_SQL: &str = r#"
+    -- Axon: pub/sub event bus -----------------------------------------
+    CREATE TABLE IF NOT EXISTS axon_channels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        description TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        retain_hours INTEGER NOT NULL DEFAULT 168
+    );
+
+    CREATE TABLE IF NOT EXISTS axon_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel TEXT NOT NULL,
+        source TEXT NOT NULL,
+        type TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        user_id INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_axon_events_channel ON axon_events(channel, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_axon_events_type ON axon_events(type);
+    CREATE INDEX IF NOT EXISTS idx_axon_events_user ON axon_events(user_id);
+
+    CREATE TABLE IF NOT EXISTS axon_subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        filter_type TEXT,
+        webhook_url TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        user_id INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(agent, channel)
+    );
+    CREATE INDEX IF NOT EXISTS idx_axon_subs_channel ON axon_subscriptions(channel);
+
+    CREATE TABLE IF NOT EXISTS axon_cursors (
+        agent TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        last_event_id INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        user_id INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY(agent, channel)
+    );
+
+    -- Broca: action log ------------------------------------------------
+    CREATE TABLE IF NOT EXISTS broca_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent TEXT NOT NULL,
+        service TEXT NOT NULL,
+        action TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}',
+        narrative TEXT,
+        axon_event_id INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        user_id INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_broca_actions_agent ON broca_actions(agent, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_broca_actions_service ON broca_actions(service, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_broca_actions_action ON broca_actions(action, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_broca_actions_created ON broca_actions(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_broca_actions_user ON broca_actions(user_id);
+
+    -- Chiasm: task tracking with history ------------------------------
+    CREATE TABLE IF NOT EXISTS chiasm_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent TEXT NOT NULL,
+        project TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active'
+            CHECK(status IN ('active','paused','blocked','completed')),
+        summary TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        user_id INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_status ON chiasm_tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_agent ON chiasm_tasks(agent);
+    CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_project ON chiasm_tasks(project);
+    CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_user ON chiasm_tasks(user_id);
+
+    CREATE TABLE IF NOT EXISTS chiasm_task_updates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER NOT NULL REFERENCES chiasm_tasks(id) ON DELETE CASCADE,
+        agent TEXT NOT NULL,
+        status TEXT NOT NULL,
+        summary TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        user_id INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_chiasm_task_updates_task_id ON chiasm_task_updates(task_id);
+
+    -- Soma: agent registry and groups ---------------------------------
+    CREATE TABLE IF NOT EXISTS soma_agents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        type TEXT NOT NULL,
+        description TEXT,
+        capabilities TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','online','offline','error')),
+        config TEXT NOT NULL DEFAULT '{}',
+        heartbeat_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        quality_score REAL,
+        drift_flags TEXT DEFAULT '[]',
+        user_id INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_soma_agents_type ON soma_agents(type);
+    CREATE INDEX IF NOT EXISTS idx_soma_agents_status ON soma_agents(status);
+    CREATE INDEX IF NOT EXISTS idx_soma_agents_user ON soma_agents(user_id);
+
+    CREATE TABLE IF NOT EXISTS soma_groups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        description TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        user_id INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_soma_groups_user ON soma_groups(user_id);
+
+    CREATE TABLE IF NOT EXISTS soma_agent_groups (
+        agent_id INTEGER NOT NULL REFERENCES soma_agents(id) ON DELETE CASCADE,
+        group_id INTEGER NOT NULL REFERENCES soma_groups(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(agent_id, group_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS soma_agent_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id INTEGER NOT NULL REFERENCES soma_agents(id) ON DELETE CASCADE,
+        level TEXT NOT NULL DEFAULT 'info',
+        message TEXT NOT NULL,
+        data TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_soma_agent_logs_agent_created ON soma_agent_logs(agent_id, created_at);
+
+    -- Jobs: durable queue with retries --------------------------------
+    CREATE TABLE IF NOT EXISTS jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        claimed_at TEXT,
+        completed_at TEXT,
+        next_retry_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, next_retry_at);
+    CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type, status);
+
+    -- Scheduler: named leases for singleton background jobs ----------
+    CREATE TABLE IF NOT EXISTS scheduler_leases (
+        job_name TEXT PRIMARY KEY,
+        holder_id TEXT NOT NULL,
+        acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
+        expires_at TEXT NOT NULL,
+        last_run_at TEXT
+    );
+
+    -- Seed default axon channels --------------------------------------
+    INSERT OR IGNORE INTO axon_channels (name, description) VALUES
+        ('system', 'System-wide events (startup, shutdown, errors)'),
+        ('memory', 'Memory storage and retrieval events'),
+        ('tasks',  'Task lifecycle events (created, updated, completed)'),
+        ('deploy', 'Deployment and infrastructure events'),
+        ('alerts', 'Alerts and notifications');
+"#;
