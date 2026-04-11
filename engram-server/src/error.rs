@@ -27,6 +27,13 @@ impl IntoResponse for AppError {
                     "Database error".to_string(),
                 )
             }
+            EngError::DatabaseMessage(msg) => {
+                tracing::error!("Database error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Database error".to_string(),
+                )
+            }
             EngError::Serialization(e) => {
                 tracing::error!("Serialization error: {}", e);
                 (
