@@ -16,6 +16,7 @@ const MIGRATION_ADD_COMMUNITY_ID: i64 = 8;
 const MIGRATION_DROP_IS_INFERENCE: i64 = 9;
 const MIGRATION_SYNTHEOS_SERVICES: i64 = 10;
 const MIGRATION_BRAIN_PATTERNS: i64 = 11;
+const MIGRATION_APPROVALS: i64 = 12;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -139,6 +140,15 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         record_migration(conn, MIGRATION_BRAIN_PATTERNS, "brain_patterns").await?;
     }
 
+    // Migration 12: approvals table for human-in-the-loop approval workflow.
+    // TUI clients poll pending approvals; gate integration can block on
+    // approval decision within a 120s window.
+    if current_version < MIGRATION_APPROVALS {
+        info!("Running migration 12: approvals");
+        run_migration_approvals(conn).await?;
+        record_migration(conn, MIGRATION_APPROVALS, "approvals").await?;
+    }
+
     // Future migrations go here:
     // if current_version < MIGRATION_XXX { ... }
 
@@ -234,6 +244,12 @@ pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 11: brain_patterns");
         run_migration_brain_patterns_rusqlite(conn)?;
         record_migration_rusqlite(conn, MIGRATION_BRAIN_PATTERNS, "brain_patterns")?;
+    }
+
+    if current_version < MIGRATION_APPROVALS {
+        info!("Running migration 12: approvals");
+        run_migration_approvals_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_APPROVALS, "approvals")?;
     }
 
     Ok(())
@@ -394,6 +410,33 @@ async fn run_migration_brain_patterns(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_brain_edges_source ON brain_edges(source_id);
         CREATE INDEX IF NOT EXISTS idx_brain_edges_target ON brain_edges(target_id);
         CREATE INDEX IF NOT EXISTS idx_brain_edges_user ON brain_edges(user_id);
+        ",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Migration 12: approvals table for human-in-the-loop approval workflow.
+async fn run_migration_approvals(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS approvals (
+            id TEXT PRIMARY KEY,
+            action TEXT NOT NULL,
+            context TEXT,
+            requester TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            decision_by TEXT,
+            decision_reason TEXT,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            decided_at TEXT,
+            user_id INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+        CREATE INDEX IF NOT EXISTS idx_approvals_expires ON approvals(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_approvals_user ON approvals(user_id);
+        CREATE INDEX IF NOT EXISTS idx_approvals_user_status ON approvals(user_id, status);
         ",
     )
     .await?;
@@ -696,6 +739,34 @@ fn run_migration_brain_patterns_rusqlite(conn: &rusqlite::Connection) -> Result<
         CREATE INDEX IF NOT EXISTS idx_brain_edges_source ON brain_edges(source_id);
         CREATE INDEX IF NOT EXISTS idx_brain_edges_target ON brain_edges(target_id);
         CREATE INDEX IF NOT EXISTS idx_brain_edges_user ON brain_edges(user_id);
+        ",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+/// Migration 12 (rusqlite): approvals table for human-in-the-loop approval workflow.
+#[cfg(feature = "db_pool")]
+fn run_migration_approvals_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS approvals (
+            id TEXT PRIMARY KEY,
+            action TEXT NOT NULL,
+            context TEXT,
+            requester TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            decision_by TEXT,
+            decision_reason TEXT,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            decided_at TEXT,
+            user_id INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+        CREATE INDEX IF NOT EXISTS idx_approvals_expires ON approvals(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_approvals_user ON approvals(user_id);
+        CREATE INDEX IF NOT EXISTS idx_approvals_user_status ON approvals(user_id, status);
         ",
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
