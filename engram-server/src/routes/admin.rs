@@ -5,6 +5,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::atomic::Ordering;
 
 use crate::error::AppError;
 use crate::extractors::Auth;
@@ -68,6 +69,8 @@ pub fn router() -> Router<AppState> {
         .route("/backup", get(backup_handler))
         .route("/backup/verify", post(backup_verify_handler))
         .route("/checkpoint", post(checkpoint_handler))
+        // Safe mode
+        .route("/admin/safe-mode/exit", post(post_safe_mode_exit))
         // Graph operations
         .route(
             "/admin/detect-communities",
@@ -786,6 +789,21 @@ async fn admin_vector_sync_replay(
     let limit = body.and_then(|Json(b)| b.limit).unwrap_or(200).min(5000);
     let report = engram_lib::memory::replay_vector_sync_pending(&state.db, limit).await?;
     to_json(report)
+}
+
+// ---------------------------------------------------------------------------
+// Safe mode exit
+// ---------------------------------------------------------------------------
+
+async fn post_safe_mode_exit(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    engram_lib::admin::clear_crash_window(&state.db).await?;
+    state.safe_mode.store(false, Ordering::Relaxed);
+    tracing::info!(user_id = auth.user_id, "safe mode exited");
+    Ok(Json(json!({ "safe_mode": false })))
 }
 
 async fn admin_pagerank_rebuild(
