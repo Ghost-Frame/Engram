@@ -62,6 +62,8 @@ curl -X POST http://localhost:4200/search \
 
 The Rust server keeps the TypeScript API surface. Existing SDKs, MCP clients, and CLI wrappers point at the new binary without changes.
 
+MCP stdio entrypoint: `KLEOS_MCP_BEARER_TOKEN=kleos_... cargo run -p kleos-mcp`
+
 ---
 
 ![Kleos CLI demo](tools/cli-demo.gif)
