@@ -13,6 +13,7 @@ const MIGRATION_APP_STATE_TABLE: i64 = 5;
 const MIGRATION_BACKFILL_THYMUS_USER_ID: i64 = 6;
 const MIGRATION_VECTOR_SYNC_PENDING: i64 = 7;
 const MIGRATION_ADD_COMMUNITY_ID: i64 = 8;
+const MIGRATION_DROP_IS_INFERENCE: i64 = 9;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -107,6 +108,15 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         record_migration(conn, MIGRATION_ADD_COMMUNITY_ID, "add_community_id").await?;
     }
 
+    // Migration 9: drop is_inference dead column. Never written by any
+    // INSERT, never read by any filter, always false. Remove from the
+    // schema so row mappers stop paying the offset tax.
+    if current_version < MIGRATION_DROP_IS_INFERENCE {
+        info!("Running migration 9: drop_is_inference");
+        run_migration_drop_is_inference(conn).await?;
+        record_migration(conn, MIGRATION_DROP_IS_INFERENCE, "drop_is_inference").await?;
+    }
+
     // Future migrations go here:
     // if current_version < MIGRATION_XXX { ... }
 
@@ -184,6 +194,12 @@ pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 8: add_community_id");
         run_migration_add_community_id_rusqlite(conn)?;
         record_migration_rusqlite(conn, MIGRATION_ADD_COMMUNITY_ID, "add_community_id")?;
+    }
+
+    if current_version < MIGRATION_DROP_IS_INFERENCE {
+        info!("Running migration 9: drop_is_inference");
+        run_migration_drop_is_inference_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_DROP_IS_INFERENCE, "drop_is_inference")?;
     }
 
     Ok(())
@@ -274,6 +290,29 @@ async fn run_migration_add_community_id(conn: &Connection) -> Result<()> {
             ON memories(community_id) WHERE community_id IS NOT NULL;",
     )
     .await?;
+    Ok(())
+}
+
+/// Migration 9: drop the is_inference dead column from memories.
+/// Idempotent: only runs DROP COLUMN if the column still exists.
+/// Requires SQLite 3.35+ (libsql bundles 3.42+).
+async fn run_migration_drop_is_inference(conn: &Connection) -> Result<()> {
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = ?1",
+            libsql::params!["is_inference"],
+        )
+        .await?;
+    let exists: i64 = if let Some(row) = rows.next().await? {
+        row.get(0)?
+    } else {
+        0
+    };
+    if exists > 0 {
+        conn.execute("ALTER TABLE memories DROP COLUMN is_inference", ())
+            .await?;
+        info!("Dropped memories.is_inference column");
+    }
     Ok(())
 }
 
@@ -509,6 +548,26 @@ fn run_migration_add_community_id_rusqlite(conn: &rusqlite::Connection) -> Resul
             ON memories(community_id) WHERE community_id IS NOT NULL;",
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+/// Migration 9 (rusqlite): drop the is_inference dead column from memories.
+/// Idempotent: only runs DROP COLUMN if the column still exists.
+/// Requires SQLite 3.35+ (bundled rusqlite is 3.44+).
+#[cfg(feature = "db_pool")]
+fn run_migration_drop_is_inference_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = ?1",
+            rusqlite::params!["is_inference"],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if exists > 0 {
+        conn.execute("ALTER TABLE memories DROP COLUMN is_inference", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Dropped memories.is_inference column");
+    }
     Ok(())
 }
 

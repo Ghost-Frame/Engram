@@ -38,7 +38,6 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             is_static BOOLEAN NOT NULL DEFAULT 0,
             is_forgotten BOOLEAN NOT NULL DEFAULT 0,
             is_archived BOOLEAN NOT NULL DEFAULT 0,
-            is_inference BOOLEAN NOT NULL DEFAULT 0,
             is_fact INTEGER DEFAULT 0,
             is_decomposed INTEGER DEFAULT 0,
             forget_after TEXT,

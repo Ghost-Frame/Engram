@@ -133,7 +133,6 @@ pub struct Memory {
     pub is_static: bool,
     pub is_forgotten: bool,
     pub is_archived: bool,
-    pub is_inference: bool,
     pub is_fact: bool,
     pub is_decomposed: bool,
     pub forget_after: Option<String>,
