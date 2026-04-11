@@ -710,6 +710,72 @@ pub async fn cold_storage_stats(db: &Database, days: i64) -> Result<serde_json::
 }
 
 // ---------------------------------------------------------------------------
+// Crash-loop detection
+// ---------------------------------------------------------------------------
+
+const CRASH_WINDOW_KEY: &str = "crash_window";
+const CRASH_WINDOW_SECONDS: i64 = 300; // 5 minutes
+const CRASH_THRESHOLD: usize = 3;
+
+/// Record the current timestamp as a crash/restart event.
+/// Prunes timestamps older than the 5-minute window before saving.
+pub async fn record_crash(db: &Database) -> Result<()> {
+    let now = Utc::now();
+    let cutoff = now - chrono::Duration::seconds(CRASH_WINDOW_SECONDS);
+
+    // Load existing timestamps.
+    let existing = match get_state(db, CRASH_WINDOW_KEY).await? {
+        Some(row) => serde_json::from_str::<Vec<String>>(&row.value)
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+
+    // Keep only timestamps within the window, then append now.
+    let mut timestamps: Vec<String> = existing
+        .into_iter()
+        .filter(|ts| {
+            chrono::DateTime::parse_from_rfc3339(ts)
+                .map(|t| t.with_timezone(&Utc) > cutoff)
+                .unwrap_or(false)
+        })
+        .collect();
+    timestamps.push(now.to_rfc3339());
+
+    let value = serde_json::to_string(&timestamps)
+        .map_err(|e| crate::EngError::Internal(format!("serialize crash window: {e}")))?;
+    upsert_state(db, CRASH_WINDOW_KEY, &value).await?;
+    Ok(())
+}
+
+/// Returns true when there have been >= 3 crash/restart events in the last 5 minutes.
+pub async fn should_enter_safe_mode(db: &Database) -> Result<bool> {
+    let cutoff = Utc::now() - chrono::Duration::seconds(CRASH_WINDOW_SECONDS);
+
+    let existing = match get_state(db, CRASH_WINDOW_KEY).await? {
+        Some(row) => serde_json::from_str::<Vec<String>>(&row.value)
+            .unwrap_or_default(),
+        None => return Ok(false),
+    };
+
+    let recent = existing
+        .iter()
+        .filter(|ts| {
+            chrono::DateTime::parse_from_rfc3339(ts)
+                .map(|t| t.with_timezone(&Utc) > cutoff)
+                .unwrap_or(false)
+        })
+        .count();
+
+    Ok(recent >= CRASH_THRESHOLD)
+}
+
+/// Clear the crash window. Called when exiting safe mode manually.
+pub async fn clear_crash_window(db: &Database) -> Result<()> {
+    delete_state(db, CRASH_WINDOW_KEY).await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Stats
 // ---------------------------------------------------------------------------
 

@@ -5,6 +5,7 @@ use engram_lib::llm::local::LocalModelClient;
 use engram_lib::reranker::Reranker;
 use engram_lib::services::brain::BrainManager;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
@@ -41,4 +42,6 @@ pub struct AppState {
     pub sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SessionBroadcast>>>>>,
     #[allow(dead_code)]
     pub eidolon_config: Option<EidolonConfig>,
+    /// When true, write operations return 503 to prevent data corruption during crash loops.
+    pub safe_mode: Arc<AtomicBool>,
 }

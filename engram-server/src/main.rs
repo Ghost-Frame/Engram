@@ -5,7 +5,11 @@ use engram_lib::embeddings::EmbeddingProvider;
 use engram_lib::jobs::pagerank_refresh::start_pagerank_refresh_job;
 use engram_lib::llm::local::{LocalModelClient, OllamaConfig};
 use engram_lib::reranker::Reranker;
+use engram_server::background::{
+    start_auto_checkpoint_task, start_job_cleanup_task, start_vector_sync_replay_task,
+};
 use engram_server::state::AppState;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -68,8 +72,24 @@ async fn main() {
         }
     };
 
+    let db = Arc::new(db);
+
+    // Record this startup as a potential crash/restart event, then decide
+    // whether the server has been crash-looping.
+    if let Err(e) = engram_lib::admin::record_crash(&db).await {
+        tracing::warn!("failed to record startup crash timestamp: {}", e);
+    }
+    let safe_mode_active = engram_lib::admin::should_enter_safe_mode(&db)
+        .await
+        .unwrap_or(false);
+    if safe_mode_active {
+        tracing::warn!("SAFE MODE ACTIVE: 3+ restarts in last 5 minutes");
+        tracing::warn!("Write operations will return 503");
+        tracing::warn!("POST /admin/safe-mode/exit to recover");
+    }
+
     let state = AppState {
-        db: Arc::new(db),
+        db,
         config: Arc::new(config),
         embedder,
         reranker,
@@ -77,6 +97,7 @@ async fn main() {
         llm,
         sessions: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         eidolon_config: None,
+        safe_mode: Arc::new(AtomicBool::new(safe_mode_active)),
     };
 
     // Start background PageRank refresh job if enabled.
@@ -91,6 +112,16 @@ async fn main() {
         tracing::info!("pagerank disabled -- skipping refresh job");
         None
     };
+
+    // Start infrastructure background tasks.
+    let _checkpoint_token = start_auto_checkpoint_task(Arc::clone(&state.db));
+    tracing::info!("auto-checkpoint background task started");
+
+    let _job_cleanup_token = start_job_cleanup_task(Arc::clone(&state.db));
+    tracing::info!("job-cleanup background task started");
+
+    let _vector_sync_token = start_vector_sync_replay_task(Arc::clone(&state.db));
+    tracing::info!("vector-sync-replay background task started");
 
     if let Err(e) = engram_server::server::run(state).await {
         tracing::error!("server error: {}", e);
