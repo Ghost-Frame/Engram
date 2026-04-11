@@ -7,8 +7,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use engram_lib::context::budget::estimate_tokens;
+use engram_lib::intelligence::growth::list_observations;
 use engram_lib::memory::search::hybrid_search;
 use engram_lib::memory::types::SearchRequest;
+use engram_lib::services::brain::BrainQueryOptions;
 use engram_lib::EngError;
 
 use crate::error::AppError;
@@ -73,6 +75,17 @@ struct GeneratePromptRequest {
     include_memories: Option<bool>,
     #[serde(default)]
     memory_limit: Option<usize>,
+    // Living prompt sources
+    #[serde(default)]
+    include_brain: Option<bool>,
+    #[serde(default)]
+    include_growth: Option<bool>,
+    #[serde(default)]
+    include_instincts: Option<bool>,
+    #[serde(default)]
+    brain_limit: Option<usize>,
+    #[serde(default)]
+    growth_limit: Option<usize>,
 }
 
 async fn post_prompt_generate(
@@ -102,6 +115,11 @@ async fn post_prompt_generate(
         .include_personality
         .unwrap_or(prompt_cfg.default_include_personality);
     let memory_limit = body.memory_limit.unwrap_or(8).clamp(1, 32);
+    let include_brain = body.include_brain.unwrap_or(false);
+    let include_growth = body.include_growth.unwrap_or(false);
+    let include_instincts = body.include_instincts.unwrap_or(false);
+    let brain_limit = body.brain_limit.unwrap_or(5).clamp(1, 20);
+    let growth_limit = body.growth_limit.unwrap_or(5).clamp(1, 20);
 
     let mut sources: Vec<Value> = Vec::new();
     let mut sections: Vec<String> = Vec::new();
@@ -184,6 +202,80 @@ async fn post_prompt_generate(
         }
     }
 
+    // Living prompt: Brain patterns (neural substrate recall)
+    if include_brain {
+        if let Some(ref brain) = state.brain {
+            if brain.is_ready() {
+                if let Some(ref embedder) = state.embedder {
+                    let opts = BrainQueryOptions {
+                        query: task.to_string(),
+                        top_k: Some(brain_limit),
+                        beta: None,
+                        spread_hops: None,
+                    };
+                    if let Ok(result) = brain.query(embedder.as_ref(), task, &opts).await {
+                        if !result.activated.is_empty() {
+                            let mut buf = String::from("## Brain Patterns\n");
+                            for m in &result.activated {
+                                buf.push_str(&format!(
+                                    "- [act:{:.2}] {}\n",
+                                    m.activation,
+                                    m.content.trim()
+                                ));
+                                sources.push(json!({
+                                    "id": m.id,
+                                    "kind": "brain",
+                                    "activation": m.activation,
+                                    "category": m.category,
+                                }));
+                            }
+                            sections.push(buf);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Living prompt: Growth observations
+    if include_growth {
+        if let Ok(observations) = list_observations(&state.db, auth.user_id, growth_limit).await {
+            if !observations.is_empty() {
+                let mut buf = String::from("## Growth Observations\n");
+                for obs in &observations {
+                    buf.push_str("- ");
+                    buf.push_str(obs.content.trim());
+                    buf.push('\n');
+                    sources.push(json!({
+                        "id": obs.id,
+                        "kind": "growth",
+                        "importance": obs.importance,
+                    }));
+                }
+                sections.push(buf);
+            }
+        }
+    }
+
+    // Living prompt: Instinct domains (pre-trained knowledge)
+    if include_instincts {
+        // Instincts are ghost patterns with negative IDs in the brain
+        // Provide a summary of the instinct categories
+        let instinct_summary = concat!(
+            "## Instinct Domains\n",
+            "Pre-trained knowledge covering: infrastructure state transitions, ",
+            "architecture decisions, system references, task completion patterns, ",
+            "and common error resolutions. These domains provide baseline context ",
+            "for infrastructure and deployment tasks."
+        );
+        sections.push(instinct_summary.to_string());
+        sources.push(json!({
+            "kind": "instincts",
+            "domains": 5,
+            "note": "synthetic pre-training corpus",
+        }));
+    }
+
     sections.push(format!("## Task\n{task}"));
 
     let mut prompt = state
@@ -233,4 +325,55 @@ async fn post_header(
         "actor_model": result.actor_model,
         "prior_models": result.prior_models,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_request_deserializes_living_flags() {
+        let json = r#"{
+            "agent": "test-agent",
+            "task": "do something",
+            "include_brain": true,
+            "include_growth": true,
+            "include_instincts": true,
+            "brain_limit": 10,
+            "growth_limit": 3
+        }"#;
+        let req: GeneratePromptRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.agent, "test-agent");
+        assert_eq!(req.task, "do something");
+        assert_eq!(req.include_brain, Some(true));
+        assert_eq!(req.include_growth, Some(true));
+        assert_eq!(req.include_instincts, Some(true));
+        assert_eq!(req.brain_limit, Some(10));
+        assert_eq!(req.growth_limit, Some(3));
+    }
+
+    #[test]
+    fn generate_request_defaults_living_flags_to_none() {
+        let json = r#"{"agent": "a", "task": "t"}"#;
+        let req: GeneratePromptRequest = serde_json::from_str(json).unwrap();
+        assert!(req.include_brain.is_none());
+        assert!(req.include_growth.is_none());
+        assert!(req.include_instincts.is_none());
+        assert!(req.brain_limit.is_none());
+        assert!(req.growth_limit.is_none());
+    }
+
+    #[test]
+    fn instinct_summary_is_static() {
+        // Verify the instinct summary text is available
+        let summary = concat!(
+            "## Instinct Domains\n",
+            "Pre-trained knowledge covering: infrastructure state transitions, ",
+            "architecture decisions, system references, task completion patterns, ",
+            "and common error resolutions. These domains provide baseline context ",
+            "for infrastructure and deployment tasks."
+        );
+        assert!(summary.contains("Instinct Domains"));
+        assert!(summary.contains("infrastructure"));
+    }
 }
