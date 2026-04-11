@@ -156,6 +156,36 @@ impl RegistryDb {
         Ok(())
     }
 
+    /// Insert a new tenant, or return existing row if user_id already exists.
+    ///
+    /// This handles the TOCTOU race in get_or_create by using INSERT OR IGNORE
+    /// and then fetching the existing row.
+    pub fn insert_or_get(&self, row: &TenantRow) -> Result<TenantRow, EngError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO tenants (tenant_id, user_id, created_at, status, data_path,
+                                            schema_version, quota_bytes, quota_memories, last_access)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                row.tenant_id,
+                row.user_id,
+                row.created_at,
+                row.status.as_str(),
+                row.data_path,
+                row.schema_version,
+                row.quota_bytes,
+                row.quota_memories,
+                row.last_access,
+            ],
+        )
+        .map_err(|e| EngError::Internal(format!("failed to insert tenant: {}", e)))?;
+
+        // Fetch the row (either we inserted it or it already existed)
+        drop(conn);
+        self.get_by_user_id(&row.user_id)?
+            .ok_or_else(|| EngError::Internal("tenant row disappeared after insert".to_string()))
+    }
+
     /// Update tenant status.
     pub fn update_status(&self, tenant_id: &str, status: TenantStatus) -> Result<(), EngError> {
         let conn = self.lock()?;
