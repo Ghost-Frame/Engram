@@ -11,6 +11,17 @@ use uuid::Uuid;
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
+/// SECURITY/DoS: cap how many memories a single import call can ingest.
+/// The previous handlers iterated the full array with no upper bound, so a
+/// single call with millions of entries could pin a worker thread and blow
+/// through per-tenant disk quotas without ever hitting the rate limiter.
+const MAX_IMPORT_BATCH: usize = 5_000;
+
+/// Cap the raw text fed into a single ingest/import call. The body limit
+/// layer already bounds HTTP payload size at 2 MiB but raw text that nears
+/// that cap is still far too much for a single chunking pass.
+const MAX_INGEST_TEXT_BYTES: usize = 1 << 20; // 1 MiB
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/import/bulk", post(import_bulk))
@@ -49,6 +60,12 @@ async fn import_bulk(
             return Err(AppError(engram_lib::EngError::InvalidInput(
                 "text must be a non-empty string".to_string(),
             )));
+        }
+        if text.len() > MAX_INGEST_TEXT_BYTES {
+            return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+                "text exceeds {} bytes; split the import",
+                MAX_INGEST_TEXT_BYTES
+            ))));
         }
         text.clone()
     } else {
@@ -132,6 +149,12 @@ async fn import_json(
             "Invalid export format: missing memories array".to_string(),
         )));
     }
+    if memories.len() > MAX_IMPORT_BATCH {
+        return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+            "import batch exceeds {} memories; split into smaller requests",
+            MAX_IMPORT_BATCH
+        ))));
+    }
     let mut imported = 0i64;
     let mut skipped = 0i64;
     for m in &memories {
@@ -189,6 +212,12 @@ async fn import_mem0(
             "Expected array of mem0 memories".to_string(),
         ))
     })?;
+    if arr.len() > MAX_IMPORT_BATCH {
+        return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+            "import batch exceeds {} memories; split into smaller requests",
+            MAX_IMPORT_BATCH
+        ))));
+    }
     let mut imported = 0i64;
     for mem in arr {
         let content = mem
@@ -256,6 +285,12 @@ async fn import_supermemory(
             "Expected array".to_string(),
         ))
     })?;
+    if arr.len() > MAX_IMPORT_BATCH {
+        return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+            "import batch exceeds {} memories; split into smaller requests",
+            MAX_IMPORT_BATCH
+        ))));
+    }
     let mut imported = 0i64;
     let mut skipped = 0i64;
     for item in arr {
@@ -367,6 +402,12 @@ async fn ingest_text(
             return Err(AppError(engram_lib::EngError::InvalidInput(
                 "text must be a non-empty string".to_string(),
             )));
+        }
+        if text.len() > MAX_INGEST_TEXT_BYTES {
+            return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+                "text exceeds {} bytes; split the ingest",
+                MAX_INGEST_TEXT_BYTES
+            ))));
         }
         raw_text = text.trim().to_string();
         title = body.title.unwrap_or_else(|| {

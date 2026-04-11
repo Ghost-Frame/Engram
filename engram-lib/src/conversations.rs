@@ -218,7 +218,11 @@ pub async fn create_conversation(
     get_conversation_for_user(db, new_id, user_id).await
 }
 
-pub async fn get_conversation(db: &Database, id: i64) -> Result<Conversation> {
+/// Unscoped conversation lookup. Only callers that have already confirmed the
+/// caller owns `id` (e.g. an immediately prior INSERT under a known tenant)
+/// may use this. For any external / route-level access use
+/// [`get_conversation_for_user`], which enforces user_id scoping.
+pub(crate) async fn get_conversation(db: &Database, id: i64) -> Result<Conversation> {
     let sql = format!(
         "SELECT {} FROM conversations WHERE id = ?1",
         CONVERSATION_COLUMNS
@@ -457,16 +461,26 @@ pub async fn bulk_insert_conversation(
     user_id: i64,
 ) -> Result<Conversation> {
     let meta_str = metadata_to_string(&req.metadata);
-    db.conn.execute(
-        "INSERT INTO conversations (agent, session_id, title, metadata, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![req.agent.clone(), req.session_id.clone(), req.title.clone(), meta_str, user_id],
-    ).await?;
-    let mut id_rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
+    // INSERT ... RETURNING avoids the cross-connection last_insert_rowid race.
+    let mut id_rows = db
+        .conn
+        .query(
+            "INSERT INTO conversations (agent, session_id, title, metadata, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
+            params![
+                req.agent.clone(),
+                req.session_id.clone(),
+                req.title.clone(),
+                meta_str,
+                user_id
+            ],
+        )
+        .await?;
     let conv_id: i64 = match id_rows.next().await? {
         Some(row) => row.get(0)?,
         None => {
             return Err(EngError::Internal(
-                "failed to get last insert id for bulk conversation".into(),
+                "bulk conversation insert RETURNING row was empty".into(),
             ))
         }
     };
@@ -477,7 +491,7 @@ pub async fn bulk_insert_conversation(
             params![conv_id, msg.role.clone(), msg.content.clone(), msg_meta],
         ).await?;
     }
-    get_conversation(db, conv_id).await
+    get_conversation_for_user(db, conv_id, user_id).await
 }
 
 pub async fn upsert_conversation(

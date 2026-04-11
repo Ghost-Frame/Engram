@@ -102,7 +102,15 @@ pub async fn auth_middleware(
                 next.run(request).await
             }
             Err(e) => {
-                let body = serde_json::json!({ "error": e.to_string() });
+                // SECURITY: normalize the client-facing error so an attacker
+                // cannot distinguish "key not found" from "key expired" from
+                // "key revoked" and build a probing oracle. The detailed
+                // reason is still written to logs for operators.
+                tracing::warn!(
+                    error = %e,
+                    "authentication failed"
+                );
+                let body = serde_json::json!({ "error": "invalid credentials" });
                 axum::response::Response::builder()
                     .status(StatusCode::UNAUTHORIZED)
                     .header("Content-Type", "application/json")

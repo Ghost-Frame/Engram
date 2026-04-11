@@ -150,9 +150,33 @@ async fn bootstrap(
         ));
     }
 
+    // SECURITY: atomically claim the bootstrap slot via an INSERT OR IGNORE on
+    // a unique row in app_state. SQLite reports the number of modified rows,
+    // which is 1 if we won the claim and 0 if another concurrent request beat
+    // us to it. Collapsing the prior COUNT + INSERT race means two requests
+    // arriving in the same microsecond cannot both mint an admin key.
+    let changes = state
+        .db
+        .conn
+        .execute(
+            "INSERT OR IGNORE INTO app_state (key, value, updated_at) \
+             VALUES ('bootstrap_claimed', datetime('now'), datetime('now'))",
+            (),
+        )
+        .await
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
+
+    if changes == 0 {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "bootstrap already complete" })),
+        ));
+    }
+
+    // Belt-and-suspenders: if any prior build already minted keys without the
+    // sentinel being set, keep refusing so we don't produce a second admin.
     let existing_count =
         count_rows(&state, "SELECT COUNT(*) FROM api_keys WHERE is_active = 1").await?;
-
     if existing_count > 0 {
         return Ok((
             StatusCode::FORBIDDEN,
@@ -635,7 +659,23 @@ async fn backup_handler(
     Auth(auth): Auth,
 ) -> Result<impl IntoResponse, AppError> {
     require_admin(&auth)?;
-    let tmp = format!("/tmp/engram-backup-{}.db", chrono::Utc::now().timestamp());
+    // SECURITY/TOCTOU: use a UUID-bearing filename inside the OS temp dir so
+    // two admin requests landing in the same second cannot collide on the
+    // same path, and a predictable path cannot be pre-created by a local
+    // unprivileged user to redirect VACUUM INTO.
+    let tmp_path = std::env::temp_dir().join(format!(
+        "engram-backup-{}-{}.db",
+        chrono::Utc::now().timestamp_millis(),
+        uuid::Uuid::new_v4()
+    ));
+    let tmp = tmp_path.to_string_lossy().to_string();
+    // SQLite's VACUUM INTO requires a string literal; embedding the UUID
+    // filename keeps the statement immune to user-controlled input.
+    if tmp.contains('\'') {
+        return Err(AppError(engram_lib::EngError::Internal(
+            "backup path contains a single quote".into(),
+        )));
+    }
     state
         .db
         .conn
