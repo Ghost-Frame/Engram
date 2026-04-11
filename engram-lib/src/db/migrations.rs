@@ -18,6 +18,9 @@ const MIGRATION_SYNTHEOS_SERVICES: i64 = 10;
 const MIGRATION_BRAIN_PATTERNS: i64 = 11;
 const MIGRATION_APPROVALS: i64 = 12;
 const MIGRATION_ERROR_EVENTS: i64 = 13;
+const MIGRATION_BRAIN_META: i64 = 14;
+const MIGRATION_PCA_MODELS: i64 = 15;
+const MIGRATION_BRAIN_DREAM_RUNS: i64 = 16;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -157,6 +160,28 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         record_migration(conn, MIGRATION_ERROR_EVENTS, "error_events").await?;
     }
 
+    // Migration 14: brain_meta key-value table for brain-level metadata
+    // (e.g. instincts_seeded_at per user).
+    if current_version < MIGRATION_BRAIN_META {
+        info!("Running migration 14: brain_meta");
+        run_migration_brain_meta(conn).await?;
+        record_migration(conn, MIGRATION_BRAIN_META, "brain_meta").await?;
+    }
+
+    // Migration 15: brain_pca_models table for PCA dimensionality reduction.
+    if current_version < MIGRATION_PCA_MODELS {
+        info!("Running migration 15: brain_pca_models");
+        run_migration_pca_models(conn).await?;
+        record_migration(conn, MIGRATION_PCA_MODELS, "brain_pca_models").await?;
+    }
+
+    // Migration 16: brain_dream_runs table for dream cycle audit trail.
+    if current_version < MIGRATION_BRAIN_DREAM_RUNS {
+        info!("Running migration 16: brain_dream_runs");
+        run_migration_brain_dream_runs(conn).await?;
+        record_migration(conn, MIGRATION_BRAIN_DREAM_RUNS, "brain_dream_runs").await?;
+    }
+
     // Future migrations go here:
     // if current_version < MIGRATION_XXX { ... }
 
@@ -264,6 +289,24 @@ pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 13: error_events");
         run_migration_error_events_rusqlite(conn)?;
         record_migration_rusqlite(conn, MIGRATION_ERROR_EVENTS, "error_events")?;
+    }
+
+    if current_version < MIGRATION_BRAIN_META {
+        info!("Running migration 14: brain_meta");
+        run_migration_brain_meta_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_BRAIN_META, "brain_meta")?;
+    }
+
+    if current_version < MIGRATION_PCA_MODELS {
+        info!("Running migration 15: brain_pca_models");
+        run_migration_pca_models_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_PCA_MODELS, "brain_pca_models")?;
+    }
+
+    if current_version < MIGRATION_BRAIN_DREAM_RUNS {
+        info!("Running migration 16: brain_dream_runs");
+        run_migration_brain_dream_runs_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_BRAIN_DREAM_RUNS, "brain_dream_runs")?;
     }
 
     Ok(())
@@ -831,6 +874,61 @@ fn run_migration_error_events_rusqlite(conn: &rusqlite::Connection) -> Result<()
     Ok(())
 }
 
+/// Migration 14 (rusqlite): brain_meta key-value table.
+#[cfg(feature = "db_pool")]
+fn run_migration_brain_meta_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS brain_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(feature = "db_pool")]
+fn run_migration_pca_models_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS brain_pca_models (
+            id INTEGER PRIMARY KEY,
+            source_dim INTEGER NOT NULL,
+            target_dim INTEGER NOT NULL,
+            fit_at TEXT NOT NULL,
+            model_blob BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pca_models_dims
+            ON brain_pca_models(source_dim, target_dim);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+/// Migration 16 (rusqlite): brain_dream_runs table for dream cycle audit trail.
+#[cfg(feature = "db_pool")]
+fn run_migration_brain_dream_runs_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS brain_dream_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            started_at TEXT NOT NULL DEFAULT (datetime('now')),
+            finished_at TEXT,
+            replay_count INTEGER NOT NULL DEFAULT 0,
+            merge_count INTEGER NOT NULL DEFAULT 0,
+            prune_count INTEGER NOT NULL DEFAULT 0,
+            discover_count INTEGER NOT NULL DEFAULT 0,
+            decorrelate_count INTEGER NOT NULL DEFAULT 0,
+            resolve_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_dream_runs_user
+            ON brain_dream_runs(user_id);
+        CREATE INDEX IF NOT EXISTS idx_brain_dream_runs_started
+            ON brain_dream_runs(started_at);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
 /// Add a new column to a table if it doesn't exist
 /// SQLite doesn't have IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check first
 async fn add_column_if_not_exists(
@@ -875,6 +973,58 @@ async fn run_migration_error_events(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_error_events_level ON error_events(level);
         CREATE INDEX IF NOT EXISTS idx_error_events_source ON error_events(source);
         CREATE INDEX IF NOT EXISTS idx_error_events_created_at ON error_events(created_at);",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Migration 14: brain_meta key-value table for brain-level metadata.
+async fn run_migration_brain_meta(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS brain_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
+    )
+    .await?;
+    Ok(())
+}
+
+async fn run_migration_pca_models(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS brain_pca_models (
+            id INTEGER PRIMARY KEY,
+            source_dim INTEGER NOT NULL,
+            target_dim INTEGER NOT NULL,
+            fit_at TEXT NOT NULL,
+            model_blob BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pca_models_dims
+            ON brain_pca_models(source_dim, target_dim);",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Migration 16: brain_dream_runs table for dream cycle audit trail.
+async fn run_migration_brain_dream_runs(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS brain_dream_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            started_at TEXT NOT NULL DEFAULT (datetime('now')),
+            finished_at TEXT,
+            replay_count INTEGER NOT NULL DEFAULT 0,
+            merge_count INTEGER NOT NULL DEFAULT 0,
+            prune_count INTEGER NOT NULL DEFAULT 0,
+            discover_count INTEGER NOT NULL DEFAULT 0,
+            decorrelate_count INTEGER NOT NULL DEFAULT 0,
+            resolve_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_dream_runs_user
+            ON brain_dream_runs(user_id);
+        CREATE INDEX IF NOT EXISTS idx_brain_dream_runs_started
+            ON brain_dream_runs(started_at);",
     )
     .await?;
     Ok(())

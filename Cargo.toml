@@ -40,5 +40,6 @@ arrow-schema = "51"
 futures = "0.3"
 lancedb = { version = "0.4", default-features = false }
 protoc-bin-vendored-linux-x86_64 = "3"
+flate2 = "1"
 # Note: Can't use bundled sqlite with libsql in same binary - they conflict.
 # Once Phase 4 lands (libsql removed from engram-lib), switch to bundled.

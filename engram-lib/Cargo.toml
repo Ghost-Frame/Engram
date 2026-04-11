@@ -44,6 +44,7 @@ arrow-schema = { workspace = true }
 futures = { workspace = true }
 lancedb = { workspace = true }
 protoc-bin-vendored-linux-x86_64 = { workspace = true }
+flate2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
