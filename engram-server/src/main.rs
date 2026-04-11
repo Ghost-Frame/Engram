@@ -68,6 +68,9 @@ async fn main() {
         }
     };
 
+    // Approval notification channel for TUI clients
+    let (approval_tx, _) = tokio::sync::watch::channel(());
+
     let state = AppState {
         db: Arc::new(db),
         config: Arc::new(config),
@@ -77,6 +80,7 @@ async fn main() {
         llm,
         sessions: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         eidolon_config: None,
+        approval_notify: Some(approval_tx),
     };
 
     // Start background PageRank refresh job if enabled.

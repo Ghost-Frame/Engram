@@ -6,7 +6,7 @@ use engram_lib::reranker::Reranker;
 use engram_lib::services::brain::BrainManager;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, watch, RwLock};
 
 pub struct SessionBroadcast {
     pub buffer: Vec<String>,
@@ -41,4 +41,7 @@ pub struct AppState {
     pub sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SessionBroadcast>>>>>,
     #[allow(dead_code)]
     pub eidolon_config: Option<EidolonConfig>,
+    /// Notification channel for approval events. TUI clients can subscribe to
+    /// be notified when approvals are created or decided.
+    pub approval_notify: Option<watch::Sender<()>>,
 }
