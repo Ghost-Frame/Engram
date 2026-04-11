@@ -6,7 +6,8 @@ edition = "2021"
 [features]
 default = []
 test-utils = []
-db_pool = ["dep:rusqlite", "dep:tokio-rusqlite", "dep:deadpool-sqlite"]
+# Enable per-tenant sharding (rusqlite-based). Mutually exclusive with libsql tests.
+tenant-sharding = []
 
 [dependencies]
 libsql = { workspace = true }
@@ -37,6 +38,7 @@ arrow-schema = { workspace = true }
 futures = { workspace = true }
 lancedb = { workspace = true }
 protoc-bin-vendored-linux-x86_64 = { workspace = true }
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
