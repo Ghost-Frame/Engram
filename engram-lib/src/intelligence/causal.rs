@@ -65,9 +65,33 @@ pub async fn add_link(
     effect_memory_id: i64,
     strength: f64,
     order_index: i32,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<CausalLink> {
     let conn = db.connection();
+
+    // Verify chain belongs to caller
+    let mut chain_rows = conn
+        .query(
+            "SELECT id FROM causal_chains WHERE id = ?1 AND user_id = ?2",
+            params![chain_id, user_id],
+        )
+        .await?;
+    if chain_rows.next().await?.is_none() {
+        return Err(EngError::NotFound(format!("causal chain {} not found", chain_id)));
+    }
+
+    // Verify both memories belong to caller
+    let mut mem_rows = conn
+        .query(
+            "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0",
+            params![cause_memory_id, effect_memory_id, user_id],
+        )
+        .await?;
+    let count: i64 = if let Some(r) = mem_rows.next().await? { r.get(0)? } else { 0 };
+    if count != 2 {
+        return Err(EngError::NotFound("one or more memories not found or not owned".into()));
+    }
+
     conn.execute(
         "INSERT INTO causal_links (chain_id, cause_memory_id, effect_memory_id, strength, order_index) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -93,14 +117,15 @@ pub async fn add_link(
 }
 
 /// Get a causal chain with all its links.
-pub async fn get_chain(db: &Database, chain_id: i64, _user_id: i64) -> Result<CausalChain> {
+pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<CausalChain> {
     let conn = db.connection();
 
+    // Verify chain belongs to caller
     let mut rows = conn
         .query(
             "SELECT id, root_memory_id, description, confidence, user_id, created_at \
-         FROM causal_chains WHERE id = ?1",
-            params![chain_id],
+             FROM causal_chains WHERE id = ?1 AND user_id = ?2",
+            params![chain_id, user_id],
         )
         .await?;
 

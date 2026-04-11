@@ -75,31 +75,34 @@ async fn download_artifact(
         .ok_or_else(|| AppError(engram_lib::EngError::NotFound("Artifact not found".into())))?;
 
     // Verify the owning memory belongs to this user
-    if let Some(memory_id) = artifact.memory_id {
-        let mut rows = state
-            .db
-            .conn
-            .query(
-                "SELECT user_id FROM memories WHERE id = ?1",
-                libsql::params![memory_id],
-            )
-            .await
-            .map_err(engram_lib::EngError::Database)?;
+    // Reject orphaned artifacts (no memory_id) to prevent BOLA
+    let memory_id = artifact.memory_id.ok_or_else(|| {
+        AppError(engram_lib::EngError::NotFound("Artifact has no associated memory".into()))
+    })?;
 
-        let row = rows.next().await.map_err(engram_lib::EngError::Database)?;
+    let mut rows = state
+        .db
+        .conn
+        .query(
+            "SELECT user_id FROM memories WHERE id = ?1",
+            libsql::params![memory_id],
+        )
+        .await
+        .map_err(engram_lib::EngError::Database)?;
 
-        match row {
-            Some(r) => {
-                let owner: i64 = r
-                    .get(0)
-                    .map_err(|e| engram_lib::EngError::Internal(e.to_string()))?;
-                if owner != auth.user_id {
-                    return Err(AppError(engram_lib::EngError::NotFound("Not found".into())));
-                }
-            }
-            None => {
+    let row = rows.next().await.map_err(engram_lib::EngError::Database)?;
+
+    match row {
+        Some(r) => {
+            let owner: i64 = r
+                .get(0)
+                .map_err(|e| engram_lib::EngError::Internal(e.to_string()))?;
+            if owner != auth.user_id {
                 return Err(AppError(engram_lib::EngError::NotFound("Not found".into())));
             }
+        }
+        None => {
+            return Err(AppError(engram_lib::EngError::NotFound("Not found".into())));
         }
     }
 
