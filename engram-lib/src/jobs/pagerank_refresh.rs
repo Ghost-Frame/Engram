@@ -117,3 +117,75 @@ pub fn start_pagerank_refresh_job(db: Arc<Database>, config: Arc<Config>) -> Can
 
     token
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory;
+    use crate::memory::types::StoreRequest;
+
+    fn store_request(content: &str, user_id: i64) -> StoreRequest {
+        StoreRequest {
+            content: content.to_string(),
+            category: "test".to_string(),
+            source: "test".to_string(),
+            importance: 5,
+            tags: None,
+            embedding: None,
+            session_id: None,
+            is_static: None,
+            user_id: Some(user_id),
+            space_id: None,
+            parent_memory_id: None,
+        }
+    }
+
+    async fn pagerank_count(db: &Database, user_id: i64) -> i64 {
+        let mut rows = db
+            .connection()
+            .query(
+                "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
+                libsql::params![user_id],
+            )
+            .await
+            .expect("query pagerank count");
+        rows.next()
+            .await
+            .expect("read count row")
+            .expect("count row exists")
+            .get(0)
+            .expect("count value")
+    }
+
+    #[tokio::test]
+    async fn run_once_populates_pagerank_for_dirty_user() {
+        let db = Arc::new(Database::connect_memory().await.expect("in-memory db"));
+        let user_id = 1;
+        let mut created = 0_i64;
+
+        for i in 0..100 {
+            let content = format!(
+                "background refresh node_{i} edge_{} branch_{} ring_{}",
+                i * 19,
+                i * 29,
+                i * 37
+            );
+            let stored = memory::store(db.as_ref(), store_request(&content, user_id))
+                .await
+                .expect("store memory");
+            if stored.created {
+                created += 1;
+            }
+        }
+
+        let mut config = Config::default();
+        config.pagerank_dirty_threshold = 100;
+        config.pagerank_refresh_interval_secs = 300;
+        config.pagerank_max_concurrent = 2;
+
+        let refreshed = run_once(&db, &config).await.expect("run refresh cycle");
+
+        assert_eq!(refreshed, 1);
+        assert_eq!(pagerank_count(db.as_ref(), user_id).await, created);
+    }
+}

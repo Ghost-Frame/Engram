@@ -276,6 +276,105 @@ pub async fn rebuild_all_users(db: &Database) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Database;
+    use crate::memory;
+    use crate::memory::search::hybrid_search;
+    use crate::memory::types::{QuestionType, SearchRequest, StoreRequest};
+    use std::time::{Duration, Instant};
+
+    fn store_request(content: &str, user_id: i64) -> StoreRequest {
+        StoreRequest {
+            content: content.to_string(),
+            category: "test".to_string(),
+            source: "test".to_string(),
+            importance: 5,
+            tags: None,
+            embedding: None,
+            session_id: None,
+            is_static: None,
+            user_id: Some(user_id),
+            space_id: None,
+            parent_memory_id: None,
+        }
+    }
+
+    fn search_request(query: &str, user_id: i64, limit: usize) -> SearchRequest {
+        SearchRequest {
+            query: query.to_string(),
+            embedding: None,
+            limit: Some(limit),
+            category: None,
+            source: None,
+            tags: None,
+            threshold: None,
+            user_id: Some(user_id),
+            space_id: None,
+            include_forgotten: None,
+            mode: None,
+            question_type: Some(QuestionType::FactRecall),
+            expand_relationships: false,
+            include_links: false,
+            latest_only: true,
+            source_filter: None,
+        }
+    }
+
+    async fn dirty_state(db: &Database, user_id: i64) -> (i64, i64) {
+        let mut rows = db
+            .connection()
+            .query(
+                "SELECT dirty_count, last_refresh FROM pagerank_dirty WHERE user_id = ?1",
+                libsql::params![user_id],
+            )
+            .await
+            .expect("query pagerank_dirty");
+        let row = rows
+            .next()
+            .await
+            .expect("read pagerank_dirty row")
+            .expect("pagerank_dirty row exists");
+        (
+            row.get(0).expect("dirty_count"),
+            row.get(1).expect("last_refresh"),
+        )
+    }
+
+    async fn pagerank_count(db: &Database, user_id: i64) -> i64 {
+        let mut rows = db
+            .connection()
+            .query(
+                "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
+                libsql::params![user_id],
+            )
+            .await
+            .expect("query memory_pagerank count");
+        rows.next()
+            .await
+            .expect("read count row")
+            .expect("count row exists")
+            .get(0)
+            .expect("count value")
+    }
+
+    async fn pagerank_row(db: &Database, memory_id: i64) -> (f64, i64) {
+        let mut rows = db
+            .connection()
+            .query(
+                "SELECT score, computed_at FROM memory_pagerank WHERE memory_id = ?1",
+                libsql::params![memory_id],
+            )
+            .await
+            .expect("query pagerank row");
+        let row = rows
+            .next()
+            .await
+            .expect("read pagerank row")
+            .expect("pagerank row exists");
+        (
+            row.get(0).expect("score"),
+            row.get(1).expect("computed_at"),
+        )
+    }
 
     #[test]
     fn test_edge_weight() {
@@ -313,5 +412,133 @@ mod tests {
             pr = new_pr;
         }
         assert!(pr[&3] > pr[&1]);
+    }
+
+    #[tokio::test]
+    async fn dirty_counter_increments_on_store_and_delete() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let user_id = 1;
+
+        let stored = memory::store(&db, store_request("dirty counter alpha 001", user_id))
+            .await
+            .expect("store memory");
+        assert_eq!(dirty_state(&db, user_id).await, (1, 0));
+
+        memory::delete(&db, stored.id, user_id)
+            .await
+            .expect("delete memory");
+        assert_eq!(dirty_state(&db, user_id).await, (2, 0));
+    }
+
+    #[tokio::test]
+    async fn persist_pagerank_upserts_and_zeroes_dirty_counter() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let user_id = 1;
+
+        let stored = memory::store(&db, store_request("persist pagerank alpha 002", user_id))
+            .await
+            .expect("store memory");
+        assert_eq!(dirty_state(&db, user_id).await, (1, 0));
+
+        persist_pagerank(&db, user_id, &[(stored.id, 0.25)])
+            .await
+            .expect("persist initial pagerank");
+        let (score_one, computed_one) = pagerank_row(&db, stored.id).await;
+        let (dirty_count_one, last_refresh_one) = dirty_state(&db, user_id).await;
+        assert!((score_one - 0.25).abs() < 1e-10);
+        assert_eq!(dirty_count_one, 0);
+        assert!(last_refresh_one > 0);
+        assert_eq!(computed_one, last_refresh_one);
+
+        mark_pagerank_dirty(&db, user_id, 3)
+            .await
+            .expect("mark dirty again");
+        assert_eq!(dirty_state(&db, user_id).await.0, 3);
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        persist_pagerank(&db, user_id, &[(stored.id, 0.75)])
+            .await
+            .expect("persist updated pagerank");
+
+        let (score_two, computed_two) = pagerank_row(&db, stored.id).await;
+        let (dirty_count_two, last_refresh_two) = dirty_state(&db, user_id).await;
+        assert!((score_two - 0.75).abs() < 1e-10);
+        assert_eq!(dirty_count_two, 0);
+        assert!(computed_two >= computed_one);
+        assert!(last_refresh_two >= last_refresh_one);
+    }
+
+    #[tokio::test]
+    async fn first_query_populates_cache_and_prefers_high_rank_memory() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let user_id = 1;
+
+        let center = memory::store(&db, store_request("alpha common hub signal center", user_id))
+            .await
+            .expect("store center memory");
+        let left = memory::store(&db, store_request("alpha common leaf signal left", user_id))
+            .await
+            .expect("store left memory");
+        let right = memory::store(&db, store_request("alpha common leaf signal right", user_id))
+            .await
+            .expect("store right memory");
+
+        memory::insert_link(&db, left.id, center.id, 1.0, "causes", user_id)
+            .await
+            .expect("link left to center");
+        memory::insert_link(&db, right.id, center.id, 1.0, "causes", user_id)
+            .await
+            .expect("link right to center");
+
+        assert_eq!(pagerank_count(&db, user_id).await, 0);
+
+        let results = hybrid_search(&db, search_request("alpha common signal", user_id, 3))
+            .await
+            .expect("hybrid search succeeds");
+
+        assert_eq!(pagerank_count(&db, user_id).await, 3);
+        assert!(results.len() >= 3);
+        assert_eq!(results[0].memory.id, center.id);
+    }
+
+    #[tokio::test]
+    async fn cached_search_returns_under_100ms_after_warm() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let user_id = 1;
+        let mut created = 0_i64;
+
+        for i in 0..100 {
+            let content = format!(
+                "warm cache token node_{i} axis_{} shard_{} pulse_{}",
+                i * 17,
+                i * 31,
+                i * 43
+            );
+            let stored = memory::store(&db, store_request(&content, user_id))
+                .await
+                .expect("store memory for warm search");
+            if stored.created {
+                created += 1;
+            }
+        }
+
+        let warmup = hybrid_search(&db, search_request("warm cache token", user_id, 10))
+            .await
+            .expect("warmup search succeeds");
+        assert!(!warmup.is_empty());
+        assert_eq!(pagerank_count(&db, user_id).await, created);
+
+        let started = Instant::now();
+        let results = hybrid_search(&db, search_request("warm cache token", user_id, 10))
+            .await
+            .expect("cached search succeeds");
+        let elapsed = started.elapsed();
+
+        assert!(!results.is_empty());
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "cached search took {:?}, expected under 100ms",
+            elapsed
+        );
     }
 }
