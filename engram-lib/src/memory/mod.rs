@@ -50,6 +50,30 @@ fn clamp_importance(value: i32) -> i32 {
     value.clamp(1, 10)
 }
 
+/// Record a failed LanceDB write into the vector_sync_pending table so a
+/// sweeper (or the admin replay endpoint) can retry it. Intentionally
+/// best-effort: if the sync-pending insert itself fails, log and move on.
+async fn record_vector_sync_failure(
+    db: &Database,
+    memory_id: i64,
+    user_id: i64,
+    op: &str,
+    err: &str,
+) {
+    let sql = "INSERT INTO vector_sync_pending (memory_id, user_id, op, error) \
+               VALUES (?1, ?2, ?3, ?4)";
+    if let Err(e) = db
+        .conn
+        .execute(sql, params![memory_id, user_id, op, err])
+        .await
+    {
+        warn!(
+            "failed to record vector_sync_pending for memory {} ({}): {}",
+            memory_id, op, e
+        );
+    }
+}
+
 fn embedding_to_json(embedding: &[f32]) -> String {
     format!(
         "[{}]",
@@ -297,6 +321,8 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
             if let Some(index) = db.vector_index.as_ref() {
                 if let Err(e) = index.insert(new_id, user_id, emb).await {
                     warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+                    record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string())
+                        .await;
                 }
             }
         }
@@ -334,11 +360,15 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
         Ok(new_id) => {
             db.conn.execute("COMMIT", ()).await?;
 
-            // LanceDB insert is outside transaction (external system, best-effort)
+            // LanceDB insert is outside transaction (external system,
+            // best-effort). Failures are recorded in vector_sync_pending so a
+            // sweep or admin replay can recover without data loss.
             if let Some(ref emb) = req.embedding {
                 if let Some(index) = db.vector_index.as_ref() {
                     if let Err(e) = index.insert(new_id, user_id, emb).await {
                         warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+                        record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string())
+                            .await;
                     }
                 }
             }
@@ -935,17 +965,24 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
         Ok(new_id) => {
             db.conn.execute("COMMIT", ()).await?;
 
-            // LanceDB operations outside transaction (external system, best-effort)
+            // LanceDB operations outside transaction (external system,
+            // best-effort). Failures queue into vector_sync_pending so the
+            // old row's vector does not leak and the new row's vector can
+            // be replayed later.
             if let Some(ref emb) = req.embedding {
                 if let Some(index) = db.vector_index.as_ref() {
                     if let Err(e) = index.insert(new_id, user_id, emb).await {
                         warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+                        record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string())
+                            .await;
                     }
                     if let Err(e) = index.delete(id).await {
                         warn!(
                             "LanceDB vector delete failed for superseded memory {}: {}",
                             id, e
                         );
+                        record_vector_sync_failure(db, id, user_id, "delete", &e.to_string())
+                            .await;
                     }
                 }
             }
@@ -975,7 +1012,12 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
     }
 }
 
-/// Internal transactional helper for update - returns new_id
+/// Internal transactional helper for update - returns new_id.
+///
+/// The is_latest flip is guarded with `AND is_latest = 1` and the affected
+/// row count is checked. If a concurrent update already superseded this
+/// version the UPDATE matches 0 rows and we abort so the version chain
+/// never ends up with two rows sharing `is_latest = 1` for the same root.
 #[allow(clippy::too_many_arguments)]
 async fn update_transactional(
     db: &Database,
@@ -992,13 +1034,23 @@ async fn update_transactional(
     new_version: i32,
     embedding: Option<&Vec<f32>>,
 ) -> Result<i64> {
-    // Mark old as not latest
-    db.conn
+    // Mark old as not latest, but only if it still is. A concurrent update
+    // may have already flipped is_latest to 0 between the pre-transaction
+    // SELECT and BEGIN IMMEDIATE. If that happened we have to abort.
+    let affected = db
+        .conn
         .execute(
-            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') \
+             WHERE id = ?1 AND user_id = ?2 AND is_latest = 1",
             params![old_id, user_id],
         )
         .await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!(
+            "memory {} is no longer the latest version (concurrent update)",
+            old_id
+        )));
+    }
 
     // INSERT new row
     let insert_sql = "INSERT INTO memories (
@@ -1088,11 +1140,19 @@ fn update_transactional_rusqlite(
     new_version: i32,
     embedding: Option<&Vec<f32>>,
 ) -> Result<i64> {
-    tx.execute(
-        "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-        rusqlite::params![old_id, user_id],
-    )
-    .map_err(rusqlite_to_eng_error)?;
+    let affected = tx
+        .execute(
+            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') \
+             WHERE id = ?1 AND user_id = ?2 AND is_latest = 1",
+            rusqlite::params![old_id, user_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!(
+            "memory {} is no longer the latest version (concurrent update)",
+            old_id
+        )));
+    }
 
     tx.execute(
         "INSERT INTO memories (
