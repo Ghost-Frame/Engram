@@ -71,16 +71,16 @@ struct LlmDecompositionResponse {
 
 /// Decompose a memory into atomic facts.
 /// Returns the decomposed memory IDs (newly created child facts).
-pub async fn decompose(db: &Database, memory_id: i64, _user_id: i64) -> Result<Vec<i64>> {
+pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Vec<i64>> {
     let conn = db.connection();
 
-    // Fetch the memory content
+    // Fetch the memory content - MUST belong to caller
     let mut rows = conn
         .query(
-            "SELECT content, category, source, importance, user_id, space_id, \
+            "SELECT content, category, source, importance, space_id, \
                     episode_id, tags, session_id \
-             FROM memories WHERE id = ?1 AND is_forgotten = 0",
-            libsql::params![memory_id],
+             FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
+            libsql::params![memory_id, user_id],
         )
         .await?;
 
@@ -93,17 +93,16 @@ pub async fn decompose(db: &Database, memory_id: i64, _user_id: i64) -> Result<V
     let category: String = row.get(1)?;
     let _source: String = row.get(2)?;
     let importance: i64 = row.get(3)?;
-    let user_id: i64 = row.get(4)?;
-    let space_id: Option<i64> = row.get(5)?;
-    let episode_id: Option<i64> = row.get(6)?;
-    let tags: Option<String> = row.get(7)?;
-    let _session_id: Option<String> = row.get(8)?;
+    let space_id: Option<i64> = row.get(4)?;
+    let episode_id: Option<i64> = row.get(5)?;
+    let tags: Option<String> = row.get(6)?;
+    let _session_id: Option<String> = row.get(7)?;
 
     // Skip if too short or is a fact/consolidation already
     if content.len() < MIN_LENGTH {
         conn.execute(
-            "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
-            libsql::params![memory_id],
+            "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
+            libsql::params![memory_id, user_id],
         )
         .await?;
         return Ok(Vec::new());
@@ -124,8 +123,8 @@ pub async fn decompose(db: &Database, memory_id: i64, _user_id: i64) -> Result<V
         Some(d) if !d.result.skip && !d.result.facts.is_empty() => d,
         _ => {
             conn.execute(
-                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
-                libsql::params![memory_id],
+                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
+                libsql::params![memory_id, user_id],
             )
             .await?;
             return Ok(Vec::new());
@@ -178,8 +177,8 @@ pub async fn decompose(db: &Database, memory_id: i64, _user_id: i64) -> Result<V
     // Mark parent as decomposed
     if !created_ids.is_empty() {
         conn.execute(
-            "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
-            libsql::params![memory_id],
+            "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
+            libsql::params![memory_id, user_id],
         )
         .await?;
 

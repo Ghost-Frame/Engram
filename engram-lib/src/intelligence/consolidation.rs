@@ -11,7 +11,7 @@ use tracing::info;
 /// Merges content from the candidate memories, computes new importance
 /// (max of the group), creates a consolidated memory, links the sources,
 /// and records the consolidation.
-pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) -> Result<Memory> {
+pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> Result<Memory> {
     let conn = db.connection();
 
     if memory_ids.is_empty() {
@@ -20,8 +20,8 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) ->
         ));
     }
 
-    // Fetch all source memories
-    let mut sources: Vec<(i64, String, String, i32, i64)> = Vec::new();
+    // Fetch all source memories - MUST belong to caller
+    let mut sources: Vec<(i64, String, String, i32)> = Vec::new();
 
     for id_str in memory_ids {
         let id: i64 = id_str
@@ -30,9 +30,9 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) ->
 
         let mut rows = conn
             .query(
-                "SELECT id, content, category, importance, user_id \
-                 FROM memories WHERE id = ?1 AND is_forgotten = 0",
-                libsql::params![id],
+                "SELECT id, content, category, importance \
+                 FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
+                libsql::params![id, user_id],
             )
             .await?;
 
@@ -42,7 +42,6 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) ->
                 row.get(1)?,
                 row.get(2)?,
                 row.get(3)?,
-                row.get(4)?,
             ));
         }
     }
@@ -53,12 +52,18 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) ->
         ));
     }
 
+    // Reject if any requested ID was not found (caller doesn't own it)
+    if sources.len() != memory_ids.len() {
+        return Err(crate::EngError::NotFound(
+            "one or more memories not found or not owned".to_string(),
+        ));
+    }
+
     // Build merged content
     let max_importance = sources.iter().map(|s| s.3).max().unwrap_or(5);
-    let user_id = sources[0].4;
     let category = sources[0].2.clone();
 
-    // Create a title from the first few words of the first memory
+    // Create a title from the first few words of the first memory (sources[0].1 = content)
     let title_words: Vec<&str> = sources[0].1.split_whitespace().take(5).collect();
     let title = title_words.join(" ");
 
@@ -98,7 +103,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], _user_id: i64) ->
     };
 
     // Link source memories to the consolidated memory
-    for &(source_id, _, _, _, _) in &sources {
+    for &(source_id, _, _, _) in &sources {
         conn.execute(
             "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) \
              VALUES (?1, ?2, 1.0, 'consolidates')",

@@ -4,6 +4,7 @@ use super::types::{
     EntityRelationship,
 };
 use crate::db::Database;
+use crate::memory::fts::sanitize_fts_query;
 use crate::{EngError, Result};
 
 const ENTITY_COLUMNS: &str = "id, name, entity_type, description, aliases, user_id, space_id, confidence, occurrence_count, first_seen_at, last_seen_at, created_at";
@@ -446,6 +447,12 @@ pub async fn search_entity_memories(
     query: &str,
     limit: i64,
 ) -> Result<Vec<EntityMemorySearchResult>> {
+    // Sanitize query to prevent FTS5 syntax injection
+    let sanitized = sanitize_fts_query(query);
+    if sanitized.is_empty() {
+        return Ok(vec![]);
+    }
+
     let conn = db.connection();
     let mut rows = conn
         .query(
@@ -457,7 +464,7 @@ pub async fn search_entity_memories(
                AND m.id IN (SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?3) \
              ORDER BY m.importance DESC, m.created_at DESC \
              LIMIT ?4",
-            libsql::params![entity_id, user_id, query, limit],
+            libsql::params![entity_id, user_id, sanitized, limit],
         )
         .await?;
 

@@ -19,17 +19,17 @@ use tracing::{info, warn};
 pub async fn reconsolidate_memory(
     db: &Database,
     memory_id: i64,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<ReconsolidationResult> {
     let conn = db.connection();
 
-    // Fetch the memory
+    // Fetch the memory - MUST belong to caller
     let mut rows = conn
         .query(
             "SELECT id, importance, confidence, is_static, access_count, \
                     recall_hits, recall_misses, fsrs_stability, created_at \
-             FROM memories WHERE id = ?1",
-            libsql::params![memory_id],
+             FROM memories WHERE id = ?1 AND user_id = ?2",
+            libsql::params![memory_id, user_id],
         )
         .await?;
 
@@ -132,8 +132,8 @@ pub async fn reconsolidate_memory(
     if action != ReconsolidationAction::Unchanged {
         conn.execute(
             "UPDATE memories SET importance = ?1, confidence = ?2, updated_at = datetime('now') \
-             WHERE id = ?3",
-            libsql::params![new_importance, new_confidence, memory_id],
+             WHERE id = ?3 AND user_id = ?4",
+            libsql::params![new_importance, new_confidence, memory_id, user_id],
         )
         .await?;
 
@@ -144,8 +144,8 @@ pub async fn reconsolidate_memory(
             0.5
         };
         conn.execute(
-            "UPDATE memories SET adaptive_score = ?1 WHERE id = ?2",
-            libsql::params![adaptive_score, memory_id],
+            "UPDATE memories SET adaptive_score = ?1 WHERE id = ?2 AND user_id = ?3",
+            libsql::params![adaptive_score, memory_id, user_id],
         )
         .await?;
 
@@ -162,7 +162,7 @@ pub async fn reconsolidate_memory(
                     new_importance, new_confidence
                 ),
                 reason.trim().to_string(),
-                _user_id
+                user_id
             ],
         )
         .await?;

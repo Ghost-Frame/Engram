@@ -1,6 +1,9 @@
-use axum::{middleware as axum_mw, Router};
+use axum::{extract::DefaultBodyLimit, middleware as axum_mw, Router};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+
+/// Default request body limit: 2 MiB. Prevents memory exhaustion from oversized payloads.
+const BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 
 use crate::middleware::auth::auth_middleware;
 use crate::middleware::rate_limit::rate_limit_middleware;
@@ -70,6 +73,7 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             routes::gui::gui_spa_middleware,
         ))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

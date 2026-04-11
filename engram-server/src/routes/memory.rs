@@ -148,10 +148,13 @@ async fn search_memories(
 
     let body_query = body.query.clone();
 
+    // Cap limit to prevent DoS via unbounded result sets
+    let limit = body.limit.map(|l| l.min(100));
+
     let req = SearchRequest {
         query: body.query,
         embedding,
-        limit: body.limit,
+        limit,
         category: body.category,
         source: body.source,
         tags: body.tags.or_else(|| body.tag.map(|tag| vec![tag])),
@@ -225,7 +228,7 @@ async fn recall(
     Auth(auth): Auth,
     Json(body): Json<RecallBody>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = body.limit.unwrap_or(20);
+    let limit = body.limit.unwrap_or(20).min(100);
     let user_id = auth.user_id;
     let query = body
         .query
@@ -467,7 +470,7 @@ async fn search_tags(
         auth.user_id,
         &body.tags,
         body.match_all.unwrap_or(false),
-        body.limit.unwrap_or(50),
+        body.limit.unwrap_or(50).min(100),
     )
     .await?;
     let results: Vec<Value> = memories.iter().map(memory_to_json).collect();
