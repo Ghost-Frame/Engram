@@ -122,13 +122,13 @@ async fn add_msg(
     conversations::get_conversation_for_user(&state.db, id, auth.user_id).await?;
     match body {
         MessageBody::Single(req) => {
-            let msg = conversations::add_message(&state.db, id, req).await?;
+            let msg = conversations::add_message(&state.db, id, auth.user_id, req).await?;
             Ok((StatusCode::CREATED, Json(json!(msg))))
         }
         MessageBody::Batch(reqs) => {
             let mut msgs = Vec::new();
             for req in reqs {
-                msgs.push(conversations::add_message(&state.db, id, req).await?);
+                msgs.push(conversations::add_message(&state.db, id, auth.user_id, req).await?);
             }
             Ok((StatusCode::CREATED, Json(json!({ "messages": msgs }))))
         }
