@@ -8,6 +8,7 @@
 *.sqlite-shm
 *.sqlite-wal
 .claude/worktrees/
+.worktrees/
 WORKTREE-SPEC.md
 docs/plans/
 docs/specs/
