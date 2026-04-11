@@ -2048,6 +2048,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "engram-mcp"
+version = "0.1.0"
+dependencies = [
+ "axum 0.8.8",
+ "clap",
+ "engram-lib",
+ "libsql",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower 0.5.3",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "engram-server"
 version = "0.1.0"
 dependencies = [
