@@ -3,12 +3,8 @@
 //! HTTP server providing secure credential storage and retrieval
 //! with two-tier authentication (master key vs agent keys).
 
-mod auth;
-mod handlers;
-mod server;
-mod state;
-
 use clap::Parser;
+use engram_credd::server;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 

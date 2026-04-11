@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Credential management daemon for Engram"
 
+[lib]
+name = "engram_credd"
+path = "src/lib.rs"
+
 [[bin]]
 name = "engram-credd"
 path = "src/main.rs"
@@ -36,7 +40,11 @@ clap.workspace = true
 async-trait.workspace = true
 rpassword = "7"
 anyhow = "1"
+hex = "0.4"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 reqwest.workspace = true
+http-body-util = "0.1"
+tower = { workspace = true, features = ["util"] }
+hex = "0.4"

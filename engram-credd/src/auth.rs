@@ -12,6 +12,7 @@ use axum::{
 
 use engram_cred::agent_keys::{parse_agent_key, validate_agent_key, AgentKey};
 use engram_cred::crypto::hash_key;
+use hex;
 
 use crate::state::AppState;
 
@@ -73,11 +74,17 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    // Skip auth for health endpoint
+    if request.uri().path() == "/health" {
+        return Ok(next.run(request).await);
+    }
+
     let token = extract_bearer_token(&request).ok_or(StatusCode::UNAUTHORIZED)?;
 
-    // Check if it's the master key (hash comparison)
+    // Check if it's the master key (try hex-decoded first, then raw)
     let master_hash = hash_key(state.master_key.as_ref());
-    let token_hash = hash_key(token.as_bytes());
+    let token_bytes = hex::decode(token).unwrap_or_else(|_| token.as_bytes().to_vec());
+    let token_hash = hash_key(&token_bytes);
 
     let auth = if master_hash == token_hash {
         // Master key - assume user_id 1 (admin)
