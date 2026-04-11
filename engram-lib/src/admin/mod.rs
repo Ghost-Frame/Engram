@@ -556,12 +556,18 @@ async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>
 // Re-embed: clear embeddings so they get regenerated
 // ---------------------------------------------------------------------------
 
+/// Clear embeddings on every live memory so ingestion regenerates them on
+/// next access. Both the legacy `embedding` BLOB column and the active
+/// `embedding_vec_1024` column are cleared; clearing only the legacy
+/// column would leave the live index serving stale vectors and is the
+/// bug pre-round-5 callers hit when swapping models.
 pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
     let affected = match user_id {
         Some(uid) => {
             db.conn
                 .execute(
-                    "UPDATE memories SET embedding = NULL WHERE user_id = ?1 AND is_forgotten = 0",
+                    "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
+                     WHERE user_id = ?1 AND is_forgotten = 0",
                     libsql::params![uid],
                 )
                 .await?
@@ -569,7 +575,8 @@ pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
         None => {
             db.conn
                 .execute(
-                    "UPDATE memories SET embedding = NULL WHERE is_forgotten = 0",
+                    "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
+                     WHERE is_forgotten = 0",
                     (),
                 )
                 .await?

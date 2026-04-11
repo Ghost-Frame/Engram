@@ -26,7 +26,8 @@ struct RerankerInner {
 impl Reranker {
     pub async fn new(config: &Config) -> Result<Self> {
         let model_dir = config.model_dir("granite-reranker");
-        let (tokenizer_path, model_path) = ensure_reranker_model(&model_dir).await?;
+        let (tokenizer_path, model_path) =
+            ensure_reranker_model(&model_dir, config.embedding_offline_only).await?;
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
             EngError::Internal(format!(
