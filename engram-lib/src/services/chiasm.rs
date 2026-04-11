@@ -1,92 +1,57 @@
 use crate::db::Database;
+#[cfg(feature = "db_pool")]
+use crate::memory::uses_pool_backend;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fmt;
-use std::str::FromStr;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum TaskStatus {
-    Pending,
-    InProgress,
-    Completed,
-    Blocked,
-    Cancelled,
-}
-
-impl fmt::Display for TaskStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TaskStatus::Pending => write!(f, "pending"),
-            TaskStatus::InProgress => write!(f, "inprogress"),
-            TaskStatus::Completed => write!(f, "completed"),
-            TaskStatus::Blocked => write!(f, "blocked"),
-            TaskStatus::Cancelled => write!(f, "cancelled"),
-        }
-    }
-}
-
-impl FromStr for TaskStatus {
-    type Err = EngError;
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "pending" => Ok(TaskStatus::Pending),
-            "inprogress" | "in_progress" => Ok(TaskStatus::InProgress),
-            "completed" => Ok(TaskStatus::Completed),
-            "blocked" => Ok(TaskStatus::Blocked),
-            "cancelled" => Ok(TaskStatus::Cancelled),
-            other => Err(EngError::InvalidInput(format!(
-                "unknown task status: {}",
-                other
-            ))),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: i64,
+    pub agent: String,
+    pub project: String,
     pub title: String,
-    pub description: Option<String>,
     pub status: String,
-    pub priority: i32,
-    pub agent: Option<String>,
-    pub project: Option<String>,
-    pub tags: Option<String>,     // JSON array stored as TEXT
-    pub metadata: Option<String>, // JSON object stored as TEXT
-    pub user_id: i64,
-    pub due_at: Option<String>,
-    pub completed_at: Option<String>,
+    pub summary: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub user_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskUpdate {
+    pub id: i64,
+    pub task_id: i64,
+    pub agent: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub created_at: String,
+    pub user_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTaskRequest {
+    pub agent: String,
+    pub project: String,
     pub title: String,
-    pub description: Option<String>,
+    #[serde(default)]
     pub status: Option<String>,
-    pub priority: Option<i32>,
-    pub agent: Option<String>,
-    pub project: Option<String>,
-    pub tags: Option<Vec<String>>,
-    pub metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
     pub user_id: Option<i64>,
-    pub due_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateTaskRequest {
+    #[serde(default)]
     pub title: Option<String>,
-    pub description: Option<String>,
+    #[serde(default)]
     pub status: Option<String>,
-    pub priority: Option<i32>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
     pub agent: Option<String>,
-    pub project: Option<String>,
-    pub tags: Option<Vec<String>>,
-    pub metadata: Option<serde_json::Value>,
-    pub due_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,279 +63,473 @@ pub struct ChiasmStats {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedItem {
     pub id: i64,
+    pub agent: String,
+    pub project: String,
     pub title: String,
     pub status: String,
-    pub priority: i32,
-    pub agent: Option<String>,
-    pub project: Option<String>,
+    pub summary: Option<String>,
     pub updated_at: String,
     pub created_at: String,
 }
 
-fn normalize_status_bucket(status: &str) -> String {
-    match status {
-        "pending" | "open" => "open".to_string(),
-        "inprogress" | "in_progress" => "in_progress".to_string(),
-        "completed" | "done" => "done".to_string(),
-        other => other.to_string(),
+const TASK_COLUMNS: &str =
+    "id, agent, project, title, status, summary, created_at, updated_at, user_id";
+
+const VALID_STATUSES: &[&str] = &["active", "paused", "blocked", "completed"];
+
+fn validate_status(status: &str) -> Result<()> {
+    if VALID_STATUSES.contains(&status) {
+        Ok(())
+    } else {
+        Err(EngError::InvalidInput(format!(
+            "invalid chiasm status '{}', must be one of active, paused, blocked, completed",
+            status
+        )))
     }
 }
 
 fn row_to_task(row: &libsql::Row) -> Result<Task> {
     Ok(Task {
         id: row.get(0)?,
-        title: row.get(1)?,
-        description: row.get(2)?,
-        status: row.get(3)?,
-        priority: row.get(4)?,
-        agent: row.get(5)?,
-        project: row.get(6)?,
-        tags: row.get(7)?,
-        metadata: row.get(8)?,
-        user_id: row.get(9)?,
-        due_at: row.get(10)?,
-        completed_at: row.get(11)?,
-        created_at: row.get(12)?,
-        updated_at: row.get(13)?,
+        agent: row.get(1)?,
+        project: row.get(2)?,
+        title: row.get(3)?,
+        status: row.get(4)?,
+        summary: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        user_id: row.get(8)?,
     })
 }
 
-pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> {
-    let conn = &db.conn;
-
-    let status = req.status.unwrap_or_else(|| "pending".to_string());
-    let priority = req.priority.unwrap_or(5);
-    let user_id = req
-        .user_id
-        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
-    let tags_json = req.tags.as_ref().map(serde_json::to_string).transpose()?;
-    let metadata_json = req
-        .metadata
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-
-    conn.execute(
-        "INSERT INTO tasks (title, description, status, priority, agent, project, tags, metadata, user_id, due_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        libsql::params![
-            req.title,
-            req.description,
-            status,
-            priority,
-            req.agent,
-            req.project,
-            tags_json,
-            metadata_json,
-            user_id,
-            req.due_at,
-        ],
-    )
-    .await?;
-
-    let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id_row = rows
-        .next()
-        .await?
-        .ok_or_else(|| EngError::Internal("no rowid".into()))?;
-    let id: i64 = id_row.get(0)?;
-
-    get_task(db, id, user_id).await
+#[cfg(feature = "db_pool")]
+fn row_to_task_rusqlite(row: &rusqlite::Row<'_>) -> Result<Task> {
+    Ok(Task {
+        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+        agent: row.get(1).map_err(rusqlite_to_eng_error)?,
+        project: row.get(2).map_err(rusqlite_to_eng_error)?,
+        title: row.get(3).map_err(rusqlite_to_eng_error)?,
+        status: row.get(4).map_err(rusqlite_to_eng_error)?,
+        summary: row.get(5).map_err(rusqlite_to_eng_error)?,
+        created_at: row.get(6).map_err(rusqlite_to_eng_error)?,
+        updated_at: row.get(7).map_err(rusqlite_to_eng_error)?,
+        user_id: row.get(8).map_err(rusqlite_to_eng_error)?,
+    })
 }
 
-pub async fn get_task(db: &Database, id: i64, user_id: i64) -> Result<Task> {
+#[cfg(feature = "db_pool")]
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
+pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> {
+    let status = req.status.clone().unwrap_or_else(|| "active".to_string());
+    validate_status(&status)?;
+    let user_id = req
+        .user_id
+        .ok_or_else(|| EngError::InvalidInput("user_id required".into()))?;
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        let agent = req.agent.clone();
+        let project = req.project.clone();
+        let title = req.title.clone();
+        let summary = req.summary.clone();
+        let status_ins = status.clone();
+        let id = db
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO chiasm_tasks (agent, project, title, status, summary, user_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![agent, project, title, status_ins, summary, user_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                Ok(conn.last_insert_rowid())
+            })
+            .await?;
+        return get_task(db, id, user_id).await;
+    }
+
     let conn = &db.conn;
     let mut rows = conn
         .query(
-            "SELECT id, title, description, status, priority, agent, project, tags, metadata,
-                user_id, due_at, completed_at, created_at, updated_at
-         FROM tasks WHERE id = ?1 AND user_id = ?2",
-            libsql::params![id, user_id],
+            &format!(
+                "INSERT INTO chiasm_tasks (agent, project, title, status, summary, user_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 RETURNING {TASK_COLUMNS}"
+            ),
+            libsql::params![req.agent, req.project, req.title, status, req.summary, user_id],
         )
         .await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| EngError::Internal("chiasm_tasks RETURNING row empty".into()))?;
+    row_to_task(&row)
+}
 
+pub async fn get_task(db: &Database, id: i64, user_id: i64) -> Result<Task> {
+    let sql = format!("SELECT {TASK_COLUMNS} FROM chiasm_tasks WHERE id = ?1 AND user_id = ?2");
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![id, user_id])
+                    .map_err(rusqlite_to_eng_error)?;
+                let row = rows
+                    .next()
+                    .map_err(rusqlite_to_eng_error)?
+                    .ok_or_else(|| EngError::NotFound(format!("task {}", id)))?;
+                row_to_task_rusqlite(row)
+            })
+            .await;
+    }
+
+    let conn = &db.conn;
+    let mut rows = conn.query(&sql, libsql::params![id, user_id]).await?;
     let row = rows
         .next()
         .await?
         .ok_or_else(|| EngError::NotFound(format!("task {}", id)))?;
-
     row_to_task(&row)
 }
 
 pub async fn list_tasks(
     db: &Database,
-    user_id: Option<i64>,
+    user_id: i64,
     status: Option<&str>,
+    agent: Option<&str>,
+    project: Option<&str>,
     limit: usize,
     offset: usize,
 ) -> Result<Vec<Task>> {
-    let conn = &db.conn;
+    let mut sql = format!("SELECT {TASK_COLUMNS} FROM chiasm_tasks WHERE user_id = ?1");
+    let mut idx = 2usize;
+    let mut params: Vec<libsql::Value> = vec![libsql::Value::Integer(user_id)];
 
-    let mut sql = String::from(
-        "SELECT id, title, description, status, priority, agent, project, tags, metadata,
-                user_id, due_at, completed_at, created_at, updated_at
-         FROM tasks WHERE 1=1",
-    );
-
-    let mut param_idx = 1usize;
-    let mut params_vec: Vec<libsql::Value> = Vec::new();
-
-    if let Some(uid) = user_id {
-        sql.push_str(&format!(" AND user_id = ?{}", param_idx));
-        params_vec.push(libsql::Value::Integer(uid));
-        param_idx += 1;
-    }
     if let Some(s) = status {
-        sql.push_str(&format!(" AND status = ?{}", param_idx));
-        params_vec.push(libsql::Value::Text(s.to_string()));
-        param_idx += 1;
+        sql.push_str(&format!(" AND status = ?{}", idx));
+        params.push(libsql::Value::Text(s.to_string()));
+        idx += 1;
     }
-
+    if let Some(a) = agent {
+        sql.push_str(&format!(" AND agent = ?{}", idx));
+        params.push(libsql::Value::Text(a.to_string()));
+        idx += 1;
+    }
+    if let Some(p) = project {
+        sql.push_str(&format!(" AND project = ?{}", idx));
+        params.push(libsql::Value::Text(p.to_string()));
+        idx += 1;
+    }
     sql.push_str(&format!(
-        " ORDER BY created_at DESC LIMIT ?{} OFFSET ?{}",
-        param_idx,
-        param_idx + 1
+        " ORDER BY updated_at DESC, id DESC LIMIT ?{} OFFSET ?{}",
+        idx,
+        idx + 1
     ));
-    params_vec.push(libsql::Value::Integer(limit as i64));
-    params_vec.push(libsql::Value::Integer(offset as i64));
+    params.push(libsql::Value::Integer(limit as i64));
+    params.push(libsql::Value::Integer(offset as i64));
 
-    let mut rows = conn
-        .query(&sql, libsql::params_from_iter(params_vec))
-        .await?;
-    let mut results = Vec::new();
-    while let Some(row) = rows.next().await? {
-        results.push(row_to_task(&row)?);
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+                let converted = rusqlite::params_from_iter(
+                    params.iter().map(crate::memory::libsql_value_to_rusqlite_value),
+                );
+                let mut rows = stmt.query(converted).map_err(rusqlite_to_eng_error)?;
+                let mut out = Vec::new();
+                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                    out.push(row_to_task_rusqlite(row)?);
+                }
+                Ok(out)
+            })
+            .await;
     }
-    Ok(results)
+
+    let conn = &db.conn;
+    let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await? {
+        out.push(row_to_task(&row)?);
+    }
+    Ok(out)
 }
 
+/// Update a task AND append a history row atomically. The history row records
+/// the agent making the change, the resulting status, and the resulting summary
+/// so external consumers can replay the task's lifecycle.
 pub async fn update_task(
     db: &Database,
     id: i64,
     req: UpdateTaskRequest,
     user_id: i64,
 ) -> Result<Task> {
-    let conn = &db.conn;
-
-    // Make sure the task exists and belongs to this user
-    get_task(db, id, user_id).await?;
-
-    let mut sets: Vec<String> = Vec::new();
-    let mut params_vec: Vec<libsql::Value> = Vec::new();
-    let mut idx = 1usize;
-
-    if let Some(v) = req.title {
-        sets.push(format!("title = ?{}", idx));
-        params_vec.push(libsql::Value::Text(v));
-        idx += 1;
-    }
-    if let Some(v) = req.description {
-        sets.push(format!("description = ?{}", idx));
-        params_vec.push(libsql::Value::Text(v));
-        idx += 1;
-    }
-    if let Some(v) = &req.status {
-        sets.push(format!("status = ?{}", idx));
-        params_vec.push(libsql::Value::Text(v.clone()));
-        idx += 1;
-        // Auto-set completed_at when status becomes "completed"
-        if v == "completed" {
-            sets.push(format!("completed_at = ?{}", idx));
-            params_vec.push(libsql::Value::Text("datetime('now')".to_string()));
-            idx += 1;
-        }
-    }
-    if let Some(v) = req.priority {
-        sets.push(format!("priority = ?{}", idx));
-        params_vec.push(libsql::Value::Integer(v as i64));
-        idx += 1;
-    }
-    if let Some(v) = req.agent {
-        sets.push(format!("agent = ?{}", idx));
-        params_vec.push(libsql::Value::Text(v));
-        idx += 1;
-    }
-    if let Some(v) = req.project {
-        sets.push(format!("project = ?{}", idx));
-        params_vec.push(libsql::Value::Text(v));
-        idx += 1;
-    }
-    if let Some(v) = req.tags {
-        let j = serde_json::to_string(&v)?;
-        sets.push(format!("tags = ?{}", idx));
-        params_vec.push(libsql::Value::Text(j));
-        idx += 1;
-    }
-    if let Some(v) = req.metadata {
-        let j = serde_json::to_string(&v)?;
-        sets.push(format!("metadata = ?{}", idx));
-        params_vec.push(libsql::Value::Text(j));
-        idx += 1;
-    }
-    if let Some(v) = req.due_at {
-        sets.push(format!("due_at = ?{}", idx));
-        params_vec.push(libsql::Value::Text(v));
-        idx += 1;
+    if let Some(ref s) = req.status {
+        validate_status(s)?;
     }
 
-    // Always update updated_at
-    sets.push(format!("updated_at = ?{}", idx));
-    params_vec.push(libsql::Value::Text("datetime('now')".to_string()));
-    idx += 1;
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        let req_for_tx = req.clone();
+        db.transaction(move |tx| {
+            let current: (String, String, Option<String>) = tx
+                .query_row(
+                    "SELECT agent, status, summary FROM chiasm_tasks WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![id, user_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => {
+                        EngError::NotFound(format!("task {}", id))
+                    }
+                    other => rusqlite_to_eng_error(other),
+                })?;
 
-    if sets.is_empty() {
+            let new_title = req_for_tx.title.clone();
+            let new_status = req_for_tx.status.clone().unwrap_or(current.1.clone());
+            let new_summary = req_for_tx.summary.clone().or(current.2.clone());
+            let new_agent = req_for_tx.agent.clone().unwrap_or(current.0.clone());
+
+            let mut sets: Vec<&str> = Vec::new();
+            let mut params_dyn: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+            if let Some(t) = new_title.as_ref() {
+                sets.push("title = ?");
+                params_dyn.push(Box::new(t.clone()));
+            }
+            if req_for_tx.status.is_some() {
+                sets.push("status = ?");
+                params_dyn.push(Box::new(new_status.clone()));
+            }
+            if req_for_tx.summary.is_some() {
+                sets.push("summary = ?");
+                params_dyn.push(Box::new(new_summary.clone()));
+            }
+            if req_for_tx.agent.is_some() {
+                sets.push("agent = ?");
+                params_dyn.push(Box::new(new_agent.clone()));
+            }
+            sets.push("updated_at = datetime('now')");
+
+            let sql = format!(
+                "UPDATE chiasm_tasks SET {} WHERE id = ? AND user_id = ?",
+                sets.join(", ")
+            );
+            params_dyn.push(Box::new(id));
+            params_dyn.push(Box::new(user_id));
+            let refs: Vec<&dyn rusqlite::ToSql> =
+                params_dyn.iter().map(|b| b.as_ref()).collect();
+            tx.execute(&sql, refs.as_slice())
+                .map_err(rusqlite_to_eng_error)?;
+
+            tx.execute(
+                "INSERT INTO chiasm_task_updates (task_id, agent, status, summary, user_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id, new_agent, new_status, new_summary, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+            Ok(())
+        })
+        .await?;
         return get_task(db, id, user_id).await;
     }
 
-    let sql = format!(
-        "UPDATE tasks SET {} WHERE id = ?{} AND user_id = ?{}",
-        sets.join(", "),
-        idx,
-        idx + 1
-    );
-    params_vec.push(libsql::Value::Integer(id));
-    params_vec.push(libsql::Value::Integer(user_id));
+    let conn = &db.conn;
+    let current = get_task(db, id, user_id).await?;
+    let new_status = req.status.clone().unwrap_or(current.status.clone());
+    let new_summary = req.summary.clone().or(current.summary.clone());
+    let new_agent = req.agent.clone().unwrap_or(current.agent.clone());
+    let new_title = req.title.clone().unwrap_or(current.title.clone());
 
-    conn.execute(&sql, libsql::params_from_iter(params_vec))
-        .await?;
+    conn.execute("BEGIN IMMEDIATE", ()).await?;
 
+    let update_res = conn
+        .execute(
+            "UPDATE chiasm_tasks
+             SET title = ?1, status = ?2, summary = ?3, agent = ?4,
+                 updated_at = datetime('now')
+             WHERE id = ?5 AND user_id = ?6",
+            libsql::params![
+                new_title,
+                new_status.clone(),
+                new_summary.clone(),
+                new_agent.clone(),
+                id,
+                user_id
+            ],
+        )
+        .await;
+
+    if let Err(e) = update_res {
+        let _ = conn.execute("ROLLBACK", ()).await;
+        return Err(e.into());
+    }
+
+    let hist_res = conn
+        .execute(
+            "INSERT INTO chiasm_task_updates (task_id, agent, status, summary, user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            libsql::params![id, new_agent, new_status, new_summary, user_id],
+        )
+        .await;
+
+    if let Err(e) = hist_res {
+        let _ = conn.execute("ROLLBACK", ()).await;
+        return Err(e.into());
+    }
+
+    conn.execute("COMMIT", ()).await?;
     get_task(db, id, user_id).await
 }
 
 pub async fn delete_task(db: &Database, id: i64, user_id: i64) -> Result<()> {
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .write(move |conn| {
+                conn.execute(
+                    "DELETE FROM chiasm_tasks WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![id, user_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                Ok(())
+            })
+            .await;
+    }
+
     let conn = &db.conn;
     conn.execute(
-        "DELETE FROM tasks WHERE id = ?1 AND user_id = ?2",
+        "DELETE FROM chiasm_tasks WHERE id = ?1 AND user_id = ?2",
         libsql::params![id, user_id],
     )
     .await?;
     Ok(())
 }
 
+pub async fn list_task_history(
+    db: &Database,
+    task_id: i64,
+    user_id: i64,
+    limit: usize,
+) -> Result<Vec<TaskUpdate>> {
+    let sql = "SELECT id, task_id, agent, status, summary, created_at, user_id
+               FROM chiasm_task_updates
+               WHERE task_id = ?1 AND user_id = ?2
+               ORDER BY id DESC
+               LIMIT ?3";
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![task_id, user_id, limit as i64])
+                    .map_err(rusqlite_to_eng_error)?;
+                let mut out = Vec::new();
+                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                    out.push(TaskUpdate {
+                        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                        task_id: row.get(1).map_err(rusqlite_to_eng_error)?,
+                        agent: row.get(2).map_err(rusqlite_to_eng_error)?,
+                        status: row.get(3).map_err(rusqlite_to_eng_error)?,
+                        summary: row.get(4).map_err(rusqlite_to_eng_error)?,
+                        created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
+                        user_id: row.get(6).map_err(rusqlite_to_eng_error)?,
+                    });
+                }
+                Ok(out)
+            })
+            .await;
+    }
+
+    let conn = &db.conn;
+    let mut rows = conn
+        .query(sql, libsql::params![task_id, user_id, limit as i64])
+        .await?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await? {
+        out.push(TaskUpdate {
+            id: row.get(0)?,
+            task_id: row.get(1)?,
+            agent: row.get(2)?,
+            status: row.get(3)?,
+            summary: row.get(4)?,
+            created_at: row.get(5)?,
+            user_id: row.get(6)?,
+        });
+    }
+    Ok(out)
+}
+
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<ChiasmStats> {
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut by_status = BTreeMap::new();
+                let mut total: i64 = 0;
+                if let Some(uid) = user_id {
+                    let mut stmt = conn
+                        .prepare(
+                            "SELECT status, COUNT(*) FROM chiasm_tasks WHERE user_id = ?1 GROUP BY status",
+                        )
+                        .map_err(rusqlite_to_eng_error)?;
+                    let mut rows = stmt
+                        .query(rusqlite::params![uid])
+                        .map_err(rusqlite_to_eng_error)?;
+                    while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                        let s: String = row.get(0).map_err(rusqlite_to_eng_error)?;
+                        let c: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
+                        total += c;
+                        *by_status.entry(s).or_insert(0) += c;
+                    }
+                } else {
+                    let mut stmt = conn
+                        .prepare(
+                            "SELECT status, COUNT(*) FROM chiasm_tasks GROUP BY status",
+                        )
+                        .map_err(rusqlite_to_eng_error)?;
+                    let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+                    while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                        let s: String = row.get(0).map_err(rusqlite_to_eng_error)?;
+                        let c: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
+                        total += c;
+                        *by_status.entry(s).or_insert(0) += c;
+                    }
+                }
+                Ok(ChiasmStats { total, by_status })
+            })
+            .await;
+    }
+
     let conn = &db.conn;
     let mut by_status = BTreeMap::new();
-
     let mut rows = if let Some(uid) = user_id {
         conn.query(
-            "SELECT status, COUNT(*) FROM tasks WHERE user_id = ?1 GROUP BY status",
+            "SELECT status, COUNT(*) FROM chiasm_tasks WHERE user_id = ?1 GROUP BY status",
             libsql::params![uid],
         )
         .await?
     } else {
-        conn.query("SELECT status, COUNT(*) FROM tasks GROUP BY status", ())
-            .await?
+        conn.query(
+            "SELECT status, COUNT(*) FROM chiasm_tasks GROUP BY status",
+            (),
+        )
+        .await?
     };
-
     let mut total = 0i64;
     while let Some(row) = rows.next().await? {
-        let status: String = row.get(0)?;
-        let count: i64 = row.get(1)?;
-        total += count;
-        let bucket = normalize_status_bucket(&status);
-        *by_status.entry(bucket).or_insert(0) += count;
+        let s: String = row.get(0)?;
+        let c: i64 = row.get(1)?;
+        total += c;
+        *by_status.entry(s).or_insert(0) += c;
     }
-
     Ok(ChiasmStats { total, by_status })
 }
 
@@ -380,31 +539,161 @@ pub async fn get_feed(
     limit: usize,
     offset: usize,
 ) -> Result<Vec<FeedItem>> {
+    let sql = "SELECT id, agent, project, title, status, summary, updated_at, created_at
+               FROM chiasm_tasks
+               WHERE user_id = ?1
+               ORDER BY updated_at DESC, id DESC
+               LIMIT ?2 OFFSET ?3";
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![user_id, limit as i64, offset as i64])
+                    .map_err(rusqlite_to_eng_error)?;
+                let mut out = Vec::new();
+                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                    out.push(FeedItem {
+                        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                        agent: row.get(1).map_err(rusqlite_to_eng_error)?,
+                        project: row.get(2).map_err(rusqlite_to_eng_error)?,
+                        title: row.get(3).map_err(rusqlite_to_eng_error)?,
+                        status: row.get(4).map_err(rusqlite_to_eng_error)?,
+                        summary: row.get(5).map_err(rusqlite_to_eng_error)?,
+                        updated_at: row.get(6).map_err(rusqlite_to_eng_error)?,
+                        created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
+                    });
+                }
+                Ok(out)
+            })
+            .await;
+    }
+
     let conn = &db.conn;
     let mut rows = conn
-        .query(
-            "SELECT id, title, status, priority, agent, project, updated_at, created_at
-             FROM tasks
-             WHERE user_id = ?1
-             ORDER BY updated_at DESC, created_at DESC
-             LIMIT ?2 OFFSET ?3",
-            libsql::params![user_id, limit as i64, offset as i64],
-        )
+        .query(sql, libsql::params![user_id, limit as i64, offset as i64])
         .await?;
-
-    let mut items = Vec::new();
+    let mut out = Vec::new();
     while let Some(row) = rows.next().await? {
-        items.push(FeedItem {
+        out.push(FeedItem {
             id: row.get(0)?,
-            title: row.get(1)?,
-            status: row.get(2)?,
-            priority: row.get(3)?,
-            agent: row.get(4)?,
-            project: row.get(5)?,
+            agent: row.get(1)?,
+            project: row.get(2)?,
+            title: row.get(3)?,
+            status: row.get(4)?,
+            summary: row.get(5)?,
             updated_at: row.get(6)?,
             created_at: row.get(7)?,
         });
     }
+    Ok(out)
+}
 
-    Ok(items)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn setup() -> Database {
+        Database::connect_memory().await.expect("db")
+    }
+
+    #[tokio::test]
+    async fn create_and_get_task() {
+        let db = setup().await;
+        let t = create_task(
+            &db,
+            CreateTaskRequest {
+                agent: "claude-code".into(),
+                project: "engram-rust".into(),
+                title: "port syntheos".into(),
+                status: Some("active".into()),
+                summary: Some("phase 27b".into()),
+                user_id: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(t.status, "active");
+        let fetched = get_task(&db, t.id, 1).await.unwrap();
+        assert_eq!(fetched.title, "port syntheos");
+    }
+
+    #[tokio::test]
+    async fn update_task_writes_history() {
+        let db = setup().await;
+        let t = create_task(
+            &db,
+            CreateTaskRequest {
+                agent: "claude-code".into(),
+                project: "engram-rust".into(),
+                title: "t".into(),
+                status: None,
+                summary: None,
+                user_id: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+
+        update_task(
+            &db,
+            t.id,
+            UpdateTaskRequest {
+                title: None,
+                status: Some("completed".into()),
+                summary: Some("done".into()),
+                agent: Some("claude-code".into()),
+            },
+            1,
+        )
+        .await
+        .unwrap();
+
+        let after = get_task(&db, t.id, 1).await.unwrap();
+        assert_eq!(after.status, "completed");
+        let history = list_task_history(&db, t.id, 1, 10).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, "completed");
+        assert_eq!(history[0].summary.as_deref(), Some("done"));
+    }
+
+    #[tokio::test]
+    async fn list_is_scoped_by_user() {
+        let db = setup().await;
+        create_task(
+            &db,
+            CreateTaskRequest {
+                agent: "a".into(),
+                project: "p".into(),
+                title: "mine".into(),
+                status: None,
+                summary: None,
+                user_id: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        let other = list_tasks(&db, 2, None, None, None, 10, 0).await.unwrap();
+        assert!(other.is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_status_rejected() {
+        let db = setup().await;
+        let r = create_task(
+            &db,
+            CreateTaskRequest {
+                agent: "a".into(),
+                project: "p".into(),
+                title: "t".into(),
+                status: Some("nonsense".into()),
+                summary: None,
+                user_id: Some(1),
+            },
+        )
+        .await;
+        assert!(r.is_err());
+    }
 }

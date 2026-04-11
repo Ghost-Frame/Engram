@@ -10,7 +10,7 @@ use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::services::chiasm::{
     create_task, delete_task, get_feed as get_task_feed, get_stats as get_task_stats, get_task,
-    list_tasks, update_task, CreateTaskRequest, UpdateTaskRequest,
+    list_task_history, list_tasks, update_task, CreateTaskRequest, UpdateTaskRequest,
 };
 
 pub fn router() -> Router<AppState> {
@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
                 .patch(update_task_handler)
                 .delete(delete_task_handler),
         )
+        .route("/tasks/{id}/history", get(get_task_history_handler))
         .route("/feed", get(get_feed))
 }
 
@@ -38,28 +39,18 @@ struct ListTasksParams {
 #[derive(Debug, Deserialize)]
 struct CreateTaskBody {
     title: String,
-    description: Option<String>,
+    agent: String,
+    project: String,
     status: Option<String>,
-    priority: Option<i32>,
-    agent: Option<String>,
-    project: Option<String>,
-    tags: Option<Vec<String>>,
-    metadata: Option<serde_json::Value>,
-    due_at: Option<String>,
+    summary: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct UpdateTaskBody {
     title: Option<String>,
-    description: Option<String>,
     summary: Option<String>,
     status: Option<String>,
-    priority: Option<i32>,
     agent: Option<String>,
-    project: Option<String>,
-    tags: Option<Vec<String>>,
-    metadata: Option<serde_json::Value>,
-    due_at: Option<String>,
 }
 
 async fn list_tasks_handler(
@@ -70,24 +61,16 @@ async fn list_tasks_handler(
     let limit = params.limit.unwrap_or(500).min(1000);
     let offset = params.offset.unwrap_or(0);
 
-    // list_tasks signature: (db, user_id, status, limit, offset)
-    // No agent/project filter in the lib -- filter client-side or just use user_id
-    let mut tasks = list_tasks(
+    let tasks = list_tasks(
         &state.db,
-        Some(auth.user_id),
+        auth.user_id,
         params.status.as_deref(),
+        params.agent.as_deref(),
+        params.project.as_deref(),
         limit,
         offset,
     )
     .await?;
-
-    // Apply agent/project filters in-memory since lib doesn't support them
-    if let Some(ref agent) = params.agent {
-        tasks.retain(|t| t.agent.as_deref() == Some(agent.as_str()));
-    }
-    if let Some(ref project) = params.project {
-        tasks.retain(|t| t.project.as_deref() == Some(project.as_str()));
-    }
 
     Ok(Json(json!({ "tasks": tasks, "count": tasks.len() })))
 }
@@ -98,16 +81,12 @@ async fn create_task_handler(
     Json(body): Json<CreateTaskBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let req = CreateTaskRequest {
-        title: body.title,
-        description: body.description,
-        status: body.status,
-        priority: body.priority,
         agent: body.agent,
         project: body.project,
-        tags: body.tags,
-        metadata: body.metadata,
+        title: body.title,
+        status: body.status,
+        summary: body.summary,
         user_id: Some(auth.user_id),
-        due_at: body.due_at,
     };
 
     let task = create_task(&state.db, req).await?;
@@ -139,18 +118,29 @@ async fn update_task_handler(
 ) -> Result<Json<Value>, AppError> {
     let req = UpdateTaskRequest {
         title: body.title,
-        description: body.summary.or(body.description),
         status: body.status,
-        priority: body.priority,
+        summary: body.summary,
         agent: body.agent,
-        project: body.project,
-        tags: body.tags,
-        metadata: body.metadata,
-        due_at: body.due_at,
     };
 
     let task = update_task(&state.db, id, req, auth.user_id).await?;
     Ok(Json(json!(task)))
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryParams {
+    limit: Option<usize>,
+}
+
+async fn get_task_history_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+    Query(params): Query<HistoryParams>,
+) -> Result<Json<Value>, AppError> {
+    let limit = params.limit.unwrap_or(100).min(1000);
+    let history = list_task_history(&state.db, id, auth.user_id, limit).await?;
+    Ok(Json(json!({ "history": history, "count": history.len() })))
 }
 
 async fn delete_task_handler(

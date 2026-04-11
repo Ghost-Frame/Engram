@@ -9,8 +9,8 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::services::soma::{
-    get_agent, get_stats as get_soma_stats, heartbeat, list_agents, register_agent,
-    RegisterAgentRequest,
+    delete_agent, get_agent, get_stats as get_soma_stats, heartbeat, list_agents, register_agent,
+    set_status, RegisterAgentRequest,
 };
 
 pub fn router() -> Router<AppState> {
@@ -32,32 +32,26 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 struct CreateAgentBody {
     name: String,
-    /// The plan spec says `agent_type` but lib uses `category`
-    agent_type: Option<String>,
-    category: Option<String>,
+    #[serde(alias = "agent_type", alias = "category")]
+    r#type: Option<String>,
     description: Option<String>,
-    /// Ignored -- lib doesn't support capabilities field
-    #[allow(dead_code)]
     capabilities: Option<serde_json::Value>,
-    /// Ignored -- lib doesn't support metadata field on register
-    #[allow(dead_code)]
-    metadata: Option<serde_json::Value>,
+    config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct UpdateAgentBody {
-    /// Ignored for now -- lib doesn't have a direct update function, uses register (upsert by name)
-    #[allow(dead_code)]
     status: Option<String>,
-    #[allow(dead_code)]
-    metadata: Option<serde_json::Value>,
-    category: Option<String>,
+    #[serde(alias = "agent_type", alias = "category")]
+    r#type: Option<String>,
     description: Option<String>,
-    name: Option<String>,
+    capabilities: Option<serde_json::Value>,
+    config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ListAgentsParams {
+    #[serde(alias = "type")]
     agent_type: Option<String>,
     status: Option<String>,
     limit: Option<usize>,
@@ -68,13 +62,17 @@ async fn create_agent_handler(
     Auth(auth): Auth,
     Json(body): Json<CreateAgentBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let category = body.category.or(body.agent_type);
+    let type_ = body
+        .r#type
+        .ok_or_else(|| engram_lib::EngError::InvalidInput("type is required".into()))?;
 
     let req = RegisterAgentRequest {
         user_id: Some(auth.user_id),
         name: body.name,
-        category,
+        type_,
         description: body.description,
+        capabilities: body.capabilities,
+        config: body.config,
     };
 
     let agent = register_agent(&state.db, req).await?;
@@ -86,16 +84,15 @@ async fn list_agents_handler(
     Auth(auth): Auth,
     Query(params): Query<ListAgentsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let active_only = params.status.as_deref() == Some("active");
-    let mut agents = list_agents(&state.db, Some(auth.user_id), active_only).await?;
-
-    // Filter by agent_type/category in-memory
-    if let Some(ref agent_type) = params.agent_type {
-        agents.retain(|a| a.category.as_deref() == Some(agent_type.as_str()));
-    }
-
     let limit = params.limit.unwrap_or(100).min(1000);
-    agents.truncate(limit);
+    let agents = list_agents(
+        &state.db,
+        auth.user_id,
+        params.agent_type.as_deref(),
+        params.status.as_deref(),
+        limit,
+    )
+    .await?;
 
     Ok(Json(json!({ "agents": agents, "count": agents.len() })))
 }
@@ -115,24 +112,34 @@ async fn update_agent_handler(
     Path(id): Path<i64>,
     Json(body): Json<UpdateAgentBody>,
 ) -> Result<Json<Value>, AppError> {
-    // Fetch existing agent to get current name
     let existing = get_agent(&state.db, id, auth.user_id).await?;
 
-    // Re-register with updated fields (lib uses INSERT OR IGNORE, so we update directly via re-register)
-    // Since lib only supports INSERT OR IGNORE (not UPDATE), we need to use the DB directly
-    // The only mutable fields via register are category and description.
-    // We'll do a direct update via the db connection.
-    let new_name = body.name.unwrap_or(existing.name.clone());
-    let new_category = body.category.or(existing.category.clone());
-    let new_description = body.description.or(existing.description.clone());
-
-    state.db.conn
-        .execute(
-            "UPDATE agents SET name = ?1, category = ?2, description = ?3 WHERE id = ?4 AND user_id = ?5",
-            libsql::params![new_name, new_category, new_description, id, auth.user_id],
+    if body.r#type.is_some()
+        || body.description.is_some()
+        || body.capabilities.is_some()
+        || body.config.is_some()
+    {
+        let type_ = body.r#type.unwrap_or(existing.type_.clone());
+        let description = body.description.or(existing.description.clone());
+        let capabilities = body.capabilities.or(Some(existing.capabilities.clone()));
+        let config = body.config.or(Some(existing.config.clone()));
+        register_agent(
+            &state.db,
+            RegisterAgentRequest {
+                user_id: Some(auth.user_id),
+                name: existing.name.clone(),
+                type_,
+                description,
+                capabilities,
+                config,
+            },
         )
-        .await
-        .map_err(engram_lib::EngError::Database)?;
+        .await?;
+    }
+
+    if let Some(status) = body.status.as_deref() {
+        set_status(&state.db, id, auth.user_id, status).await?;
+    }
 
     let agent = get_agent(&state.db, id, auth.user_id).await?;
     Ok(Json(json!(agent)))
@@ -143,16 +150,7 @@ async fn delete_agent_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    state
-        .db
-        .conn
-        .execute(
-            "DELETE FROM agents WHERE id = ?1 AND user_id = ?2",
-            libsql::params![id, auth.user_id],
-        )
-        .await
-        .map_err(engram_lib::EngError::Database)?;
-
+    delete_agent(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
