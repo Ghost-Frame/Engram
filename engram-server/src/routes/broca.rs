@@ -26,13 +26,15 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 struct LogActionBody {
     agent: String,
-    /// The plan spec says `service` and `action` but the lib uses `action` and `summary`
     service: Option<String>,
     action: Option<String>,
     summary: Option<String>,
     detail: Option<String>,
+    narrative: Option<String>,
     project: Option<String>,
+    payload: Option<serde_json::Value>,
     metadata: Option<serde_json::Value>,
+    axon_event_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,7 +42,6 @@ struct QueryActionsParams {
     agent: Option<String>,
     service: Option<String>,
     action: Option<String>,
-    project: Option<String>,
     since: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
@@ -51,25 +52,29 @@ async fn log_action_handler(
     Auth(auth): Auth,
     Json(body): Json<LogActionBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    // Map service+action -> action, detail/summary -> summary
-    let action = body.action.unwrap_or_else(|| {
-        body.service
-            .as_deref()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "unknown".to_string())
-    });
+    let action = body
+        .action
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
 
-    let summary = body
-        .summary
-        .or(body.detail)
-        .unwrap_or_else(|| action.clone());
+    let narrative = body.narrative.or(body.summary).or(body.detail);
+
+    let mut payload = body.payload.or(body.metadata);
+    if let Some(project) = body.project {
+        let obj = payload.get_or_insert_with(|| serde_json::Value::Object(Default::default()));
+        if let Some(map) = obj.as_object_mut() {
+            map.entry("project")
+                .or_insert(serde_json::Value::String(project));
+        }
+    }
 
     let req = LogActionRequest {
         agent: body.agent,
+        service: body.service,
         action,
-        summary,
-        project: body.project,
-        metadata: body.metadata,
+        narrative,
+        payload,
+        axon_event_id: body.axon_event_id,
         user_id: Some(auth.user_id),
     };
 
@@ -85,15 +90,14 @@ async fn list_actions_handler(
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
 
-    // Support `service` as a query filter mapped to `project` field or agent filter
     let agent = params.agent.as_deref();
-    let project = params.project.as_deref().or(params.service.as_deref());
+    let service = params.service.as_deref();
     let action = params.action.as_deref();
 
     let mut entries = query_actions(
         &state.db,
         agent,
-        project,
+        service,
         action,
         limit,
         offset,
