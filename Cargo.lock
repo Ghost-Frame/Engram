@@ -2117,6 +2117,7 @@ dependencies = [
  "chrono",
  "deadpool-sqlite",
  "dirs 6.0.0",
+ "flate2",
  "futures",
  "hmac",
  "lancedb",
