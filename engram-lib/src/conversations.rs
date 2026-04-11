@@ -377,11 +377,16 @@ pub async fn add_message(
     };
     // Touch the conversation updated_at (scoped by user_id).
     let _ = touch_conversation(db, conversation_id, user_id).await;
+    let qualified_cols = MESSAGE_COLUMNS
+        .split(", ")
+        .map(|c| format!("m.{}", c))
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
         "SELECT {} FROM messages m \
          INNER JOIN conversations c ON m.conversation_id = c.id \
          WHERE m.id = ?1 AND c.user_id = ?2",
-        MESSAGE_COLUMNS
+        qualified_cols
     );
     let mut rows = db.conn.query(&sql, params![new_id, user_id]).await?;
     match rows.next().await? {
