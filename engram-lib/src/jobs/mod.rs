@@ -94,7 +94,29 @@ pub async fn enqueue_job(
 }
 
 pub async fn claim_next_job(conn: &Connection) -> Result<Option<Job>> {
-    let mut rows = conn.query("SELECT id, type, payload, attempts, max_attempts, created_at, next_retry_at FROM jobs WHERE status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= datetime('now')) ORDER BY created_at ASC LIMIT 1", ()).await?;
+    // Atomic claim: the UPDATE...RETURNING pattern below runs as one SQLite
+    // statement, so two concurrent workers cannot both transition the same
+    // pending job to running. The previous implementation did a SELECT then
+    // a separate UPDATE, which let a second worker read the same row in
+    // between and process the job twice (the guard UPDATE silently returned
+    // 0 rows but the caller returned the Job anyway).
+    let mut rows = conn
+        .query(
+            "UPDATE jobs \
+             SET status = 'running', \
+                 claimed_at = datetime('now'), \
+                 attempts = attempts + 1 \
+             WHERE id = ( \
+                 SELECT id FROM jobs \
+                 WHERE status = 'pending' \
+                   AND (next_retry_at IS NULL OR next_retry_at <= datetime('now')) \
+                 ORDER BY created_at ASC \
+                 LIMIT 1 \
+             ) \
+             RETURNING id, type, payload, attempts, max_attempts, created_at, next_retry_at",
+            (),
+        )
+        .await?;
     let row = match rows.next().await? {
         Some(r) => r,
         None => return Ok(None),
@@ -106,13 +128,12 @@ pub async fn claim_next_job(conn: &Connection) -> Result<Option<Job>> {
     let ma: i32 = row.get(4)?;
     let created_at: String = row.get(5).unwrap_or_default();
     let next_retry_at: Option<String> = row.get(6).unwrap_or(None);
-    conn.execute("UPDATE jobs SET status = 'running', claimed_at = datetime('now'), attempts = attempts + 1 WHERE id = ?1 AND status = 'pending'", libsql::params![id]).await?;
     Ok(Some(Job {
         id,
         job_type: jt,
         payload: pl,
         status: JobStatus::Running,
-        attempts: att + 1,
+        attempts: att,
         max_attempts: ma,
         error: None,
         created_at,
