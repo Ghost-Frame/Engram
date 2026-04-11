@@ -2,6 +2,7 @@
 
 pub mod activity;
 pub mod admin;
+pub mod errors_log;
 pub mod agents;
 pub mod approvals;
 pub mod apikeys;

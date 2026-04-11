@@ -9,8 +9,9 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use kleos_lib::services::axon::{
-    get_event, get_stats as get_axon_stats, list_channels, publish_event, query_events,
-    PublishEventRequest,
+    consume, delete_subscription, ensure_channel, get_cursor, get_event,
+    get_stats as get_axon_stats, list_channels, list_subscriptions_for_agent, publish_event,
+    query_events, upsert_subscription, PublishEventRequest, SubscribeRequest,
 };
 
 pub fn router() -> Router<AppState> {
@@ -18,7 +19,17 @@ pub fn router() -> Router<AppState> {
         .route("/axon/publish", post(publish_event_handler))
         .route("/axon/events", get(list_events_handler))
         .route("/axon/events/{id}", get(get_event_handler))
-        .route("/axon/channels", get(list_channels_handler))
+        .route(
+            "/axon/channels",
+            get(list_channels_handler).post(create_channel_handler),
+        )
+        .route(
+            "/axon/subscribe",
+            post(subscribe_handler).delete(unsubscribe_handler),
+        )
+        .route("/axon/subscriptions", get(list_subscriptions_handler))
+        .route("/axon/poll", post(poll_handler))
+        .route("/axon/cursor", get(get_cursor_handler))
         .route("/axon/stats", get(get_stats))
 }
 
@@ -123,4 +134,115 @@ async fn get_stats(
 ) -> Result<Json<Value>, AppError> {
     let stats = get_axon_stats(&state.db, Some(auth.user_id)).await?;
     Ok(Json(json!(stats)))
+}
+
+// --- New handlers for P0-0 Phase 27c ---
+
+#[derive(Debug, Deserialize)]
+struct CreateChannelBody {
+    name: String,
+    description: Option<String>,
+    #[allow(dead_code)]
+    retain_hours: Option<i64>,
+}
+
+async fn create_channel_handler(
+    State(state): State<AppState>,
+    Auth(_auth): Auth,
+    Json(body): Json<CreateChannelBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    ensure_channel(&state.db, body.name.clone(), body.description).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "ok": true, "channel": body.name })),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+struct SubscribeBody {
+    agent: String,
+    channel: String,
+    filter_type: Option<String>,
+    webhook_url: Option<String>,
+}
+
+async fn subscribe_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<SubscribeBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let req = SubscribeRequest {
+        agent: body.agent,
+        channel: body.channel,
+        filter_type: body.filter_type,
+        webhook_url: body.webhook_url,
+    };
+    let sub = upsert_subscription(&state.db, req, auth.user_id).await?;
+    Ok((StatusCode::CREATED, Json(json!(sub))))
+}
+
+#[derive(Debug, Deserialize)]
+struct UnsubscribeBody {
+    agent: String,
+    channel: String,
+}
+
+async fn unsubscribe_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<UnsubscribeBody>,
+) -> Result<Json<Value>, AppError> {
+    let deleted = delete_subscription(&state.db, &body.agent, &body.channel, auth.user_id).await?;
+    Ok(Json(json!({ "deleted": deleted })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ListSubscriptionsParams {
+    agent: String,
+}
+
+async fn list_subscriptions_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<ListSubscriptionsParams>,
+) -> Result<Json<Value>, AppError> {
+    let subs = list_subscriptions_for_agent(&state.db, &params.agent, auth.user_id).await?;
+    Ok(Json(json!({ "subscriptions": subs, "count": subs.len() })))
+}
+
+#[derive(Debug, Deserialize)]
+struct PollBody {
+    agent: String,
+    channel: String,
+    limit: Option<usize>,
+}
+
+async fn poll_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<PollBody>,
+) -> Result<Json<Value>, AppError> {
+    let limit = body.limit.unwrap_or(100).min(1000);
+    let events = consume(&state.db, &body.agent, &body.channel, limit, auth.user_id).await?;
+    let cursor = get_cursor(&state.db, &body.agent, &body.channel, auth.user_id).await?;
+    Ok(Json(json!({
+        "events": events,
+        "cursor": cursor.last_event_id,
+        "count": events.len()
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct GetCursorParams {
+    agent: String,
+    channel: String,
+}
+
+async fn get_cursor_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<GetCursorParams>,
+) -> Result<Json<Value>, AppError> {
+    let cursor = get_cursor(&state.db, &params.agent, &params.channel, auth.user_id).await?;
+    Ok(Json(json!(cursor)))
 }

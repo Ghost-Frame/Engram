@@ -6,7 +6,11 @@ use kleos_lib::jobs::pagerank_refresh::start_pagerank_refresh_job;
 use kleos_lib::llm::local::{LocalModelClient, OllamaConfig};
 use kleos_lib::reranker::Reranker;
 use kleos_lib::services::brain::create_brain_backend;
+use kleos_server::background::{
+    start_auto_checkpoint_task, start_job_cleanup_task, start_vector_sync_replay_task,
+};
 use kleos_server::state::AppState;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -78,6 +82,20 @@ async fn main() {
     // Approval notification channel for TUI clients
     let (approval_tx, _) = tokio::sync::watch::channel(());
 
+    // Record this startup as a potential crash/restart event, then decide
+    // whether the server has been crash-looping.
+    if let Err(e) = kleos_lib::admin::record_crash(&db_arc).await {
+        tracing::warn!("failed to record startup crash timestamp: {}", e);
+    }
+    let safe_mode_active = kleos_lib::admin::should_enter_safe_mode(&db_arc)
+        .await
+        .unwrap_or(false);
+    if safe_mode_active {
+        tracing::warn!("SAFE MODE ACTIVE: 3+ restarts in last 5 minutes");
+        tracing::warn!("Write operations will return 503");
+        tracing::warn!("POST /admin/safe-mode/exit to recover");
+    }
+
     let state = AppState {
         db: db_arc,
         config: Arc::new(config),
@@ -88,6 +106,7 @@ async fn main() {
         sessions: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         eidolon_config: None,
         approval_notify: Some(approval_tx),
+        safe_mode: Arc::new(AtomicBool::new(safe_mode_active)),
     };
 
     // Start background PageRank refresh job if enabled.
@@ -102,6 +121,16 @@ async fn main() {
         tracing::info!("pagerank disabled -- skipping refresh job");
         None
     };
+
+    // Start infrastructure background tasks.
+    let _checkpoint_token = start_auto_checkpoint_task(Arc::clone(&state.db));
+    tracing::info!("auto-checkpoint background task started");
+
+    let _job_cleanup_token = start_job_cleanup_task(Arc::clone(&state.db));
+    tracing::info!("job-cleanup background task started");
+
+    let _vector_sync_token = start_vector_sync_replay_task(Arc::clone(&state.db));
+    tracing::info!("vector-sync-replay background task started");
 
     if let Err(e) = kleos_server::server::run(state).await {
         tracing::error!("server error: {}", e);

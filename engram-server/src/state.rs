@@ -5,6 +5,7 @@ use kleos_lib::llm::local::LocalModelClient;
 use kleos_lib::reranker::Reranker;
 use kleos_lib::services::brain::BrainBackend;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch, RwLock};
 
@@ -44,4 +45,6 @@ pub struct AppState {
     /// Notification channel for approval events. TUI clients can subscribe to
     /// be notified when approvals are created or decided.
     pub approval_notify: Option<watch::Sender<()>>,
+    /// When true, write operations return 503 to prevent data corruption during crash loops.
+    pub safe_mode: Arc<AtomicBool>,
 }

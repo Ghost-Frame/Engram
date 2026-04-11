@@ -17,6 +17,7 @@ const MIGRATION_DROP_IS_INFERENCE: i64 = 9;
 const MIGRATION_KLEOS_SERVICES: i64 = 10;
 const MIGRATION_BRAIN_PATTERNS: i64 = 11;
 const MIGRATION_APPROVALS: i64 = 12;
+const MIGRATION_ERROR_EVENTS: i64 = 13;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -149,6 +150,13 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         record_migration(conn, MIGRATION_APPROVALS, "approvals").await?;
     }
 
+    // Migration 13: error_events table for centralized error aggregation.
+    if current_version < MIGRATION_ERROR_EVENTS {
+        info!("Running migration 13: error_events");
+        run_migration_error_events(conn).await?;
+        record_migration(conn, MIGRATION_ERROR_EVENTS, "error_events").await?;
+    }
+
     // Future migrations go here:
     // if current_version < MIGRATION_XXX { ... }
 
@@ -250,6 +258,12 @@ pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 12: approvals");
         run_migration_approvals_rusqlite(conn)?;
         record_migration_rusqlite(conn, MIGRATION_APPROVALS, "approvals")?;
+    }
+
+    if current_version < MIGRATION_ERROR_EVENTS {
+        info!("Running migration 13: error_events");
+        run_migration_error_events_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_ERROR_EVENTS, "error_events")?;
     }
 
     Ok(())
@@ -796,6 +810,27 @@ fn add_column_if_not_exists_rusqlite(
     Ok(())
 }
 
+/// Migration 11 (rusqlite): error_events table.
+#[cfg(feature = "db_pool")]
+fn run_migration_error_events_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS error_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            level TEXT NOT NULL,
+            message TEXT NOT NULL,
+            context TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            user_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_error_events_level ON error_events(level);
+        CREATE INDEX IF NOT EXISTS idx_error_events_source ON error_events(source);
+        CREATE INDEX IF NOT EXISTS idx_error_events_created_at ON error_events(created_at);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
 /// Add a new column to a table if it doesn't exist
 /// SQLite doesn't have IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check first
 async fn add_column_if_not_exists(
@@ -822,6 +857,26 @@ async fn add_column_if_not_exists(
         info!("Added column {}.{}", table, column);
     }
 
+    Ok(())
+}
+
+/// Migration 11: error_events table for centralised error aggregation.
+async fn run_migration_error_events(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS error_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            level TEXT NOT NULL,
+            message TEXT NOT NULL,
+            context TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            user_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_error_events_level ON error_events(level);
+        CREATE INDEX IF NOT EXISTS idx_error_events_source ON error_events(source);
+        CREATE INDEX IF NOT EXISTS idx_error_events_created_at ON error_events(created_at);",
+    )
+    .await?;
     Ok(())
 }
 

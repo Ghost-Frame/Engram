@@ -1,5 +1,6 @@
 #[cfg(feature = "db_pool")]
 pub mod pool;
+pub mod backup;
 pub mod migrations;
 pub mod schema;
 mod schema_sql;

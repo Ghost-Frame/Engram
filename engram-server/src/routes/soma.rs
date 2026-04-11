@@ -9,8 +9,9 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use kleos_lib::services::soma::{
-    delete_agent, get_agent, get_stats as get_soma_stats, heartbeat, list_agents, register_agent,
-    set_status, RegisterAgentRequest,
+    add_agent_to_group, create_group, delete_agent, get_agent, get_stats as get_soma_stats,
+    heartbeat, list_agent_logs, list_agents, list_groups, log_event, register_agent,
+    remove_agent_from_group, set_status, RegisterAgentRequest,
 };
 
 pub fn router() -> Router<AppState> {
@@ -26,6 +27,17 @@ pub fn router() -> Router<AppState> {
                 .delete(delete_agent_handler),
         )
         .route("/soma/agents/{id}/heartbeat", post(heartbeat_handler))
+        .route(
+            "/soma/agents/{id}/log",
+            post(log_event_handler).get(list_logs_handler),
+        )
+        .route("/soma/agents/{id}/logs", get(list_logs_handler))
+        .route("/soma/groups", post(create_group_handler).get(list_groups_handler))
+        .route("/soma/groups/{id}/members", post(add_member_handler))
+        .route(
+            "/soma/groups/{id}/members/{agent_id}",
+            axum::routing::delete(remove_member_handler),
+        )
         .route("/soma/stats", get(get_stats))
 }
 
@@ -169,4 +181,86 @@ async fn get_stats(
 ) -> Result<Json<Value>, AppError> {
     let stats = get_soma_stats(&state.db, Some(auth.user_id)).await?;
     Ok(Json(json!(stats)))
+}
+
+// --- New handlers for P0-0 Phase 27c: groups and logs ---
+
+#[derive(Debug, Deserialize)]
+struct CreateGroupBody {
+    name: String,
+    description: Option<String>,
+}
+
+async fn create_group_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<CreateGroupBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let group = create_group(&state.db, body.name, body.description, auth.user_id).await?;
+    Ok((StatusCode::CREATED, Json(json!(group))))
+}
+
+async fn list_groups_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let groups = list_groups(&state.db, auth.user_id).await?;
+    Ok(Json(json!({ "groups": groups, "count": groups.len() })))
+}
+
+#[derive(Debug, Deserialize)]
+struct AddMemberBody {
+    agent_id: i64,
+}
+
+async fn add_member_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(group_id): Path<i64>,
+    Json(body): Json<AddMemberBody>,
+) -> Result<Json<Value>, AppError> {
+    add_agent_to_group(&state.db, body.agent_id, group_id, auth.user_id).await?;
+    Ok(Json(json!({ "ok": true, "group_id": group_id, "agent_id": body.agent_id })))
+}
+
+async fn remove_member_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path((group_id, agent_id)): Path<(i64, i64)>,
+) -> Result<Json<Value>, AppError> {
+    let removed = remove_agent_from_group(&state.db, agent_id, group_id, auth.user_id).await?;
+    Ok(Json(json!({ "removed": removed })))
+}
+
+#[derive(Debug, Deserialize)]
+struct LogEventBody {
+    level: String,
+    message: String,
+    data: Option<serde_json::Value>,
+}
+
+async fn log_event_handler(
+    State(state): State<AppState>,
+    Auth(_auth): Auth,
+    Path(agent_id): Path<i64>,
+    Json(body): Json<LogEventBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let id = log_event(&state.db, agent_id, &body.level, &body.message, body.data).await?;
+    Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
+}
+
+#[derive(Debug, Deserialize)]
+struct ListLogsParams {
+    limit: Option<i64>,
+}
+
+async fn list_logs_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(agent_id): Path<i64>,
+    Query(params): Query<ListLogsParams>,
+) -> Result<Json<Value>, AppError> {
+    let limit = params.limit.unwrap_or(100).min(1000);
+    let logs = list_agent_logs(&state.db, agent_id, auth.user_id, limit).await?;
+    Ok(Json(json!({ "logs": logs, "count": logs.len() })))
 }

@@ -391,6 +391,309 @@ pub async fn delete_agent(db: &Database, id: i64, user_id: i64) -> Result<()> {
     Ok(())
 }
 
+// --- Group types and functions (P0-0 Phase 27c) ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Group {
+    pub id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub user_id: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentLog {
+    pub id: i64,
+    pub agent_id: i64,
+    pub level: String,
+    pub message: String,
+    pub data: Option<serde_json::Value>,
+    pub created_at: String,
+}
+
+pub async fn create_group(
+    db: &Database,
+    name: String,
+    description: Option<String>,
+    user_id: i64,
+) -> Result<Group> {
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        let n = name.clone();
+        let d = description.clone();
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO soma_groups (name, description, user_id)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![n, d, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
+        .await?;
+        return get_group_by_name(db, &name, user_id).await;
+    }
+
+    let conn = &db.conn;
+    conn.execute(
+        "INSERT INTO soma_groups (name, description, user_id)
+         VALUES (?1, ?2, ?3)",
+        libsql::params![name.clone(), description.clone(), user_id],
+    )
+    .await?;
+    get_group_by_name(db, &name, user_id).await
+}
+
+async fn get_group_by_name(db: &Database, name: &str, user_id: i64) -> Result<Group> {
+    let sql = "SELECT id, name, description, user_id, created_at
+               FROM soma_groups WHERE name = ?1 AND user_id = ?2";
+    let n = name.to_string();
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![n.clone(), user_id])
+                    .map_err(rusqlite_to_eng_error)?;
+                let row = rows
+                    .next()
+                    .map_err(rusqlite_to_eng_error)?
+                    .ok_or_else(|| EngError::NotFound(format!("group '{}'", n)))?;
+                Ok(Group {
+                    id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                    name: row.get(1).map_err(rusqlite_to_eng_error)?,
+                    description: row.get(2).map_err(rusqlite_to_eng_error)?,
+                    user_id: row.get(3).map_err(rusqlite_to_eng_error)?,
+                    created_at: row.get(4).map_err(rusqlite_to_eng_error)?,
+                })
+            })
+            .await;
+    }
+
+    let conn = &db.conn;
+    let mut rows = conn.query(sql, libsql::params![n.clone(), user_id]).await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| EngError::NotFound(format!("group '{}'", n)))?;
+    Ok(Group {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        user_id: row.get(3)?,
+        created_at: row.get(4)?,
+    })
+}
+
+pub async fn list_groups(db: &Database, user_id: i64) -> Result<Vec<Group>> {
+    let sql = "SELECT id, name, description, user_id, created_at
+               FROM soma_groups WHERE user_id = ?1 ORDER BY name ASC";
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![user_id])
+                    .map_err(rusqlite_to_eng_error)?;
+                let mut out = Vec::new();
+                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                    out.push(Group {
+                        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                        name: row.get(1).map_err(rusqlite_to_eng_error)?,
+                        description: row.get(2).map_err(rusqlite_to_eng_error)?,
+                        user_id: row.get(3).map_err(rusqlite_to_eng_error)?,
+                        created_at: row.get(4).map_err(rusqlite_to_eng_error)?,
+                    });
+                }
+                Ok(out)
+            })
+            .await;
+    }
+
+    let conn = &db.conn;
+    let mut rows = conn.query(sql, libsql::params![user_id]).await?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await? {
+        out.push(Group {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+            user_id: row.get(3)?,
+            created_at: row.get(4)?,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn add_agent_to_group(
+    db: &Database,
+    agent_id: i64,
+    group_id: i64,
+    user_id: i64,
+) -> Result<()> {
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO soma_agent_groups (agent_id, group_id, user_id)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![agent_id, group_id, user_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                Ok(())
+            })
+            .await;
+    }
+
+    let conn = &db.conn;
+    conn.execute(
+        "INSERT OR IGNORE INTO soma_agent_groups (agent_id, group_id, user_id)
+         VALUES (?1, ?2, ?3)",
+        libsql::params![agent_id, group_id, user_id],
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn remove_agent_from_group(
+    db: &Database,
+    agent_id: i64,
+    group_id: i64,
+    user_id: i64,
+) -> Result<bool> {
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        let n = db
+            .write(move |conn| {
+                conn.execute(
+                    "DELETE FROM soma_agent_groups
+                     WHERE agent_id = ?1 AND group_id = ?2 AND user_id = ?3",
+                    rusqlite::params![agent_id, group_id, user_id],
+                )
+                .map_err(rusqlite_to_eng_error)
+            })
+            .await?;
+        return Ok(n > 0);
+    }
+
+    let conn = &db.conn;
+    let n = conn
+        .execute(
+            "DELETE FROM soma_agent_groups
+             WHERE agent_id = ?1 AND group_id = ?2 AND user_id = ?3",
+            libsql::params![agent_id, group_id, user_id],
+        )
+        .await?;
+    Ok(n > 0)
+}
+
+pub async fn log_event(
+    db: &Database,
+    agent_id: i64,
+    level: &str,
+    message: &str,
+    data: Option<serde_json::Value>,
+) -> Result<i64> {
+    let data_str = data
+        .map(|d| serde_json::to_string(&d))
+        .transpose()?;
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        let l = level.to_string();
+        let m = message.to_string();
+        let ds = data_str.clone();
+        return db
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO soma_agent_logs (agent_id, level, message, data)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![agent_id, l, m, ds],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                Ok(conn.last_insert_rowid())
+            })
+            .await;
+    }
+
+    let conn = &db.conn;
+    conn.execute(
+        "INSERT INTO soma_agent_logs (agent_id, level, message, data)
+         VALUES (?1, ?2, ?3, ?4)",
+        libsql::params![agent_id, level.to_string(), message.to_string(), data_str],
+    )
+    .await?;
+
+    let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| EngError::Internal("no rowid".into()))?;
+    Ok(row.get(0)?)
+}
+
+pub async fn list_agent_logs(
+    db: &Database,
+    agent_id: i64,
+    user_id: i64,
+    limit: i64,
+) -> Result<Vec<AgentLog>> {
+    let sql = "SELECT l.id, l.agent_id, l.level, l.message, l.data, l.created_at
+               FROM soma_agent_logs l
+               JOIN soma_agents a ON l.agent_id = a.id
+               WHERE l.agent_id = ?1 AND a.user_id = ?2
+               ORDER BY l.created_at DESC LIMIT ?3";
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![agent_id, user_id, limit])
+                    .map_err(rusqlite_to_eng_error)?;
+                let mut out = Vec::new();
+                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                    let data_str: Option<String> = row.get(4).map_err(rusqlite_to_eng_error)?;
+                    out.push(AgentLog {
+                        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                        agent_id: row.get(1).map_err(rusqlite_to_eng_error)?,
+                        level: row.get(2).map_err(rusqlite_to_eng_error)?,
+                        message: row.get(3).map_err(rusqlite_to_eng_error)?,
+                        data: data_str.and_then(|s| serde_json::from_str(&s).ok()),
+                        created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
+                    });
+                }
+                Ok(out)
+            })
+            .await;
+    }
+
+    let conn = &db.conn;
+    let mut rows = conn
+        .query(sql, libsql::params![agent_id, user_id, limit])
+        .await?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let data_str: Option<String> = row.get(4)?;
+        out.push(AgentLog {
+            id: row.get(0)?,
+            agent_id: row.get(1)?,
+            level: row.get(2)?,
+            message: row.get(3)?,
+            data: data_str.and_then(|s| serde_json::from_str(&s).ok()),
+            created_at: row.get(5)?,
+        });
+    }
+    Ok(out)
+}
+
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<SomaStats> {
     #[cfg(feature = "db_pool")]
     if uses_pool_backend(db) {

@@ -189,6 +189,20 @@ pub async fn cleanup_completed_jobs(conn: &Connection) -> Result<u64> {
     Ok(conn.execute("DELETE FROM jobs WHERE id IN (SELECT id FROM jobs WHERE status = 'completed' AND completed_at < datetime('now', '-1 hour') LIMIT 100)", ()).await?)
 }
 
+/// Delete completed jobs older than the specified number of days.
+/// Returns the count of deleted jobs.
+pub async fn cleanup_jobs(conn: &Connection, older_than_days: i64) -> Result<u64> {
+    // Clamp to non-negative to avoid deleting future jobs
+    let days = older_than_days.max(0);
+    let modifier = format!("-{} days", days);
+    Ok(conn
+        .execute(
+            "DELETE FROM jobs WHERE status = 'completed' AND completed_at < datetime('now', ?1)",
+            libsql::params![modifier],
+        )
+        .await?)
+}
+
 pub async fn recover_stuck_jobs(conn: &Connection) -> Result<u64> {
     Ok(conn.execute("UPDATE jobs SET status = 'pending', claimed_at = NULL WHERE status = 'running' AND claimed_at < datetime('now', '-5 minutes')", ()).await?)
 }

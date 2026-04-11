@@ -55,6 +55,7 @@ impl TestApp {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             eidolon_config: None,
             approval_notify: None,
+            safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let router = build_router(state);
 
@@ -307,6 +308,7 @@ async fn bootstrap_returns_api_key() {
         sessions: Arc::new(RwLock::new(HashMap::new())),
         eidolon_config: None,
         approval_notify: None,
+        safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let router = build_router(state);
 
