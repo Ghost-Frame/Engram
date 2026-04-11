@@ -203,7 +203,7 @@ async fn get_executions(
         .await?
         .ok_or_else(|| AppError(engram_lib::EngError::NotFound("Agent not found".into())))?;
 
-    let limit = params.limit.unwrap_or(50);
+    let limit = params.limit.unwrap_or(50).min(1000);
     let executions = agents::get_agent_executions(&state.db.conn, agent.id, limit).await?;
     Ok(Json(json!({ "agent_id": id, "executions": executions })))
 }

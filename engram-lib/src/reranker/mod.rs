@@ -3,20 +3,25 @@ use crate::embeddings::download::ensure_reranker_model;
 use crate::{EngError, Result};
 use ort::session::Session;
 use ort::value::Tensor;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokenizers::Tokenizer;
 use tracing::info;
 
 /// Cross-encoder reranker using IBM Granite model.
+///
+/// Heavy state lives behind an `Arc<RerankerInner>` so blocking work can be
+/// scheduled on `spawn_blocking` with a cheap clone instead of a raw-pointer
+/// cast, closing the previous use-after-free risk.
 pub struct Reranker {
-    session: Mutex<Session>,
-    tokenizer: Tokenizer,
-    max_seq: usize,
+    inner: Arc<RerankerInner>,
     top_k: usize,
 }
 
-unsafe impl Send for Reranker {}
-unsafe impl Sync for Reranker {}
+struct RerankerInner {
+    session: Mutex<Session>,
+    tokenizer: Tokenizer,
+    max_seq: usize,
+}
 
 impl Reranker {
     pub async fn new(config: &Config) -> Result<Self> {
@@ -51,13 +56,17 @@ impl Reranker {
         );
 
         Ok(Self {
-            session: Mutex::new(session),
-            tokenizer,
-            max_seq: 512,
+            inner: Arc::new(RerankerInner {
+                session: Mutex::new(session),
+                tokenizer,
+                max_seq: 512,
+            }),
             top_k: config.reranker_top_k,
         })
     }
+}
 
+impl RerankerInner {
     /// Score a single query-document pair. Returns relevance score 0-1 (sigmoid of logit).
     fn score_pair(&self, query: &str, document: &str) -> Result<f32> {
         let encoding = self
@@ -119,7 +128,9 @@ impl Reranker {
         let score = 1.0 / (1.0 + (-logit).exp());
         Ok(score)
     }
+}
 
+impl Reranker {
     /// Rerank search results by cross-encoder relevance.
     pub async fn rerank_results(
         &self,
@@ -135,14 +146,11 @@ impl Reranker {
         for result in results.iter_mut().take(k) {
             let doc = result.memory.content.clone();
             let q = query.to_string();
-            let reranker = self as *const Reranker as usize;
+            let inner = Arc::clone(&self.inner);
 
-            let ce_score = tokio::task::spawn_blocking(move || {
-                let reranker = unsafe { &*(reranker as *const Reranker) };
-                reranker.score_pair(&q, &doc)
-            })
-            .await
-            .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))??;
+            let ce_score = tokio::task::spawn_blocking(move || inner.score_pair(&q, &doc))
+                .await
+                .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))??;
 
             // Blend: 70% cross-encoder, 30% original score
             result.score = ce_score as f64 * 0.7 + result.score * 0.3;

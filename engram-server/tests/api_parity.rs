@@ -40,6 +40,9 @@ impl TestApp {
     async fn with_config(config: Config) -> Self {
         // Ensure auth is enabled regardless of dev environment
         std::env::set_var("ENGRAM_OPEN_ACCESS", "0");
+        // /bootstrap now requires a shared secret; set a known test value so
+        // the harness can authenticate exactly once to create the admin key.
+        std::env::set_var("ENGRAM_BOOTSTRAP_SECRET", "test-bootstrap-secret");
 
         let db = Arc::new(Database::connect_memory().await.expect("in-memory db"));
         let state = AppState {
@@ -54,7 +57,7 @@ impl TestApp {
         };
         let router = build_router(state);
 
-        // Bootstrap to get an admin API key (no auth required on this endpoint)
+        // Bootstrap to get an admin API key (public endpoint, secret-gated)
         let res = router
             .clone()
             .oneshot(
@@ -62,7 +65,10 @@ impl TestApp {
                     .method("POST")
                     .uri("/bootstrap")
                     .header("Content-Type", "application/json")
-                    .body(Body::empty())
+                    .body(Body::from(
+                        serde_json::json!({ "secret": "test-bootstrap-secret" })
+                            .to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -288,6 +294,7 @@ async fn health_returns_version_field() {
 
 #[tokio::test]
 async fn bootstrap_returns_api_key() {
+    std::env::set_var("ENGRAM_BOOTSTRAP_SECRET", "test-bootstrap-secret");
     let db = Database::connect_memory().await.expect("db");
     let state = AppState {
         db: Arc::new(db),
@@ -306,7 +313,10 @@ async fn bootstrap_returns_api_key() {
             Request::builder()
                 .method("POST")
                 .uri("/bootstrap")
-                .body(Body::empty())
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "secret": "test-bootstrap-secret" }).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -338,7 +348,10 @@ async fn bootstrap_is_idempotent_returns_forbidden() {
             Request::builder()
                 .method("POST")
                 .uri("/bootstrap")
-                .body(Body::empty())
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "secret": "test-bootstrap-secret" }).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -346,7 +359,7 @@ async fn bootstrap_is_idempotent_returns_forbidden() {
     assert_eq!(
         res.status(),
         StatusCode::FORBIDDEN,
-        "second bootstrap should be 403"
+        "second bootstrap with valid secret should be 403"
     );
 }
 

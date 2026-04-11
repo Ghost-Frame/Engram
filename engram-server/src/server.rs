@@ -1,9 +1,67 @@
-use axum::{extract::DefaultBodyLimit, middleware as axum_mw, Router};
-use tower_http::cors::CorsLayer;
+use axum::{extract::DefaultBodyLimit, http::HeaderValue, middleware as axum_mw, Router};
+use std::time::Duration;
+use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 /// Default request body limit: 2 MiB. Prevents memory exhaustion from oversized payloads.
 const BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+
+/// Default request timeout. Slow-loris attacks previously could tie up
+/// connections indefinitely; this provides an upper bound per request.
+const REQUEST_TIMEOUT_SECS: u64 = 60;
+
+/// Build a CORS layer from the `ENGRAM_ALLOWED_ORIGINS` env var (comma
+/// separated). When the variable is unset we fall back to the same origin
+/// only (no cross-origin access), which is the safest default.
+///
+/// SECURITY: `CorsLayer::permissive()` was previously used here; combined with
+/// cookie-based GUI auth that exposed every tenant's data to any internet
+/// origin via CSRF. Callers that need third-party origins must enumerate them
+/// explicitly.
+fn build_cors_layer() -> CorsLayer {
+    let base = CorsLayer::new()
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::ACCEPT,
+            axum::http::header::COOKIE,
+        ])
+        .allow_credentials(true);
+
+    match std::env::var("ENGRAM_ALLOWED_ORIGINS") {
+        Ok(raw) => {
+            let origins: Vec<HeaderValue> = raw
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| HeaderValue::from_str(s).ok())
+                .collect();
+            if origins.is_empty() {
+                tracing::warn!(
+                    "ENGRAM_ALLOWED_ORIGINS set but empty/invalid; CORS will reject all origins"
+                );
+                base.allow_origin(AllowOrigin::list(Vec::<HeaderValue>::new()))
+            } else {
+                base.allow_origin(AllowOrigin::list(origins))
+            }
+        }
+        Err(_) => {
+            tracing::info!(
+                "ENGRAM_ALLOWED_ORIGINS not set; CORS restricted (set explicitly to enable cross-origin access)"
+            );
+            base.allow_origin(AllowOrigin::list(Vec::<HeaderValue>::new()))
+        }
+    }
+}
 
 use crate::middleware::auth::auth_middleware;
 use crate::middleware::rate_limit::rate_limit_middleware;
@@ -74,7 +132,11 @@ pub fn build_router(state: AppState) -> Router {
             routes::gui::gui_spa_middleware,
         ))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
-        .layer(CorsLayer::permissive())
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(REQUEST_TIMEOUT_SECS),
+        ))
+        .layer(build_cors_layer())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

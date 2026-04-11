@@ -8,6 +8,8 @@ default = []
 test-utils = []
 # Enable per-tenant sharding (rusqlite-based). Mutually exclusive with libsql tests.
 tenant-sharding = []
+# Enable the deadpool-sqlite-backed connection pool backend.
+db_pool = ["dep:deadpool-sqlite"]
 
 [dependencies]
 libsql = { workspace = true }

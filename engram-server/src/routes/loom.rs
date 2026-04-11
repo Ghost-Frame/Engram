@@ -121,7 +121,7 @@ async fn list_runs_handler(
     Auth(auth): Auth,
     Query(params): Query<ListRunsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     let runs = list_runs(
         &state.db,
         auth.user_id,
@@ -173,7 +173,7 @@ async fn get_logs_handler(
     Path(id): Path<i64>,
     Query(params): Query<GetLogsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(500);
+    let limit = params.limit.unwrap_or(500).min(2000);
     let logs = get_logs(
         &state.db,
         id,

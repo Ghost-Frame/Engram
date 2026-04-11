@@ -200,7 +200,7 @@ async fn list_consolidations_handler(
     Auth(auth): Auth,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20);
+    let limit = params.limit.unwrap_or(20).min(500);
     let items = list_consolidations(&state.db, auth.user_id, limit).await?;
     Ok(Json(json!({ "consolidations": items })))
 }
@@ -262,7 +262,7 @@ async fn list_temporal_handler(
     Auth(auth): Auth,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20);
+    let limit = params.limit.unwrap_or(20).min(500);
     let patterns = list_patterns(&state.db, auth.user_id, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
@@ -291,7 +291,7 @@ async fn list_digests_handler(
     Auth(auth): Auth,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20);
+    let limit = params.limit.unwrap_or(20).min(500);
     let items = list_digests(&state.db, auth.user_id, limit).await?;
     Ok(Json(json!({ "digests": items })))
 }
@@ -332,7 +332,7 @@ async fn list_reflections_handler(
     Auth(auth): Auth,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20);
+    let limit = params.limit.unwrap_or(20).min(500);
     let items = list_reflections(&state.db, auth.user_id, limit).await?;
     Ok(Json(json!({ "reflections": items })))
 }
@@ -367,7 +367,7 @@ async fn list_chains_handler(
     Auth(auth): Auth,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20);
+    let limit = params.limit.unwrap_or(20).min(500);
     let items = list_chains(&state.db, auth.user_id, limit).await?;
     Ok(Json(json!({ "chains": items })))
 }
@@ -523,7 +523,7 @@ async fn valence_score_handler(
 ) -> Result<Json<Value>, AppError> {
     if let Some(memory_id) = body.memory_id {
         let mem = memory::get(&state.db, memory_id, auth.user_id).await?;
-        let result = store_valence(&state.db, memory_id, &mem.content).await?;
+        let result = store_valence(&state.db, memory_id, &mem.content, auth.user_id).await?;
         Ok(Json(json!(result)))
     } else if let Some(ref content) = body.content {
         let result = analyze_valence(content);
@@ -575,7 +575,7 @@ async fn predictive_patterns_handler(
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     // Return temporal patterns that drive predictions
-    let limit = params.limit.unwrap_or(20);
+    let limit = params.limit.unwrap_or(20).min(500);
     let patterns = list_patterns(&state.db, auth.user_id, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }

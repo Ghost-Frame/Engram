@@ -404,7 +404,7 @@ async fn list_memories(
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let opts = ListOptions {
-        limit: params.limit.unwrap_or(50),
+        limit: params.limit.unwrap_or(50).min(1000),
         offset: params.offset.unwrap_or(0),
         category: params.category,
         source: params.source,

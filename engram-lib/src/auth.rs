@@ -125,9 +125,27 @@ fn generate_key() -> (String, String, String) {
 
 /// Parse a comma-separated scopes string into a Vec<Scope>.
 fn parse_scopes(s: &str) -> Vec<Scope> {
-    s.split(',')
-        .filter_map(|part| part.trim().parse().ok())
-        .collect()
+    // Legacy "*" means "all scopes". Without this translation legacy keys
+    // stored before the stricter scope model would parse to an empty Vec and
+    // lose all access when scope checks were introduced.
+    let trimmed = s.trim();
+    if trimmed == "*" {
+        return vec![Scope::Read, Scope::Write, Scope::Admin];
+    }
+    let mut out: Vec<Scope> = Vec::new();
+    for part in trimmed.split(',') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        if p == "*" {
+            return vec![Scope::Read, Scope::Write, Scope::Admin];
+        }
+        if let Ok(scope) = p.parse::<Scope>() {
+            out.push(scope);
+        }
+    }
+    out
 }
 
 /// Serialize a slice of Scope values to a comma-separated string.
@@ -217,10 +235,17 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
 
     let api_key = row_to_api_key(&row)?;
 
-    // Check expiration
+    // Check expiration. Parse expires_at as a real timestamp rather than a
+    // lexical string compare -- the previous compare broke on timezone
+    // suffixes and on any ISO-8601 variant that doesn't match the exact
+    // `%Y-%m-%d %H:%M:%S` formatting we produce on insert.
     if let Some(ref expires_at) = api_key.expires_at {
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        if expires_at.as_str() < now.as_str() {
+        let parsed = chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%d %H:%M:%S")
+            .or_else(|_| {
+                chrono::DateTime::parse_from_rfc3339(expires_at).map(|dt| dt.naive_utc())
+            })
+            .map_err(|_| crate::EngError::Auth("invalid key expiry format".into()))?;
+        if parsed <= chrono::Utc::now().naive_utc() {
             return Err(crate::EngError::Auth("key has expired".into()));
         }
     }

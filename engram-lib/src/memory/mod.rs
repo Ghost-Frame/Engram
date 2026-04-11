@@ -231,7 +231,12 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
         )));
     }
 
-    let user_id = req.user_id.unwrap_or(1);
+    // SECURITY: previous code defaulted to user 1 (typically the bootstrap
+    // admin). A caller that forgot to set user_id would silently attribute
+    // the memory to tenant 1 -- fail closed instead.
+    let user_id = req
+        .user_id
+        .ok_or_else(|| EngError::InvalidInput("user_id required".into()))?;
     let importance = clamp_importance(req.importance);
 
     // 2. Compute simhash of content

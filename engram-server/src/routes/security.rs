@@ -41,10 +41,62 @@ async fn create_api_key_handler(
     Auth(auth): Auth,
     Json(body): Json<CreateApiKeyBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let scopes = body.scopes.as_deref().unwrap_or("*");
-    let rate_limit = body.rate_limit.unwrap_or(1000);
+    // SECURITY: a caller cannot mint a key with broader scopes than their own.
+    // Admin callers may mint anything; non-admins are capped at read/write.
+    let requested_raw = body.scopes.as_deref().unwrap_or("read").trim();
+    let requested: Vec<String> = requested_raw
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if requested.is_empty() {
+        return Err(AppError::from(engram_lib::EngError::InvalidInput(
+            "scopes must be one of: read, write, admin".into(),
+        )));
+    }
+    let wants_admin = requested.iter().any(|s| s == "admin" || s == "*");
+    if wants_admin && !auth.has_scope(&Scope::Admin) {
+        return Err(AppError::from(engram_lib::EngError::Auth(
+            "admin scope required to mint admin keys".into(),
+        )));
+    }
+    for s in &requested {
+        match s.as_str() {
+            "read" | "write" | "admin" | "*" => {}
+            other => {
+                return Err(AppError::from(engram_lib::EngError::InvalidInput(
+                    format!("unknown scope: {}", other),
+                )));
+            }
+        }
+    }
+    // Non-admin callers also cannot elevate to scopes they themselves lack.
+    if !auth.has_scope(&Scope::Admin) {
+        for s in &requested {
+            let scope = match s.as_str() {
+                "read" => Scope::Read,
+                "write" => Scope::Write,
+                _ => continue,
+            };
+            if !auth.has_scope(&scope) {
+                return Err(AppError::from(engram_lib::EngError::Auth(format!(
+                    "caller lacks {} scope and cannot grant it",
+                    s
+                ))));
+            }
+        }
+    }
+    // Rate limit cannot exceed caller's own limit (admins still capped at a sane ceiling).
+    let caller_limit = auth.key.rate_limit as i64;
+    let max_limit = if auth.has_scope(&Scope::Admin) {
+        body.rate_limit.unwrap_or(caller_limit).min(100_000)
+    } else {
+        body.rate_limit.unwrap_or(caller_limit).min(caller_limit)
+    };
+    let rate_limit = max_limit.max(1);
+    let scopes_csv = requested.join(",");
     let (key_record, full_key) =
-        apikeys::create_api_key(&state.db, auth.user_id, scopes, rate_limit).await?;
+        apikeys::create_api_key(&state.db, auth.user_id, &scopes_csv, rate_limit).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({ "key": key_record, "full_key": full_key })),
@@ -83,6 +135,7 @@ struct AuditParams {
     limit: Option<usize>,
     target_type: Option<String>,
     target_id: Option<String>,
+    all: Option<bool>,
 }
 
 async fn list_audit_handler(
@@ -90,16 +143,35 @@ async fn list_audit_handler(
     Auth(auth): Auth,
     Query(params): Query<AuditParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(50);
-    let entries = audit::query_audit_log(
-        &state.db,
-        params.target_type.as_deref(),
-        params.target_id.as_deref(),
-        limit,
-        auth.user_id,
-    )
-    .await?;
-    Ok(Json(json!({ "entries": entries, "count": entries.len() })))
+    // SECURITY: the /audit endpoint previously returned entries across every
+    // tenant to any authenticated caller. It now filters by auth.user_id by
+    // default. Admins can opt in to the global view via `?all=true`.
+    let limit = params.limit.unwrap_or(50).min(1000);
+    let entries = if params.all.unwrap_or(false) {
+        if !auth.has_scope(&Scope::Admin) {
+            return Err(AppError::from(engram_lib::EngError::Auth(
+                "admin scope required for global audit view".into(),
+            )));
+        }
+        audit::query_audit_log_admin(
+            &state.db,
+            params.target_type.as_deref(),
+            params.target_id.as_deref(),
+            limit,
+        )
+        .await?
+    } else {
+        audit::query_audit_log(
+            &state.db,
+            params.target_type.as_deref(),
+            params.target_id.as_deref(),
+            limit,
+            auth.user_id,
+        )
+        .await?
+    };
+    let count = entries.len();
+    Ok(Json(json!({ "entries": entries, "count": count })))
 }
 
 async fn rate_limit_status_handler(
