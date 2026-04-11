@@ -4,6 +4,9 @@ members = ["engram-lib", "engram-server", "engram-cli", "engram-sidecar", "agent
 
 [workspace.dependencies]
 libsql = "0.6"
+rusqlite = "0.31"
+tokio-rusqlite = "0.5"
+deadpool-sqlite = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "=0.4.38", features = ["serde"] }

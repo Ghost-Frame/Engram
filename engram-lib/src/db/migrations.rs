@@ -1,4 +1,6 @@
 use crate::Result;
+#[cfg(feature = "db_pool")]
+use crate::EngError;
 use libsql::Connection;
 use tracing::info;
 
@@ -57,6 +59,42 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "db_pool")]
+pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        ",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let current_version: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    if current_version < MIGRATION_CREATE_SCHEMA {
+        info!("Running migration 1: create_tables");
+        super::schema::create_tables_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_CREATE_SCHEMA, "create_tables")?;
+    }
+
+    if current_version < MIGRATION_ADD_MISSING_INDEXES {
+        info!("Running migration 2: add_missing_indexes");
+        run_migration_add_missing_indexes_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_ADD_MISSING_INDEXES, "add_missing_indexes")?;
+    }
+
+    Ok(())
+}
+
 /// Record that a migration has been applied
 async fn record_migration(conn: &Connection, version: i64, name: &str) -> Result<()> {
     conn.execute(
@@ -103,6 +141,7 @@ async fn run_migration_add_missing_indexes(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+
 /// Migration 3: Create pagerank cache and dirty-tracking tables
 async fn run_migration_pagerank_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -127,8 +166,51 @@ async fn run_migration_pagerank_tables(conn: &Connection) -> Result<()> {
     .await?;
     Ok(())
 }
+#[cfg(feature = "db_pool")]
+fn record_migration_rusqlite(conn: &rusqlite::Connection, version: i64, name: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO schema_version (version, name) VALUES (?1, ?2)",
+        rusqlite::params![version, name],
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
 
-/// Add a new column to a table if it doesn't exist/// SQLite doesn't have IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check first
+#[cfg(feature = "db_pool")]
+fn run_migration_add_missing_indexes_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        -- Memory indexes
+        CREATE INDEX IF NOT EXISTS idx_memories_root ON memories(root_memory_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_superseded ON memories(is_superseded) WHERE is_superseded = 1;
+        CREATE INDEX IF NOT EXISTS idx_memories_parent ON memories(parent_memory_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_latest ON memories(is_latest) WHERE is_latest = 1;
+        CREATE INDEX IF NOT EXISTS idx_memories_forgotten ON memories(is_forgotten);
+        CREATE INDEX IF NOT EXISTS idx_memories_archived ON memories(is_archived) WHERE is_archived = 1;
+        CREATE INDEX IF NOT EXISTS idx_memories_forget_after ON memories(forget_after) WHERE forget_after IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(tags) WHERE tags IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_memories_episode ON memories(episode_id) WHERE episode_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_memories_access ON memories(access_count DESC);
+        CREATE INDEX IF NOT EXISTS idx_memories_decay ON memories(decay_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
+        CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_space ON memories(space_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_fsrs_stability ON memories(fsrs_stability) WHERE fsrs_stability IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+        CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source);
+        CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+        CREATE INDEX IF NOT EXISTS idx_memories_user_latest ON memories(user_id, is_latest, is_forgotten);
+
+        -- Composite indexes for common query patterns
+        CREATE INDEX IF NOT EXISTS idx_memories_search_composite ON memories(user_id, is_forgotten, is_latest, category);
+        ",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+/// Add a new column to a table if it doesn't exist
+/// SQLite doesn't have IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check first
 #[allow(dead_code)]
 async fn add_column_if_not_exists(
     conn: &Connection,
@@ -191,6 +273,30 @@ mod tests {
             .await?
             .ok_or_else(|| crate::EngError::Internal("missing schema_version row".to_string()))?;
         let count: i64 = row.get(0)?;
+        assert_eq!(count, 1);
+
+        let _ = std::fs::remove_file(&db_path);
+        Ok(())
+    }
+
+    #[cfg(feature = "db_pool")]
+    #[tokio::test]
+    async fn test_rusqlite_migrations_idempotent() -> Result<()> {
+        let db_path =
+            std::env::temp_dir().join(format!("engram-rusqlite-migrations-{}.db", uuid::Uuid::new_v4()));
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+
+        run_migrations_rusqlite(&conn)?;
+        run_migrations_rusqlite(&conn)?;
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_version WHERE version = ?1",
+                rusqlite::params![MIGRATION_CREATE_SCHEMA],
+                |row| row.get(0),
+            )
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         assert_eq!(count, 1);
 
         let _ = std::fs::remove_file(&db_path);
