@@ -62,6 +62,8 @@ curl -X POST http://localhost:4200/search \
 
 The Rust server keeps the TypeScript API surface. Existing SDKs, MCP clients, and CLI wrappers point at the new binary without changes.
 
+MCP stdio entrypoint: `ENGRAM_MCP_BEARER_TOKEN=engram_... cargo run -p engram-mcp`
+
 ---
 
 ![Engram CLI demo](tools/cli-demo.gif)
