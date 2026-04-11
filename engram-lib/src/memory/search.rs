@@ -1,12 +1,14 @@
 use super::fts::fts_search;
 use super::vector::vector_search;
+#[cfg(feature = "db_pool")]
+use super::{row_to_memory_rusqlite, rusqlite_to_eng_error, uses_pool_backend};
 use super::{row_to_memory, MEMORY_COLUMNS};
 use crate::db::Database;
 use crate::memory::scoring::{
     self, blend_strategies, classify_question_mixed, question_strategy, rrf_score, DECAY_FLOOR,
     RERANKER_TOP_K,
 };
-use crate::memory::types::{QuestionType, SearchRequest, SearchResult};
+use crate::memory::types::{LinkedMemory, QuestionType, SearchRequest, SearchResult, VersionChainEntry};
 use crate::Result;
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
@@ -35,6 +37,330 @@ struct Candidate {
     combined_score: f64,
     decay_score: Option<f64>,
     temporal_boost: Option<f64>,
+}
+
+struct HydratedCandidateRow {
+    id: i64,
+    created_at: String,
+    importance: i32,
+    is_static: bool,
+    source_count: i32,
+    version: Option<i32>,
+    is_latest: Option<bool>,
+    source: Option<String>,
+    model: Option<String>,
+    access_count: i32,
+    pagerank_score: f64,
+    content: String,
+    category: String,
+}
+
+struct GraphExpansionRow {
+    link_id: i64,
+    similarity: f64,
+    link_type: String,
+    content: String,
+    category: String,
+    importance: i32,
+    created_at: String,
+    is_latest: bool,
+    is_forgotten: bool,
+    version: Option<i32>,
+    source_count: i32,
+    model: Option<String>,
+    source: Option<String>,
+}
+
+async fn hydrate_candidates(
+    db: &Database,
+    ids: &[i64],
+    user_id: i64,
+) -> Result<Vec<HydratedCandidateRow>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = ids
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id, created_at, importance, is_static, source_count, \
+         version, is_latest, source, model, access_count, pagerank_score, \
+         content, category \
+         FROM memories WHERE id IN ({}) AND user_id = ?1",
+        placeholders
+    );
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![user_id])
+                    .map_err(rusqlite_to_eng_error)?;
+                let mut hydrated = Vec::new();
+                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                    hydrated.push(HydratedCandidateRow {
+                        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                        created_at: row.get(1).map_err(rusqlite_to_eng_error)?,
+                        importance: row.get(2).map_err(rusqlite_to_eng_error)?,
+                        is_static: row.get::<_, i32>(3).map_err(rusqlite_to_eng_error)? != 0,
+                        source_count: row.get(4).map_err(rusqlite_to_eng_error)?,
+                        version: row.get(5).map_err(rusqlite_to_eng_error)?,
+                        is_latest: row
+                            .get::<_, Option<i32>>(6)
+                            .map_err(rusqlite_to_eng_error)?
+                            .map(|value| value != 0),
+                        source: row.get(7).map_err(rusqlite_to_eng_error)?,
+                        model: row.get(8).map_err(rusqlite_to_eng_error)?,
+                        access_count: row.get(9).map_err(rusqlite_to_eng_error)?,
+                        pagerank_score: row
+                            .get::<_, Option<f64>>(10)
+                            .map_err(rusqlite_to_eng_error)?
+                            .unwrap_or(0.0),
+                        content: row.get(11).map_err(rusqlite_to_eng_error)?,
+                        category: row.get(12).map_err(rusqlite_to_eng_error)?,
+                    });
+                }
+                Ok(hydrated)
+            })
+            .await;
+    }
+
+    let mut rows = db.conn.query(&sql, libsql::params![user_id]).await?;
+    let mut hydrated = Vec::new();
+    while let Some(row) = rows.next().await? {
+        hydrated.push(HydratedCandidateRow {
+            id: row.get(0)?,
+            created_at: row.get::<String>(1).unwrap_or_default(),
+            importance: row.get::<i32>(2).unwrap_or(5),
+            is_static: row.get::<i32>(3).unwrap_or(0) != 0,
+            source_count: row.get::<i32>(4).unwrap_or(1),
+            version: row.get::<Option<i32>>(5).unwrap_or(None),
+            is_latest: Some(row.get::<i32>(6).unwrap_or(1) != 0),
+            source: row.get::<Option<String>>(7).unwrap_or(None),
+            model: row.get::<Option<String>>(8).unwrap_or(None),
+            access_count: row.get::<i32>(9).unwrap_or(0),
+            pagerank_score: row.get::<Option<f64>>(10).unwrap_or(None).unwrap_or(0.0),
+            content: row.get::<String>(11).unwrap_or_default(),
+            category: row.get::<String>(12).unwrap_or_default(),
+        });
+    }
+    Ok(hydrated)
+}
+
+async fn fetch_graph_neighbors(
+    db: &Database,
+    seed_id: i64,
+    user_id: i64,
+) -> Result<Vec<GraphExpansionRow>> {
+    let link_sql = "SELECT ml.target_id, ml.similarity, ml.type, \
+        m.content, m.category, m.importance, m.created_at, \
+        m.is_latest, m.is_forgotten, m.version, m.source_count, m.model, m.source \
+        FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
+        WHERE ml.source_id = ?1 AND m.user_id = ?2 \
+        UNION \
+        SELECT ml.source_id, ml.similarity, ml.type, \
+        m.content, m.category, m.importance, m.created_at, \
+        m.is_latest, m.is_forgotten, m.version, m.source_count, m.model, m.source \
+        FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
+        WHERE ml.target_id = ?1 AND m.user_id = ?2";
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(link_sql).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![seed_id, user_id])
+                    .map_err(rusqlite_to_eng_error)?;
+                let mut linked = Vec::new();
+                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                    linked.push(GraphExpansionRow {
+                        link_id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                        similarity: row.get(1).map_err(rusqlite_to_eng_error)?,
+                        link_type: row.get(2).map_err(rusqlite_to_eng_error)?,
+                        content: row.get(3).map_err(rusqlite_to_eng_error)?,
+                        category: row.get(4).map_err(rusqlite_to_eng_error)?,
+                        importance: row.get(5).map_err(rusqlite_to_eng_error)?,
+                        created_at: row.get(6).map_err(rusqlite_to_eng_error)?,
+                        is_latest: row.get::<_, i32>(7).map_err(rusqlite_to_eng_error)? != 0,
+                        is_forgotten: row.get::<_, i32>(8).map_err(rusqlite_to_eng_error)? != 0,
+                        version: row.get(9).map_err(rusqlite_to_eng_error)?,
+                        source_count: row.get(10).map_err(rusqlite_to_eng_error)?,
+                        model: row.get(11).map_err(rusqlite_to_eng_error)?,
+                        source: row.get(12).map_err(rusqlite_to_eng_error)?,
+                    });
+                }
+                Ok(linked)
+            })
+            .await;
+    }
+
+    let mut rows = db
+        .conn
+        .query(link_sql, libsql::params![seed_id, user_id])
+        .await?;
+    let mut linked = Vec::new();
+    while let Some(row) = rows.next().await? {
+        linked.push(GraphExpansionRow {
+            link_id: row.get(0).unwrap_or(0),
+            similarity: row.get(1).unwrap_or(0.0),
+            link_type: row.get(2).unwrap_or_default(),
+            content: row.get(3).unwrap_or_default(),
+            category: row.get(4).unwrap_or_default(),
+            importance: row.get(5).unwrap_or(5),
+            created_at: row.get(6).unwrap_or_default(),
+            is_latest: row.get::<i32>(7).unwrap_or(1) != 0,
+            is_forgotten: row.get::<i32>(8).unwrap_or(0) != 0,
+            version: row.get::<Option<i32>>(9).unwrap_or(None),
+            source_count: row.get(10).unwrap_or(1),
+            model: row.get::<Option<String>>(11).unwrap_or(None),
+            source: row.get::<Option<String>>(12).unwrap_or(None),
+        });
+    }
+    Ok(linked)
+}
+
+async fn fetch_memory_for_search(db: &Database, id: i64, user_id: i64) -> Result<Option<crate::memory::types::Memory>> {
+    let fetch_sql = format!(
+        "SELECT {} FROM memories \
+         WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_latest = 1",
+        MEMORY_COLUMNS
+    );
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(&fetch_sql).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![id, user_id])
+                    .map_err(rusqlite_to_eng_error)?;
+                if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                    Ok(Some(row_to_memory_rusqlite(row)?))
+                } else {
+                    Ok(None)
+                }
+            })
+            .await;
+    }
+
+    let mut rows = db.conn.query(&fetch_sql, libsql::params![id, user_id]).await?;
+    match rows.next().await? {
+        Some(row) => Ok(Some(row_to_memory(&row)?)),
+        None => Ok(None),
+    }
+}
+
+async fn fetch_links_for_search(db: &Database, memory_id: i64, user_id: i64) -> Result<Vec<LinkedMemory>> {
+    let link_sql = "SELECT ml.target_id, ml.similarity, ml.type, \
+        m.content, m.category, m.is_forgotten \
+        FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
+        WHERE ml.source_id = ?1 AND m.user_id = ?2 \
+        UNION \
+        SELECT ml.source_id, ml.similarity, ml.type, \
+        m.content, m.category, m.is_forgotten \
+        FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
+        WHERE ml.target_id = ?1 AND m.user_id = ?2";
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(link_sql).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![memory_id, user_id])
+                    .map_err(rusqlite_to_eng_error)?;
+                let mut links = Vec::new();
+                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                    if row.get::<_, i32>(5).map_err(rusqlite_to_eng_error)? != 0 {
+                        continue;
+                    }
+                    links.push(LinkedMemory {
+                        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                        similarity: ((row.get::<_, f64>(1).map_err(rusqlite_to_eng_error)? * 1000.0)
+                            .round())
+                            / 1000.0,
+                        link_type: row.get(2).map_err(rusqlite_to_eng_error)?,
+                        content: row.get(3).map_err(rusqlite_to_eng_error)?,
+                        category: row.get(4).map_err(rusqlite_to_eng_error)?,
+                    });
+                }
+                Ok(links)
+            })
+            .await;
+    }
+
+    let mut rows = db
+        .conn
+        .query(link_sql, libsql::params![memory_id, user_id])
+        .await?;
+    let mut links = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let is_forgotten: i32 = row.get(5).unwrap_or(0);
+        if is_forgotten != 0 {
+            continue;
+        }
+        links.push(LinkedMemory {
+            id: row.get(0).unwrap_or(0),
+            similarity: ((row.get::<f64>(1).unwrap_or(0.0) * 1000.0).round()) / 1000.0,
+            link_type: row.get(2).unwrap_or_default(),
+            content: row.get(3).unwrap_or_default(),
+            category: row.get(4).unwrap_or_default(),
+        });
+    }
+    Ok(links)
+}
+
+async fn fetch_version_chain_for_search(
+    db: &Database,
+    root_id: i64,
+    user_id: i64,
+) -> Result<Vec<VersionChainEntry>> {
+    let chain_sql = "SELECT id, content, version, is_latest FROM memories \
+        WHERE (root_memory_id = ?1 OR id = ?1) AND user_id = ?2 \
+        ORDER BY version ASC";
+
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(chain_sql).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![root_id, user_id])
+                    .map_err(rusqlite_to_eng_error)?;
+                let mut chain = Vec::new();
+                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                    chain.push(VersionChainEntry {
+                        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                        content: row.get(1).map_err(rusqlite_to_eng_error)?,
+                        version: row.get(2).map_err(rusqlite_to_eng_error)?,
+                        is_latest: row.get::<_, i32>(3).map_err(rusqlite_to_eng_error)? != 0,
+                    });
+                }
+                Ok(chain)
+            })
+            .await;
+    }
+
+    let mut rows = db
+        .conn
+        .query(chain_sql, libsql::params![root_id, user_id])
+        .await?;
+    let mut chain = Vec::new();
+    while let Some(row) = rows.next().await? {
+        chain.push(VersionChainEntry {
+            id: row.get(0).unwrap_or(0),
+            content: row.get(1).unwrap_or_default(),
+            version: row.get(2).unwrap_or(1),
+            is_latest: row.get::<i32>(3).unwrap_or(0) != 0,
+        });
+    }
+    Ok(chain)
 }
 
 /// Resolve question type and search strategy from request.
@@ -188,48 +514,32 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     {
         let ids: Vec<i64> = results.keys().copied().collect();
         if !ids.is_empty() {
-            let placeholders: String = ids
-                .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            let hydrate_sql = format!(
-                "SELECT m.id, m.created_at, m.decay_score, m.importance, m.is_static, m.source_count, \
-                 m.version, m.is_latest, m.source, m.model, m.access_count, m.fsrs_stability, \
-                 m.last_accessed_at, COALESCE(mp.score, 0.0) AS pagerank_score, m.content, m.category \
-                 FROM memories m \
-                 LEFT JOIN memory_pagerank mp ON mp.memory_id = m.id \
-                 WHERE m.id IN ({}) AND m.user_id = ?1",
-                placeholders
-            );
-            if let Ok(mut rows) = db.conn.query(&hydrate_sql, libsql::params![user_id]).await {
-                while let Ok(Some(row)) = rows.next().await {
-                    let id: i64 = row.get(0).unwrap_or(0);
-                    if let Some(c) = results.get_mut(&id) {
-                        c.created_at = row.get::<String>(1).unwrap_or_default();
-                        c.importance = row.get::<i32>(3).unwrap_or(5);
-                        c.is_static = row.get::<i32>(4).unwrap_or(0) != 0;
-                        c.source_count = row.get::<i32>(5).unwrap_or(1).max(c.source_count);
+            if let Ok(rows) = hydrate_candidates(db, &ids, user_id).await {
+                for row in rows {
+                    if let Some(c) = results.get_mut(&row.id) {
+                        c.created_at = row.created_at;
+                        c.importance = row.importance;
+                        c.is_static = row.is_static;
+                        c.source_count = row.source_count.max(c.source_count);
                         if c.version.is_none() {
-                            c.version = row.get::<Option<i32>>(6).unwrap_or(None);
+                            c.version = row.version;
                         }
                         if c.is_latest.is_none() {
-                            c.is_latest = Some(row.get::<i32>(7).unwrap_or(1) != 0);
+                            c.is_latest = row.is_latest;
                         }
                         if c.source.is_none() {
-                            c.source = row.get::<Option<String>>(8).unwrap_or(None);
+                            c.source = row.source;
                         }
                         if c.model.is_none() {
-                            c.model = row.get::<Option<String>>(9).unwrap_or(None);
+                            c.model = row.model;
                         }
-                        c.access_count = row.get::<i32>(10).unwrap_or(0);
-                        c.pagerank_score =
-                            row.get::<Option<f64>>(13).unwrap_or(None).unwrap_or(0.0);
+                        c.access_count = row.access_count;
+                        c.pagerank_score = row.pagerank_score;
                         if c.content.is_empty() {
-                            c.content = row.get::<String>(14).unwrap_or_default();
+                            c.content = row.content;
                         }
                         if c.category.is_empty() {
-                            c.category = row.get::<String>(15).unwrap_or_default();
+                            c.category = row.category;
                         }
                     }
                 }
@@ -311,54 +621,34 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
         top_ids.truncate(strategy.relationship_seed_limit);
 
         for (seed_id, _) in &top_ids {
-            let link_sql = "SELECT ml.target_id, ml.similarity, ml.type, \
-                m.content, m.category, m.importance, m.created_at, \
-                m.is_latest, m.is_forgotten, m.version, m.source_count, m.model, m.source \
-                FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
-                WHERE ml.source_id = ?1 AND m.user_id = ?2 \
-                UNION \
-                SELECT ml.source_id, ml.similarity, ml.type, \
-                m.content, m.category, m.importance, m.created_at, \
-                m.is_latest, m.is_forgotten, m.version, m.source_count, m.model, m.source \
-                FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
-                WHERE ml.target_id = ?1 AND m.user_id = ?2";
-
-            if let Ok(mut rows) = db
-                .conn
-                .query(link_sql, libsql::params![*seed_id, user_id])
-                .await
-            {
+            if let Ok(rows) = fetch_graph_neighbors(db, *seed_id, user_id).await {
                 let mut added = 0usize;
-                while let Ok(Some(row)) = rows.next().await {
+                for row in rows {
                     if added >= strategy.hop1_limit {
                         break;
                     }
-                    let link_id: i64 = row.get(0).unwrap_or(0);
-                    let similarity: f64 = row.get(1).unwrap_or(0.0);
-                    let link_type: String = row.get(2).unwrap_or_default();
-                    let is_forgotten: i32 = row.get(8).unwrap_or(0);
-                    if is_forgotten != 0 {
+                    if row.is_forgotten {
                         continue;
                     }
 
-                    let tw = scoring::link_type_weight(&link_type);
-                    let gs = similarity * tw * strategy.relationship_multiplier;
-                    let prev = graph_score_map.get(&link_id).copied().unwrap_or(0.0);
-                    graph_score_map.insert(link_id, prev.max(gs));
+                    let tw = scoring::link_type_weight(&row.link_type);
+                    let gs = row.similarity * tw * strategy.relationship_multiplier;
+                    let prev = graph_score_map.get(&row.link_id).copied().unwrap_or(0.0);
+                    graph_score_map.insert(row.link_id, prev.max(gs));
 
-                    if let std::collections::hash_map::Entry::Vacant(e) = results.entry(link_id) {
+                    if let std::collections::hash_map::Entry::Vacant(e) = results.entry(row.link_id) {
                         e.insert(Candidate {
-                            id: link_id,
-                            content: row.get::<String>(3).unwrap_or_default(),
-                            category: row.get::<String>(4).unwrap_or_default(),
-                            source: row.get::<Option<String>>(12).unwrap_or(None),
-                            model: row.get::<Option<String>>(11).unwrap_or(None),
-                            importance: row.get::<i32>(5).unwrap_or(5),
-                            created_at: row.get::<String>(6).unwrap_or_default(),
-                            version: row.get::<Option<i32>>(9).unwrap_or(None),
-                            is_latest: Some(row.get::<i32>(7).unwrap_or(1) != 0),
+                            id: row.link_id,
+                            content: row.content,
+                            category: row.category,
+                            source: row.source,
+                            model: row.model,
+                            importance: row.importance,
+                            created_at: row.created_at,
+                            version: row.version,
+                            is_latest: Some(row.is_latest),
                             is_static: false,
-                            source_count: row.get::<i32>(10).unwrap_or(1),
+                            source_count: row.source_count,
                             root_memory_id: None,
                             access_count: 0,
                             pagerank_score: 0.0,
@@ -413,12 +703,6 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     sorted.truncate(limit);
 
     // Build final SearchResult vec
-    let conn = db.connection();
-    let fetch_sql = format!(
-        "SELECT {} FROM memories \
-         WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_latest = 1",
-        MEMORY_COLUMNS
-    );
     let mut final_results: Vec<SearchResult> = Vec::with_capacity(sorted.len());
 
     for c in &sorted {
@@ -435,17 +719,9 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
         }
 
         // Fetch full memory if needed
-        let memory = match conn.query(&fetch_sql, libsql::params![c.id, user_id]).await {
-            Ok(mut rows) => match rows.next().await {
-                Ok(Some(row)) => match row_to_memory(&row) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        warn!("row_to_memory failed for {}: {}", c.id, e);
-                        continue;
-                    }
-                },
-                _ => continue,
-            },
+        let memory = match fetch_memory_for_search(db, c.id, user_id).await {
+            Ok(Some(memory)) => memory,
+            Ok(None) => continue,
             Err(e) => {
                 warn!("fetch memory {} failed: {}", c.id, e);
                 continue;
@@ -483,57 +759,14 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     // Include linked memories + version chain if requested
     if req.include_links {
         for result in &mut final_results {
-            // Links
-            let link_sql = "SELECT ml.target_id, ml.similarity, ml.type, \
-                m.content, m.category, m.is_forgotten \
-                FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
-                WHERE ml.source_id = ?1 AND m.user_id = ?2 \
-                UNION \
-                SELECT ml.source_id, ml.similarity, ml.type, \
-                m.content, m.category, m.is_forgotten \
-                FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
-                WHERE ml.target_id = ?1 AND m.user_id = ?2";
-            if let Ok(mut rows) = conn
-                .query(link_sql, libsql::params![result.memory.id, user_id])
-                .await
-            {
-                let mut links = Vec::new();
-                while let Ok(Some(row)) = rows.next().await {
-                    let is_forgotten: i32 = row.get(5).unwrap_or(0);
-                    if is_forgotten != 0 {
-                        continue;
-                    }
-                    links.push(crate::memory::types::LinkedMemory {
-                        id: row.get(0).unwrap_or(0),
-                        similarity: ((row.get::<f64>(1).unwrap_or(0.0)) * 1000.0).round() / 1000.0,
-                        link_type: row.get(2).unwrap_or_default(),
-                        content: row.get(3).unwrap_or_default(),
-                        category: row.get(4).unwrap_or_default(),
-                    });
-                }
+            if let Ok(links) = fetch_links_for_search(db, result.memory.id, user_id).await {
                 if !links.is_empty() {
                     result.linked = Some(links);
                 }
             }
 
-            // Version chain
             let root_id = result.memory.root_memory_id.unwrap_or(result.memory.id);
-            let chain_sql = "SELECT id, content, version, is_latest FROM memories \
-                WHERE (root_memory_id = ?1 OR id = ?1) AND user_id = ?2 \
-                ORDER BY version ASC";
-            if let Ok(mut rows) = conn
-                .query(chain_sql, libsql::params![root_id, user_id])
-                .await
-            {
-                let mut chain = Vec::new();
-                while let Ok(Some(row)) = rows.next().await {
-                    chain.push(crate::memory::types::VersionChainEntry {
-                        id: row.get(0).unwrap_or(0),
-                        content: row.get(1).unwrap_or_default(),
-                        version: row.get(2).unwrap_or(1),
-                        is_latest: row.get::<i32>(3).unwrap_or(0) != 0,
-                    });
-                }
+            if let Ok(chain) = fetch_version_chain_for_search(db, root_id, user_id).await {
                 if chain.len() > 1 {
                     result.version_chain = Some(chain);
                 }
@@ -582,24 +815,8 @@ pub async fn auto_link(
 
     let mut linked = 0usize;
     for (target_id, similarity) in &similarities {
-        // Insert bidirectional links
-        let insert_sql =
-            "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) \
-            VALUES (?1, ?2, ?3, 'similarity')";
-        let _ = db
-            .conn
-            .execute(
-                insert_sql,
-                libsql::params![memory_id, *target_id, *similarity],
-            )
-            .await;
-        let _ = db
-            .conn
-            .execute(
-                insert_sql,
-                libsql::params![*target_id, memory_id, *similarity],
-            )
-            .await;
+        let _ = crate::memory::insert_link(db, memory_id, *target_id, *similarity, "similarity", user_id).await;
+        let _ = crate::memory::insert_link(db, *target_id, memory_id, *similarity, "similarity", user_id).await;
         linked += 1;
     }
 
