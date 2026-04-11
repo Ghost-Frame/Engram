@@ -29,17 +29,21 @@ use engram_server::state::AppState;
 struct TestApp {
     router: Router,
     api_key: String,
+    db: Arc<Database>,
 }
 
 impl TestApp {
     async fn new() -> Self {
+        Self::with_config(Config::default()).await
+    }
+
+    async fn with_config(config: Config) -> Self {
         // Ensure auth is enabled regardless of dev environment
         std::env::set_var("ENGRAM_OPEN_ACCESS", "0");
 
-        let db = Database::connect_memory().await.expect("in-memory db");
-        let config = Config::default();
+        let db = Arc::new(Database::connect_memory().await.expect("in-memory db"));
         let state = AppState {
-            db: Arc::new(db),
+            db: Arc::clone(&db),
             config: Arc::new(config),
             embedder: None,
             reranker: None,
@@ -70,7 +74,7 @@ impl TestApp {
             .expect("bootstrap did not return api_key")
             .to_string();
 
-        TestApp { router, api_key }
+        TestApp { router, api_key, db }
     }
 
     fn bearer(&self) -> String {
@@ -220,6 +224,37 @@ async fn body_json(res: axum::response::Response) -> Value {
         .await
         .expect("failed to read response body");
     serde_json::from_slice(&bytes).unwrap_or(json!(null))
+}
+
+async fn pagerank_count_for_user(db: &Database, user_id: i64) -> i64 {
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
+            libsql::params![user_id],
+        )
+        .await
+        .expect("query pagerank count");
+    rows.next()
+        .await
+        .expect("read count row")
+        .expect("count row exists")
+        .get(0)
+        .expect("count value")
+}
+
+async fn distinct_pagerank_users(db: &Database) -> i64 {
+    let mut rows = db
+        .conn
+        .query("SELECT COUNT(DISTINCT user_id) FROM memory_pagerank", ())
+        .await
+        .expect("query distinct pagerank users");
+    rows.next()
+        .await
+        .expect("read distinct row")
+        .expect("distinct row exists")
+        .get(0)
+        .expect("distinct count value")
 }
 
 // ---------------------------------------------------------------------------
@@ -736,6 +771,99 @@ async fn search_response_shape() {
     assert!(body.get("results").is_some(), "missing results");
     assert!(body.get("abstained").is_some(), "missing abstained");
     assert!(body.get("top_score").is_some(), "missing top_score");
+}
+
+#[tokio::test]
+async fn search_still_works_when_pagerank_job_is_disabled() {
+    let mut config = Config::default();
+    config.pagerank_enabled = false;
+    let app = TestApp::with_config(config).await;
+
+    app.post(
+        "/store",
+        json!({ "content": "pagerank disabled search smoke test", "category": "test" }),
+    )
+    .await;
+
+    let (status, body) = app
+        .post(
+            "/search",
+            json!({ "query": "disabled search smoke", "limit": 5 }),
+        )
+        .await;
+    assert!(
+        status == StatusCode::OK || status == StatusCode::CREATED,
+        "expected 2xx"
+    );
+    let results = body["results"].as_array().expect("results should be array");
+    assert!(results.iter().any(|result| {
+        result["content"].as_str().unwrap_or("") == "pagerank disabled search smoke test"
+    }));
+}
+
+#[tokio::test]
+async fn admin_pagerank_rebuild_single_user_populates_cache() {
+    let app = TestApp::new().await;
+
+    app.post(
+        "/store",
+        json!({ "content": "admin pagerank single user one", "category": "test" }),
+    )
+    .await;
+    app.post(
+        "/store",
+        json!({ "content": "admin pagerank single user two", "category": "test" }),
+    )
+    .await;
+
+    assert_eq!(pagerank_count_for_user(app.db.as_ref(), 1).await, 0);
+
+    let (status, body) = app
+        .post("/admin/pagerank/rebuild?user_id=1", json!({}))
+        .await;
+    assert!(
+        status == StatusCode::OK || status == StatusCode::CREATED,
+        "expected 2xx, got {status}: {body}"
+    );
+    assert_eq!(body["success"], json!(true));
+    assert_eq!(body["users_updated"], json!(1));
+    assert!(body["memories_updated"].as_u64().unwrap_or(0) >= 2);
+    assert_eq!(pagerank_count_for_user(app.db.as_ref(), 1).await, 2);
+}
+
+#[tokio::test]
+async fn admin_pagerank_rebuild_all_users_populates_each_users_cache() {
+    let app = TestApp::new().await;
+
+    app.post(
+        "/store",
+        json!({ "content": "admin rebuild user one memory", "category": "test" }),
+    )
+    .await;
+
+    let user2_key = create_user2_key(&app).await;
+    let (status_user2, body_user2) = app
+        .post_as(
+            "/store",
+            json!({ "content": "admin rebuild user two memory", "category": "test" }),
+            &user2_key,
+        )
+        .await;
+    assert!(
+        status_user2 == StatusCode::OK || status_user2 == StatusCode::CREATED,
+        "user 2 store should succeed, got {status_user2}: {body_user2}"
+    );
+
+    assert_eq!(distinct_pagerank_users(app.db.as_ref()).await, 0);
+
+    let (status, body) = app.post("/admin/pagerank/rebuild", json!({})).await;
+    assert!(
+        status == StatusCode::OK || status == StatusCode::CREATED,
+        "expected 2xx, got {status}: {body}"
+    );
+    assert_eq!(body["success"], json!(true));
+    assert!(body["users_updated"].as_u64().unwrap_or(0) >= 2);
+    assert_eq!(distinct_pagerank_users(app.db.as_ref()).await, 2);
 }
 
 // ---------------------------------------------------------------------------
