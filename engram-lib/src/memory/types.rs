@@ -167,6 +167,7 @@ pub struct Memory {
     pub created_at: String,
     pub updated_at: String,
     pub is_superseded: bool,
+    pub is_consolidated: bool,
 }
 
 #[derive(Debug, Clone)]

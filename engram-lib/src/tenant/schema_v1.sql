@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS memories (
     session_id TEXT,
     importance INTEGER NOT NULL DEFAULT 5,
     embedding BLOB,
+    embedding_vec_1024 FLOAT32(1024),
     version INTEGER NOT NULL DEFAULT 1,
     is_latest BOOLEAN NOT NULL DEFAULT 1,
     parent_memory_id INTEGER REFERENCES memories(id),
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS memories (
     fsrs_lapses INTEGER DEFAULT 0,
     fsrs_last_review_at TEXT,
     is_superseded INTEGER NOT NULL DEFAULT 0,
+    is_consolidated INTEGER NOT NULL DEFAULT 0,
     valence REAL,
     arousal REAL,
     dominant_emotion TEXT,
@@ -61,6 +63,7 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 CREATE INDEX IF NOT EXISTS idx_memories_root ON memories(root_memory_id);
 CREATE INDEX IF NOT EXISTS idx_memories_superseded ON memories(is_superseded) WHERE is_superseded = 1;
+CREATE INDEX IF NOT EXISTS idx_memories_consolidated ON memories(is_consolidated) WHERE is_consolidated = 1;
 CREATE INDEX IF NOT EXISTS idx_memories_parent ON memories(parent_memory_id);
 CREATE INDEX IF NOT EXISTS idx_memories_latest ON memories(is_latest) WHERE is_latest = 1;
 CREATE INDEX IF NOT EXISTS idx_memories_forgotten ON memories(is_forgotten);

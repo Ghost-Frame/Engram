@@ -788,8 +788,10 @@ async fn search_response_shape() {
 
 #[tokio::test]
 async fn search_still_works_when_pagerank_job_is_disabled() {
-    let mut config = Config::default();
-    config.pagerank_enabled = false;
+    let config = Config {
+        pagerank_enabled: false,
+        ..Config::default()
+    };
     let app = TestApp::with_config(config).await;
 
     app.post(
