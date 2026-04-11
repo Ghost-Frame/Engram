@@ -2048,6 +2048,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kleos-mcp"
+version = "0.1.0"
+dependencies = [
+ "axum 0.8.8",
+ "clap",
+ "kleos-lib",
+ "libsql",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower 0.5.3",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kleos-server"
 version = "0.1.0"
 dependencies = [
