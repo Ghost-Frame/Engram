@@ -1,4 +1,5 @@
 use engram_lib::config::Config;
+use engram_lib::cred::CreddClient;
 use engram_lib::db::Database;
 use engram_lib::embeddings::onnx::OnnxProvider;
 use engram_lib::embeddings::EmbeddingProvider;
@@ -98,6 +99,7 @@ async fn main() {
 
     let state = AppState {
         db: db_arc,
+        credd: Arc::new(CreddClient::from_config(&config)),
         config: Arc::new(config),
         embedder,
         reranker,

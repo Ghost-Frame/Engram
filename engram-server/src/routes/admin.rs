@@ -11,6 +11,7 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::auth::{create_key, AuthContext, Scope};
+use engram_lib::cred::{ProxyRequest, ProxyResponse};
 use engram_lib::graph::{communities, cooccurrence};
 
 fn require_admin(auth: &AuthContext) -> Result<(), AppError> {
@@ -49,6 +50,8 @@ pub fn router() -> Router<AppState> {
         .route("/admin/cold-storage", get(cold_storage_handler))
         .route("/admin/providers", get(admin_providers))
         .route("/admin/tasks", get(admin_tasks))
+        .route("/admin/cred/resolve", post(admin_cred_resolve))
+        .route("/admin/cred/proxy", post(admin_cred_proxy))
         // Maintenance + SLA
         .route(
             "/admin/maintenance",
@@ -470,6 +473,92 @@ async fn admin_tasks(
     require_admin(&auth)?;
     let stats = engram_lib::jobs::get_job_stats(&state.db.conn).await?;
     to_json(stats)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AdminCredResolveBody {
+    text: Option<String>,
+    service: Option<String>,
+    key: Option<String>,
+    raw: bool,
+}
+
+async fn admin_cred_resolve(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<AdminCredResolveBody>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let agent = auth.key.name.as_str();
+
+    if let Some(text) = body.text.as_deref() {
+        let resolved = state
+            .credd
+            .resolve_text_with_options(&state.db, auth.user_id, agent, text, body.raw)
+            .await?;
+        return Ok(Json(json!({ "text": resolved })));
+    }
+
+    let service = body
+        .service
+        .as_deref()
+        .ok_or_else(|| AppError(engram_lib::EngError::InvalidInput("service is required".into())))?;
+    let key = body
+        .key
+        .as_deref()
+        .ok_or_else(|| AppError(engram_lib::EngError::InvalidInput("key is required".into())))?;
+
+    let value = if body.raw {
+        state
+            .credd
+            .get_raw(&state.db, auth.user_id, agent, service, key)
+            .await?
+    } else {
+        state
+            .credd
+            .resolve_text(
+                &state.db,
+                auth.user_id,
+                agent,
+                &format!("{{{{secret:{service}/{key}}}}}"),
+            )
+            .await?
+    };
+
+    Ok(Json(json!({
+        "service": service,
+        "key": key,
+        "value": value,
+        "raw": body.raw,
+    })))
+}
+
+#[derive(Deserialize)]
+struct AdminCredProxyBody {
+    service: String,
+    key: String,
+    request: ProxyRequest,
+}
+
+async fn admin_cred_proxy(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<AdminCredProxyBody>,
+) -> Result<Json<ProxyResponse>, AppError> {
+    require_admin(&auth)?;
+    let response = state
+        .credd
+        .proxy(
+            &state.db,
+            auth.user_id,
+            auth.key.name.as_str(),
+            &body.service,
+            &body.key,
+            &body.request,
+        )
+        .await?;
+    Ok(Json(response))
 }
 
 // ---------------------------------------------------------------------------

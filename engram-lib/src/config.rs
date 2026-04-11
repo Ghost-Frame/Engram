@@ -22,10 +22,7 @@ impl Default for GateConfig {
                 "> /dev/sda".to_string(),
                 "chmod -R 777 /".to_string(),
             ],
-            reserved_targets: vec![
-                "ovh".to_string(),
-                "hetzner-prod".to_string(),
-            ],
+            reserved_targets: vec!["ovh".to_string(), "hetzner-prod".to_string()],
             approval_timeout_secs: 300,
         }
     }
@@ -51,6 +48,7 @@ pub struct SessionsConfig {
     pub max_concurrent: usize,
     pub buffer_size: usize,
     pub stream_timeout_secs: u64,
+    pub scrub_secrets: bool,
 }
 
 impl Default for SessionsConfig {
@@ -59,6 +57,7 @@ impl Default for SessionsConfig {
             max_concurrent: 64,
             buffer_size: 4096,
             stream_timeout_secs: 1800,
+            scrub_secrets: true,
         }
     }
 }
@@ -84,11 +83,32 @@ impl Default for PromptConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreddConfig {
+    pub url: String,
+    pub agent_key_env: String,
+    pub allow_raw: bool,
+    pub cache_ttl_secs: u64,
+}
+
+impl Default for CreddConfig {
+    fn default() -> Self {
+        Self {
+            url: "http://127.0.0.1:4400".to_string(),
+            agent_key_env: "CREDD_AGENT_KEY".to_string(),
+            allow_raw: false,
+            cache_ttl_secs: 60,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EidolonConfig {
     pub enabled: bool,
     pub url: Option<String>,
     pub api_key: Option<String>,
+    #[serde(default)]
+    pub credd: CreddConfig,
     #[serde(default)]
     pub gate: GateConfig,
     #[serde(default)]
@@ -107,11 +127,26 @@ impl EidolonConfig {
                 .unwrap_or(false),
             url: std::env::var("ENGRAM_EIDOLON_URL").ok(),
             api_key: std::env::var("ENGRAM_EIDOLON_API_KEY").ok(),
+            credd: CreddConfig::default(),
             gate: GateConfig::default(),
             growth: GrowthConfig::default(),
             sessions: SessionsConfig::default(),
             prompt: PromptConfig::default(),
         };
+        if let Ok(v) = std::env::var("CREDD_URL") {
+            c.credd.url = v;
+        }
+        if let Ok(v) = std::env::var("ENGRAM_CREDD_AGENT_KEY_ENV") {
+            c.credd.agent_key_env = v;
+        }
+        if let Ok(v) = std::env::var("ENGRAM_CREDD_ALLOW_RAW") {
+            c.credd.allow_raw = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
+        }
+        if let Ok(v) = std::env::var("ENGRAM_CREDD_CACHE_TTL_SECS") {
+            if let Ok(n) = v.parse() {
+                c.credd.cache_ttl_secs = n;
+            }
+        }
         if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT") {
             if let Ok(n) = v.parse() {
                 c.gate.approval_timeout_secs = n;
@@ -148,6 +183,9 @@ impl EidolonConfig {
                 c.sessions.stream_timeout_secs = n;
             }
         }
+        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_SESSIONS_SCRUB_SECRETS") {
+            c.sessions.scrub_secrets = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
+        }
         if let Ok(v) = std::env::var("ENGRAM_EIDOLON_PROMPT_MAX_TOKENS") {
             if let Ok(n) = v.parse() {
                 c.prompt.default_max_tokens = n;
@@ -164,8 +202,7 @@ impl EidolonConfig {
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_EIDOLON_PROMPT_INCLUDE_MEMORIES") {
-            c.prompt.default_include_memories =
-                matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
+            c.prompt.default_include_memories = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
         if let Ok(v) = std::env::var("ENGRAM_EIDOLON_PROMPT_INCLUDE_PERSONALITY") {
             c.prompt.default_include_personality =
@@ -377,12 +414,20 @@ mod tests {
     fn eidolon_config_defaults_are_populated() {
         let c = EidolonConfig::default();
         assert!(!c.enabled);
-        assert!(c.gate.blocked_patterns.iter().any(|p| p.contains("rm -rf /")));
+        assert_eq!(c.credd.url, "http://127.0.0.1:4400");
+        assert_eq!(c.credd.agent_key_env, "CREDD_AGENT_KEY");
+        assert!(!c.credd.allow_raw);
+        assert!(c
+            .gate
+            .blocked_patterns
+            .iter()
+            .any(|p| p.contains("rm -rf /")));
         assert_eq!(c.gate.approval_timeout_secs, 300);
         assert_eq!(c.growth.reflection_interval_secs, 3600);
         assert_eq!(c.growth.observation_limit, 100);
         assert_eq!(c.sessions.max_concurrent, 64);
         assert_eq!(c.sessions.buffer_size, 4096);
+        assert!(c.sessions.scrub_secrets);
         assert_eq!(c.prompt.default_max_tokens, 4000);
         assert_eq!(c.prompt.max_tokens_cap, 128000);
         assert!(c.prompt.default_include_memories);

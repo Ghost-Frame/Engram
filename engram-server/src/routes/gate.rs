@@ -5,7 +5,9 @@ use serde_json::{json, Value};
 use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
-use engram_lib::gate::{check_command, complete_gate, respond_to_gate, GateCheckRequest};
+use engram_lib::gate::{
+    check_command_with_context, complete_gate, respond_to_gate, GateCheckRequest,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -21,7 +23,27 @@ async fn check_handler(
     Auth(auth): Auth,
     Json(body): Json<GateCheckRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let result = check_command(&state.db, &body, auth.user_id).await?;
+    let resolved_command = state
+        .credd
+        .resolve_text(&state.db, auth.user_id, &body.agent, &body.command)
+        .await?;
+    let mut resolved_patterns = Vec::new();
+    for pattern in &state.config.eidolon.gate.blocked_patterns {
+        resolved_patterns.push(
+            state
+                .credd
+                .resolve_text(&state.db, auth.user_id, &body.agent, pattern)
+                .await?,
+        );
+    }
+    let result = check_command_with_context(
+        &state.db,
+        &body,
+        auth.user_id,
+        Some(&resolved_command),
+        &resolved_patterns,
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 

@@ -25,8 +25,24 @@ pub async fn check_command(
     req: &GateCheckRequest,
     user_id: i64,
 ) -> Result<GateCheckResult> {
+    check_command_with_context(db, req, user_id, None, &[]).await
+}
+
+/// Check a command against blocked patterns using a resolved copy while storing
+/// the original command text in the DB.
+pub async fn check_command_with_context(
+    db: &Database,
+    req: &GateCheckRequest,
+    user_id: i64,
+    resolved_command: Option<&str>,
+    blocked_patterns: &[String],
+) -> Result<GateCheckResult> {
+    let command_for_checks = resolved_command.unwrap_or(&req.command);
+
     // 1. Check dangerous patterns
-    if let Some(reason) = check_dangerous_patterns(&req.command) {
+    if let Some(reason) = check_dangerous_patterns(command_for_checks)
+        .or_else(|| check_blocked_patterns(command_for_checks, blocked_patterns))
+    {
         // Store blocked request
         let gate_id = store_gate_request(
             db,
@@ -41,14 +57,14 @@ pub async fn check_command(
         return Ok(GateCheckResult {
             allowed: false,
             reason: Some(reason),
-            resolved_command: None,
+            resolved_command: Some(req.command.clone()),
             gate_id,
             requires_approval: false,
         });
     }
 
-    // 2. Detect secret placeholders (note them but don't resolve - no credd client)
-    let has_secrets = has_secret_placeholders(&req.command);
+    // 2. Detect any placeholders that remain unresolved.
+    let has_secrets = has_secret_placeholders(command_for_checks);
 
     // 3. Store as pending gate request
     let status = if has_secrets {
@@ -75,7 +91,7 @@ pub async fn check_command(
     Ok(GateCheckResult {
         allowed: !has_secrets,
         reason: reason.map(|r| r.to_string()),
-        resolved_command: if !has_secrets {
+        resolved_command: if !has_secrets || resolved_command.is_some() {
             Some(req.command.clone())
         } else {
             None
@@ -83,6 +99,20 @@ pub async fn check_command(
         gate_id,
         requires_approval: has_secrets,
     })
+}
+
+pub fn check_blocked_patterns(command: &str, blocked_patterns: &[String]) -> Option<String> {
+    let command_lower = command.to_lowercase();
+    for pattern in blocked_patterns {
+        let trimmed = pattern.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if command_lower.contains(&trimmed.to_lowercase()) {
+            return Some(format!("Command matched blocked pattern: {}", trimmed));
+        }
+    }
+    None
 }
 
 /// Update a gate request with approval decision.
@@ -319,6 +349,14 @@ mod tests {
         assert!(check_dangerous_patterns("ls -la").is_none());
         assert!(check_dangerous_patterns("cat file.txt").is_none());
         assert!(check_dangerous_patterns("git status").is_none());
+    }
+
+    #[test]
+    fn test_gate_blocks_custom_patterns() {
+        let patterns = vec!["blocked-domain.com".to_string()];
+        assert!(
+            check_blocked_patterns("curl https://blocked-domain.com", &patterns).is_some()
+        );
     }
 
     #[test]

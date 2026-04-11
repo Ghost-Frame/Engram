@@ -4,6 +4,8 @@
 //! stores them as growth memories.
 
 use crate::db::Database;
+use crate::config::Config;
+use crate::cred::{has_secret_patterns, CreddClient};
 use crate::intelligence::llm::{call_llm, is_llm_available, LlmOptions};
 use crate::intelligence::types::{GrowthReflectRequest, GrowthReflectResult};
 use crate::Result;
@@ -133,6 +135,21 @@ fn validate_observation(text: &str) -> bool {
     true
 }
 
+async fn resolve_growth_observation(
+    db: &Database,
+    service: &str,
+    observation: &str,
+    user_id: i64,
+) -> Result<String> {
+    if !has_secret_patterns(observation) {
+        return Ok(observation.to_string());
+    }
+
+    let config = Config::from_env();
+    let credd = CreddClient::from_config(&config);
+    credd.resolve_text(db, user_id, service, observation).await
+}
+
 /// Perform a growth reflection -- observe recent activity and generate an observation.
 pub async fn reflect(
     db: &Database,
@@ -209,6 +226,8 @@ pub async fn reflect(
             reflection_id: None,
         });
     }
+
+    let trimmed = resolve_growth_observation(db, &req.service, &trimmed, user_id).await?;
 
     // Store as growth memory
     let source = format!("{}-growth", req.service);
