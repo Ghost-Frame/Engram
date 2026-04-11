@@ -23,8 +23,8 @@ pub struct ListQuery {
 
 #[derive(Serialize)]
 pub struct SecretListItem {
-    category: String,
-    name: String,
+    service: String,
+    key: String,
     secret_type: String,
     created_at: String,
     updated_at: String,
@@ -42,8 +42,8 @@ pub async fn list_handler(
         .into_iter()
         .filter(|s| auth.can_access_category(&s.category))
         .map(|s| SecretListItem {
-            category: s.category,
-            name: s.name,
+            service: s.category,
+            key: s.name,
             secret_type: s.secret_type.to_string(),
             created_at: s.created_at,
             updated_at: s.updated_at,
