@@ -34,7 +34,11 @@ pub async fn create_entity(db: &Database, req: CreateEntityRequest) -> Result<En
     let conn = db.connection();
 
     let entity_type = req.entity_type.unwrap_or_else(|| "general".to_string());
-    let user_id = req.user_id.unwrap_or(0);
+    // SECURITY: fail closed when user_id is missing so an unauthenticated path
+    // cannot silently create tenant-0 rows that other callers may trust.
+    let user_id = req.user_id.ok_or_else(|| {
+        EngError::InvalidInput("user_id is required to create an entity".into())
+    })?;
     let aliases_json = match req.aliases {
         Some(ref v) => Some(serde_json::to_string(v)?),
         None => None,
@@ -231,42 +235,63 @@ pub async fn update_entity(
 // -- Entity Relationships --
 
 /// Upsert a relationship between two entities. On conflict, increments
-/// evidence_count and keeps the higher strength value.
+/// evidence_count and keeps the higher strength value. Both source and target
+/// must belong to `user_id`, otherwise returns NotFound.
 pub async fn create_relationship(
     db: &Database,
+    user_id: i64,
     req: CreateRelationshipRequest,
 ) -> Result<EntityRelationship> {
     let conn = db.connection();
+
+    // SECURITY: verify both endpoints belong to the caller before writing so a
+    // malicious tenant cannot attach a target they don't own. Using a single
+    // COUNT-of-two check prevents a TOCTOU gap between two separate lookups.
+    let mut check = conn
+        .query(
+            "SELECT COUNT(*) FROM entities WHERE id IN (?1, ?2) AND user_id = ?3",
+            libsql::params![req.source_entity_id, req.target_entity_id, user_id],
+        )
+        .await?;
+    let owned: i64 = match check.next().await? {
+        Some(row) => row.get(0)?,
+        None => 0,
+    };
+    // When source == target the same row is counted once, so accept >= 1 in
+    // that case and >= 2 otherwise.
+    let required = if req.source_entity_id == req.target_entity_id {
+        1
+    } else {
+        2
+    };
+    if owned < required {
+        return Err(EngError::NotFound(
+            "one or both entities not found for this user".into(),
+        ));
+    }
 
     let relationship_type = req
         .relationship_type
         .unwrap_or_else(|| "related".to_string());
     let strength = req.strength.unwrap_or(0.5);
 
-    conn.execute(
-        "INSERT INTO entity_relationships \
-         (source_entity_id, target_entity_id, relationship_type, strength, evidence_count, created_at) \
-         VALUES (?1, ?2, ?3, ?4, 1, datetime('now')) \
-         ON CONFLICT(source_entity_id, target_entity_id, relationship_type) DO UPDATE SET \
-           evidence_count = evidence_count + 1, \
-           strength = max(strength, excluded.strength)",
-        libsql::params![
-            req.source_entity_id,
-            req.target_entity_id,
-            relationship_type,
-            strength,
-        ],
-    )
-    .await?;
-
-    // Fetch the upserted row
+    // INSERT ... ON CONFLICT ... RETURNING avoids the cross-connection
+    // last_insert_rowid() race inherent to a follow-up SELECT.
     let mut rows = conn
         .query(
-            "SELECT id, source_entity_id, target_entity_id, relationship_type, strength, evidence_count, created_at \
-             FROM entity_relationships \
-             WHERE source_entity_id = ?1 AND target_entity_id = ?2 \
-             ORDER BY id DESC LIMIT 1",
-            libsql::params![req.source_entity_id, req.target_entity_id],
+            "INSERT INTO entity_relationships \
+             (source_entity_id, target_entity_id, relationship_type, strength, evidence_count, created_at) \
+             VALUES (?1, ?2, ?3, ?4, 1, datetime('now')) \
+             ON CONFLICT(source_entity_id, target_entity_id, relationship_type) DO UPDATE SET \
+               evidence_count = evidence_count + 1, \
+               strength = max(strength, excluded.strength) \
+             RETURNING id, source_entity_id, target_entity_id, relationship_type, strength, evidence_count, created_at",
+            libsql::params![
+                req.source_entity_id,
+                req.target_entity_id,
+                relationship_type,
+                strength,
+            ],
         )
         .await?;
 
@@ -281,7 +306,7 @@ pub async fn create_relationship(
             created_at: row.get(6)?,
         }),
         None => Err(EngError::Internal(
-            "relationship upsert succeeded but fetch returned nothing".to_string(),
+            "relationship upsert succeeded but RETURNING row was empty".to_string(),
         )),
     }
 }

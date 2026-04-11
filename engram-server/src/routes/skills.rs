@@ -14,6 +14,29 @@ use engram_lib::skills::{
     UpdateSkillRequest,
 };
 
+/// Clamp a caller-supplied `limit` into [1, max] with a default when absent.
+fn clamp_limit(raw: Option<usize>, default: usize, max: usize) -> Result<usize, AppError> {
+    match raw {
+        None => Ok(default.min(max).max(1)),
+        Some(0) => Err(AppError::from(engram_lib::EngError::InvalidInput(
+            "limit must be >= 1".into(),
+        ))),
+        Some(n) => Ok(n.min(max)),
+    }
+}
+
+/// Clamp a caller-supplied `offset`. No upper bound needed; just rejects absurd values.
+fn clamp_offset(raw: Option<usize>) -> Result<usize, AppError> {
+    const MAX_OFFSET: usize = 1_000_000;
+    match raw {
+        None => Ok(0),
+        Some(n) if n > MAX_OFFSET => Err(AppError::from(engram_lib::EngError::InvalidInput(
+            format!("offset must be <= {}", MAX_OFFSET),
+        ))),
+        Some(n) => Ok(n),
+    }
+}
+
 /// Read the skill-sync allowlist from env. Empty means sync is disabled.
 /// Each entry is canonicalized once at check time.
 fn skill_sync_allowlist() -> Vec<std::path::PathBuf> {
@@ -188,8 +211,8 @@ async fn list_skills_handler(
     Auth(auth): Auth,
     Query(params): Query<ListSkillsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(50);
-    let offset = params.offset.unwrap_or(0);
+    let limit = clamp_limit(params.limit, 50, 1000)?;
+    let offset = clamp_offset(params.offset)?;
     let skill_list = skills::list_skills(
         &state.db,
         auth.user_id,
@@ -208,7 +231,7 @@ async fn search_skills_handler(
     Auth(auth): Auth,
     Json(body): Json<SearchSkillsBody>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = body.limit.unwrap_or(20);
+    let limit = clamp_limit(body.limit, 20, 1000)?;
     let results = search_skills(&state.db, &body.query, auth.user_id, limit).await?;
     Ok(Json(json!({ "results": results, "count": results.len() })))
 }
@@ -250,10 +273,10 @@ async fn record_execution_handler(
     Path(id): Path<i64>,
     Json(body): Json<RecordExecutionBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    skills::get_skill(&state.db, id, auth.user_id).await?;
     skills::record_execution(
         &state.db,
         id,
+        auth.user_id,
         body.success,
         body.duration_ms,
         body.error_type.as_deref(),
@@ -272,9 +295,8 @@ async fn get_executions_handler(
     Path(id): Path<i64>,
     Query(params): Query<GetExecutionsParams>,
 ) -> Result<Json<Value>, AppError> {
-    skills::get_skill(&state.db, id, auth.user_id).await?;
-    let limit = params.limit.unwrap_or(20);
-    let executions = skills::get_executions(&state.db, id, limit).await?;
+    let limit = clamp_limit(params.limit, 20, 1000)?;
+    let executions = skills::get_executions(&state.db, id, auth.user_id, limit).await?;
     Ok(Json(
         json!({ "executions": executions, "count": executions.len() }),
     ))
@@ -290,10 +312,10 @@ async fn judge_handler(
     Path(id): Path<i64>,
     Json(body): Json<JudgeBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    skills::get_skill(&state.db, id, auth.user_id).await?;
     let judgment = skills::add_judgment(
         &state.db,
         id,
+        auth.user_id,
         &body.judge_agent,
         body.score,
         body.rationale.as_deref(),
@@ -307,8 +329,7 @@ async fn get_judgments_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    skills::get_skill(&state.db, id, auth.user_id).await?;
-    let judgments = skills::get_judgments(&state.db, id).await?;
+    let judgments = skills::get_judgments(&state.db, id, auth.user_id).await?;
     Ok(Json(
         json!({ "judgments": judgments, "count": judgments.len() }),
     ))
@@ -323,8 +344,7 @@ async fn get_tags_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    skills::get_skill(&state.db, id, auth.user_id).await?;
-    let tags = skills::get_skill_tags(&state.db, id).await?;
+    let tags = skills::get_skill_tags(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "tags": tags })))
 }
 
@@ -333,8 +353,7 @@ async fn get_deps_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    skills::get_skill(&state.db, id, auth.user_id).await?;
-    let deps = skills::get_tool_deps(&state.db, id).await?;
+    let deps = skills::get_tool_deps(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "deps": deps })))
 }
 
@@ -343,8 +362,7 @@ async fn get_lineage_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    skills::get_skill(&state.db, id, auth.user_id).await?;
-    let lineage = skills::get_lineage(&state.db, id).await?;
+    let lineage = skills::get_lineage(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "lineage": lineage })))
 }
 
@@ -405,7 +423,7 @@ async fn stats_handler(
     Auth(auth): Auth,
     Query(params): Query<StatsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(50);
+    let limit = clamp_limit(params.limit, 50, 1000)?;
     let stats =
         dashboard::get_skill_stats(&state.db, auth.user_id, params.sort_by.as_deref(), limit)
             .await?;
@@ -492,7 +510,8 @@ async fn cloud_search_handler(
     Auth(_auth): Auth,
     Json(body): Json<CloudSearchBody>,
 ) -> Result<Json<Value>, AppError> {
-    let results = cloud::search_skills_cloud(&body.query, body.limit.unwrap_or(20)).await?;
+    let limit = clamp_limit(body.limit, 20, 100)?;
+    let results = cloud::search_skills_cloud(&body.query, limit).await?;
     Ok(Json(json!({ "results": results, "count": results.len() })))
 }
 
@@ -557,13 +576,18 @@ async fn sync_skills_handler(
     let mut errors = Vec::new();
 
     for dir in &dirs {
+        // SECURITY: never echo the requested path or the allowlist back to
+        // the caller -- it leaks server filesystem layout. Log internally
+        // and return an opaque rejection to the client.
         if !is_path_allowed(dir, &allowlist) {
-            errors.push(format!("Directory not in allowlist: {}", dir));
+            tracing::warn!(dir = %dir, "sync_skills: directory not in allowlist");
+            errors.push("directory not permitted".to_string());
             continue;
         }
         let path = std::path::Path::new(dir);
         if !path.exists() || !path.is_dir() {
-            errors.push(format!("Directory not found: {}", dir));
+            tracing::warn!(dir = %dir, "sync_skills: directory not found");
+            errors.push("directory not permitted".to_string());
             continue;
         }
 

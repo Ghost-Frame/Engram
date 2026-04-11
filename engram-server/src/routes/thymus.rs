@@ -225,9 +225,10 @@ async fn get_metric_summary_handler(
 
 async fn record_session_quality_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
-    Json(body): Json<RecordSessionQualityRequest>,
+    Auth(auth): Auth,
+    Json(mut body): Json<RecordSessionQualityRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    body.user_id = Some(auth.user_id);
     let sq = record_session_quality(&state.db, body).await?;
     Ok((StatusCode::CREATED, Json(json!(sq))))
 }
@@ -241,12 +242,19 @@ struct SessionQualityParams {
 
 async fn get_session_quality_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(params): Query<SessionQualityParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
-    let records = get_session_quality(&state.db, agent, params.since.as_deref(), limit).await?;
+    let records = get_session_quality(
+        &state.db,
+        auth.user_id,
+        agent,
+        params.since.as_deref(),
+        limit,
+    )
+    .await?;
     Ok(Json(json!({ "session_quality": records })))
 }
 
@@ -256,9 +264,10 @@ async fn get_session_quality_handler(
 
 async fn record_drift_event_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
-    Json(body): Json<RecordDriftEventRequest>,
+    Auth(auth): Auth,
+    Json(mut body): Json<RecordDriftEventRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    body.user_id = Some(auth.user_id);
     let event = record_drift_event(&state.db, body).await?;
     Ok((StatusCode::CREATED, Json(json!(event))))
 }
@@ -271,12 +280,12 @@ struct DriftEventsParams {
 
 async fn get_drift_events_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(params): Query<DriftEventsParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
-    let events = get_drift_events(&state.db, agent, limit).await?;
+    let events = get_drift_events(&state.db, auth.user_id, agent, limit).await?;
     Ok(Json(json!({ "drift_events": events })))
 }
 
@@ -286,8 +295,8 @@ async fn get_drift_events_handler(
 
 async fn get_stats_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_stats(&state.db).await?;
+    let stats = get_stats(&state.db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }

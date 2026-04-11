@@ -1,6 +1,12 @@
-use axum::{extract::DefaultBodyLimit, http::HeaderValue, middleware as axum_mw, Router};
+use axum::{
+    extract::DefaultBodyLimit,
+    http::{header, HeaderName, HeaderValue},
+    middleware as axum_mw,
+    Router,
+};
 use std::time::Duration;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
@@ -35,6 +41,9 @@ fn build_cors_layer() -> CorsLayer {
             axum::http::header::ACCEPT,
             axum::http::header::COOKIE,
         ])
+        // Cache preflight for an hour so cross-origin GUIs do not re-OPTIONS
+        // every API call.
+        .max_age(Duration::from_secs(3600))
         .allow_credentials(true);
 
     match std::env::var("ENGRAM_ALLOWED_ORIGINS") {
@@ -64,6 +73,7 @@ fn build_cors_layer() -> CorsLayer {
 }
 
 use crate::middleware::auth::auth_middleware;
+use crate::middleware::json_depth::json_depth_middleware;
 use crate::middleware::rate_limit::rate_limit_middleware;
 use crate::routes;
 use crate::state::AppState;
@@ -131,14 +141,73 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             routes::gui::gui_spa_middleware,
         ))
+        // JSON depth check runs after body limit but before routing so
+        // downstream Json<T> extractors never see a stack-bomb payload.
+        .layer(axum_mw::from_fn(json_depth_middleware))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(REQUEST_TIMEOUT_SECS),
         ))
         .layer(build_cors_layer())
+        // SECURITY: baseline response hardening headers. Applied as overrides
+        // so individual handlers cannot accidentally downgrade them.
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-permitted-cross-domain-policies"),
+            HeaderValue::from_static("none"),
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Listen for SIGTERM / SIGINT so the server can drain in-flight requests
+/// before exiting. Without this the process dies hard on signal and any
+/// in-flight writes to SQLite can be cut mid-statement.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!("failed to install ctrl-c handler: {}", e);
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::error!("failed to install SIGTERM handler: {}", e);
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("shutdown signal received, draining connections");
 }
 
 pub async fn run(state: AppState) -> Result<(), Box<dyn std::error::Error>> {
@@ -146,6 +215,8 @@ pub async fn run(state: AppState) -> Result<(), Box<dyn std::error::Error>> {
     let app = build_router(state);
     tracing::info!("engram-server listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
 }

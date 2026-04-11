@@ -2022,6 +2022,7 @@ dependencies = [
  "deadpool-sqlite",
  "dirs 6.0.0",
  "futures",
+ "hmac",
  "lancedb",
  "libsql",
  "ndarray 0.16.1",
@@ -2041,6 +2042,7 @@ dependencies = [
  "tokio-rusqlite",
  "tokio-util",
  "tracing",
+ "url",
  "uuid",
  "zip",
 ]

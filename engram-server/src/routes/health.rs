@@ -1,9 +1,15 @@
 use axum::{
-    body::Body, extract::State, http::header, response::Response, routing::get, Json, Router,
+    body::Body,
+    extract::State,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+    routing::get,
+    Json, Router,
 };
 use serde_json::{json, Value};
 
-use crate::state::AppState;
+use crate::{extractors::Auth, state::AppState};
+use engram_lib::auth::Scope;
 use engram_lib::jobs;
 
 pub fn router() -> Router<AppState> {
@@ -38,7 +44,17 @@ async fn get_ready() -> Json<Value> {
     }))
 }
 
-async fn get_metrics(State(state): State<AppState>) -> Response<Body> {
+async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Response<Body> {
+    // SECURITY: /metrics exposes global counts. Restrict to admin-scoped callers so
+    // a leaked read/write key can neither enumerate tenant sizes nor observe fleet
+    // activity.
+    if !auth.has_scope(&Scope::Admin) {
+        return (
+            StatusCode::FORBIDDEN,
+            "admin scope required for metrics\n",
+        )
+            .into_response();
+    }
     let mut lines = Vec::new();
 
     // Memory counts

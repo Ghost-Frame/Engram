@@ -18,7 +18,7 @@ use tokio::fs;
 
 use crate::error::AppError;
 use crate::state::AppState;
-use engram_lib::auth;
+use engram_lib::auth::{self, Scope};
 use engram_lib::memory;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -55,7 +55,11 @@ fn mime_for_extension(ext: &str) -> &'static str {
     }
 }
 
-/// Get or create the HMAC secret for cookie signing
+/// Get or create the HMAC secret for cookie signing.
+///
+/// SECURITY: the on-disk secret is chmod 0o600 so another user on the box
+/// cannot read it and forge GUI auth cookies. If we find an existing file
+/// with permissive bits we tighten them in place.
 async fn get_hmac_secret(data_dir: &str) -> String {
     if let Ok(secret) = std::env::var("ENGRAM_HMAC_SECRET") {
         return secret;
@@ -65,6 +69,7 @@ async fn get_hmac_secret(data_dir: &str) -> String {
 
     // Try to read existing secret
     if let Ok(secret) = fs::read_to_string(&secret_path).await {
+        tighten_secret_perms(&secret_path).await;
         return secret;
     }
 
@@ -76,15 +81,61 @@ async fn get_hmac_secret(data_dir: &str) -> String {
 
     // Write secret (ignore errors, we'll use the generated one anyway)
     let _ = fs::write(&secret_path, &secret).await;
+    tighten_secret_perms(&secret_path).await;
     tracing::info!(path = ?secret_path, "generated HMAC secret");
 
     secret
 }
 
-/// Sign user_id and timestamp to create a cookie value
-/// Format: {user_id}:{timestamp}.{hmac}
-fn sign_cookie(user_id: i64, ts: i64, secret: &str) -> String {
-    let payload = format!("{}:{}", user_id, ts);
+#[cfg(unix)]
+async fn tighten_secret_perms(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = fs::metadata(path).await {
+        let mut perms = meta.permissions();
+        if perms.mode() & 0o777 != 0o600 {
+            perms.set_mode(0o600);
+            if let Err(e) = fs::set_permissions(path, perms).await {
+                tracing::warn!(path = ?path, error = %e, "failed to chmod 0o600 on hmac secret");
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn tighten_secret_perms(_path: &std::path::Path) {}
+
+/// Authenticated GUI session resolved from a signed cookie.
+#[derive(Debug, Clone)]
+pub struct GuiSession {
+    pub user_id: i64,
+    pub scopes: Vec<Scope>,
+}
+
+impl GuiSession {
+    pub fn has_scope(&self, scope: &Scope) -> bool {
+        self.scopes.contains(scope) || self.scopes.contains(&Scope::Admin)
+    }
+}
+
+fn encode_scopes(scopes: &[Scope]) -> String {
+    scopes
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn decode_scopes(raw: &str) -> Vec<Scope> {
+    raw.split(',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<Scope>().ok())
+        .collect()
+}
+
+/// Sign user_id, timestamp, and scopes to create a cookie value.
+/// Format: {user_id}:{timestamp}:{scopes}.{hmac}
+fn sign_cookie(user_id: i64, ts: i64, scopes: &[Scope], secret: &str) -> String {
+    let payload = format!("{}:{}:{}", user_id, ts, encode_scopes(scopes));
     let mut mac =
         HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
     mac.update(payload.as_bytes());
@@ -93,18 +144,28 @@ fn sign_cookie(user_id: i64, ts: i64, secret: &str) -> String {
     format!("{}.{}", payload, hex)
 }
 
-/// Verify a cookie value and check expiration
-/// Returns the user_id if valid, None otherwise
-/// Cookie format: {user_id}:{timestamp}.{hmac}
-fn verify_cookie(cookie: &str, secret: &str) -> Option<i64> {
+/// Verify a cookie value and return the resolved session.
+/// Cookie format: {user_id}:{timestamp}:{scopes}.{hmac}
+fn verify_cookie(cookie: &str, secret: &str) -> Option<GuiSession> {
     let dot_idx = cookie.find('.')?;
     let payload = &cookie[..dot_idx];
     let sig = &cookie[dot_idx + 1..];
 
-    // Parse payload: user_id:timestamp
-    let colon_idx = payload.find(':')?;
-    let user_id: i64 = payload[..colon_idx].parse().ok()?;
-    let ts: i64 = payload[colon_idx + 1..].parse().ok()?;
+    // SECURITY: verify HMAC BEFORE parsing payload fields. This means a
+    // forged cookie can never select a user via the field parser alone.
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
+    mac.update(payload.as_bytes());
+    let expected = hex::encode(mac.finalize().into_bytes());
+    if expected.as_bytes().ct_eq(sig.as_bytes()).unwrap_u8() != 1 {
+        return None;
+    }
+
+    // Parse payload: user_id:timestamp[:scopes]
+    let mut parts = payload.splitn(3, ':');
+    let user_id: i64 = parts.next()?.parse().ok()?;
+    let ts: i64 = parts.next()?.parse().ok()?;
+    let scopes = parts.next().map(decode_scopes).unwrap_or_default();
 
     // Check expiration
     let now = chrono::Utc::now().timestamp();
@@ -112,19 +173,7 @@ fn verify_cookie(cookie: &str, secret: &str) -> Option<i64> {
         return None;
     }
 
-    // Verify HMAC
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
-    mac.update(payload.as_bytes());
-    let expected = hex::encode(mac.finalize().into_bytes());
-
-    // Constant-time comparison via subtle::ConstantTimeEq. The previous
-    // Iterator::all() short-circuits on first mismatch and leaks timing.
-    if expected.as_bytes().ct_eq(sig.as_bytes()).unwrap_u8() != 1 {
-        return None;
-    }
-
-    Some(user_id)
+    Some(GuiSession { user_id, scopes })
 }
 
 /// Extract the engram_auth cookie from headers
@@ -140,12 +189,38 @@ fn get_auth_cookie(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Check if a request is authenticated via GUI cookie
-/// Returns the user_id if authenticated, None otherwise
-pub async fn get_gui_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
+/// Resolve the GUI session (user_id + scopes) from the cookie, if any.
+pub async fn get_gui_session(state: &AppState, headers: &HeaderMap) -> Option<GuiSession> {
     let cookie = get_auth_cookie(headers)?;
     let secret = get_hmac_secret(&state.config.data_dir).await;
     verify_cookie(&cookie, &secret)
+}
+
+/// Check if a request is authenticated via GUI cookie and return the user_id.
+pub async fn get_gui_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
+    get_gui_session(state, headers).await.map(|s| s.user_id)
+}
+
+/// Require an authenticated GUI session with a specific scope.
+///
+/// SECURITY: write handlers must call this instead of `get_gui_user_id` so a
+/// read-only API key cannot be used to create, update, or delete data via the
+/// GUI cookie path.
+async fn require_gui_scope(
+    state: &AppState,
+    headers: &HeaderMap,
+    scope: Scope,
+) -> Result<i64, AppError> {
+    let session = get_gui_session(state, headers)
+        .await
+        .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
+    if !session.has_scope(&scope) {
+        return Err(AppError::from(engram_lib::EngError::Auth(format!(
+            "GUI session missing required scope: {}",
+            scope
+        ))));
+    }
+    Ok(session.user_id)
 }
 
 /// Check if a request is authenticated via GUI cookie (bool convenience wrapper)
@@ -192,10 +267,11 @@ async fn gui_auth(
         }
     };
 
-    // Generate signed cookie with user_id
+    // Generate signed cookie with user_id and the key's scopes so write
+    // handlers can re-check them without another DB round trip.
     let ts = chrono::Utc::now().timestamp();
     let secret = get_hmac_secret(&state.config.data_dir).await;
-    let cookie_value = sign_cookie(auth_ctx.user_id, ts, &secret);
+    let cookie_value = sign_cookie(auth_ctx.user_id, ts, &auth_ctx.key.scopes, &secret);
 
     let attrs = cookie_attributes(&headers);
     let cookie = format!(
@@ -426,10 +502,7 @@ async fn gui_create_memory(
     headers: HeaderMap,
     Json(body): Json<CreateMemoryBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    // Get authenticated user_id from GUI session
-    let user_id = get_gui_user_id(&state, &headers)
-        .await
-        .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
+    let user_id = require_gui_scope(&state, &headers, Scope::Write).await?;
 
     let content = body.content.trim();
     if content.is_empty() {
@@ -476,9 +549,7 @@ async fn gui_update_memory(
     Path(id): Path<i64>,
     Json(body): Json<UpdateMemoryBody>,
 ) -> Result<Json<Value>, AppError> {
-    let user_id = get_gui_user_id(&state, &headers)
-        .await
-        .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
+    let user_id = require_gui_scope(&state, &headers, Scope::Write).await?;
 
     let req = memory::types::UpdateRequest {
         content: body.content.map(|s| s.trim().to_string()),
@@ -499,9 +570,7 @@ async fn gui_delete_memory(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let user_id = get_gui_user_id(&state, &headers)
-        .await
-        .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
+    let user_id = require_gui_scope(&state, &headers, Scope::Write).await?;
 
     memory::delete(&state.db, id, user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
@@ -517,9 +586,7 @@ async fn gui_bulk_archive(
     headers: HeaderMap,
     Json(body): Json<BulkArchiveBody>,
 ) -> Result<Json<Value>, AppError> {
-    let user_id = get_gui_user_id(&state, &headers)
-        .await
-        .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
+    let user_id = require_gui_scope(&state, &headers, Scope::Write).await?;
 
     let mut archived = 0;
     for id in &body.ids {

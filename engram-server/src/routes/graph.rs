@@ -104,27 +104,22 @@ async fn create_entity_handler(
     let space_id = req.space_id;
     let user_id = auth.user_id;
 
-    conn.execute(
-        "INSERT INTO entities (name, entity_type, description, aliases, user_id, space_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        libsql::params![
-            req.name.clone(),
-            entity_type.to_string(),
-            description.map(|s| s.to_string()),
-            aliases_json.clone(),
-            user_id,
-            space_id
-        ],
-    )
-    .await
-    .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
-
+    // INSERT ... RETURNING avoids the cross-connection last_insert_rowid() race
+    // that could hand a caller another tenant's row under concurrency.
     let mut rows = conn
         .query(
-            "SELECT id, name, entity_type, description, aliases, user_id, space_id, \
-             confidence, occurrence_count, first_seen_at, last_seen_at, created_at \
-             FROM entities WHERE rowid = last_insert_rowid()",
-            (),
+            "INSERT INTO entities (name, entity_type, description, aliases, user_id, space_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             RETURNING id, name, entity_type, description, aliases, user_id, space_id, \
+             confidence, occurrence_count, first_seen_at, last_seen_at, created_at",
+            libsql::params![
+                req.name.clone(),
+                entity_type.to_string(),
+                description.map(|s| s.to_string()),
+                aliases_json.clone(),
+                user_id,
+                space_id
+            ],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
@@ -313,6 +308,9 @@ async fn entity_relationships_handler(
     Query(params): Query<RelationshipQuery>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
+    // SECURITY/DoS: cap the fan-out so a hot entity cannot return an unbounded
+    // result set and starve server memory.
+    const MAX_RELATIONSHIPS: i64 = 1_000;
     let mut rows = if let Some(relationship_type) = params.relationship_type {
         conn.query(
             "SELECT er.id, er.source_entity_id, er.target_entity_id, er.relationship_type, \
@@ -320,8 +318,10 @@ async fn entity_relationships_handler(
              FROM entity_relationships er \
              WHERE (er.source_entity_id = ?1 OR er.target_entity_id = ?1) \
                AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2) \
-               AND er.relationship_type = ?3",
-            libsql::params![id, auth.user_id, relationship_type],
+               AND er.relationship_type = ?3 \
+             ORDER BY er.strength DESC, er.id DESC \
+             LIMIT ?4",
+            libsql::params![id, auth.user_id, relationship_type, MAX_RELATIONSHIPS],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
@@ -331,8 +331,10 @@ async fn entity_relationships_handler(
              er.strength, er.evidence_count, er.created_at \
              FROM entity_relationships er \
              WHERE (er.source_entity_id = ?1 OR er.target_entity_id = ?1) \
-             AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2)",
-            libsql::params![id, auth.user_id],
+             AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2) \
+             ORDER BY er.strength DESC, er.id DESC \
+             LIMIT ?3",
+            libsql::params![id, auth.user_id, MAX_RELATIONSHIPS],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?
@@ -506,26 +508,21 @@ async fn create_relationship_handler(
     let rel_type = req.relationship_type.as_deref().unwrap_or("related");
     let strength = req.strength.unwrap_or(1.0);
 
-    conn.execute(
-        "INSERT INTO entity_relationships \
-         (source_entity_id, target_entity_id, relationship_type, strength) \
-         VALUES (?1, ?2, ?3, ?4)",
-        libsql::params![
-            req.source_entity_id,
-            req.target_entity_id,
-            rel_type.to_string(),
-            strength
-        ],
-    )
-    .await
-    .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
-
+    // INSERT ... RETURNING avoids the cross-connection last_insert_rowid()
+    // race that could otherwise leak another tenant's relationship row.
     let mut rows = conn
         .query(
-            "SELECT id, source_entity_id, target_entity_id, relationship_type, \
-             strength, evidence_count, created_at \
-             FROM entity_relationships WHERE rowid = last_insert_rowid()",
-            (),
+            "INSERT INTO entity_relationships \
+             (source_entity_id, target_entity_id, relationship_type, strength) \
+             VALUES (?1, ?2, ?3, ?4) \
+             RETURNING id, source_entity_id, target_entity_id, relationship_type, \
+             strength, evidence_count, created_at",
+            libsql::params![
+                req.source_entity_id,
+                req.target_entity_id,
+                rel_type.to_string(),
+                strength
+            ],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
@@ -612,6 +609,18 @@ async fn build_graph_handler(
     Json(mut opts): Json<GraphBuildOptions>,
 ) -> Result<Json<Value>, AppError> {
     opts.user_id = auth.user_id;
+    // SECURITY/DoS: clamp caller-supplied node cap so a single request cannot
+    // force the server to materialize an arbitrarily large graph.
+    const MAX_GRAPH_NODES: usize = 5_000;
+    opts.limit = Some(match opts.limit {
+        Some(0) => {
+            return Err(AppError::from(engram_lib::EngError::InvalidInput(
+                "limit must be >= 1".into(),
+            )))
+        }
+        Some(n) => n.min(MAX_GRAPH_NODES),
+        None => MAX_GRAPH_NODES,
+    });
     let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
     Ok(Json(json!(result)))
 }
@@ -651,7 +660,14 @@ async fn neighborhood_handler(
     Path(id): Path<String>,
     Query(params): Query<NeighborhoodQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let depth = params.depth.unwrap_or(2);
+    // SECURITY/DoS: neighborhood expansion is super-linear in depth. Cap the
+    // caller-supplied depth so a single request cannot amplify into a full
+    // graph traversal.
+    const MAX_NEIGHBORHOOD_DEPTH: u32 = 5;
+    let depth = params
+        .depth
+        .unwrap_or(2)
+        .clamp(1, MAX_NEIGHBORHOOD_DEPTH);
     let (nodes, edges) = neighborhood(&state.db, &id, depth, auth.user_id).await?;
     Ok(Json(json!({ "nodes": nodes, "edges": edges })))
 }
@@ -666,14 +682,18 @@ async fn memory_entities_handler(
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let conn = state.db.connection();
+    // SECURITY/DoS: cap entity fan-out per memory to avoid unbounded result sets.
+    const MAX_MEMORY_ENTITIES: i64 = 1_000;
     let mut rows = conn
         .query(
             "SELECT e.id, e.name, e.entity_type, me.salience \
              FROM memory_entities me \
              JOIN entities e ON e.id = me.entity_id \
              JOIN memories m ON m.id = me.memory_id \
-             WHERE me.memory_id = ?1 AND m.user_id = ?2",
-            libsql::params![id, auth.user_id],
+             WHERE me.memory_id = ?1 AND m.user_id = ?2 \
+             ORDER BY me.salience DESC \
+             LIMIT ?3",
+            libsql::params![id, auth.user_id, MAX_MEMORY_ENTITIES],
         )
         .await
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
