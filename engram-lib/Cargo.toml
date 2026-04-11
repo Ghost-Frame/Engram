@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = []
+default = ["brain_hopfield"]
+brain_hopfield = []
 test-utils = []
 # Enable per-tenant sharding (rusqlite-based). Mutually exclusive with libsql tests.
 tenant-sharding = []

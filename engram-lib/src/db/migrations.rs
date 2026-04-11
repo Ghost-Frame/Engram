@@ -15,6 +15,7 @@ const MIGRATION_VECTOR_SYNC_PENDING: i64 = 7;
 const MIGRATION_ADD_COMMUNITY_ID: i64 = 8;
 const MIGRATION_DROP_IS_INFERENCE: i64 = 9;
 const MIGRATION_KLEOS_SERVICES: i64 = 10;
+const MIGRATION_BRAIN_PATTERNS: i64 = 11;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -129,6 +130,15 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         record_migration(conn, MIGRATION_KLEOS_SERVICES, "kleos_services").await?;
     }
 
+    // Migration 11: brain_patterns + brain_edges tables for the Hopfield
+    // neural substrate. Enables in-process associative recall without the
+    // eidolon subprocess dependency.
+    if current_version < MIGRATION_BRAIN_PATTERNS {
+        info!("Running migration 11: brain_patterns");
+        run_migration_brain_patterns(conn).await?;
+        record_migration(conn, MIGRATION_BRAIN_PATTERNS, "brain_patterns").await?;
+    }
+
     // Future migrations go here:
     // if current_version < MIGRATION_XXX { ... }
 
@@ -218,6 +228,12 @@ pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 10: kleos_services");
         run_migration_kleos_services_rusqlite(conn)?;
         record_migration_rusqlite(conn, MIGRATION_KLEOS_SERVICES, "kleos_services")?;
+    }
+
+    if current_version < MIGRATION_BRAIN_PATTERNS {
+        info!("Running migration 11: brain_patterns");
+        run_migration_brain_patterns_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_BRAIN_PATTERNS, "brain_patterns")?;
     }
 
     Ok(())
@@ -344,6 +360,43 @@ async fn run_migration_drop_is_inference(conn: &Connection) -> Result<()> {
 async fn run_migration_kleos_services(conn: &Connection) -> Result<()> {
     conn.execute_batch(crate::db::schema_sql::KLEOS_SERVICES_SQL)
         .await?;
+    Ok(())
+}
+
+/// Migration 11: brain_patterns + brain_edges tables for the Hopfield
+/// neural substrate. All statements are idempotent.
+async fn run_migration_brain_patterns(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS brain_patterns (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            pattern BLOB NOT NULL,
+            strength REAL NOT NULL DEFAULT 1.0,
+            importance INTEGER NOT NULL DEFAULT 5,
+            access_count INTEGER NOT NULL DEFAULT 0,
+            last_activated_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_patterns_user ON brain_patterns(user_id);
+        CREATE INDEX IF NOT EXISTS idx_brain_patterns_strength ON brain_patterns(strength);
+
+        CREATE TABLE IF NOT EXISTS brain_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            weight REAL NOT NULL DEFAULT 1.0,
+            edge_type TEXT NOT NULL DEFAULT 'association',
+            user_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(source_id, target_id, edge_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_edges_source ON brain_edges(source_id);
+        CREATE INDEX IF NOT EXISTS idx_brain_edges_target ON brain_edges(target_id);
+        CREATE INDEX IF NOT EXISTS idx_brain_edges_user ON brain_edges(user_id);
+        ",
+    )
+    .await?;
     Ok(())
 }
 
@@ -609,6 +662,43 @@ fn run_migration_drop_is_inference_rusqlite(conn: &rusqlite::Connection) -> Resu
 fn run_migration_kleos_services_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(crate::db::schema_sql::KLEOS_SERVICES_SQL)
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+/// Migration 11 (rusqlite): brain_patterns + brain_edges tables.
+#[cfg(feature = "db_pool")]
+fn run_migration_brain_patterns_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS brain_patterns (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            pattern BLOB NOT NULL,
+            strength REAL NOT NULL DEFAULT 1.0,
+            importance INTEGER NOT NULL DEFAULT 5,
+            access_count INTEGER NOT NULL DEFAULT 0,
+            last_activated_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_patterns_user ON brain_patterns(user_id);
+        CREATE INDEX IF NOT EXISTS idx_brain_patterns_strength ON brain_patterns(strength);
+
+        CREATE TABLE IF NOT EXISTS brain_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            weight REAL NOT NULL DEFAULT 1.0,
+            edge_type TEXT NOT NULL DEFAULT 'association',
+            user_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(source_id, target_id, edge_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_edges_source ON brain_edges(source_id);
+        CREATE INDEX IF NOT EXISTS idx_brain_edges_target ON brain_edges(target_id);
+        CREATE INDEX IF NOT EXISTS idx_brain_edges_user ON brain_edges(user_id);
+        ",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
 }
 

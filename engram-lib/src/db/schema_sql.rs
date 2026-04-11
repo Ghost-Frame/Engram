@@ -1030,6 +1030,35 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        -- Brain: Hopfield substrate pattern storage
+        CREATE TABLE IF NOT EXISTS brain_patterns (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            pattern BLOB NOT NULL,
+            strength REAL NOT NULL DEFAULT 1.0,
+            importance INTEGER NOT NULL DEFAULT 5,
+            access_count INTEGER NOT NULL DEFAULT 0,
+            last_activated_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_patterns_user ON brain_patterns(user_id);
+        CREATE INDEX IF NOT EXISTS idx_brain_patterns_strength ON brain_patterns(strength);
+
+        -- Brain: Hopfield edge adjacency with typed weights
+        CREATE TABLE IF NOT EXISTS brain_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            weight REAL NOT NULL DEFAULT 1.0,
+            edge_type TEXT NOT NULL DEFAULT 'association',
+            user_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(source_id, target_id, edge_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_edges_source ON brain_edges(source_id);
+        CREATE INDEX IF NOT EXISTS idx_brain_edges_target ON brain_edges(target_id);
+        CREATE INDEX IF NOT EXISTS idx_brain_edges_user ON brain_edges(user_id);
 "#;
 
 pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[

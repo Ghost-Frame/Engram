@@ -3,7 +3,7 @@ use kleos_lib::db::Database;
 use kleos_lib::embeddings::EmbeddingProvider;
 use kleos_lib::llm::local::LocalModelClient;
 use kleos_lib::reranker::Reranker;
-use kleos_lib::services::brain::BrainManager;
+use kleos_lib::services::brain::BrainBackend;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
@@ -35,7 +35,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub embedder: Option<Arc<dyn EmbeddingProvider>>,
     pub reranker: Option<Arc<Reranker>>,
-    pub brain: Option<Arc<BrainManager>>,
+    pub brain: Option<Arc<dyn BrainBackend>>,
     #[allow(dead_code)]
     pub llm: Option<Arc<LocalModelClient>>,
     pub sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SessionBroadcast>>>>>,

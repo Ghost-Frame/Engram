@@ -43,6 +43,9 @@ pub mod tenant;
 pub mod vector;
 pub mod webhooks;
 
+#[cfg(feature = "brain_hopfield")]
+pub mod brain;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]

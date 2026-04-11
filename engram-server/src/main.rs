@@ -5,6 +5,7 @@ use kleos_lib::embeddings::EmbeddingProvider;
 use kleos_lib::jobs::pagerank_refresh::start_pagerank_refresh_job;
 use kleos_lib::llm::local::{LocalModelClient, OllamaConfig};
 use kleos_lib::reranker::Reranker;
+use kleos_lib::services::brain::create_brain_backend;
 use kleos_server::state::AppState;
 use std::sync::Arc;
 
@@ -68,12 +69,18 @@ async fn main() {
         }
     };
 
+    let db_arc = Arc::new(db);
+
+    // Initialize brain backend (Hopfield in-process or subprocess eidolon)
+    let data_dir = config.data_dir.clone();
+    let brain = create_brain_backend(Arc::clone(&db_arc), &data_dir, 1).await;
+
     let state = AppState {
-        db: Arc::new(db),
+        db: db_arc,
         config: Arc::new(config),
         embedder,
         reranker,
-        brain: None,
+        brain,
         llm,
         sessions: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         eidolon_config: None,

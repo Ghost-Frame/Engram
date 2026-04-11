@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -13,6 +14,39 @@ use tracing::{info, warn};
 use crate::db::Database;
 use crate::embeddings::EmbeddingProvider;
 use crate::{EngError, Result};
+
+// ---------------------------------------------------------------------------
+// BrainBackend trait -- unifies subprocess and in-process Hopfield
+// ---------------------------------------------------------------------------
+
+/// Trait that abstracts over different brain implementations. The server
+/// routes call these methods without knowing whether the brain is a
+/// subprocess (eidolon binary) or the in-process Hopfield network.
+#[async_trait]
+pub trait BrainBackend: Send + Sync {
+    fn is_ready(&self) -> bool;
+    async fn stop(&self);
+    async fn query(
+        &self,
+        embedder: &dyn EmbeddingProvider,
+        text: &str,
+        options: &BrainQueryOptions,
+    ) -> Result<BrainQueryResult>;
+    async fn absorb(
+        &self,
+        embedder: &dyn EmbeddingProvider,
+        memory: AbsorbMemoryData,
+    ) -> Result<()>;
+    async fn decay_tick(&self, ticks: u32) -> Result<()>;
+    async fn stats(&self) -> Result<BrainStats>;
+    async fn dream_cycle(&self) -> Result<BrainResponse>;
+    async fn feedback_signal(
+        &self,
+        memory_ids: Vec<i64>,
+        edge_pairs: Vec<(i64, i64)>,
+        useful: bool,
+    ) -> Result<BrainResponse>;
+}
 // ---------------------------------------------------------------------------
 // Types (from types.ts)
 // ---------------------------------------------------------------------------
@@ -588,6 +622,436 @@ impl BrainManager {
             .await
     }
 }
+
+#[async_trait]
+impl BrainBackend for BrainManager {
+    fn is_ready(&self) -> bool {
+        self.is_ready()
+    }
+
+    async fn stop(&self) {
+        self.stop().await;
+    }
+
+    async fn query(
+        &self,
+        embedder: &dyn EmbeddingProvider,
+        text: &str,
+        options: &BrainQueryOptions,
+    ) -> Result<BrainQueryResult> {
+        self.query(embedder, text, options).await
+    }
+
+    async fn absorb(
+        &self,
+        embedder: &dyn EmbeddingProvider,
+        memory: AbsorbMemoryData,
+    ) -> Result<()> {
+        self.absorb(embedder, memory).await
+    }
+
+    async fn decay_tick(&self, ticks: u32) -> Result<()> {
+        self.decay_tick(ticks).await
+    }
+
+    async fn stats(&self) -> Result<BrainStats> {
+        self.stats().await
+    }
+
+    async fn dream_cycle(&self) -> Result<BrainResponse> {
+        self.dream_cycle().await
+    }
+
+    async fn feedback_signal(
+        &self,
+        memory_ids: Vec<i64>,
+        edge_pairs: Vec<(i64, i64)>,
+        useful: bool,
+    ) -> Result<BrainResponse> {
+        self.feedback_signal(memory_ids, edge_pairs, useful).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HopfieldBrainManager -- in-process Hopfield network backend
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "brain_hopfield")]
+pub struct HopfieldBrainManager {
+    network: Mutex<crate::brain::hopfield::HopfieldNetwork>,
+    db: Arc<Database>,
+    user_id: AtomicI64,
+    ready: std::sync::atomic::AtomicBool,
+    pub query_state: BrainQueryState,
+}
+
+#[cfg(feature = "brain_hopfield")]
+impl HopfieldBrainManager {
+    /// Create a new in-process Hopfield brain manager. Loads existing patterns
+    /// from the database for the given user.
+    pub async fn new(db: Arc<Database>, user_id: i64) -> Result<Self> {
+        use crate::brain::hopfield::pattern;
+
+        info!(msg = "hopfield_brain_init", user_id = user_id);
+
+        // Load all patterns from the database
+        let db_patterns = pattern::list_patterns(&db, user_id).await?;
+        let batch: Vec<(i64, Vec<f32>, f32)> = db_patterns
+            .into_iter()
+            .map(|p| (p.id, p.pattern, p.strength))
+            .collect();
+
+        let pattern_count = batch.len();
+        let network = crate::brain::hopfield::HopfieldNetwork::from_patterns(batch);
+
+        info!(
+            msg = "hopfield_brain_ready",
+            user_id = user_id,
+            patterns_loaded = pattern_count
+        );
+
+        Ok(Self {
+            network: Mutex::new(network),
+            db,
+            user_id: AtomicI64::new(user_id),
+            ready: std::sync::atomic::AtomicBool::new(true),
+            query_state: BrainQueryState::new(),
+        })
+    }
+
+    /// Switch to a different user's pattern space. Re-loads patterns from DB.
+    pub async fn switch_user(&self, user_id: i64) -> Result<()> {
+        use crate::brain::hopfield::pattern;
+
+        let db_patterns = pattern::list_patterns(&self.db, user_id).await?;
+        let batch: Vec<(i64, Vec<f32>, f32)> = db_patterns
+            .into_iter()
+            .map(|p| (p.id, p.pattern, p.strength))
+            .collect();
+
+        let new_network = crate::brain::hopfield::HopfieldNetwork::from_patterns(batch);
+        *self.network.lock().await = new_network;
+        self.user_id.store(user_id, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn current_user_id(&self) -> i64 {
+        self.user_id.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(feature = "brain_hopfield")]
+#[async_trait]
+impl BrainBackend for HopfieldBrainManager {
+    fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Relaxed)
+    }
+
+    async fn stop(&self) {
+        self.ready.store(false, Ordering::Relaxed);
+        info!(msg = "hopfield_brain_stopped");
+    }
+
+    async fn query(
+        &self,
+        embedder: &dyn EmbeddingProvider,
+        text: &str,
+        options: &BrainQueryOptions,
+    ) -> Result<BrainQueryResult> {
+        use crate::brain::hopfield::{recall, DEFAULT_BETA};
+
+        let embedding = embedder.embed(text).await?;
+        let user_id = self.current_user_id();
+        let top_k = options.top_k.unwrap_or(10);
+        let beta = options.beta.map(|b| b as f32).unwrap_or(DEFAULT_BETA);
+
+        let network = self.network.lock().await;
+        let results =
+            recall::recall_pattern(&self.db, &network, &embedding, user_id, top_k, beta).await?;
+
+        self.query_state.touch();
+
+        // Convert RecallResults to BrainMemory format
+        let mut activated = Vec::new();
+        for r in &results {
+            // Load the full memory content from the memories table
+            let mem = load_brain_memory(&self.db, r.pattern_id, user_id).await;
+            if let Ok(mut m) = mem {
+                m.activation = r.activation as f64;
+                activated.push(m);
+            }
+        }
+
+        Ok(BrainQueryResult {
+            activated,
+            contradictions: Vec::new(), // Contradiction detection is done by the intelligence layer
+        })
+    }
+
+    async fn absorb(
+        &self,
+        embedder: &dyn EmbeddingProvider,
+        memory: AbsorbMemoryData,
+    ) -> Result<()> {
+        use crate::brain::hopfield::recall;
+
+        if !self.is_ready() {
+            return Ok(());
+        }
+
+        let embedding = embedder.embed(&memory.content).await?;
+        let user_id = self.current_user_id();
+        let importance = memory.importance.round() as i32;
+
+        let mut network = self.network.lock().await;
+        recall::store_pattern(
+            &self.db,
+            &mut network,
+            memory.id,
+            &embedding,
+            user_id,
+            importance,
+            1.0, // Initial strength
+        )
+        .await?;
+
+        info!(msg = "hopfield_absorbed", id = memory.id);
+        Ok(())
+    }
+
+    async fn decay_tick(&self, ticks: u32) -> Result<()> {
+        use crate::brain::hopfield::recall;
+
+        if !self.is_ready() {
+            return Ok(());
+        }
+
+        let user_id = self.current_user_id();
+        let mut network = self.network.lock().await;
+        let stats = recall::decay_tick(&self.db, &mut network, user_id, ticks).await?;
+
+        info!(
+            msg = "hopfield_decay",
+            ticks = ticks,
+            patterns_decayed = stats.patterns_decayed,
+            patterns_removed = stats.patterns_removed,
+            edges_decayed = stats.edges_decayed,
+            edges_removed = stats.edges_removed
+        );
+        Ok(())
+    }
+
+    async fn stats(&self) -> Result<BrainStats> {
+        use crate::brain::hopfield::pattern;
+
+        let user_id = self.current_user_id();
+        let network = self.network.lock().await;
+        let db_patterns = pattern::list_patterns(&self.db, user_id).await?;
+
+        let total_strength: f32 = db_patterns.iter().map(|p| p.strength).sum();
+        let avg_strength = if db_patterns.is_empty() {
+            0.0
+        } else {
+            total_strength / db_patterns.len() as f32
+        };
+
+        Ok(serde_json::json!({
+            "mode": "hopfield",
+            "pattern_count": network.pattern_count(),
+            "db_pattern_count": db_patterns.len(),
+            "avg_strength": avg_strength,
+            "total_strength": total_strength,
+        }))
+    }
+
+    async fn dream_cycle(&self) -> Result<BrainResponse> {
+        use crate::brain::hopfield::recall;
+
+        let user_id = self.current_user_id();
+        let mut network = self.network.lock().await;
+
+        // Dream cycle: decay, prune dead patterns, merge similar
+        let stats = recall::decay_tick(&self.db, &mut network, user_id, 1).await?;
+        let pruned = recall::prune_weak(&self.db, &mut network, user_id, recall::DEATH_THRESHOLD)
+            .await?;
+        let merged = recall::merge_similar(&self.db, &mut network, user_id, 0.0).await?;
+
+        Ok(BrainResponse {
+            seq: None,
+            ok: true,
+            error: None,
+            data: Some(serde_json::json!({
+                "decay": {
+                    "patterns_decayed": stats.patterns_decayed,
+                    "patterns_removed": stats.patterns_removed,
+                },
+                "pruned": pruned,
+                "merged": merged.len(),
+                "merged_pairs": merged,
+            })),
+        })
+    }
+
+    async fn feedback_signal(
+        &self,
+        memory_ids: Vec<i64>,
+        _edge_pairs: Vec<(i64, i64)>,
+        useful: bool,
+    ) -> Result<BrainResponse> {
+        use crate::brain::hopfield::recall;
+
+        let user_id = self.current_user_id();
+        let mut network = self.network.lock().await;
+
+        let mut reinforced = Vec::new();
+        for id in &memory_ids {
+            if useful {
+                // Reinforce useful patterns
+                match recall::reinforce(&self.db, &mut network, *id, user_id).await {
+                    Ok(new_strength) => {
+                        reinforced.push(serde_json::json!({
+                            "id": id,
+                            "new_strength": new_strength,
+                        }));
+                    }
+                    Err(e) => {
+                        warn!(msg = "hopfield_reinforce_failed", id = id, error = %e);
+                    }
+                }
+            }
+            // For non-useful patterns, we let natural decay handle weakening
+        }
+
+        Ok(BrainResponse {
+            seq: None,
+            ok: true,
+            error: None,
+            data: Some(serde_json::json!({
+                "reinforced": reinforced,
+                "useful": useful,
+            })),
+        })
+    }
+}
+
+/// Load a BrainMemory from the memories table for a given pattern id.
+/// Falls back to a minimal record if the memory doesn't exist in the
+/// memories table (pattern may have been created directly).
+#[cfg(feature = "brain_hopfield")]
+async fn load_brain_memory(db: &Database, memory_id: i64, user_id: i64) -> Result<BrainMemory> {
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT id, content, category, source, importance, created_at, tags
+             FROM memories WHERE id = ?1 AND user_id = ?2",
+            libsql::params![memory_id, user_id],
+        )
+        .await?;
+
+    if let Some(row) = rows.next().await? {
+        let id: i64 = row.get(0)?;
+        let content: String = row.get(1)?;
+        let category: String = row.get(2)?;
+        let source: String = row.get(3)?;
+        let importance: f64 = row.get(4)?;
+        let created_at: Option<String> = row.get(5)?;
+        let tags_raw: Option<String> = row.get(6)?;
+        let tags = tags_raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
+
+        Ok(BrainMemory {
+            id,
+            content,
+            category,
+            source,
+            importance,
+            activation: 0.0, // Will be set by caller
+            created_at,
+            tags,
+        })
+    } else {
+        Err(EngError::NotFound(format!("memory {}", memory_id)))
+    }
+}
+
+/// Factory function to create the appropriate brain backend based on the
+/// `KLEOS_BRAIN_MODE` environment variable.
+///
+/// - `"hopfield"` (default when feature enabled): In-process Hopfield network
+/// - `"subprocess"`: External eidolon binary via stdin/stdout JSON
+/// - `"none"`: No brain backend
+#[cfg(feature = "brain_hopfield")]
+pub async fn create_brain_backend(
+    db: Arc<Database>,
+    data_dir: &str,
+    user_id: i64,
+) -> Option<Arc<dyn BrainBackend>> {
+    let mode = std::env::var("KLEOS_BRAIN_MODE").unwrap_or_else(|_| "hopfield".into());
+
+    match mode.as_str() {
+        "hopfield" => match HopfieldBrainManager::new(db, user_id).await {
+            Ok(mgr) => {
+                info!(msg = "brain_backend_selected", mode = "hopfield");
+                Some(Arc::new(mgr))
+            }
+            Err(e) => {
+                warn!(msg = "hopfield_init_failed", error = %e, fallback = "subprocess");
+                // Fall back to subprocess
+                let mgr = BrainManager::new(data_dir.to_string());
+                if mgr.start().await {
+                    Some(Arc::new(mgr))
+                } else {
+                    warn!(msg = "brain_both_backends_failed");
+                    None
+                }
+            }
+        },
+        "subprocess" => {
+            let mgr = BrainManager::new(data_dir.to_string());
+            if mgr.start().await {
+                info!(msg = "brain_backend_selected", mode = "subprocess");
+                Some(Arc::new(mgr))
+            } else {
+                warn!(msg = "subprocess_brain_failed");
+                None
+            }
+        }
+        "none" => {
+            info!(msg = "brain_disabled");
+            None
+        }
+        other => {
+            warn!(
+                msg = "unknown_brain_mode",
+                mode = other,
+                fallback = "hopfield"
+            );
+            match HopfieldBrainManager::new(db, user_id).await {
+                Ok(mgr) => Some(Arc::new(mgr)),
+                Err(_) => None,
+            }
+        }
+    }
+}
+
+/// Non-feature-gated factory -- returns subprocess or None.
+#[cfg(not(feature = "brain_hopfield"))]
+pub async fn create_brain_backend(
+    _db: Arc<Database>,
+    data_dir: &str,
+    _user_id: i64,
+) -> Option<Arc<dyn BrainBackend>> {
+    let mode = std::env::var("KLEOS_BRAIN_MODE").unwrap_or_else(|_| "subprocess".into());
+    if mode == "none" {
+        return None;
+    }
+    let mgr = BrainManager::new(data_dir.to_string());
+    if mgr.start().await {
+        Some(Arc::new(mgr))
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AbsorbMemoryData {
     pub id: i64,
