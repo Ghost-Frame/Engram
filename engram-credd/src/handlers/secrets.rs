@@ -1,0 +1,228 @@
+//! Secret CRUD handlers.
+
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use engram_cred::audit::{log_audit, AccessTier, AuditAction};
+use engram_cred::storage::{delete_secret, get_secret, list_secrets, store_secret, update_secret};
+use engram_cred::types::SecretData;
+use engram_cred::CredError;
+
+use crate::auth::Auth;
+use crate::handlers::AppError;
+use crate::state::AppState;
+
+#[derive(Deserialize)]
+pub struct ListQuery {
+    category: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SecretListItem {
+    category: String,
+    name: String,
+    secret_type: String,
+    created_at: String,
+    updated_at: String,
+}
+
+/// List secrets.
+pub async fn list_handler(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Value>, AppError> {
+    let secrets = list_secrets(&state.db, auth.user_id(), query.category.as_deref()).await?;
+
+    let items: Vec<SecretListItem> = secrets
+        .into_iter()
+        .filter(|s| auth.can_access_category(&s.category))
+        .map(|s| SecretListItem {
+            category: s.category,
+            name: s.name,
+            secret_type: s.secret_type.to_string(),
+            created_at: s.created_at,
+            updated_at: s.updated_at,
+        })
+        .collect();
+
+    Ok(Json(json!({ "secrets": items })))
+}
+
+#[derive(Deserialize)]
+pub struct StoreRequest {
+    pub data: SecretData,
+}
+
+/// Store a new secret.
+pub async fn store_handler(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path((category, name)): Path<(String, String)>,
+    Json(body): Json<StoreRequest>,
+) -> Result<Json<Value>, AppError> {
+    if !auth.is_master() {
+        return Err(CredError::PermissionDenied("only master key can store secrets".into()).into());
+    }
+
+    let id = store_secret(
+        &state.db,
+        auth.user_id(),
+        &category,
+        &name,
+        &body.data,
+        state.master_key.as_ref(),
+    )
+    .await?;
+
+    log_audit(
+        &state.db,
+        auth.user_id(),
+        auth.agent_name(),
+        AuditAction::Set,
+        &category,
+        &name,
+        None,
+        true,
+    )
+    .await?;
+
+    Ok(Json(json!({
+        "id": id,
+        "category": category,
+        "name": name,
+    })))
+}
+
+/// Get a secret.
+pub async fn get_handler(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path((category, name)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    if !auth.can_access_category(&category) {
+        log_audit(
+            &state.db,
+            auth.user_id(),
+            auth.agent_name(),
+            AuditAction::Get,
+            &category,
+            &name,
+            None,
+            false,
+        )
+        .await?;
+        return Err(CredError::PermissionDenied(format!(
+            "no access to category: {}",
+            category
+        ))
+        .into());
+    }
+
+    let (row, data) = get_secret(
+        &state.db,
+        auth.user_id(),
+        &category,
+        &name,
+        state.master_key.as_ref(),
+    )
+    .await?;
+
+    log_audit(
+        &state.db,
+        auth.user_id(),
+        auth.agent_name(),
+        AuditAction::Get,
+        &category,
+        &name,
+        Some(AccessTier::Raw),
+        true,
+    )
+    .await?;
+
+    Ok(Json(json!({
+        "service": row.category,
+        "key": row.name,
+        "type": row.secret_type.as_str(),
+        "value": data,
+    })))
+}
+
+/// Update a secret.
+pub async fn update_handler(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path((category, name)): Path<(String, String)>,
+    Json(body): Json<StoreRequest>,
+) -> Result<Json<Value>, AppError> {
+    if !auth.is_master() {
+        return Err(
+            CredError::PermissionDenied("only master key can update secrets".into()).into(),
+        );
+    }
+
+    update_secret(
+        &state.db,
+        auth.user_id(),
+        &category,
+        &name,
+        &body.data,
+        state.master_key.as_ref(),
+    )
+    .await?;
+
+    log_audit(
+        &state.db,
+        auth.user_id(),
+        auth.agent_name(),
+        AuditAction::Update,
+        &category,
+        &name,
+        None,
+        true,
+    )
+    .await?;
+
+    Ok(Json(json!({
+        "category": category,
+        "name": name,
+        "updated": true,
+    })))
+}
+
+/// Delete a secret.
+pub async fn delete_handler(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path((category, name)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    if !auth.is_master() {
+        return Err(
+            CredError::PermissionDenied("only master key can delete secrets".into()).into(),
+        );
+    }
+
+    delete_secret(&state.db, auth.user_id(), &category, &name).await?;
+
+    log_audit(
+        &state.db,
+        auth.user_id(),
+        auth.agent_name(),
+        AuditAction::Delete,
+        &category,
+        &name,
+        None,
+        true,
+    )
+    .await?;
+
+    Ok(Json(json!({
+        "category": category,
+        "name": name,
+        "deleted": true,
+    })))
+}

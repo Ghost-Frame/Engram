@@ -1,0 +1,36 @@
+[package]
+name = "engram-cred"
+version = "0.1.0"
+edition = "2021"
+description = "Credential management for Engram with YubiKey support"
+
+[dependencies]
+engram-lib = { path = "../engram-lib" }
+
+# Crypto
+aes-gcm = "0.10"
+sha1 = "0.10"
+sha2.workspace = true
+hmac.workspace = true
+rand.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Async
+tokio.workspace = true
+async-trait.workspace = true
+
+# Database
+libsql.workspace = true
+
+# Utils
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+hex = "0.4"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

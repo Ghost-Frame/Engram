@@ -1,0 +1,42 @@
+[package]
+name = "engram-credd"
+version = "0.1.0"
+edition = "2021"
+description = "Credential management daemon for Engram"
+
+[[bin]]
+name = "engram-credd"
+path = "src/main.rs"
+
+[dependencies]
+engram-lib = { path = "../engram-lib" }
+engram-cred = { path = "../engram-cred" }
+
+# Web framework
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+
+# Async
+tokio.workspace = true
+
+# HTTP client for proxy
+reqwest.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Utils
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+async-trait.workspace = true
+rpassword = "7"
+anyhow = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+reqwest.workspace = true
