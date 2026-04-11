@@ -67,7 +67,7 @@ async fn list_tasks_handler(
     Auth(auth): Auth,
     Query(params): Query<ListTasksParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(500);
+    let limit = params.limit.unwrap_or(500).min(1000);
     let offset = params.offset.unwrap_or(0);
 
     // list_tasks signature: (db, user_id, status, limit, offset)
@@ -167,7 +167,7 @@ async fn get_feed(
     Auth(auth): Auth,
     Query(params): Query<ListTasksParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
     let items = get_task_feed(&state.db, auth.user_id, limit, offset).await?;
     let total = get_task_stats(&state.db, Some(auth.user_id)).await?.total;

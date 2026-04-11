@@ -102,7 +102,7 @@ async fn create_entity_handler(
         .as_ref()
         .and_then(|a| serde_json::to_string(a).ok());
     let space_id = req.space_id;
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = auth.user_id;
 
     conn.execute(
         "INSERT INTO entities (name, entity_type, description, aliases, user_id, space_id) \
@@ -191,7 +191,7 @@ async fn list_entities_handler(
     Auth(auth): Auth,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(50);
+    let limit = params.limit.unwrap_or(50).min(1000);
     let offset = params.offset.unwrap_or(0);
     let user_id = auth.user_id;
 
@@ -428,7 +428,7 @@ async fn entity_search_handler(
         id,
         auth.user_id,
         &body.query,
-        body.limit.unwrap_or(20),
+        body.limit.unwrap_or(20).min(1000),
     )
     .await
     .map_err(AppError)?;
@@ -554,7 +554,7 @@ async fn graph_handler(
 ) -> Result<Json<Value>, AppError> {
     let opts = GraphBuildOptions {
         user_id: auth.user_id,
-        limit: Some(params.limit.unwrap_or(500) as usize),
+        limit: Some(params.limit.unwrap_or(500).min(5000) as usize),
     };
     let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
     Ok(Json(json!(result)))
@@ -571,7 +571,7 @@ async fn graph_raw_handler(
 ) -> Result<Json<Value>, AppError> {
     let opts = GraphBuildOptions {
         user_id: auth.user_id,
-        limit: Some(params.limit.unwrap_or(500) as usize),
+        limit: Some(params.limit.unwrap_or(500).min(5000) as usize),
     };
     let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
     Ok(Json(json!({
@@ -592,7 +592,7 @@ async fn graph_view_handler(
 ) -> Result<Json<Value>, AppError> {
     let opts = GraphBuildOptions {
         user_id: auth.user_id,
-        limit: Some(params.limit.unwrap_or(500) as usize),
+        limit: Some(params.limit.unwrap_or(500).min(5000) as usize),
     };
     let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
     Ok(Json(json!({
@@ -631,7 +631,7 @@ async fn graph_search_handler(
     Auth(auth): Auth,
     Json(body): Json<GraphSearchBody>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = body.limit.unwrap_or(20);
+    let limit = body.limit.unwrap_or(20).min(1000);
     let nodes = graph_search(&state.db, &body.query, limit, auth.user_id).await?;
     Ok(Json(json!({ "nodes": nodes })))
 }
@@ -768,7 +768,7 @@ async fn community_members_handler(
     Path(id): Path<i64>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(50) as usize;
+    let limit = params.limit.unwrap_or(50).min(1000) as usize;
     let members = get_community_members(&state.db, id, auth.user_id, limit)
         .await
         .map_err(AppError)?;
@@ -827,7 +827,7 @@ async fn entity_cooccurrences_handler(
     Path(id): Path<i64>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20) as usize;
+    let limit = params.limit.unwrap_or(20).min(1000) as usize;
     let entities = get_cooccurring_entities(&state.db, id, auth.user_id, limit)
         .await
         .map_err(AppError)?;
@@ -847,7 +847,7 @@ async fn facts_handler(
         &state.db,
         auth.user_id,
         params.memory_id,
-        params.limit.unwrap_or(50),
+        params.limit.unwrap_or(50).min(1000),
     )
     .await
     .map_err(AppError)?;

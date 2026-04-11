@@ -279,13 +279,16 @@ pub async fn fast_extract_facts(
         }
     }
 
-    // Stamp episode provenance on newly extracted facts
+    // Stamp episode provenance on newly extracted facts. Scope to user_id so
+    // this UPDATE cannot stamp facts owned by another tenant that happen to
+    // share memory_id -- structured_facts.user_id defaults to 1 historically.
     if stats.facts > 0 {
         if let Some(ep_id) = episode_id {
             let _ = conn
                 .execute(
-                    "UPDATE structured_facts SET episode_id = ?1 WHERE memory_id = ?2 AND episode_id IS NULL",
-                    libsql::params![ep_id, memory_id],
+                    "UPDATE structured_facts SET episode_id = ?1
+                     WHERE memory_id = ?2 AND user_id = ?3 AND episode_id IS NULL",
+                    libsql::params![ep_id, memory_id, user_id],
                 )
                 .await;
         }

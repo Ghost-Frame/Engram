@@ -129,7 +129,7 @@ async fn list_evaluations_handler(
     Auth(auth): Auth,
     Query(params): Query<ListEvaluationsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     let evaluations = list_evaluations(
         &state.db,
         auth.user_id,
@@ -180,7 +180,7 @@ async fn get_metrics_handler(
     Auth(auth): Auth,
     Query(params): Query<GetMetricsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     let metrics = get_metrics(
         &state.db,
         auth.user_id,
@@ -245,7 +245,7 @@ async fn get_session_quality_handler(
     Query(params): Query<SessionQualityParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     let records = get_session_quality(&state.db, agent, params.since.as_deref(), limit).await?;
     Ok(Json(json!({ "session_quality": records })))
 }
@@ -275,7 +275,7 @@ async fn get_drift_events_handler(
     Query(params): Query<DriftEventsParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     let events = get_drift_events(&state.db, agent, limit).await?;
     Ok(Json(json!({ "drift_events": events })))
 }

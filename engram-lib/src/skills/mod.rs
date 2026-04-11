@@ -135,7 +135,9 @@ pub(crate) fn row_to_skill(row: &libsql::Row) -> Result<Skill> {
 
 pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skill> {
     let conn = db.connection();
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let language = req.language.unwrap_or_else(|| "javascript".into());
 
     // Determine version and root

@@ -76,7 +76,9 @@ fn row_to_state(row: &libsql::Row) -> Result<CurrentState> {
 
 /// Create a new structured fact.
 pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<StructuredFact> {
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let confidence = req.confidence.unwrap_or(1.0);
 
     db.conn
@@ -152,11 +154,14 @@ pub async fn list_facts(
     Ok(facts)
 }
 
-/// Hard-delete a structured fact by id.
-pub async fn delete_fact(db: &Database, id: i64) -> Result<()> {
+/// Hard-delete a structured fact by id (tenant-scoped).
+pub async fn delete_fact(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .conn
-        .execute("DELETE FROM structured_facts WHERE id = ?1", params![id])
+        .execute(
+            "DELETE FROM structured_facts WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+        )
         .await?;
 
     if affected == 0 {

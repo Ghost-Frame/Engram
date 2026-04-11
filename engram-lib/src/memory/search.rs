@@ -382,7 +382,9 @@ fn resolve_strategy(req: &SearchRequest) -> (QuestionType, crate::memory::types:
 /// Run the full hybrid search pipeline matching TS hybridSearch.
 pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<SearchResult>> {
     let limit = req.limit.unwrap_or(DEFAULT_LIMIT);
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let (question_type, strategy) = resolve_strategy(&req);
 
     let candidate_target = limit

@@ -381,16 +381,29 @@ pub async fn add_message(
 pub async fn list_messages(
     db: &Database,
     conversation_id: i64,
+    user_id: i64,
     limit: usize,
     offset: usize,
 ) -> Result<Vec<Message>> {
+    // Defense-in-depth: route layer also calls get_conversation_for_user
+    // before invoking this, but library functions must not trust callers.
     let sql = format!(
-        "SELECT {} FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC LIMIT ?2 OFFSET ?3",
+        "SELECT {} FROM messages m
+         INNER JOIN conversations c ON m.conversation_id = c.id
+         WHERE m.conversation_id = ?1 AND c.user_id = ?2
+         ORDER BY m.created_at ASC LIMIT ?3 OFFSET ?4",
         MESSAGE_COLUMNS
+            .split(", ")
+            .map(|c| format!("m.{}", c))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     let mut rows = db
         .conn
-        .query(&sql, params![conversation_id, limit as i64, offset as i64])
+        .query(
+            &sql,
+            params![conversation_id, user_id, limit as i64, offset as i64],
+        )
         .await?;
     let mut msgs = Vec::new();
     while let Some(row) = rows.next().await? {

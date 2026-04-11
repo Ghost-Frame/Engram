@@ -74,7 +74,9 @@ pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Ev
         .payload
         .unwrap_or(serde_json::Value::Object(Default::default()));
     let payload_str = serde_json::to_string(&payload)?;
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
 
     #[cfg(feature = "db_pool")]
     if uses_pool_backend(db) {

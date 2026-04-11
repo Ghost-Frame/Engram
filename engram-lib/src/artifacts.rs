@@ -122,10 +122,17 @@ pub async fn store_artifact(
         .map_err(|e| crate::EngError::Internal(e.to_string()))
 }
 
-pub async fn get_artifacts_by_memory(db: &Database, memory_id: i64) -> Result<Vec<ArtifactRow>> {
+pub async fn get_artifacts_by_memory(
+    db: &Database,
+    memory_id: i64,
+    user_id: i64,
+) -> Result<Vec<ArtifactRow>> {
     let mut rows = db.conn.query(
-        "SELECT id, memory_id, filename, mime_type, size_bytes, sha256, storage_mode, is_encrypted, is_indexed, created_at FROM artifacts WHERE memory_id = ?1",
-        libsql::params![memory_id],
+        "SELECT a.id, a.memory_id, a.filename, a.mime_type, a.size_bytes, a.sha256, a.storage_mode, a.is_encrypted, a.is_indexed, a.created_at
+         FROM artifacts a
+         INNER JOIN memories m ON a.memory_id = m.id
+         WHERE a.memory_id = ?1 AND m.user_id = ?2",
+        libsql::params![memory_id, user_id],
     ).await?;
     let mut result = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -134,10 +141,17 @@ pub async fn get_artifacts_by_memory(db: &Database, memory_id: i64) -> Result<Ve
     Ok(result)
 }
 
-pub async fn get_artifact_by_id(db: &Database, artifact_id: i64) -> Result<Option<ArtifactRow>> {
+pub async fn get_artifact_by_id(
+    db: &Database,
+    artifact_id: i64,
+    user_id: i64,
+) -> Result<Option<ArtifactRow>> {
     let mut rows = db.conn.query(
-        "SELECT id, memory_id, filename, mime_type, size_bytes, sha256, storage_mode, is_encrypted, is_indexed, created_at FROM artifacts WHERE id = ?1",
-        libsql::params![artifact_id],
+        "SELECT a.id, a.memory_id, a.filename, a.mime_type, a.size_bytes, a.sha256, a.storage_mode, a.is_encrypted, a.is_indexed, a.created_at
+         FROM artifacts a
+         INNER JOIN memories m ON a.memory_id = m.id
+         WHERE a.id = ?1 AND m.user_id = ?2",
+        libsql::params![artifact_id, user_id],
     ).await?;
     match rows.next().await? {
         Some(row) => Ok(Some(row_to_artifact(&row)?)),
@@ -174,10 +188,11 @@ pub async fn get_artifact_stats(db: &Database, user_id: Option<i64>) -> Result<A
 pub async fn enrich_with_artifacts(
     db: &Database,
     memory_ids: &[i64],
+    user_id: i64,
 ) -> Result<std::collections::HashMap<i64, Vec<ArtifactSummary>>> {
     let mut map = std::collections::HashMap::new();
     for &mid in memory_ids {
-        let arts = get_artifacts_by_memory(db, mid).await?;
+        let arts = get_artifacts_by_memory(db, mid, user_id).await?;
         let summaries: Vec<ArtifactSummary> = arts
             .into_iter()
             .map(|a| ArtifactSummary {

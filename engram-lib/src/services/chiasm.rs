@@ -140,7 +140,9 @@ pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> 
 
     let status = req.status.unwrap_or_else(|| "pending".to_string());
     let priority = req.priority.unwrap_or(5);
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let tags_json = req.tags.as_ref().map(serde_json::to_string).transpose()?;
     let metadata_json = req
         .metadata

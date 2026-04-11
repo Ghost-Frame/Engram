@@ -278,7 +278,9 @@ fn row_to_drift_event(row: &libsql::Row) -> Result<DriftEvent> {
 
 pub async fn create_rubric(db: &Database, req: CreateRubricRequest) -> Result<Rubric> {
     let conn = &db.conn;
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let criteria_json = serde_json::to_string(&req.criteria)?;
 
     conn.execute(
@@ -468,7 +470,9 @@ fn compute_weighted_score(criteria: &serde_json::Value, scores: &serde_json::Val
 
 pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation> {
     let conn = &db.conn;
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
 
     // Fetch rubric to get criteria
     let rubric = get_rubric(db, req.rubric_id, user_id).await?;
@@ -676,7 +680,9 @@ pub async fn get_agent_scores(
 
 pub async fn record_metric(db: &Database, req: RecordMetricRequest) -> Result<QualityMetric> {
     let conn = &db.conn;
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let tags = req
         .tags
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));

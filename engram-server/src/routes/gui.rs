@@ -11,6 +11,7 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
+use subtle::ConstantTimeEq;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tokio::fs;
@@ -117,16 +118,9 @@ fn verify_cookie(cookie: &str, secret: &str) -> Option<i64> {
     mac.update(payload.as_bytes());
     let expected = hex::encode(mac.finalize().into_bytes());
 
-    // Constant-time comparison
-    if expected.len() != sig.len() {
-        return None;
-    }
-    if !expected
-        .as_bytes()
-        .iter()
-        .zip(sig.as_bytes())
-        .all(|(a, b)| a == b)
-    {
+    // Constant-time comparison via subtle::ConstantTimeEq. The previous
+    // Iterator::all() short-circuits on first mismatch and leaks timing.
+    if expected.as_bytes().ct_eq(sig.as_bytes()).unwrap_u8() != 1 {
         return None;
     }
 

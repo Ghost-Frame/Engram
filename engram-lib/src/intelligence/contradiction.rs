@@ -24,13 +24,13 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
     let conn = db.connection();
     let mut contradictions = Vec::new();
 
-    // Get structured facts for this memory
+    // Get structured facts for this memory (tenant-scoped)
     let mut fact_rows = conn
         .query(
             "SELECT id, subject, predicate, object, confidence \
              FROM structured_facts \
-             WHERE memory_id = ?1",
-            libsql::params![memory.id],
+             WHERE memory_id = ?1 AND user_id = ?2",
+            libsql::params![memory.id, memory.user_id],
         )
         .await?;
 
@@ -46,16 +46,24 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
     }
 
     // For each new fact, check against existing facts with same subject+predicate
+    // SECURITY: scoped to memory.user_id to prevent cross-tenant fact leakage.
     for (new_fact_id, subject, predicate, new_object, _confidence) in &new_facts {
         let mut existing_rows = conn
             .query(
                 "SELECT sf.id, sf.object, sf.memory_id, sf.confidence \
                  FROM structured_facts sf \
-                 WHERE sf.subject = ?1 AND sf.predicate = ?2 \
-                   AND sf.memory_id != ?3 \
-                   AND sf.id != ?4 \
+                 WHERE sf.user_id = ?1 \
+                   AND sf.subject = ?2 AND sf.predicate = ?3 \
+                   AND sf.memory_id != ?4 \
+                   AND sf.id != ?5 \
                  ORDER BY sf.confidence DESC",
-                libsql::params![subject.clone(), predicate.clone(), memory.id, *new_fact_id],
+                libsql::params![
+                    memory.user_id,
+                    subject.clone(),
+                    predicate.clone(),
+                    memory.id,
+                    *new_fact_id
+                ],
             )
             .await?;
 

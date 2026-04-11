@@ -42,14 +42,8 @@ pub async fn rate_limit_middleware(
 
     let key = format!("user:{}", user_id);
 
-    match ratelimit::check_rate_limit(&state.db, &key, limit, 60).await {
-        Ok(true) => {
-            // Within limit -- record the hit then continue.
-            if let Err(e) = ratelimit::increment_counter(&state.db, &key).await {
-                tracing::warn!("rate_limit increment failed for {}: {}", key, e);
-            }
-            next.run(request).await
-        }
+    match ratelimit::check_and_increment(&state.db, &key, limit, 60).await {
+        Ok(true) => next.run(request).await,
         Ok(false) => {
             let body = serde_json::json!({
                 "error": "Rate limit exceeded.",

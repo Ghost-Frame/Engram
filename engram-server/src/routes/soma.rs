@@ -94,7 +94,7 @@ async fn list_agents_handler(
         agents.retain(|a| a.category.as_deref() == Some(agent_type.as_str()));
     }
 
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     agents.truncate(limit);
 
     Ok(Json(json!({ "agents": agents, "count": agents.len() })))

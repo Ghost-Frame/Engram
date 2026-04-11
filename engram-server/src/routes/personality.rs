@@ -93,7 +93,7 @@ async fn list_signals_handler(
     Auth(auth): Auth,
     Query(params): Query<ListSignalsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(50);
+    let limit = params.limit.unwrap_or(50).min(1000);
     let signals = list_signals(&state.db, auth.user_id, limit).await?;
     Ok(Json(json!({ "signals": signals, "count": signals.len() })))
 }

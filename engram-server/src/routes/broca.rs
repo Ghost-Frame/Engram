@@ -82,7 +82,7 @@ async fn list_actions_handler(
     Auth(auth): Auth,
     Query(params): Query<QueryActionsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
 
     // Support `service` as a query filter mapped to `project` field or agent filter
@@ -123,7 +123,7 @@ async fn get_feed_handler(
     Auth(auth): Auth,
     Query(params): Query<QueryActionsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
     let agent = params.agent.as_deref();
 

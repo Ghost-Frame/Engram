@@ -112,13 +112,58 @@ pub async fn log_request(
     Ok(())
 }
 
-/// Query audit log entries, optionally filtered by target_type and target_id.
+/// Query audit log entries for a specific tenant.
+///
+/// SECURITY: the `user_id` argument is ALWAYS applied as a WHERE clause so a
+/// non-admin caller can only see their own entries. Admin-wide access lives in
+/// `query_audit_log_admin`.
 pub async fn query_audit_log(
     db: &Database,
     resource_type: Option<&str>,
     resource_id: Option<&str>,
     limit: usize,
-    _user_id: i64,
+    user_id: i64,
+) -> Result<Vec<AuditEntry>> {
+    let target_id: Option<i64> = resource_id.and_then(|r| r.parse().ok());
+    let limit_i64 = limit as i64;
+
+    let mut rows = match (resource_type, target_id) {
+        (Some(rt), Some(tid)) => db.conn.query(
+            "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
+             FROM audit_log WHERE user_id = ?1 AND target_type = ?2 AND target_id = ?3
+             ORDER BY id DESC LIMIT ?4",
+            libsql::params![user_id, rt, tid, limit_i64],
+        ).await?,
+        (Some(rt), None) => db.conn.query(
+            "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
+             FROM audit_log WHERE user_id = ?1 AND target_type = ?2
+             ORDER BY id DESC LIMIT ?3",
+            libsql::params![user_id, rt, limit_i64],
+        ).await?,
+        _ => db.conn.query(
+            "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
+             FROM audit_log WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
+            libsql::params![user_id, limit_i64],
+        ).await?,
+    };
+
+    let mut entries = Vec::new();
+    while let Some(row) = rows.next().await? {
+        match row_to_entry(&row) {
+            Ok(entry) => entries.push(entry),
+            Err(e) => tracing::warn!("audit row parse error: {}", e),
+        }
+    }
+    Ok(entries)
+}
+
+/// Admin-wide audit query (no user_id filter). Callers MUST verify that the
+/// requester carries `Scope::Admin` before invoking this function.
+pub async fn query_audit_log_admin(
+    db: &Database,
+    resource_type: Option<&str>,
+    resource_id: Option<&str>,
+    limit: usize,
 ) -> Result<Vec<AuditEntry>> {
     let target_id: Option<i64> = resource_id.and_then(|r| r.parse().ok());
     let limit_i64 = limit as i64;

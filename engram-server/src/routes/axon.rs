@@ -72,7 +72,7 @@ async fn list_events_handler(
     Auth(auth): Auth,
     Query(params): Query<QueryEventsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(1000);
     // Support both `action` and `event_type` field names
     let action = params.action.or(params.event_type);
 

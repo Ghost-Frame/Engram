@@ -81,7 +81,9 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
-    let user_id = req.user_id.unwrap_or(1);
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
 
     #[cfg(feature = "db_pool")]
     if uses_pool_backend(db) {
