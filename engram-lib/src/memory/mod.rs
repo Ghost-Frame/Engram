@@ -198,6 +198,11 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
                 }
             }
 
+            // Mark pagerank dirty -- new memory changes graph structure
+            if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+                warn!("pagerank dirty mark failed on store: {}", e);
+            }
+
             Ok(StoreResult {
                 id: new_id,
                 created: true,
@@ -426,6 +431,9 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
             warn!("LanceDB vector delete failed for memory {}: {}", id, e);
         }
     }
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+        warn!("mark_pagerank_dirty failed after delete for user {}: {}", user_id, e);
+    }
     Ok(())
 }
 
@@ -521,6 +529,10 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
                 "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2",
                 MEMORY_COLUMNS
             );
+            // Mark pagerank dirty -- new version changes active node set
+            if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+                warn!("pagerank dirty mark failed on update: {}", e);
+            }
             let mut new_rows = db.conn.query(&new_sql, params![new_id, user_id]).await?;
             if let Some(row) = new_rows.next().await? {
                 row_to_memory(&row)
@@ -651,6 +663,9 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
             );
         }
     }
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+        warn!("mark_pagerank_dirty failed after mark_forgotten for user {}: {}", user_id, e);
+    }
     Ok(())
 }
 
@@ -665,6 +680,9 @@ pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     if affected == 0 {
         return Err(EngError::NotFound(format!("memory {} not found", id)));
     }
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+        warn!("mark_pagerank_dirty failed after mark_archived for user {}: {}", user_id, e);
+    }
     Ok(())
 }
 
@@ -678,6 +696,9 @@ pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()>
         .await?;
     if affected == 0 {
         return Err(EngError::NotFound(format!("memory {} not found", id)));
+    }
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+        warn!("mark_pagerank_dirty failed after mark_unarchived for user {}: {}", user_id, e);
     }
     Ok(())
 }
@@ -745,6 +766,9 @@ pub async fn insert_link(
         "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) VALUES (?1, ?2, ?3, ?4)",
         params![source_id, target_id, similarity, link_type.to_string()],
     ).await?;
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+        warn!("mark_pagerank_dirty failed after insert_link for user {}: {}", user_id, e);
+    }
     Ok(())
 }
 

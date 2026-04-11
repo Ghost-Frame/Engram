@@ -1024,6 +1024,24 @@ pub async fn create_tables(conn: &Connection) -> Result<()> {
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_loom_run_logs_run ON loom_run_logs(run_id);
+
+        -- PageRank cache
+        CREATE TABLE IF NOT EXISTS memory_pagerank (
+            memory_id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            score REAL NOT NULL,
+            computed_at INTEGER NOT NULL,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_pagerank_user ON memory_pagerank(user_id);
+        CREATE INDEX IF NOT EXISTS idx_pagerank_score ON memory_pagerank(score DESC);
+
+        -- PageRank dirty tracking
+        CREATE TABLE IF NOT EXISTS pagerank_dirty (
+            user_id INTEGER PRIMARY KEY,
+            dirty_count INTEGER NOT NULL DEFAULT 0,
+            last_refresh INTEGER NOT NULL DEFAULT 0
+        );
         ",
     )
     .await?;

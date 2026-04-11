@@ -1994,6 +1994,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokenizers",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
  "zip",
@@ -2015,6 +2016,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "tokio-util",
  "tower 0.5.3",
  "tower-http 0.6.8",
  "tracing",
@@ -5906,6 +5908,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

@@ -30,6 +30,10 @@ pub struct Config {
     pub use_lance_index: bool,
     pub gui_password: Option<String>,
     pub gui_build_dir: Option<String>,
+    pub pagerank_refresh_interval_secs: u64,
+    pub pagerank_dirty_threshold: u32,
+    pub pagerank_max_concurrent: usize,
+    pub pagerank_enabled: bool,
 }
 
 impl Default for Config {
@@ -56,6 +60,10 @@ impl Default for Config {
             use_lance_index: true,
             gui_password: None,
             gui_build_dir: None,
+            pagerank_refresh_interval_secs: 300,
+            pagerank_dirty_threshold: 100,
+            pagerank_max_concurrent: 2,
+            pagerank_enabled: true,
         }
     }
 }
@@ -143,6 +151,24 @@ impl Config {
         }
         if let Ok(v) = std::env::var("KLEOS_GUI_BUILD_DIR") {
             config.gui_build_dir = Some(v);
+        }
+        if let Ok(v) = std::env::var("KLEOS_PAGERANK_REFRESH_INTERVAL") {
+            if let Ok(n) = v.parse() {
+                config.pagerank_refresh_interval_secs = n;
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_PAGERANK_DIRTY_THRESHOLD") {
+            if let Ok(n) = v.parse() {
+                config.pagerank_dirty_threshold = n;
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_PAGERANK_MAX_CONCURRENT") {
+            if let Ok(n) = v.parse() {
+                config.pagerank_max_concurrent = n;
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_PAGERANK_ENABLED") {
+            config.pagerank_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
         }
         config
     }

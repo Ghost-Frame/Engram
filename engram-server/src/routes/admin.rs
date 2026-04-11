@@ -77,6 +77,8 @@ pub fn router() -> Router<AppState> {
             "/admin/rebuild-cooccurrences",
             post(rebuild_cooccurrences_handler),
         )
+        // PageRank
+        .route("/admin/pagerank/rebuild", post(admin_pagerank_rebuild))
 }
 
 // ---------------------------------------------------------------------------
@@ -673,4 +675,41 @@ async fn rebuild_cooccurrences_handler(
     require_admin(&auth)?;
     let pairs = cooccurrence::rebuild_cooccurrences(&state.db, auth.user_id).await?;
     Ok(Json(json!({ "rebuilt_pairs": pairs })))
+}
+
+// ---------------------------------------------------------------------------
+// PageRank rebuild
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct AdminPageRankQuery {
+    user_id: Option<i64>,
+}
+
+async fn admin_pagerank_rebuild(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<AdminPageRankQuery>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    match params.user_id {
+        Some(uid) => {
+            let scores =
+                kleos_lib::graph::pagerank::compute_pagerank_for_user(&state.db, uid).await?;
+            let count = scores.len();
+            kleos_lib::graph::pagerank::persist_pagerank(&state.db, uid, &scores).await?;
+            Ok(Json(json!({
+                "success": true,
+                "users_updated": 1,
+                "memories_updated": count,
+            })))
+        }
+        None => {
+            let users_updated = kleos_lib::graph::pagerank::rebuild_all_users(&state.db).await?;
+            Ok(Json(json!({
+                "success": true,
+                "users_updated": users_updated,
+            })))
+        }
+    }
 }

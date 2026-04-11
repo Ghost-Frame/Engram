@@ -183,6 +183,8 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     };
 
     // Hydrate missing fields from DB (created_at, importance, etc.)
+    // Warm the pagerank cache for this user if it is empty (first-time or cold start).
+    let _ = crate::graph::pagerank::ensure_pagerank_for_user(db, user_id).await;
     {
         let ids: Vec<i64> = results.keys().copied().collect();
         if !ids.is_empty() {
@@ -192,10 +194,12 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                 .collect::<Vec<_>>()
                 .join(",");
             let hydrate_sql = format!(
-                "SELECT id, created_at, decay_score, importance, is_static, source_count, \
-                 version, is_latest, source, model, access_count, fsrs_stability, \
-                 last_accessed_at, pagerank_score, content, category \
-                 FROM memories WHERE id IN ({}) AND user_id = ?1",
+                "SELECT m.id, m.created_at, m.decay_score, m.importance, m.is_static, m.source_count, \
+                 m.version, m.is_latest, m.source, m.model, m.access_count, m.fsrs_stability, \
+                 m.last_accessed_at, COALESCE(mp.score, 0.0) AS pagerank_score, m.content, m.category \
+                 FROM memories m \
+                 LEFT JOIN memory_pagerank mp ON mp.memory_id = m.id \
+                 WHERE m.id IN ({}) AND m.user_id = ?1",
                 placeholders
             );
             if let Ok(mut rows) = db.conn.query(&hydrate_sql, libsql::params![user_id]).await {

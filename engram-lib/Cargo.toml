@@ -16,6 +16,7 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 sha2 = { workspace = true }
 ort = { workspace = true }
 tokenizers = { workspace = true }

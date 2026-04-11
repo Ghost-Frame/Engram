@@ -2,6 +2,7 @@ use kleos_lib::config::Config;
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::onnx::OnnxProvider;
 use kleos_lib::embeddings::EmbeddingProvider;
+use kleos_lib::jobs::pagerank_refresh::start_pagerank_refresh_job;
 use kleos_lib::llm::local::{LocalModelClient, OllamaConfig};
 use kleos_lib::reranker::Reranker;
 use kleos_server::state::AppState;
@@ -76,6 +77,19 @@ async fn main() {
         llm,
         sessions: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         eidolon_config: None,
+    };
+
+    // Start background PageRank refresh job if enabled.
+    let _pagerank_token = if state.config.pagerank_enabled {
+        let token = start_pagerank_refresh_job(
+            Arc::clone(&state.db),
+            Arc::clone(&state.config),
+        );
+        tracing::info!("background pagerank refresh job started");
+        Some(token)
+    } else {
+        tracing::info!("pagerank disabled -- skipping refresh job");
+        None
     };
 
     if let Err(e) = kleos_server::server::run(state).await {

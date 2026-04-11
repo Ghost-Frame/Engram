@@ -5,6 +5,7 @@ use tracing::info;
 /// Migration versions - add new migrations here
 const MIGRATION_CREATE_SCHEMA: i64 = 1;
 const MIGRATION_ADD_MISSING_INDEXES: i64 = 2;
+const MIGRATION_PAGERANK_TABLES: i64 = 3;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -41,6 +42,13 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         info!("Running migration 2: add_missing_indexes");
         run_migration_add_missing_indexes(conn).await?;
         record_migration(conn, MIGRATION_ADD_MISSING_INDEXES, "add_missing_indexes").await?;
+    }
+
+    // Migration 3: Add pagerank cache and dirty-tracking tables
+    if current_version < MIGRATION_PAGERANK_TABLES {
+        info!("Running migration 3: add_pagerank_tables");
+        run_migration_pagerank_tables(conn).await?;
+        record_migration(conn, MIGRATION_PAGERANK_TABLES, "add_pagerank_tables").await?;
     }
 
     // Future migrations go here:
@@ -95,8 +103,32 @@ async fn run_migration_add_missing_indexes(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Add a new column to a table if it doesn't exist
-/// SQLite doesn't have IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check first
+/// Migration 3: Create pagerank cache and dirty-tracking tables
+async fn run_migration_pagerank_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS memory_pagerank (
+            memory_id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            score REAL NOT NULL,
+            computed_at INTEGER NOT NULL,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_pagerank_user ON memory_pagerank(user_id);
+        CREATE INDEX IF NOT EXISTS idx_pagerank_score ON memory_pagerank(score DESC);
+
+        CREATE TABLE IF NOT EXISTS pagerank_dirty (
+            user_id INTEGER PRIMARY KEY,
+            dirty_count INTEGER NOT NULL DEFAULT 0,
+            last_refresh INTEGER NOT NULL DEFAULT 0
+        );
+        ",
+    )
+    .await?;
+    Ok(())
+}
+
+/// Add a new column to a table if it doesn't exist/// SQLite doesn't have IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check first
 #[allow(dead_code)]
 async fn add_column_if_not_exists(
     conn: &Connection,

@@ -1,3 +1,5 @@
+pub mod pagerank_refresh;
+
 // JOBS - Durable job queue with retries (ported from TS jobs/index.ts + scheduler.ts)
 use crate::Result;
 use libsql::Connection;

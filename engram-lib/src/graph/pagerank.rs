@@ -170,6 +170,109 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
     })
 }
 
+/// Compute normalized PageRank scores for a user and return as a vec of (memory_id, score).
+/// Does not write to any table.
+pub async fn compute_pagerank_for_user(db: &Database, user_id: i64) -> Result<Vec<(i64, f64)>> {
+    let result = compute_pagerank(db, user_id, 0.85, 25).await?;
+    if result.scores.is_empty() {
+        return Ok(Vec::new());
+    }
+    let max_rank = result
+        .scores
+        .values()
+        .copied()
+        .fold(0.0_f64, f64::max);
+    if max_rank == 0.0 {
+        return Ok(result.scores.into_keys().map(|id| (id, 0.0)).collect());
+    }
+    Ok(result
+        .scores
+        .into_iter()
+        .map(|(id, score)| (id, score / max_rank))
+        .collect())
+}
+
+/// Upsert computed scores into `memory_pagerank` and reset the dirty counter.
+pub async fn persist_pagerank(db: &Database, user_id: i64, scores: &[(i64, f64)]) -> Result<()> {
+    let conn = db.connection();
+    let now = chrono::Utc::now().timestamp();
+    for &(memory_id, score) in scores {
+        conn.execute(
+            "INSERT INTO memory_pagerank (memory_id, user_id, score, computed_at) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(memory_id) DO UPDATE SET \
+               score = excluded.score, \
+               computed_at = excluded.computed_at",
+            libsql::params![memory_id, user_id, score, now],
+        )
+        .await?;
+    }
+    conn.execute(
+        "INSERT INTO pagerank_dirty (user_id, dirty_count, last_refresh) \
+         VALUES (?1, 0, ?2) \
+         ON CONFLICT(user_id) DO UPDATE SET dirty_count = 0, last_refresh = excluded.last_refresh",
+        libsql::params![user_id, now],
+    )
+    .await?;
+    info!(user_id, scores = scores.len(), "pagerank_persisted");
+    Ok(())
+}
+
+/// Increment the dirty counter for a user. Called after memory/edge mutations.
+pub async fn mark_pagerank_dirty(db: &Database, user_id: i64, delta: i64) -> Result<()> {
+    db.connection()
+        .execute(
+            "INSERT INTO pagerank_dirty (user_id, dirty_count, last_refresh) \
+             VALUES (?1, ?2, 0) \
+             ON CONFLICT(user_id) DO UPDATE SET dirty_count = dirty_count + ?2",
+            libsql::params![user_id, delta],
+        )
+        .await?;
+    Ok(())
+}
+
+/// Ensure the pagerank cache is populated for this user. If empty, runs a
+/// synchronous compute and persists the result. Subsequent calls are cheap
+/// (single COUNT query that returns early).
+pub async fn ensure_pagerank_for_user(db: &Database, user_id: i64) -> Result<()> {
+    let mut rows = db
+        .connection()
+        .query(
+            "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1 LIMIT 1",
+            libsql::params![user_id],
+        )
+        .await?;
+    let count: i64 = match rows.next().await? {
+        Some(row) => row.get(0)?,
+        None => 0,
+    };
+    if count == 0 {
+        let scores = compute_pagerank_for_user(db, user_id).await?;
+        if !scores.is_empty() {
+            persist_pagerank(db, user_id, &scores).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Rebuild pagerank for every distinct user in the database.
+/// Used by the admin endpoint when no user_id is specified.
+pub async fn rebuild_all_users(db: &Database) -> Result<usize> {
+    let mut rows = db
+        .connection()
+        .query("SELECT DISTINCT user_id FROM memories WHERE is_forgotten = 0", ())
+        .await?;
+    let mut user_ids: Vec<i64> = Vec::new();
+    while let Some(row) = rows.next().await? {
+        user_ids.push(row.get(0)?);
+    }
+    for &uid in &user_ids {
+        let scores = compute_pagerank_for_user(db, uid).await?;
+        persist_pagerank(db, uid, &scores).await?;
+    }
+    Ok(user_ids.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
