@@ -1,5 +1,7 @@
 use crate::db::Database;
 use crate::Result;
+#[cfg(feature = "db_pool")]
+use crate::{memory::uses_pool_backend, EngError};
 use tracing::warn;
 
 /// Result from vector ANN search -- id and its rank position (0-based, ascending similarity)
@@ -17,7 +19,6 @@ pub async fn vector_search(
     limit: usize,
     user_id: i64,
 ) -> Result<Vec<VectorHit>> {
-    let conn = db.connection();
     let embedding_json = format!(
         "[{}]",
         embedding
@@ -38,6 +39,36 @@ pub async fn vector_search(
           AND memories.user_id = ?3
     ";
 
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return match db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(sql).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let mut rows = stmt
+                    .query(rusqlite::params![embedding_json, limit as i64, user_id])
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+                let mut hits = Vec::new();
+                let mut rank: usize = 0;
+                while let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+                    let memory_id: i64 = row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    hits.push(VectorHit { memory_id, rank });
+                    rank += 1;
+                }
+
+                Ok(hits)
+            })
+            .await
+        {
+            Ok(hits) => Ok(hits),
+            Err(e) => {
+                warn!("vector search failed: {}", e);
+                Ok(vec![])
+            }
+        };
+    }
+
+    let conn = db.connection();
     let mut rows = match conn
         .query(sql, libsql::params![embedding_json, limit as i64, user_id])
         .await

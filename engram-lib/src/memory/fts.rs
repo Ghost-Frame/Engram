@@ -1,5 +1,7 @@
 use crate::db::Database;
 use crate::Result;
+#[cfg(feature = "db_pool")]
+use crate::{memory::uses_pool_backend, EngError};
 use tracing::warn;
 
 /// Result from FTS5 search -- id, rank position, and BM25 score
@@ -39,7 +41,6 @@ pub async fn fts_search(
     limit: usize,
     user_id: i64,
 ) -> Result<Vec<FtsHit>> {
-    let conn = db.connection();
     let sanitized = sanitize_fts_query(query);
     if sanitized.is_empty() {
         return Ok(vec![]);
@@ -60,10 +61,42 @@ pub async fn fts_search(
         LIMIT ?3
     ";
 
-    let mut rows = match conn
-        .query(sql, libsql::params![sanitized, user_id, limit as i64])
-        .await
-    {
+    #[cfg(feature = "db_pool")]
+    if uses_pool_backend(db) {
+        return match db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(sql).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let mut rows = stmt
+                    .query(rusqlite::params![sanitized, user_id, limit as i64])
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+                let mut hits = Vec::new();
+                let mut pos: usize = 0;
+                while let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+                    let memory_id: i64 = row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    let bm25_score: f64 = row.get(1).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    hits.push(FtsHit {
+                        memory_id,
+                        rank: pos,
+                        bm25_score,
+                    });
+                    pos += 1;
+                }
+
+                Ok(hits)
+            })
+            .await
+        {
+            Ok(hits) => Ok(hits),
+            Err(e) => {
+                warn!("fts search failed: {}", e);
+                Ok(vec![])
+            }
+        };
+    }
+
+    let conn = db.connection();
+    let mut rows = match conn.query(sql, libsql::params![sanitized, user_id, limit as i64]).await {
         Ok(r) => r,
         Err(e) => {
             warn!("fts search failed: {}", e);

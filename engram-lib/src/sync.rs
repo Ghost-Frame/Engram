@@ -3,8 +3,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
+#[cfg(feature = "db_pool")]
+use crate::memory::uses_pool_backend;
 use crate::memory;
 use crate::memory::types::StoreRequest;
+#[cfg(feature = "db_pool")]
+use crate::EngError;
 use crate::Result;
 
 #[derive(Debug, Deserialize)]
@@ -41,17 +45,57 @@ pub async fn receive_sync(
                         continue;
                     }
                 };
-                let mut existing = db
-                    .conn
-                    .query(
-                        "SELECT id FROM memories WHERE sync_id = ?1 AND user_id = ?2",
-                        libsql::params![change.sync_id.clone(), user_id],
-                    )
-                    .await?;
-                if existing.next().await?.is_some() {
-                    skipped += 1;
-                    continue;
+
+                #[cfg(feature = "db_pool")]
+                if uses_pool_backend(db) {
+                    let sync_id = change.sync_id.clone();
+                    let exists = db
+                        .read(move |conn| {
+                            let mut stmt = conn
+                                .prepare("SELECT id FROM memories WHERE sync_id = ?1 AND user_id = ?2")
+                                .map_err(rusqlite_to_eng_error)?;
+                            let mut rows = stmt
+                                .query(rusqlite::params![sync_id, user_id])
+                                .map_err(rusqlite_to_eng_error)?;
+                            Ok(rows
+                                .next()
+                                .map_err(rusqlite_to_eng_error)?
+                                .is_some())
+                        })
+                        .await?;
+                    if exists {
+                        skipped += 1;
+                        continue;
+                    }
+                } else {
+                    let mut existing = db
+                        .conn
+                        .query(
+                            "SELECT id FROM memories WHERE sync_id = ?1 AND user_id = ?2",
+                            libsql::params![change.sync_id.clone(), user_id],
+                        )
+                        .await?;
+                    if existing.next().await?.is_some() {
+                        skipped += 1;
+                        continue;
+                    }
                 }
+
+                #[cfg(not(feature = "db_pool"))]
+                {
+                    let mut existing = db
+                        .conn
+                        .query(
+                            "SELECT id FROM memories WHERE sync_id = ?1 AND user_id = ?2",
+                            libsql::params![change.sync_id.clone(), user_id],
+                        )
+                        .await?;
+                    if existing.next().await?.is_some() {
+                        skipped += 1;
+                        continue;
+                    }
+                }
+
                 let req = StoreRequest {
                     content,
                     category: change
@@ -72,6 +116,27 @@ pub async fn receive_sync(
                 applied += 1;
             }
             "delete" => {
+                #[cfg(feature = "db_pool")]
+                let affected = if uses_pool_backend(db) {
+                    let sync_id = change.sync_id.clone();
+                    db.write(move |conn| {
+                        conn.execute(
+                            "UPDATE memories SET is_forgotten = 1 WHERE sync_id = ?1 AND user_id = ?2",
+                            rusqlite::params![sync_id, user_id],
+                        )
+                        .map_err(rusqlite_to_eng_error)
+                    })
+                    .await? as u64
+                } else {
+                    db.conn
+                        .execute(
+                            "UPDATE memories SET is_forgotten = 1 WHERE sync_id = ?1 AND user_id = ?2",
+                            libsql::params![change.sync_id.clone(), user_id],
+                        )
+                        .await?
+                };
+
+                #[cfg(not(feature = "db_pool"))]
                 let affected = db
                     .conn
                     .execute(
@@ -92,4 +157,9 @@ pub async fn receive_sync(
     }
 
     Ok(SyncReceiveResult { applied, skipped })
+}
+
+#[cfg(feature = "db_pool")]
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
 }

@@ -49,6 +49,9 @@ pub enum EngError {
     #[error("database error: {0}")]
     Database(#[from] libsql::Error),
 
+    #[error("database error: {0}")]
+    DatabaseMessage(String),
+
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
