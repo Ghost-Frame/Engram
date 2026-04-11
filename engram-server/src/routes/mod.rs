@@ -10,6 +10,7 @@ pub mod context;
 pub mod conversations;
 pub mod docs;
 pub mod episodes;
+pub mod errors;
 pub mod fsrs;
 pub mod gate;
 pub mod graph;
