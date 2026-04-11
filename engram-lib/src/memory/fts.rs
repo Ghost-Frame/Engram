@@ -13,7 +13,7 @@ pub struct FtsHit {
 }
 
 /// Sanitize a query string for FTS5 (remove special chars that break FTS syntax).
-fn sanitize_fts_query(query: &str) -> String {
+pub fn sanitize_fts_query(query: &str) -> String {
     // Remove FTS5 operators and special chars, keep alphanumeric and spaces
     let sanitized: String = query
         .chars()
