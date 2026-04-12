@@ -195,27 +195,35 @@ async fn fetch_url(
     }
 
     // Block private/internal addresses
+    // SECURITY (SEC-H1): check both string hostname AND parsed IP (covering
+    // IPv6 brackets like [::1], IPv4-mapped IPv6 like [::ffff:127.0.0.1], etc.)
     if let Some(host) = parsed.host_str() {
         let h = host.to_lowercase();
-        if h == "localhost"
-            || h == "127.0.0.1"
-            || h == "::1"
-            || h == "0.0.0.0"
-            || h.starts_with("10.")
-            || h.starts_with("192.168.")
-            || h.starts_with("172.16.")
-            || h.starts_with("172.17.")
-            || h.starts_with("172.18.")
-            || h.starts_with("172.19.")
-            || h.starts_with("172.2")
-            || h.starts_with("172.30.")
-            || h.starts_with("172.31.")
-            || h.ends_with(".local")
-            || h.ends_with(".internal")
-            || h.starts_with("100.64.")
-            || h.starts_with("169.254.")
-            || h.starts_with("fc")
-            || h.starts_with("fd")
+        // Strip brackets for IPv6 addresses
+        let h_bare = h.trim_start_matches('[').trim_end_matches(']');
+        if h_bare == "localhost"
+            || h_bare == "127.0.0.1"
+            || h_bare == "::1"
+            || h_bare == "0.0.0.0"
+            || h_bare == "::"
+            || h_bare.starts_with("::ffff:")
+            || h_bare.starts_with("10.")
+            || h_bare.starts_with("192.168.")
+            || h_bare.starts_with("172.16.")
+            || h_bare.starts_with("172.17.")
+            || h_bare.starts_with("172.18.")
+            || h_bare.starts_with("172.19.")
+            || h_bare.starts_with("172.2")
+            || h_bare.starts_with("172.30.")
+            || h_bare.starts_with("172.31.")
+            || h_bare.ends_with(".local")
+            || h_bare.ends_with(".internal")
+            || h_bare.starts_with("100.64.")
+            || h_bare.starts_with("169.254.")
+            || h_bare.starts_with("fc")
+            || h_bare.starts_with("fd")
+            || h_bare.starts_with("fe80")
+            || h_bare == "metadata.google.internal"
         {
             return Err(AppError(engram_lib::EngError::InvalidInput(
                 "URL cannot point to private/internal addresses".into(),
@@ -223,10 +231,11 @@ async fn fetch_url(
         }
     }
 
-    // Fetch the URL
+    // SECURITY (SEC-H1): disable redirect following to prevent SSRF via
+    // open redirects that bounce to internal hosts after the blocklist check.
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent("Engram/5.8 (fetch)")
         .build()
         .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?;

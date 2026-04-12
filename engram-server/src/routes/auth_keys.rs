@@ -47,12 +47,44 @@ async fn create_key(
     }
 
     let target_user_id = body.user_id.unwrap_or(auth_ctx.user_id);
+
+    // SECURITY (SEC-MED-3): verify target user_id exists before minting a key.
+    if target_user_id != auth_ctx.user_id {
+        let uid = target_user_id;
+        let exists: bool = state
+            .db
+            .read(move |conn| {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?1)",
+                    params![uid],
+                    |row| row.get(0),
+                )
+                .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))
+            })
+            .await?;
+        if !exists {
+            return Err(AppError(engram_lib::EngError::NotFound(
+                format!("user {} not found", target_user_id),
+            )));
+        }
+    }
+
     let name = body.name.as_deref().unwrap_or("default");
     let scopes_str = body.scopes.as_deref().unwrap_or("read,write");
     let scopes: Vec<auth::Scope> = scopes_str
         .split(',')
         .filter_map(|s| s.trim().parse().ok())
         .collect();
+
+    // SECURITY (SEC-MED-4): scope escalation cap -- caller cannot grant
+    // scopes they do not themselves possess.
+    for scope in &scopes {
+        if !auth_ctx.has_scope(scope) {
+            return Err(AppError(engram_lib::EngError::Auth(
+                format!("cannot grant scope '{}' that caller does not hold", scope),
+            )));
+        }
+    }
 
     let (api_key, raw_key) =
         auth::create_key(&state.db, target_user_id, name, scopes, None).await?;

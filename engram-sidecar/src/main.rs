@@ -107,8 +107,12 @@ async fn main() {
                 host = %cli.host,
                 "ENGRAM_SIDECAR_TOKEN not set; generated one-time sidecar token (printed to stderr)"
             );
-            // Print token once to stderr so the launching process can capture it.
+            // SECURITY (SEC-LOW-5): print token once to stderr so the launching
+            // process can capture it. Only the first 8 hex chars are shown in the
+            // log line; the full value is on a separate machine-parseable line.
+            // Ensure stderr is NOT forwarded to persistent log files.
             eprintln!("SIDECAR_TOKEN={}", generated);
+            tracing::debug!(token_prefix = &generated[..8.min(generated.len())], "sidecar token generated (see stderr for full value)");
             Some(generated)
         }
     };

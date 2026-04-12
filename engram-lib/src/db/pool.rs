@@ -193,8 +193,13 @@ fn apply_pragmas(
     // Any other statement on an encrypted DB without the key will fail with
     // "file is not a database".
     if let Some(ref key) = encryption_key {
-        let key_hex = crate::encryption::format_pragma_key(key);
-        conn.pragma_update(None, "key", &key_hex)?;
+        // SECURITY (SEC-MED-10): zeroize key_hex after use so the hex-encoded
+        // encryption key does not linger on the heap.
+        let mut key_hex = crate::encryption::format_pragma_key(key);
+        let pragma_result = conn.pragma_update(None, "key", &key_hex);
+        use zeroize::Zeroize;
+        key_hex.zeroize();
+        pragma_result?;
 
         // Verify the key is correct by reading schema_version. If the key
         // is wrong, SQLCipher returns "file is encrypted or is not a database"

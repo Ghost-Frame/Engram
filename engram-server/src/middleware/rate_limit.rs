@@ -1,10 +1,11 @@
 use axum::{
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     middleware::Next,
     response::Response,
 };
 use engram_lib::auth::AuthContext;
 use engram_lib::ratelimit;
+use std::net::SocketAddr;
 
 use crate::state::AppState;
 
@@ -24,7 +25,17 @@ fn too_many_requests(retry_after: i64) -> Response {
         .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
 }
 
+/// SECURITY (SEC-H7): extract client IP from X-Forwarded-For only if a
+/// ConnectInfo peer address is available as fallback.  If X-Forwarded-For is
+/// absent or empty, fall back to the real TCP socket address so a direct
+/// client cannot forge the rate-limit key.
 fn client_ip_key(request: &Request) -> String {
+    // Prefer actual socket peer address; use X-Forwarded-For only as first-hop hint.
+    let peer_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string());
+
     let forwarded = request
         .headers()
         .get("x-forwarded-for")
@@ -32,8 +43,14 @@ fn client_ip_key(request: &Request) -> String {
         .and_then(|v| v.split(',').next())
         .map(str::trim)
         .filter(|v| !v.is_empty())
-        .unwrap_or("unknown");
-    format!("ip:{}", forwarded)
+        .map(String::from);
+
+    // Use forwarded IP if available (trusted proxy scenario), else socket peer.
+    let ip = forwarded
+        .or(peer_ip)
+        .unwrap_or_else(|| "unknown".to_string());
+
+    format!("ip:{}", ip)
 }
 
 pub async fn preauth_rate_limit_middleware(
