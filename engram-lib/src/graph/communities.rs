@@ -113,13 +113,24 @@ pub async fn detect_communities(
         .flat_map(|(k, vs)| vs.iter().filter(move |(v, _)| **v > *k).map(|(_, w)| w))
         .sum();
     if m == 0.0 {
-        for (idx, &id) in memory_ids.iter().enumerate() {
-            conn.execute(
-                "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
-                libsql::params![idx as i64, id, user_id],
-            )
-            .await?;
+        // Wrap batch UPDATEs in transaction for atomicity (S1-5/S1-6 fix).
+        conn.execute("BEGIN IMMEDIATE", ()).await?;
+        let update_result: crate::Result<()> = async {
+            for (idx, &id) in memory_ids.iter().enumerate() {
+                conn.execute(
+                    "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
+                    libsql::params![idx as i64, id, user_id],
+                )
+                .await?;
+            }
+            Ok(())
+        }.await;
+        if update_result.is_err() {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            return Err(update_result.unwrap_err());
         }
+        conn.execute("COMMIT", ()).await?;
+
         return Ok(CommunitiesResult {
             communities: memory_ids.len(),
             memories: memory_ids.len(),
@@ -195,14 +206,24 @@ pub async fn detect_communities(
             next_community += 1;
         }
     }
-    for (&node_id, &comm) in &community {
-        let cid = label_map.get(&comm).copied().unwrap_or(0);
-        conn.execute(
-            "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
-            libsql::params![cid, node_id, user_id],
-        )
-        .await?;
+    // Wrap batch UPDATEs in transaction for atomicity (S1-5/S1-6 fix).
+    conn.execute("BEGIN IMMEDIATE", ()).await?;
+    let update_result: crate::Result<()> = async {
+        for (&node_id, &comm) in &community {
+            let cid = label_map.get(&comm).copied().unwrap_or(0);
+            conn.execute(
+                "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
+                libsql::params![cid, node_id, user_id],
+            )
+            .await?;
+        }
+        Ok(())
+    }.await;
+    if update_result.is_err() {
+        let _ = conn.execute("ROLLBACK", ()).await;
+        return Err(update_result.unwrap_err());
     }
+    conn.execute("COMMIT", ()).await?;
 
     let num_communities = label_map.len();
     let mut comm_sizes: HashMap<i64, usize> = HashMap::new();
