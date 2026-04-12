@@ -24,6 +24,7 @@ uuid = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
 hex = "0.4"
+rand = { workspace = true }
 
 [dev-dependencies]
 engram-lib = { path = "../engram-lib", features = ["test-utils"] }

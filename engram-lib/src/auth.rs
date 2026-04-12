@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
 use crate::db::Database;
 use crate::Result;
@@ -107,13 +106,22 @@ fn normalize_key(raw_key: &str) -> Option<String> {
 }
 
 /// Generate a new random API key.
-/// Returns (full_key, key_prefix, key_hash).
+///
+/// SECURITY (SEC-HIGH-2): keys draw 16 raw bytes from `OsRng`, giving a
+/// full 128 bits of unpredictability rendered as 32 lowercase hex chars.
+/// The previous implementation concatenated two UUID v4 strings and
+/// truncated to 32 characters, which embedded fixed version/variant bits
+/// in the middle of the key and reduced effective entropy below the
+/// advertised 128-bit strength. Returns `(full_key, key_prefix, key_hash)`.
 fn generate_key() -> (String, String, String) {
-    // Two UUIDs concatenated and stripped of hyphens give 64 hex chars.
-    // Take the first 32.
-    let part_a = Uuid::new_v4().simple().to_string(); // 32 hex chars
-    let part_b = Uuid::new_v4().simple().to_string(); // 32 hex chars
-    let raw_hex: String = format!("{}{}", part_a, part_b).chars().take(32).collect();
+    use rand::RngCore;
+    let mut raw = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut raw);
+    let mut raw_hex = String::with_capacity(32);
+    for byte in raw {
+        use std::fmt::Write;
+        let _ = write!(&mut raw_hex, "{:02x}", byte);
+    }
 
     let full_key = format!("engram_{}", raw_hex);
     // key_prefix = first 8 chars of the hex portion (chars 7..15 of full_key)
@@ -268,12 +276,17 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     })
 }
 
-/// Deactivate an API key by id.
-pub async fn revoke_key(db: &Database, key_id: i64) -> Result<()> {
+/// Deactivate an API key by id, scoped to the owning user.
+///
+/// SECURITY (SEC-HIGH-5): the `user_id` filter is defense-in-depth. All
+/// callers should already verify ownership before reaching this function,
+/// but constraining the UPDATE here means any future caller that forgets
+/// to check ownership still cannot revoke another tenant's keys.
+pub async fn revoke_key(db: &Database, user_id: i64, key_id: i64) -> Result<()> {
     db.conn
         .execute(
-            "UPDATE api_keys SET is_active = 0 WHERE id = ?1",
-            libsql::params![key_id],
+            "UPDATE api_keys SET is_active = 0 WHERE id = ?1 AND user_id = ?2",
+            libsql::params![key_id, user_id],
         )
         .await?;
     Ok(())

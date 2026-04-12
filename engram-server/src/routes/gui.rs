@@ -57,9 +57,14 @@ fn mime_for_extension(ext: &str) -> &'static str {
 
 /// Get or create the HMAC secret for cookie signing.
 ///
-/// SECURITY: the on-disk secret is chmod 0o600 so another user on the box
-/// cannot read it and forge GUI auth cookies. If we find an existing file
-/// with permissive bits we tighten them in place.
+/// SECURITY (SEC-HIGH-1): the secret is 32 bytes drawn from `OsRng` and
+/// encoded as hex, giving a full 256-bit key. The previous implementation
+/// concatenated two UUID v4 strings, which carry only ~122 bits of entropy
+/// each and embed fixed version/variant nibbles, so the effective search
+/// space for cookie forgery was substantially below the 256-bit strength
+/// implied by the Sha256 MAC. The on-disk secret is chmod 0o600 so another
+/// user on the box cannot read it and forge GUI auth cookies; if we find
+/// an existing file with permissive bits we tighten them in place.
 async fn get_hmac_secret(data_dir: &str) -> String {
     if let Ok(secret) = std::env::var("ENGRAM_HMAC_SECRET") {
         return secret;
@@ -73,8 +78,18 @@ async fn get_hmac_secret(data_dir: &str) -> String {
         return secret;
     }
 
-    // Generate new secret
-    let secret = format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    // Generate new secret: 32 bytes from OsRng, hex encoded.
+    let secret = {
+        use rand::RngCore;
+        let mut raw = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut raw);
+        let mut out = String::with_capacity(64);
+        for byte in raw {
+            use std::fmt::Write;
+            let _ = write!(&mut out, "{:02x}", byte);
+        }
+        out
+    };
 
     // Ensure data dir exists
     let _ = fs::create_dir_all(data_dir).await;

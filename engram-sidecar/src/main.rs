@@ -1,3 +1,4 @@
+mod auth;
 mod routes;
 mod session;
 
@@ -30,6 +31,12 @@ struct Cli {
 
     #[arg(long, default_value = "1", env = "ENGRAM_SIDECAR_USER_ID")]
     user_id: i64,
+
+    /// Shared-secret token clients must send as `Authorization: Bearer <token>`.
+    /// If unset and host is loopback, auth is skipped with a warning.
+    /// If unset and host is non-loopback, the sidecar refuses to start.
+    #[arg(long, env = "ENGRAM_SIDECAR_TOKEN")]
+    token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -41,6 +48,7 @@ pub struct SidecarState {
     pub session: Arc<RwLock<session::Session>>,
     pub source: String,
     pub user_id: i64,
+    pub token: Option<String>,
 }
 
 #[tokio::main]
@@ -89,6 +97,31 @@ async fn main() {
 
     tracing::info!(session_id = %session_id, "starting sidecar session");
 
+    // SECURITY (SEC-CRIT-1 / MT-F18): refuse to start on a non-loopback
+    // interface without a shared-secret token. On loopback, allow unauthed
+    // startup with a loud warning to avoid breaking existing dev flows.
+    let loopback = auth::is_loopback_host(&cli.host);
+    let token = match cli.token.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(t) => Some(t.to_string()),
+        None => {
+            if !loopback {
+                eprintln!(
+                    "error: sidecar refuses to bind {} without ENGRAM_SIDECAR_TOKEN (non-loopback)",
+                    cli.host
+                );
+                std::process::exit(2);
+            }
+            tracing::warn!(
+                host = %cli.host,
+                "ENGRAM_SIDECAR_TOKEN not set; loopback-only so auth is skipped"
+            );
+            None
+        }
+    };
+    if token.is_some() {
+        tracing::info!("sidecar shared-secret auth enabled");
+    }
+
     let state = SidecarState {
         db: Arc::new(db),
         config: Arc::new(config),
@@ -97,6 +130,7 @@ async fn main() {
         session: Arc::new(RwLock::new(session::Session::new(session_id))),
         source: cli.source,
         user_id: cli.user_id,
+        token,
     };
 
     let app = routes::router(state);

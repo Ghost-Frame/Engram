@@ -83,16 +83,44 @@ async fn revoke_key(
     Auth(auth_ctx): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    // Verify ownership: list user's keys and check if this id is among them
-    let keys = auth::list_keys(&state.db, auth_ctx.user_id).await?;
-    let is_admin = auth_ctx.has_scope(&auth::Scope::Admin);
-    let owns_key = keys.iter().any(|k| k.id == id);
-
-    if !owns_key && !is_admin {
-        return Err(AppError(engram_lib::EngError::Auth("Forbidden".into())));
+    // SECURITY (SEC-HIGH-5): resolve the key owner before revoking so an
+    // admin can revoke any key but a non-admin can only revoke their own.
+    // The inner SQL is also scoped by user_id as defense-in-depth; see
+    // `auth::revoke_key`.
+    let mut target_user = auth_ctx.user_id;
+    if auth_ctx.has_scope(&auth::Scope::Admin) {
+        // Look up the key's owner by id so admin revocations resolve
+        // against the correct tenant row.
+        let mut rows = state
+            .db
+            .conn
+            .query(
+                "SELECT user_id FROM api_keys WHERE id = ?1",
+                libsql::params![id],
+            )
+            .await
+            .map_err(engram_lib::EngError::Database)?;
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(engram_lib::EngError::Database)?
+        {
+            target_user = row
+                .get::<i64>(0)
+                .map_err(|e| engram_lib::EngError::Internal(e.to_string()))?;
+        } else {
+            return Err(AppError(engram_lib::EngError::NotFound(
+                "key not found".into(),
+            )));
+        }
+    } else {
+        let keys = auth::list_keys(&state.db, auth_ctx.user_id).await?;
+        if !keys.iter().any(|k| k.id == id) {
+            return Err(AppError(engram_lib::EngError::Auth("Forbidden".into())));
+        }
     }
 
-    auth::revoke_key(&state.db, id).await?;
+    auth::revoke_key(&state.db, target_user, id).await?;
     Ok(Json(json!({ "revoked": true, "id": id })))
 }
 
@@ -131,7 +159,11 @@ async fn rotate_key(
     )
     .await?;
 
-    // Set 24-hour grace period on old key
+    // Set 24-hour grace period on old key.
+    // SECURITY (SEC-HIGH-5): the UPDATE is scoped to the caller's user_id
+    // as defense-in-depth. Ownership was already verified above via
+    // list_keys, but constraining the SQL means an attacker who bypassed
+    // the in-memory check still cannot touch another tenant's keys.
     let grace_expiry = (chrono::Utc::now() + chrono::Duration::hours(24))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
@@ -139,8 +171,8 @@ async fn rotate_key(
         .db
         .conn
         .execute(
-            "UPDATE api_keys SET expires_at = ?1 WHERE id = ?2",
-            libsql::params![grace_expiry.clone(), body.key_id],
+            "UPDATE api_keys SET expires_at = ?1 WHERE id = ?2 AND user_id = ?3",
+            libsql::params![grace_expiry.clone(), body.key_id, auth_ctx.user_id],
         )
         .await
         .map_err(engram_lib::EngError::Database)?;

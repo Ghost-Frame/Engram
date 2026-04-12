@@ -6,6 +6,8 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
+use std::time::Instant;
 
 use crate::error::AppError;
 use crate::extractors::Auth;
@@ -120,10 +122,71 @@ struct BootstrapBody {
     secret: Option<String>,
 }
 
+/// SECURITY (SEC-HIGH-6): bootstrap has no upstream rate limiter because
+/// it bypasses auth entirely. Without a cooldown an attacker can brute-
+/// force `ENGRAM_BOOTSTRAP_SECRET` at wire speed. This sliding-window
+/// counter is kept in-process and deliberately global rather than per-IP:
+/// bootstrap is a one-shot operation, so throttling the whole endpoint is
+/// sufficient and avoids having to rearchitect the app to pass
+/// `ConnectInfo<SocketAddr>` through to handlers. Legitimate retries after
+/// the cooldown window are still possible.
+const BOOTSTRAP_FAILURE_LIMIT: u32 = 5;
+const BOOTSTRAP_WINDOW_SECS: u64 = 60;
+
+struct BootstrapThrottle {
+    failures: u32,
+    window_start: Instant,
+}
+
+fn bootstrap_throttle() -> &'static Mutex<BootstrapThrottle> {
+    static STATE: std::sync::OnceLock<Mutex<BootstrapThrottle>> = std::sync::OnceLock::new();
+    STATE.get_or_init(|| {
+        Mutex::new(BootstrapThrottle {
+            failures: 0,
+            window_start: Instant::now(),
+        })
+    })
+}
+
+/// Returns Err((status, body)) if currently locked out.
+fn check_bootstrap_cooldown() -> Result<(), (StatusCode, Json<Value>)> {
+    let mut throttle = bootstrap_throttle().lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    if now.duration_since(throttle.window_start).as_secs() >= BOOTSTRAP_WINDOW_SECS {
+        throttle.window_start = now;
+        throttle.failures = 0;
+    }
+    if throttle.failures >= BOOTSTRAP_FAILURE_LIMIT {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "error": "bootstrap rate-limited; wait before retrying",
+            })),
+        ));
+    }
+    Ok(())
+}
+
+fn record_bootstrap_failure() {
+    let mut throttle = bootstrap_throttle().lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    if now.duration_since(throttle.window_start).as_secs() >= BOOTSTRAP_WINDOW_SECS {
+        throttle.window_start = now;
+        throttle.failures = 0;
+    }
+    throttle.failures = throttle.failures.saturating_add(1);
+}
+
 async fn bootstrap(
     State(state): State<AppState>,
     body: Option<Json<BootstrapBody>>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    // SECURITY (SEC-HIGH-6): before any env lookup, check the global
+    // bootstrap cooldown so attackers cannot brute-force the secret.
+    if let Err(resp) = check_bootstrap_cooldown() {
+        return Ok(resp);
+    }
+
     // SECURITY: previously POST /bootstrap was unauthenticated with only a
     // "no active keys exist" guard. On fresh deployments an attacker could
     // race the legitimate admin to obtain the first admin key. We now require
@@ -151,7 +214,12 @@ async fn bootstrap(
         .map(|s| s.to_string())
         .unwrap_or_default();
     use subtle::ConstantTimeEq;
-    if supplied.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() != 1 {
+    if supplied.len() != expected.len()
+        || supplied.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() != 1
+    {
+        // SECURITY (SEC-HIGH-6): record failure toward the sliding-window
+        // cooldown so repeated wrong secrets lock the endpoint.
+        record_bootstrap_failure();
         return Ok((
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "invalid bootstrap secret" })),

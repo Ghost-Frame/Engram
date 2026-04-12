@@ -26,13 +26,18 @@ fn forbid(msg: &str) -> Response {
 }
 
 fn open_access_context() -> AuthContext {
+    // SECURITY (SEC-CRIT-2 / SEC-HIGH-4 / MT-F24): open-access grants only
+    // Scope::Read. Write scope was removed because any caller with the env
+    // var set could otherwise mint arbitrary memories for user 1 with no
+    // audit trail. Writes now require a real API key even in open-access
+    // mode.
     AuthContext {
         key: ApiKey {
             id: 0,
             user_id: 1,
             key_prefix: "open".into(),
             name: "open-access".into(),
-            scopes: vec![Scope::Read, Scope::Write],
+            scopes: vec![Scope::Read],
             rate_limit: 1000,
             is_active: true,
             agent_id: None,
@@ -42,6 +47,24 @@ fn open_access_context() -> AuthContext {
         },
         user_id: 1,
     }
+}
+
+/// SECURITY (SEC-CRIT-2 / MT-F24): in release builds, refuse to honor
+/// `ENGRAM_OPEN_ACCESS=1` unless the operator has also set the explicit
+/// escape hatch `ENGRAM_ALLOW_OPEN_ACCESS_IN_RELEASE=yes-i-am-sure`. This
+/// prevents the dev convenience env var from accidentally being set in a
+/// production deployment and silently disabling all auth.
+fn open_access_allowed() -> bool {
+    if std::env::var("ENGRAM_OPEN_ACCESS").as_deref() != Ok("1") {
+        return false;
+    }
+    if cfg!(debug_assertions) {
+        return true;
+    }
+    matches!(
+        std::env::var("ENGRAM_ALLOW_OPEN_ACCESS_IN_RELEASE").as_deref(),
+        Ok("yes-i-am-sure")
+    )
 }
 
 pub async fn auth_middleware(
@@ -59,12 +82,18 @@ pub async fn auth_middleware(
         return next.run(request).await;
     }
 
-    // Check ENGRAM_OPEN_ACCESS env var
-    if std::env::var("ENGRAM_OPEN_ACCESS").as_deref() == Ok("1") {
+    // Check ENGRAM_OPEN_ACCESS env var (refuses release builds without escape hatch).
+    if open_access_allowed() {
         tracing::warn!(
             path = %path,
             "ENGRAM_OPEN_ACCESS bypassing authentication for request"
         );
+        let method = request.method().clone();
+        // Even with the escape hatch, never let writes slip through without
+        // a real API key. open_access_context() grants only Scope::Read.
+        if requires_write_scope(&method) {
+            return forbid("ENGRAM_OPEN_ACCESS is read-only; writes require an API key");
+        }
         request.extensions_mut().insert(open_access_context());
         return next.run(request).await;
     }
