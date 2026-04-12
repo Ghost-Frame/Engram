@@ -13,6 +13,9 @@ credd-raw = []
 # Vendor SQLCipher for at-rest encryption. Mutually exclusive with libsql
 # in the same binary (symbol collision), so engram-migrate must NOT enable this.
 sqlcipher = ["rusqlite/bundled-sqlcipher"]
+# Bundle SQLite from source (needed on Windows where no system sqlite3.lib exists).
+# Mutually exclusive with libsql in the same binary (symbol collision).
+bundled-sqlite = ["rusqlite/bundled"]
 
 [dependencies]
 rusqlite = { workspace = true }
