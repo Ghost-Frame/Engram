@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cred::client::{CreddClient, FetchSecretRequest, SecretAccessMode};
 use crate::db::Database;
-use crate::webhooks::validate_webhook_url;
+use crate::webhooks::resolve_and_validate_url;
 use crate::{EngError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,14 +40,15 @@ impl CreddClient {
         key: &str,
         request: &ProxyRequest,
     ) -> Result<ProxyResponse> {
-        // SECURITY (SEC-CRIT-3): validate the outbound URL against the same
-        // SSRF blocklist webhooks use (loopback, RFC1918, link-local,
-        // cloud-metadata, IPv6 ULA). Without this the admin credential
-        // proxy forwards any URL including 169.254.169.254/latest/meta-data.
+        // SECURITY (SSRF-DNS): validate the outbound URL against the SSRF
+        // blocklist (loopback, RFC1918, link-local, cloud-metadata, IPv6 ULA)
+        // AND resolve DNS to catch domains pointing at private IPs. Without
+        // this the admin credential proxy forwards any URL including
+        // 169.254.169.254/latest/meta-data.
         // Test clients set `allow_loopback_proxy` so mock HTTP servers on
         // 127.0.0.1 still work; production clients never do.
         if !self.allow_loopback_proxy {
-            validate_webhook_url(&request.url).map_err(|e| match e {
+            resolve_and_validate_url(&request.url).await.map_err(|e| match e {
                 EngError::InvalidInput(msg) => {
                     EngError::InvalidInput(format!("cred proxy URL rejected: {}", msg))
                 }

@@ -279,6 +279,12 @@ pub struct Config {
     pub encryption: EncryptionConfig,
     #[serde(default)]
     pub eidolon: EidolonConfig,
+    /// SECURITY: IP addresses of trusted reverse proxies. When the request
+    /// originates from one of these IPs, X-Forwarded-For is honoured for
+    /// rate-limit keying. When empty (default), XFF is never trusted and
+    /// the TCP peer address is always used.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for Config {
@@ -312,6 +318,7 @@ impl Default for Config {
             pagerank_enabled: true,
             encryption: EncryptionConfig::default(),
             eidolon: EidolonConfig::default(),
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -492,6 +499,19 @@ impl Config {
                     EncryptionMode::None
                 }
             };
+        }
+        // SECURITY: comma-separated list of trusted reverse proxy IPs.
+        // Only when the TCP peer matches one of these will X-Forwarded-For
+        // be honoured for rate-limit keying.
+        if let Ok(v) = std::env::var("ENGRAM_TRUSTED_PROXIES") {
+            config.trusted_proxies = v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !config.trusted_proxies.is_empty() {
+                tracing::info!("trusted proxies configured: {:?}", config.trusted_proxies);
+            }
         }
         config.eidolon = EidolonConfig::from_env();
         config

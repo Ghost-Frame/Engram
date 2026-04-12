@@ -1,12 +1,15 @@
 //! HTTP server setup for credd.
 
 use axum::{
+    extract::DefaultBodyLimit,
     middleware,
     routing::{delete, get, post},
     Router,
 };
+use std::time::Duration;
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 use engram_cred::crypto::derive_key;
 use engram_lib::db::migrations::run_migrations;
@@ -15,6 +18,14 @@ use engram_lib::db::Database;
 use crate::auth::auth_middleware;
 use crate::handlers::{agents, resolve, secrets};
 use crate::state::AppState;
+
+/// Request body limit for credd: 1 MiB. Prevents memory exhaustion from
+/// oversized secret payloads or proxy bodies.
+const CREDD_BODY_LIMIT: usize = 1024 * 1024;
+
+/// Per-request timeout: 30 seconds. Prevents slow-loris and hung-upstream
+/// from tying up handler tasks indefinitely.
+const CREDD_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Run the credd HTTP server.
 pub async fn run(
@@ -61,15 +72,39 @@ pub async fn run(
             state.clone(),
             auth_middleware,
         ))
+        // SECURITY: request hardening layers. DefaultBodyLimit prevents
+        // memory exhaustion, TimeoutLayer prevents slow-loris / hung proxy.
+        .layer(DefaultBodyLimit::max(CREDD_BODY_LIMIT))
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(CREDD_REQUEST_TIMEOUT_SECS),
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
     // Parse listen address
     let addr: std::net::SocketAddr = listen.parse()?;
+
+    // SECURITY: warn if binding to a non-loopback address. credd is
+    // designed for local-only access; exposing it to the network widens
+    // the attack surface for brute-force token guessing.
+    if !addr.ip().is_loopback() {
+        warn!(
+            "credd is binding to non-loopback address {}. \
+             Ensure network access is restricted (firewall, VPN, etc.).",
+            addr
+        );
+    }
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     info!("credd listening on {}", addr);
-    axum::serve(listener, app).await?;
+    // Install ConnectInfo so future rate-limiting middleware can read peer IP.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

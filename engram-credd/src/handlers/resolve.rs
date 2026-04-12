@@ -184,13 +184,16 @@ pub async fn proxy_handler(
     State(state): State<AppState>,
     Json(req): Json<ProxyRequest>,
 ) -> Result<Json<ProxyResponse>, AppError> {
-    // SECURITY (SEC-HIGH-2): SSRF validation -- reject requests targeting
-    // loopback, private, link-local, and cloud metadata addresses. The
-    // proxy injects secret headers so an unvalidated URL would let an
-    // attacker exfiltrate credentials to internal services.
-    engram_lib::webhooks::validate_webhook_url(&req.url).map_err(|e| {
-        CredError::InvalidInput(format!("proxy target URL rejected: {}", e))
-    })?;
+    // SECURITY (SSRF-DNS): SSRF validation -- reject requests targeting
+    // loopback, private, link-local, and cloud metadata addresses. Resolves
+    // DNS so domains pointing at private IPs are also caught. The proxy
+    // injects secret headers so an unvalidated URL would let an attacker
+    // exfiltrate credentials to internal services.
+    engram_lib::webhooks::resolve_and_validate_url(&req.url)
+        .await
+        .map_err(|e| {
+            CredError::InvalidInput(format!("proxy target URL rejected: {}", e))
+        })?;
 
     if !auth.can_access_category(&req.secret_category) {
         log_audit(

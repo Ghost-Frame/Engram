@@ -8,6 +8,7 @@ use chrono::Utc;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -54,9 +55,67 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// SSRF deny-list helpers
+// ---------------------------------------------------------------------------
+
+/// Returns true if the IPv4 address falls in a range that should never be
+/// reachable from an outbound webhook or proxy request.
+pub fn is_ipv4_denied(ip: &Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        // 169.254/16 link-local incl. AWS metadata 169.254.169.254
+        || (octets[0] == 169 && octets[1] == 254)
+        // 100.64/10 CGNAT
+        || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
+        // 0.0.0.0/8
+        || octets[0] == 0
+}
+
+/// Returns true if the IPv6 address falls in a range that should never be
+/// reachable from an outbound webhook or proxy request.
+pub fn is_ipv6_denied(ip: &Ipv6Addr) -> bool {
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+        return true;
+    }
+    // IPv6-mapped/compat IPv4 (e.g. ::ffff:127.0.0.1)
+    if let Some(v4) = ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()) {
+        if is_ipv4_denied(&v4) {
+            return true;
+        }
+    }
+    let segments = ip.segments();
+    // ULA fc00::/7
+    if segments[0] & 0xfe00 == 0xfc00 {
+        return true;
+    }
+    // Link-local fe80::/10
+    if segments[0] & 0xffc0 == 0xfe80 {
+        return true;
+    }
+    false
+}
+
+/// Returns true if the socket address points to a denied IP range.
+pub fn is_addr_denied(addr: &SocketAddr) -> bool {
+    match addr.ip() {
+        IpAddr::V4(v4) => is_ipv4_denied(&v4),
+        IpAddr::V6(v6) => is_ipv6_denied(&v6),
+    }
+}
+
 /// Reject webhook URLs that would let the server attack its own network:
 /// non-http(s) schemes, loopback, link-local, or RFC1918 private ranges.
 /// Callers should invoke this before persisting a webhook.
+///
+/// NOTE: this is a **synchronous** check on literal hostnames and IPs only.
+/// For delivery-time validation that also resolves DNS, use
+/// [`resolve_and_validate_url`].
 pub fn validate_webhook_url(raw: &str) -> Result<()> {
     let parsed = url::Url::parse(raw)
         .map_err(|e| EngError::InvalidInput(format!("invalid webhook URL: {}", e)))?;
@@ -91,20 +150,7 @@ pub fn validate_webhook_url(raw: &str) -> Result<()> {
             }
         }
         url::Host::Ipv4(ip) => {
-            let octets = ip.octets();
-            if ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_broadcast()
-                || ip.is_multicast()
-                // 169.254/16 link-local incl. AWS metadata 169.254.169.254
-                || octets[0] == 169 && octets[1] == 254
-                // 100.64/10 CGNAT
-                || octets[0] == 100 && (octets[1] & 0xC0) == 64
-                // 0.0.0.0/8
-                || octets[0] == 0
-            {
+            if is_ipv4_denied(&ip) {
                 return Err(EngError::InvalidInput(format!(
                     "webhook host {} is in a disallowed IPv4 range",
                     ip
@@ -112,47 +158,65 @@ pub fn validate_webhook_url(raw: &str) -> Result<()> {
             }
         }
         url::Host::Ipv6(ip) => {
-            if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+            if is_ipv6_denied(&ip) {
                 return Err(EngError::InvalidInput(format!(
                     "webhook host {} is in a disallowed IPv6 range",
                     ip
                 )));
             }
-            // SECURITY: reject IPv6-mapped/compat IPv4 addresses (e.g. ::ffff:127.0.0.1)
-            // that bypass the IPv4 deny list above.
-            if let Some(v4) = ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()) {
-                let octets = v4.octets();
-                if v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_unspecified()
-                    || v4.is_broadcast()
-                    || v4.is_multicast()
-                    || (octets[0] == 169 && octets[1] == 254)
-                    || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
-                    || octets[0] == 0
-                {
-                    return Err(EngError::InvalidInput(format!(
-                        "webhook host {} maps to a disallowed IPv4 address",
-                        ip
-                    )));
-                }
-            }
-            // ULA fc00::/7
-            let segments = ip.segments();
-            if segments[0] & 0xfe00 == 0xfc00 {
-                return Err(EngError::InvalidInput(
-                    "webhook host is in the IPv6 ULA range".into(),
-                ));
-            }
-            // Link-local fe80::/10
-            if segments[0] & 0xffc0 == 0xfe80 {
-                return Err(EngError::InvalidInput(
-                    "webhook host is IPv6 link-local".into(),
-                ));
+        }
+    }
+    Ok(())
+}
+
+/// SECURITY (SSRF-DNS): resolve the hostname in `raw` via DNS and reject the
+/// URL if **any** resulting IP falls in a denied range (loopback, private,
+/// link-local, CGNAT, cloud metadata, IPv6 ULA). This closes the gap where
+/// `validate_webhook_url` only inspects the literal hostname/IP.
+///
+/// Callers should invoke this at **delivery/request time**, not just at
+/// persist time, because DNS can change between the two.
+pub async fn resolve_and_validate_url(raw: &str) -> Result<()> {
+    // Fast-path: reject obvious bad schemes, literal IPs, and known names.
+    validate_webhook_url(raw)?;
+
+    let parsed = url::Url::parse(raw)
+        .map_err(|e| EngError::InvalidInput(format!("invalid URL: {}", e)))?;
+
+    // Only domain names need DNS resolution; literal IPs are already
+    // validated by the synchronous check above.
+    if let Some(url::Host::Domain(name)) = parsed.host() {
+        let port = parsed.port_or_known_default().unwrap_or(443);
+        let lookup_host = format!("{}:{}", name, port);
+
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host(&lookup_host)
+            .await
+            .map_err(|e| {
+                EngError::InvalidInput(format!("DNS resolution failed for {}: {}", name, e))
+            })?
+            .collect();
+
+        if addrs.is_empty() {
+            return Err(EngError::InvalidInput(format!(
+                "no DNS records for {}",
+                name
+            )));
+        }
+
+        // Reject if ANY resolved address is in a denied range. An attacker
+        // could return both a public and a private IP; we cannot control
+        // which one the HTTP client will pick.
+        for addr in &addrs {
+            if is_addr_denied(addr) {
+                return Err(EngError::InvalidInput(format!(
+                    "DNS for {} resolved to denied address {}",
+                    name,
+                    addr.ip()
+                )));
             }
         }
     }
+
     Ok(())
 }
 
@@ -312,9 +376,10 @@ pub async fn emit_webhook_event(
         if !hook.events.contains(&"*".to_string()) && !hook.events.contains(&event.to_string()) {
             continue;
         }
-        // Re-validate the URL at delivery time: a row could have been migrated
-        // in from an older build before validation existed.
-        if validate_webhook_url(&hook.url).is_err() {
+        // SECURITY (SSRF-DNS): re-validate at delivery time with DNS
+        // resolution. A row could have been migrated from an older build, or
+        // the domain's DNS records could have changed to point at private IPs.
+        if resolve_and_validate_url(&hook.url).await.is_err() {
             tracing::warn!(hook_id = hook.id, "skipping webhook with disallowed URL");
             continue;
         }
@@ -405,4 +470,130 @@ pub async fn get_changes_since(
         Ok(result)
     })
     .await
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    // -- is_ipv4_denied unit tests --
+
+    #[test]
+    fn ipv4_loopback_denied() {
+        assert!(is_ipv4_denied(&Ipv4Addr::LOCALHOST));
+        assert!(is_ipv4_denied(&"127.0.0.2".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv4_private_denied() {
+        assert!(is_ipv4_denied(&"10.0.0.1".parse().unwrap()));
+        assert!(is_ipv4_denied(&"172.16.0.1".parse().unwrap()));
+        assert!(is_ipv4_denied(&"192.168.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv4_link_local_denied() {
+        assert!(is_ipv4_denied(&"169.254.169.254".parse().unwrap()));
+        assert!(is_ipv4_denied(&"169.254.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv4_cgnat_denied() {
+        assert!(is_ipv4_denied(&"100.64.0.1".parse().unwrap()));
+        assert!(is_ipv4_denied(&"100.127.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv4_public_allowed() {
+        assert!(!is_ipv4_denied(&"8.8.8.8".parse().unwrap()));
+        assert!(!is_ipv4_denied(&"1.1.1.1".parse().unwrap()));
+        assert!(!is_ipv4_denied(&"203.0.113.1".parse().unwrap()));
+    }
+
+    // -- is_ipv6_denied unit tests --
+
+    #[test]
+    fn ipv6_loopback_denied() {
+        assert!(is_ipv6_denied(&Ipv6Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn ipv6_mapped_loopback_denied() {
+        assert!(is_ipv6_denied(&"::ffff:127.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv6_ula_denied() {
+        assert!(is_ipv6_denied(&"fd00::1".parse().unwrap()));
+        assert!(is_ipv6_denied(&"fc00::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv6_link_local_denied() {
+        assert!(is_ipv6_denied(&"fe80::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv6_global_allowed() {
+        assert!(!is_ipv6_denied(&"2001:db8::1".parse().unwrap()));
+    }
+
+    // -- validate_webhook_url sync tests --
+
+    #[test]
+    fn rejects_ftp_scheme() {
+        assert!(validate_webhook_url("ftp://example.com/hook").is_err());
+    }
+
+    #[test]
+    fn rejects_localhost() {
+        assert!(validate_webhook_url("http://localhost/hook").is_err());
+        assert!(validate_webhook_url("http://sub.localhost/hook").is_err());
+    }
+
+    #[test]
+    fn rejects_metadata_hosts() {
+        assert!(validate_webhook_url("http://metadata.google.internal/latest").is_err());
+        assert!(validate_webhook_url("http://metadata/latest").is_err());
+    }
+
+    #[test]
+    fn rejects_literal_private_ip() {
+        assert!(validate_webhook_url("http://127.0.0.1/hook").is_err());
+        assert!(validate_webhook_url("http://10.0.0.1/hook").is_err());
+        assert!(validate_webhook_url("http://169.254.169.254/latest").is_err());
+    }
+
+    #[test]
+    fn accepts_public_url() {
+        assert!(validate_webhook_url("https://hooks.example.com/callback").is_ok());
+    }
+
+    // -- resolve_and_validate_url DNS tests --
+
+    #[tokio::test]
+    async fn dns_resolve_rejects_localhost_domain() {
+        let result = resolve_and_validate_url("https://localhost/hook").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn dns_resolve_accepts_public_domain() {
+        // Skip gracefully if DNS is unavailable.
+        match resolve_and_validate_url("https://example.com/webhook").await {
+            Ok(()) => {}
+            Err(e) => {
+                let msg = format!("{}", e);
+                if msg.contains("DNS resolution failed") {
+                    return;
+                }
+                panic!("unexpected error: {}", e);
+            }
+        }
+    }
 }

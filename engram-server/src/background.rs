@@ -94,6 +94,16 @@ pub fn start_job_cleanup_task(db: Arc<Database>) -> CancellationToken {
                             );
                         }
                     }
+
+                    // SECURITY: prune expired rate-limit rows to prevent
+                    // unbounded table growth from spoofed pre-auth keys.
+                    // Grace period of 300s (5 min) keeps rows for a bit
+                    // after window expiry to avoid edge-case resets.
+                    match engram_lib::ratelimit::cleanup_expired_rows(&db, 300).await {
+                        Ok(n) if n > 0 => info!(deleted = n, "rate-limit row cleanup"),
+                        Ok(_) => {}
+                        Err(e) => warn!(error = %e, "rate-limit row cleanup failed"),
+                    }
                 }
             }
         }

@@ -25,30 +25,44 @@ fn too_many_requests(retry_after: i64) -> Response {
         .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
 }
 
-/// SECURITY (SEC-H7): extract client IP from X-Forwarded-For only if a
-/// ConnectInfo peer address is available as fallback.  If X-Forwarded-For is
-/// absent or empty, fall back to the real TCP socket address so a direct
-/// client cannot forge the rate-limit key.
-fn client_ip_key(request: &Request) -> String {
-    // Prefer actual socket peer address; use X-Forwarded-For only as first-hop hint.
+/// SECURITY: extract client IP for rate-limit keying.
+///
+/// 1. Always read the real TCP peer address from ConnectInfo.
+/// 2. Only honour X-Forwarded-For when the peer IP is in the configured
+///    trusted_proxies list. This prevents direct clients from spoofing
+///    arbitrary rate-limit keys via XFF headers.
+/// 3. If ConnectInfo is unavailable (should not happen after the serve
+///    fix), fall back to "unknown" -- but never trust XFF in that case.
+fn client_ip_key(request: &Request, trusted_proxies: &[String]) -> String {
     let peer_ip = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip().to_string());
 
-    let forwarded = request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(String::from);
-
-    // Use forwarded IP if available (trusted proxy scenario), else socket peer.
-    let ip = forwarded
-        .or(peer_ip)
-        .unwrap_or_else(|| "unknown".to_string());
+    let ip = match &peer_ip {
+        Some(peer) if !trusted_proxies.is_empty() && trusted_proxies.iter().any(|tp| tp == peer) => {
+            // Peer is a trusted reverse proxy -- use first XFF hop.
+            request
+                .headers()
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.split(',').next())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(String::from)
+                .unwrap_or_else(|| peer.clone())
+        }
+        Some(peer) => {
+            // Direct client or untrusted proxy -- use real peer IP.
+            peer.clone()
+        }
+        None => {
+            tracing::warn!(
+                "ConnectInfo<SocketAddr> not available; rate-limit key will be \"unknown\""
+            );
+            "unknown".to_string()
+        }
+    };
 
     format!("ip:{}", ip)
 }
@@ -66,7 +80,7 @@ pub async fn preauth_rate_limit_middleware(
         return next.run(request).await;
     }
 
-    let key = client_ip_key(&request);
+    let key = client_ip_key(&request, &state.config.trusted_proxies);
     match ratelimit::check_and_increment(&state.db, &key, PREAUTH_IP_LIMIT, 60).await {
         Ok(true) => next.run(request).await,
         Ok(false) => too_many_requests(60),

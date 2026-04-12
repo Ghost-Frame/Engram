@@ -6,10 +6,13 @@ pub mod server;
 pub mod state;
 
 use axum::{
+    extract::DefaultBodyLimit,
     middleware,
     routing::{delete, get, post},
     Router,
 };
+use std::time::Duration;
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use auth::auth_middleware;
@@ -43,6 +46,12 @@ pub fn build_router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
+        ))
+        // SECURITY: request hardening -- same limits as the binary server.
+        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30),
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)

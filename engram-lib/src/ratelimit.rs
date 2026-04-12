@@ -211,6 +211,25 @@ pub async fn check_and_increment(
     .await
 }
 
+/// Delete rate-limit rows whose window expired more than `grace_seconds` ago.
+///
+/// SECURITY: without periodic cleanup, spoofed pre-auth keys (e.g. from
+/// rotated X-Forwarded-For values) accumulate rows indefinitely. This
+/// function should be called from a background task.
+pub async fn cleanup_expired_rows(db: &Database, grace_seconds: i64) -> Result<u64> {
+    db.write(move |conn| {
+        let deleted = conn
+            .execute(
+                "DELETE FROM rate_limits
+                 WHERE (strftime('%s', 'now') - strftime('%s', window_start)) > ?1",
+                rusqlite::params![grace_seconds],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(deleted as u64)
+    })
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
