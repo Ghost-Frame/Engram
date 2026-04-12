@@ -2,11 +2,91 @@
 //!
 //! Ported from intelligence/extraction.ts. Pure regex, no LLM needed.
 
+use std::sync::OnceLock;
+
 use crate::db::Database;
 use crate::intelligence::types::ExtractionStats;
 use crate::Result;
 use regex::Regex;
 use tracing::{debug, warn};
+
+// Static regex patterns compiled once via OnceLock (DOS-H4 fix).
+fn buy_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(bought|purchased|got|acquired|received|ordered|picked up)\s+(\d+)\s+(.+?)(?:\.|,|$)").unwrap()
+    })
+}
+
+fn spent_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\bspent\s+\$([\d,.]+)\s+(?:on|for)\s+(.+?)(?:\.|,|$)").unwrap()
+    })
+}
+
+fn have_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:I\s+)?(?:have|has|own|got)\s+(\d+)\s+(.+?)(?:\.|,|\s+(?:and|but|so|now))").unwrap()
+    })
+}
+
+fn exercise_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(ran|jogged|walked|hiked|swam|cycled|biked|exercised)\s+(?:for\s+)?(\d+(?:\.\d+)?)\s+(hours?|minutes?|mins?|miles?|km)").unwrap()
+    })
+}
+
+fn made_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(made|baked|cooked|prepared)\s+(?:a\s+|some\s+)?(.+?)(?:\.|,|\s+(?:and|but|for|from|yesterday|today|last))").unwrap()
+    })
+}
+
+fn earned_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:earned|made|received|got paid)\s+\$([\d,.]+)(?:\s+(?:from|for|by)\s+(.+?))?(?:\.|,|$)").unwrap()
+    })
+}
+
+fn like_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:I\s+)?(love|like|enjoy|prefer|adore)\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))").unwrap()
+    })
+}
+
+fn dislike_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:I\s+)?(hate|dislike|don't like|can't stand|avoid)\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))").unwrap()
+    })
+}
+
+fn favorite_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\bmy favorite\s+(.+?)\s+(?:is|are)\s+(.+?)(?:\.|,|$)").unwrap()
+    })
+}
+
+fn location_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:I\s+)?(?:moved to|relocated to|live in|living in|staying in)\s+(.+?)(?:\.|,|$)").unwrap()
+    })
+}
+
+fn role_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:I\s+)?(?:started|began|got promoted to|now work as|am now|just became)\s+(?:a\s+|an\s+|my\s+)?(.+?)(?:\.|,|$)").unwrap()
+    })
+}
 
 /// Extract structured facts, preferences, and state updates from memory content.
 pub async fn fast_extract_facts(
@@ -24,10 +104,7 @@ pub async fn fast_extract_facts(
     let date_ref = extract_date_ref(content);
 
     // -- Pattern 1: bought/purchased N items --
-    let buy_re = Regex::new(
-        r"(?i)\b(bought|purchased|got|acquired|received|ordered|picked up)\s+(\d+)\s+(.+?)(?:\.|,|$)"
-    ).unwrap();
-    for cap in buy_re.captures_iter(content) {
+    for cap in buy_regex().captures_iter(content) {
         let verb = cap[1].to_lowercase();
         let quantity: i64 = cap[2].parse().unwrap_or(0);
         let object = cap[3].trim();
@@ -54,8 +131,7 @@ pub async fn fast_extract_facts(
     }
 
     // -- Pattern 2: spent $N on X --
-    let spent_re = Regex::new(r"(?i)\bspent\s+\$([\d,.]+)\s+(?:on|for)\s+(.+?)(?:\.|,|$)").unwrap();
-    for cap in spent_re.captures_iter(content) {
+    for cap in spent_regex().captures_iter(content) {
         let amount: f64 = cap[1].replace(',', "").parse().unwrap_or(0.0);
         let object = cap[2].trim();
         if insert_fact(
@@ -78,11 +154,7 @@ pub async fn fast_extract_facts(
     }
 
     // -- Pattern 3: have/own N X --
-    let have_re = Regex::new(
-        r"(?i)\b(?:I\s+)?(?:have|has|own|got)\s+(\d+)\s+(.+?)(?:\.|,|\s+(?:and|but|so|now))",
-    )
-    .unwrap();
-    for cap in have_re.captures_iter(content) {
+    for cap in have_regex().captures_iter(content) {
         let quantity: i64 = cap[1].parse().unwrap_or(0);
         let object = cap[2].trim();
         if insert_fact(
@@ -105,10 +177,7 @@ pub async fn fast_extract_facts(
     }
 
     // -- Pattern 4: exercised for N time --
-    let exercise_re = Regex::new(
-        r"(?i)\b(ran|jogged|walked|hiked|swam|cycled|biked|exercised)\s+(?:for\s+)?(\d+(?:\.\d+)?)\s+(hours?|minutes?|mins?|miles?|km)"
-    ).unwrap();
-    for cap in exercise_re.captures_iter(content) {
+    for cap in exercise_regex().captures_iter(content) {
         let verb = cap[1].to_lowercase();
         let quantity: f64 = cap[2].parse().unwrap_or(0.0);
         let unit = cap[3].to_lowercase();
@@ -132,10 +201,7 @@ pub async fn fast_extract_facts(
     }
 
     // -- Pattern 5: made/baked/cooked X --
-    let made_re = Regex::new(
-        r"(?i)\b(made|baked|cooked|prepared)\s+(?:a\s+|some\s+)?(.+?)(?:\.|,|\s+(?:and|but|for|from|yesterday|today|last))"
-    ).unwrap();
-    for cap in made_re.captures_iter(content) {
+    for cap in made_regex().captures_iter(content) {
         let verb = cap[1].to_lowercase();
         let object = cap[2].trim();
         if insert_fact(
@@ -158,10 +224,7 @@ pub async fn fast_extract_facts(
     }
 
     // -- Pattern 6: earned/made $N --
-    let earned_re = Regex::new(
-        r"(?i)\b(?:earned|made|received|got paid)\s+\$([\d,.]+)(?:\s+(?:from|for|by)\s+(.+?))?(?:\.|,|$)"
-    ).unwrap();
-    for cap in earned_re.captures_iter(content) {
+    for cap in earned_regex().captures_iter(content) {
         let amount: f64 = cap[1].replace(',', "").parse().unwrap_or(0.0);
         let object = cap.get(2).map(|m| m.as_str().trim()).unwrap_or("");
         if insert_fact(
@@ -184,10 +247,7 @@ pub async fn fast_extract_facts(
     }
 
     // -- Preferences: likes/enjoys --
-    let like_re = Regex::new(
-        r"(?i)\b(?:I\s+)?(love|like|enjoy|prefer|adore)\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
-    ).unwrap();
-    for cap in like_re.captures_iter(content) {
+    for cap in like_regex().captures_iter(content) {
         let object = cap[2].trim();
         if object.len() > 3 && object.len() < 100 {
             let domain = infer_domain(object);
@@ -207,10 +267,7 @@ pub async fn fast_extract_facts(
     }
 
     // -- Preferences: dislikes --
-    let dislike_re = Regex::new(
-        r"(?i)\b(?:I\s+)?(hate|dislike|don't like|can't stand|avoid)\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
-    ).unwrap();
-    for cap in dislike_re.captures_iter(content) {
+    for cap in dislike_regex().captures_iter(content) {
         let object = cap[2].trim();
         if object.len() > 3 && object.len() < 100 {
             let domain = infer_domain(object);
@@ -230,8 +287,7 @@ pub async fn fast_extract_facts(
     }
 
     // -- Preferences: favorites --
-    let fav_re = Regex::new(r"(?i)\bmy favorite\s+(.+?)\s+(?:is|are)\s+(.+?)(?:\.|,|$)").unwrap();
-    for cap in fav_re.captures_iter(content) {
+    for cap in favorite_regex().captures_iter(content) {
         let category = cap[1].trim().to_lowercase();
         let value = cap[2].trim();
         if upsert_preference(
@@ -249,11 +305,7 @@ pub async fn fast_extract_facts(
     }
 
     // -- State updates: location changes --
-    let loc_re = Regex::new(
-        r"(?i)\b(?:I\s+)?(?:moved to|relocated to|live in|living in|staying in)\s+(.+?)(?:\.|,|$)",
-    )
-    .unwrap();
-    for cap in loc_re.captures_iter(content) {
+    for cap in location_regex().captures_iter(content) {
         let location = cap[1].trim();
         if upsert_state(conn, "current_location", location, memory_id, user_id)
             .await
@@ -264,10 +316,7 @@ pub async fn fast_extract_facts(
     }
 
     // -- State updates: role changes --
-    let role_re = Regex::new(
-        r"(?i)\b(?:I\s+)?(?:started|began|got promoted to|now work as|am now|just became)\s+(?:a\s+|an\s+|my\s+)?(.+?)(?:\.|,|$)"
-    ).unwrap();
-    for cap in role_re.captures_iter(content) {
+    for cap in role_regex().captures_iter(content) {
         let role = cap[1].trim();
         if role.len() > 3
             && role.len() < 100
