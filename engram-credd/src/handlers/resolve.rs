@@ -175,11 +175,23 @@ pub struct ProxyResponse {
 }
 
 /// Proxy HTTP request with injected credentials.
+///
+/// SECURITY: validates the target URL against SSRF deny lists (loopback,
+/// RFC1918 private, link-local, cloud metadata) before making the outbound
+/// request, which carries injected secret headers.
 pub async fn proxy_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
     Json(req): Json<ProxyRequest>,
 ) -> Result<Json<ProxyResponse>, AppError> {
+    // SECURITY (SEC-HIGH-2): SSRF validation -- reject requests targeting
+    // loopback, private, link-local, and cloud metadata addresses. The
+    // proxy injects secret headers so an unvalidated URL would let an
+    // attacker exfiltrate credentials to internal services.
+    engram_lib::webhooks::validate_webhook_url(&req.url).map_err(|e| {
+        CredError::InvalidInput(format!("proxy target URL rejected: {}", e))
+    })?;
+
     if !auth.can_access_category(&req.secret_category) {
         log_audit(
             &state.db,
@@ -241,7 +253,11 @@ pub async fn proxy_handler(
         builder = builder.body(body.clone());
     }
 
+    // SECURITY: cap response body to 10 MiB to prevent upstream from OOM-ing credd.
+    const MAX_PROXY_RESPONSE: usize = 10 * 1024 * 1024;
+
     let response = builder
+        .timeout(std::time::Duration::from_secs(30))
         .send()
         .await
         .map_err(|e| CredError::InvalidInput(format!("proxy request failed: {}", e)))?;
@@ -253,10 +269,31 @@ pub async fn proxy_handler(
             headers.insert(name.to_string(), text.to_string());
         }
     }
+
+    // Check Content-Length hint before reading body.
+    if let Some(cl) = response.content_length() {
+        if cl as usize > MAX_PROXY_RESPONSE {
+            return Err(CredError::InvalidInput(format!(
+                "proxy response too large: {} bytes (max {})",
+                cl, MAX_PROXY_RESPONSE
+            ))
+            .into());
+        }
+    }
+
     let body = response
         .text()
         .await
         .map_err(|e| CredError::InvalidInput(format!("proxy response read failed: {}", e)))?;
+
+    if body.len() > MAX_PROXY_RESPONSE {
+        return Err(CredError::InvalidInput(format!(
+            "proxy response body too large: {} bytes (max {})",
+            body.len(),
+            MAX_PROXY_RESPONSE
+        ))
+        .into());
+    }
 
     log_audit(
         &state.db,

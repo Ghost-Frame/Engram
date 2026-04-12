@@ -3,10 +3,17 @@ use serde_json::json;
 
 async fn test_app_and_token() -> (App, String) {
     let app = App::for_tests().await.unwrap();
-    app.db.conn.execute(
-        "INSERT INTO users (username, email, role, is_admin) VALUES ('mcp-test', 'mcp@example.com', 'admin', 1)",
-        (),
-    ).await.unwrap();
+    app.db
+        .write(|conn| {
+            conn.execute(
+                "INSERT INTO users (username, email, role, is_admin) VALUES ('mcp-test', 'mcp@example.com', 'admin', 1)",
+                (),
+            )
+            .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     let (_, token) = engram_lib::auth::create_key(
         &app.db,
         1,
@@ -141,6 +148,30 @@ async fn http_transport_round_trip() {
         .clone()
         .oneshot(
             Request::post("/mcp")
+                .header("authorization", "Bearer not-the-right-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":1,
+                        "method":"initialize",
+                        "params":{}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(init.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    std::env::set_var("ENGRAM_MCP_BEARER_TOKEN", "transport-secret");
+
+    let init = router
+        .clone()
+        .oneshot(
+            Request::post("/mcp")
+                .header("authorization", "Bearer transport-secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
@@ -161,6 +192,7 @@ async fn http_transport_round_trip() {
         .clone()
         .oneshot(
             Request::post("/mcp")
+                .header("authorization", "Bearer transport-secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
@@ -189,4 +221,6 @@ async fn http_transport_round_trip() {
         .unwrap();
     let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(payload["result"]["isError"], false);
+
+    std::env::remove_var("ENGRAM_MCP_BEARER_TOKEN");
 }

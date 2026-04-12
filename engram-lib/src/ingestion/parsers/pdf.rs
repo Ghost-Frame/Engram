@@ -9,10 +9,29 @@ use crate::ingestion::types::ParsedDocument;
 use crate::Result;
 use std::collections::HashMap;
 
+const MAX_PDF_INPUT_BYTES: usize = 100 * 1024 * 1024;
+const MAX_PDF_TEXT_BYTES: usize = 100 * 1024 * 1024;
+
 /// Parse PDF binary input into a parsed document.
 pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
+    if input.len() > MAX_PDF_INPUT_BYTES {
+        return Err(crate::EngError::InvalidInput(format!(
+            "PDF input too large: {} bytes (max {})",
+            input.len(),
+            MAX_PDF_INPUT_BYTES
+        )));
+    }
+
     let text = pdf_extract::extract_text_from_mem(input)
         .map_err(|e| crate::EngError::Internal(format!("PDF extraction failed: {}", e)))?;
+
+    if text.len() > MAX_PDF_TEXT_BYTES {
+        return Err(crate::EngError::InvalidInput(format!(
+            "PDF extracted text too large: {} bytes (max {})",
+            text.len(),
+            MAX_PDF_TEXT_BYTES
+        )));
+    }
 
     // First non-empty line as title, capped at 100 chars
     let title = text

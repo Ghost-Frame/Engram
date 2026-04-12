@@ -8,6 +8,7 @@ use axum::{
     Form, Json, Router,
 };
 use hmac::{Hmac, Mac};
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
@@ -28,7 +29,7 @@ const COOKIE_NAME: &str = "engram_auth";
 
 /// Process-lifetime cache for the HMAC secret. Avoids file I/O on every
 /// GUI request and eliminates the TOCTOU window between read-check and write.
-static HMAC_SECRET_CACHE: OnceLock<String> = OnceLock::new();
+static HMAC_SECRET_CACHE: OnceLock<SecretString> = OnceLock::new();
 
 // SPA routes that serve index.html
 const SPA_ROUTES: &[&str] = &[
@@ -69,7 +70,7 @@ fn mime_for_extension(ext: &str) -> &'static str {
 /// implied by the Sha256 MAC. The on-disk secret is chmod 0o600 so another
 /// user on the box cannot read it and forge GUI auth cookies; if we find
 /// an existing file with permissive bits we tighten them in place.
-async fn get_hmac_secret(data_dir: &str) -> String {
+async fn get_hmac_secret(data_dir: &str) -> SecretString {
     // Fast path: return cached value (eliminates file I/O after first call).
     if let Some(cached) = HMAC_SECRET_CACHE.get() {
         return cached.clone();
@@ -85,9 +86,9 @@ async fn get_hmac_secret(data_dir: &str) -> String {
 
 /// Load the HMAC secret from env, disk, or generate a new one.
 /// Uses an atomic rename (write tmp + rename) to avoid partial-write corruption.
-async fn load_or_generate_hmac_secret(data_dir: &str) -> String {
+async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
     if let Ok(secret) = std::env::var("ENGRAM_HMAC_SECRET") {
-        return secret;
+        return SecretString::new(secret);
     }
 
     let secret_path = PathBuf::from(data_dir).join(".hmac_secret");
@@ -95,7 +96,7 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> String {
     // Try to read existing secret
     if let Ok(secret) = fs::read_to_string(&secret_path).await {
         tighten_secret_perms(&secret_path).await;
-        return secret;
+        return SecretString::new(secret);
     }
 
     // Generate new secret: 32 bytes from OsRng, hex encoded.
@@ -108,7 +109,7 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> String {
             use std::fmt::Write;
             let _ = write!(&mut out, "{:02x}", byte);
         }
-        out
+        SecretString::new(out)
     };
 
     // Ensure data dir exists
@@ -117,7 +118,7 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> String {
     // Atomic write: write to .tmp then rename to avoid TOCTOU partial-write.
     // rename(2) is atomic on POSIX; on Windows this falls back to a replace.
     let tmp_path = secret_path.with_extension("tmp");
-    if fs::write(&tmp_path, &secret).await.is_ok() {
+    if fs::write(&tmp_path, secret.expose_secret()).await.is_ok() {
         if let Err(e) = fs::rename(&tmp_path, &secret_path).await {
             tracing::warn!(error = %e, "failed to rename hmac secret tmp file");
         }
@@ -149,6 +150,7 @@ async fn tighten_secret_perms(_path: &std::path::Path) {}
 #[derive(Debug, Clone)]
 pub struct GuiSession {
     pub user_id: i64,
+    pub key_id: i64,
     pub scopes: Vec<Scope>,
 }
 
@@ -173,38 +175,45 @@ fn decode_scopes(raw: &str) -> Vec<Scope> {
         .collect()
 }
 
-/// Sign user_id, timestamp, and scopes to create a cookie value.
-/// Format: {user_id}:{timestamp}:{scopes}.{hmac}
-fn sign_cookie(user_id: i64, ts: i64, scopes: &[Scope], secret: &str) -> String {
-    let payload = format!("{}:{}:{}", user_id, ts, encode_scopes(scopes));
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
+/// Sign user_id, key_id, timestamp, and scopes to create a cookie value.
+/// Format: {user_id}:{key_id}:{timestamp}:{scopes}.{hmac}
+fn sign_cookie(
+    user_id: i64,
+    key_id: i64,
+    ts: i64,
+    scopes: &[Scope],
+    secret: &SecretString,
+) -> String {
+    let payload = format!("{}:{}:{}:{}", user_id, key_id, ts, encode_scopes(scopes));
+    let mut mac = HmacSha256::new_from_slice(secret.expose_secret().as_bytes())
+        .expect("HMAC can take key of any size");
     mac.update(payload.as_bytes());
     let result = mac.finalize();
     let hex = hex::encode(result.into_bytes());
     format!("{}.{}", payload, hex)
 }
 
-/// Verify a cookie value and return the resolved session.
-/// Cookie format: {user_id}:{timestamp}:{scopes}.{hmac}
-fn verify_cookie(cookie: &str, secret: &str) -> Option<GuiSession> {
+/// Verify a cookie value and return the resolved session payload.
+/// Cookie format: {user_id}:{key_id}:{timestamp}:{scopes}.{hmac}
+fn verify_cookie(cookie: &str, secret: &SecretString) -> Option<GuiSession> {
     let dot_idx = cookie.find('.')?;
     let payload = &cookie[..dot_idx];
     let sig = &cookie[dot_idx + 1..];
 
     // SECURITY: verify HMAC BEFORE parsing payload fields. This means a
     // forged cookie can never select a user via the field parser alone.
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
+    let mut mac = HmacSha256::new_from_slice(secret.expose_secret().as_bytes())
+        .expect("HMAC can take key of any size");
     mac.update(payload.as_bytes());
     let expected = hex::encode(mac.finalize().into_bytes());
     if expected.as_bytes().ct_eq(sig.as_bytes()).unwrap_u8() != 1 {
         return None;
     }
 
-    // Parse payload: user_id:timestamp[:scopes]
-    let mut parts = payload.splitn(3, ':');
+    // Parse payload: user_id:key_id:timestamp[:scopes]
+    let mut parts = payload.splitn(4, ':');
     let user_id: i64 = parts.next()?.parse().ok()?;
+    let key_id: i64 = parts.next()?.parse().ok()?;
     let ts: i64 = parts.next()?.parse().ok()?;
     let scopes = parts.next().map(decode_scopes).unwrap_or_default();
 
@@ -214,7 +223,11 @@ fn verify_cookie(cookie: &str, secret: &str) -> Option<GuiSession> {
         return None;
     }
 
-    Some(GuiSession { user_id, scopes })
+    Some(GuiSession {
+        user_id,
+        key_id,
+        scopes,
+    })
 }
 
 /// Extract the engram_auth cookie from headers
@@ -234,7 +247,14 @@ fn get_auth_cookie(headers: &HeaderMap) -> Option<String> {
 pub async fn get_gui_session(state: &AppState, headers: &HeaderMap) -> Option<GuiSession> {
     let cookie = get_auth_cookie(headers)?;
     let secret = get_hmac_secret(&state.config.data_dir).await;
-    verify_cookie(&cookie, &secret)
+    let session = verify_cookie(&cookie, &secret)?;
+    let active_key = engram_lib::auth::get_active_key_by_id(&state.db, session.key_id)
+        .await
+        .ok()?;
+    if active_key.user_id != session.user_id {
+        return None;
+    }
+    Some(session)
 }
 
 /// Check if a request is authenticated via GUI cookie and return the user_id.
@@ -312,7 +332,13 @@ async fn gui_auth(
     // handlers can re-check them without another DB round trip.
     let ts = chrono::Utc::now().timestamp();
     let secret = get_hmac_secret(&state.config.data_dir).await;
-    let cookie_value = sign_cookie(auth_ctx.user_id, ts, &auth_ctx.key.scopes, &secret);
+    let cookie_value = sign_cookie(
+        auth_ctx.user_id,
+        auth_ctx.key.id,
+        ts,
+        &auth_ctx.key.scopes,
+        &secret,
+    );
 
     let attrs = cookie_attributes(&headers);
     let cookie = format!(

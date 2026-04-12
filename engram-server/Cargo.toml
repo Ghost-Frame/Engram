@@ -27,6 +27,7 @@ hex = { workspace = true }
 rand = { workspace = true }
 futures = { workspace = true }
 rusqlite = { workspace = true }
+secrecy = { workspace = true }
 
 [dev-dependencies]
 engram-lib = { path = "../engram-lib", features = ["test-utils"] }

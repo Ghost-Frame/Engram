@@ -9,7 +9,6 @@ use tower::ServiceExt;
 
 use engram_cred::crypto::derive_key;
 use engram_credd::{build_router, state::AppState};
-use engram_lib::db::migrations::run_migrations;
 use engram_lib::db::Database;
 
 // ---------------------------------------------------------------------------
@@ -24,7 +23,6 @@ struct TestApp {
 impl TestApp {
     async fn new() -> Self {
         let db = Database::connect_memory().await.expect("in-memory db");
-        run_migrations(&db.conn).await.expect("migrations");
 
         let master_password = "test-master-password";
         let master_key = derive_key(1, master_password.as_bytes(), None);

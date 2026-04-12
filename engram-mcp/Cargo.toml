@@ -5,12 +5,14 @@ edition = "2021"
 
 [features]
 default = []
-http = ["dep:axum"]
+http = ["dep:axum", "dep:tower-http", "dep:subtle"]
 
 [dependencies]
 engram-lib = { path = "../engram-lib" }
 rusqlite = { workspace = true }
 axum = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -9,6 +9,65 @@ use engram_lib::ratelimit;
 use crate::state::AppState;
 
 const OPEN_PATHS: &[&str] = &["/health", "/live", "/ready", "/bootstrap"];
+const PREAUTH_IP_LIMIT: i64 = 60;
+
+fn too_many_requests(retry_after: i64) -> Response {
+    let body = serde_json::json!({
+        "error": "Rate limit exceeded.",
+        "retry_after": retry_after,
+    });
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
+        .header("Content-Type", "application/json")
+        .header("Retry-After", retry_after.to_string())
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
+}
+
+fn client_ip_key(request: &Request) -> String {
+    let forwarded = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("unknown");
+    format!("ip:{}", forwarded)
+}
+
+pub async fn preauth_rate_limit_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path().to_string();
+    if OPEN_PATHS
+        .iter()
+        .any(|p| path == *p || path.starts_with(&format!("{}/", p)))
+    {
+        return next.run(request).await;
+    }
+
+    let key = client_ip_key(&request);
+    match ratelimit::check_and_increment(&state.db, &key, PREAUTH_IP_LIMIT, 60).await {
+        Ok(true) => next.run(request).await,
+        Ok(false) => too_many_requests(60),
+        Err(e) => {
+            tracing::error!("preauth rate_limit check failed for {}: {}", key, e);
+            let body = serde_json::json!({
+                "error": "Rate limit backend unavailable. Retry shortly.",
+                "retry_after": 5,
+            });
+            axum::response::Response::builder()
+                .status(axum::http::StatusCode::SERVICE_UNAVAILABLE)
+                .header("Content-Type", "application/json")
+                .header("Retry-After", "5")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
+        }
+    }
+}
 
 /// Axum middleware implementing per-user sliding-window rate limiting.
 ///
@@ -45,16 +104,7 @@ pub async fn rate_limit_middleware(
     match ratelimit::check_and_increment(&state.db, &key, limit, 60).await {
         Ok(true) => next.run(request).await,
         Ok(false) => {
-            let body = serde_json::json!({
-                "error": "Rate limit exceeded.",
-                "retry_after": 60,
-            });
-            axum::response::Response::builder()
-                .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
-                .header("Content-Type", "application/json")
-                .header("Retry-After", "60")
-                .body(axum::body::Body::from(body.to_string()))
-                .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
+            too_many_requests(60)
         }
         Err(e) => {
             // SECURITY: fail CLOSED on backend errors for authenticated

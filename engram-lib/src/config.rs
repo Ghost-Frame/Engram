@@ -1,3 +1,4 @@
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 /// How the at-rest encryption key is sourced.
@@ -131,7 +132,8 @@ impl Default for CreddConfig {
 pub struct EidolonConfig {
     pub enabled: bool,
     pub url: Option<String>,
-    pub api_key: Option<String>,
+    #[serde(skip, default)]
+    pub api_key: Option<SecretString>,
     #[serde(default)]
     pub credd: CreddConfig,
     #[serde(default)]
@@ -151,7 +153,9 @@ impl EidolonConfig {
                 .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes"))
                 .unwrap_or(false),
             url: std::env::var("ENGRAM_EIDOLON_URL").ok(),
-            api_key: std::env::var("ENGRAM_EIDOLON_API_KEY").ok(),
+            api_key: std::env::var("ENGRAM_EIDOLON_API_KEY")
+                .ok()
+                .map(SecretString::new),
             credd: CreddConfig::default(),
             gate: GateConfig::default(),
             growth: GrowthConfig::default(),
@@ -242,7 +246,8 @@ pub struct Config {
     pub db_path: String,
     pub host: String,
     pub port: u16,
-    pub api_key: Option<String>,
+    #[serde(skip, default)]
+    pub api_key: Option<SecretString>,
     pub embedding_dim: usize,
     pub default_retention: f32,
     pub embedding_model: String,
@@ -263,7 +268,8 @@ pub struct Config {
     pub lance_index_path: Option<String>,
     pub vector_dimensions: usize,
     pub use_lance_index: bool,
-    pub gui_password: Option<String>,
+    #[serde(skip, default)]
+    pub gui_password: Option<SecretString>,
     pub gui_build_dir: Option<String>,
     pub pagerank_refresh_interval_secs: u64,
     pub pagerank_dirty_threshold: u32,
@@ -330,7 +336,7 @@ impl Config {
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_API_KEY") {
-            config.api_key = Some(v);
+            config.api_key = Some(SecretString::new(v));
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_DIM") {
             match v.parse() {
@@ -437,7 +443,7 @@ impl Config {
             config.use_lance_index = v != "0" && !v.eq_ignore_ascii_case("false");
         }
         if let Ok(v) = std::env::var("ENGRAM_GUI_PASSWORD") {
-            config.gui_password = Some(v);
+            config.gui_password = Some(SecretString::new(v));
         }
         if let Ok(v) = std::env::var("ENGRAM_GUI_BUILD_DIR") {
             config.gui_build_dir = Some(v);

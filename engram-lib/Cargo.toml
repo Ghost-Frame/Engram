@@ -46,6 +46,8 @@ lancedb = { workspace = true }
 protoc-bin-vendored-linux-x86_64 = { workspace = true }
 flate2 = { workspace = true }
 hex = { workspace = true }
+secrecy = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

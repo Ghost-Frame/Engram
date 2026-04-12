@@ -13,6 +13,8 @@ use std::path::PathBuf;
 
 use crate::config::{Config, EncryptionMode};
 use crate::{EngError, Result};
+use secrecy::{ExposeSecret, SecretString};
+use zeroize::Zeroize;
 
 /// Size of the encryption key in bytes (AES-256 = 32 bytes).
 pub const KEY_SIZE: usize = 32;
@@ -133,13 +135,13 @@ fn check_keyfile_permissions(_path: &PathBuf) -> Result<()> {
 
 /// Read `ENGRAM_DB_KEY` env var and hex-decode to 32 bytes.
 fn resolve_env() -> Result<[u8; KEY_SIZE]> {
-    let hex_str = std::env::var("ENGRAM_DB_KEY").map_err(|_| {
+    let hex_str = SecretString::new(std::env::var("ENGRAM_DB_KEY").map_err(|_| {
         EngError::Encryption(
             "ENGRAM_DB_KEY environment variable not set (encryption.mode = env requires it)".into(),
         )
-    })?;
+    })?);
 
-    let bytes = hex::decode(hex_str.trim()).map_err(|e| {
+    let mut bytes = hex::decode(hex_str.expose_secret().trim()).map_err(|e| {
         EngError::Encryption(format!(
             "ENGRAM_DB_KEY is not valid hex: {} -- expected 64 hex characters (32 bytes)",
             e
@@ -156,6 +158,7 @@ fn resolve_env() -> Result<[u8; KEY_SIZE]> {
 
     let mut key = [0u8; KEY_SIZE];
     key.copy_from_slice(&bytes);
+    bytes.zeroize();
     Ok(key)
 }
 

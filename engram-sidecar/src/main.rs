@@ -33,8 +33,7 @@ struct Cli {
     user_id: i64,
 
     /// Shared-secret token clients must send as `Authorization: Bearer <token>`.
-    /// If unset and host is loopback, auth is skipped with a warning.
-    /// If unset and host is non-loopback, the sidecar refuses to start.
+    /// If unset, a fresh token is generated at startup.
     #[arg(long, env = "ENGRAM_SIDECAR_TOKEN")]
     token: Option<String>,
 }
@@ -93,10 +92,6 @@ async fn main() {
 
     tracing::info!(session_id = %session_id, "starting sidecar session");
 
-    // SECURITY (SEC-CRIT-1 / MT-F18): refuse to start on a non-loopback
-    // interface without a shared-secret token. On loopback, allow unauthed
-    // startup with a loud warning to avoid breaking existing dev flows.
-    let loopback = auth::is_loopback_host(&cli.host);
     let token = match cli
         .token
         .as_deref()
@@ -105,18 +100,13 @@ async fn main() {
     {
         Some(t) => Some(t.to_string()),
         None => {
-            if !loopback {
-                eprintln!(
-                    "error: sidecar refuses to bind {} without ENGRAM_SIDECAR_TOKEN (non-loopback)",
-                    cli.host
-                );
-                std::process::exit(2);
-            }
+            let generated = auth::generate_token();
             tracing::warn!(
                 host = %cli.host,
-                "ENGRAM_SIDECAR_TOKEN not set; loopback-only so auth is skipped"
+                token = %generated,
+                "ENGRAM_SIDECAR_TOKEN not set; generated one-time sidecar token"
             );
-            None
+            Some(generated)
         }
     };
     if token.is_some() {

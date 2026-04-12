@@ -13,6 +13,7 @@ use axum::{
 use engram_cred::agent_keys::{parse_agent_key, validate_agent_key, AgentKey};
 use engram_cred::crypto::hash_key;
 use hex;
+use subtle::ConstantTimeEq;
 
 use crate::state::AppState;
 
@@ -86,7 +87,15 @@ pub async fn auth_middleware(
     let token_bytes = hex::decode(token).unwrap_or_else(|_| token.as_bytes().to_vec());
     let token_hash = hash_key(&token_bytes);
 
-    let auth = if master_hash == token_hash {
+    // SECURITY (SEC-INFO-10): constant-time comparison to prevent timing
+    // oracle on the master key hash.
+    let auth = if master_hash.as_bytes().len() == token_hash.as_bytes().len()
+        && master_hash
+            .as_bytes()
+            .ct_eq(token_hash.as_bytes())
+            .unwrap_u8()
+            == 1
+    {
         // Master key - assume user_id 1 (admin)
         AuthInfo::Master { user_id: 1 }
     } else {
