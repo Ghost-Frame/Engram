@@ -4,11 +4,15 @@ use engram_lib::memory::{
     search::hybrid_search,
     types::{SearchRequest, StoreRequest},
 };
+use engram_lib::webhooks::resolve_and_validate_url;
 use rusqlite::params;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+/// Maximum response body size for /fetch (10 MiB).
+const FETCH_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -184,55 +188,22 @@ async fn fetch_url(
         )));
     }
 
+    // SECURITY (SSRF-DNS): validate URL scheme, literal hostname, AND resolve
+    // DNS to reject domains that point at private/loopback/metadata IPs. This
+    // closes the DNS-rebinding SSRF gap where a public domain resolves to
+    // 127.0.0.1, 169.254.169.254, RFC1918 space, etc.
+    resolve_and_validate_url(&body.url).await.map_err(|e| {
+        AppError(engram_lib::EngError::InvalidInput(format!(
+            "URL rejected: {}",
+            e
+        )))
+    })?;
+
     let parsed = url::Url::parse(&body.url)
         .map_err(|_| AppError(engram_lib::EngError::InvalidInput("Invalid URL".into())))?;
 
-    // Only allow http/https
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(AppError(engram_lib::EngError::InvalidInput(
-            "Only http/https URLs allowed".into(),
-        )));
-    }
-
-    // Block private/internal addresses
-    // SECURITY (SEC-H1): check both string hostname AND parsed IP (covering
-    // IPv6 brackets like [::1], IPv4-mapped IPv6 like [::ffff:127.0.0.1], etc.)
-    if let Some(host) = parsed.host_str() {
-        let h = host.to_lowercase();
-        // Strip brackets for IPv6 addresses
-        let h_bare = h.trim_start_matches('[').trim_end_matches(']');
-        if h_bare == "localhost"
-            || h_bare == "127.0.0.1"
-            || h_bare == "::1"
-            || h_bare == "0.0.0.0"
-            || h_bare == "::"
-            || h_bare.starts_with("::ffff:")
-            || h_bare.starts_with("10.")
-            || h_bare.starts_with("192.168.")
-            || h_bare.starts_with("172.16.")
-            || h_bare.starts_with("172.17.")
-            || h_bare.starts_with("172.18.")
-            || h_bare.starts_with("172.19.")
-            || h_bare.starts_with("172.2")
-            || h_bare.starts_with("172.30.")
-            || h_bare.starts_with("172.31.")
-            || h_bare.ends_with(".local")
-            || h_bare.ends_with(".internal")
-            || h_bare.starts_with("100.64.")
-            || h_bare.starts_with("169.254.")
-            || h_bare.starts_with("fc")
-            || h_bare.starts_with("fd")
-            || h_bare.starts_with("fe80")
-            || h_bare == "metadata.google.internal"
-        {
-            return Err(AppError(engram_lib::EngError::InvalidInput(
-                "URL cannot point to private/internal addresses".into(),
-            )));
-        }
-    }
-
-    // SECURITY (SEC-H1): disable redirect following to prevent SSRF via
-    // open redirects that bounce to internal hosts after the blocklist check.
+    // Disable redirect following to prevent SSRF via open redirects that
+    // bounce to internal hosts after the initial validation.
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
@@ -262,10 +233,26 @@ async fn fetch_url(
         .unwrap_or("")
         .to_string();
 
-    let raw = resp
-        .text()
-        .await
-        .map_err(|e| AppError(engram_lib::EngError::Internal(format!("Read error: {}", e))))?;
+    // SECURITY (DoS): stream body with a hard byte ceiling instead of
+    // buffering the entire upstream response. Reject once exceeded.
+    let raw = {
+        use futures::StreamExt;
+        let mut stream = resp.bytes_stream();
+        let mut buf = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| {
+                AppError(engram_lib::EngError::Internal(format!("Read error: {}", e)))
+            })?;
+            if buf.len() + chunk.len() > FETCH_MAX_BODY_BYTES {
+                return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+                    "Response body exceeds {} byte limit",
+                    FETCH_MAX_BODY_BYTES
+                ))));
+            }
+            buf.extend_from_slice(&chunk);
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    };
 
     let mut title = parsed.host_str().unwrap_or("unknown").to_string();
     let content = if content_type.contains("html") {
@@ -393,4 +380,77 @@ fn strip_html_tags(html: &str) -> String {
     }
 
     collapsed.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use engram_lib::webhooks::resolve_and_validate_url;
+
+    /// Regression: /fetch previously only checked literal hostname strings.
+    /// A public domain resolving to 127.0.0.1 bypassed the check entirely.
+    /// Now resolve_and_validate_url is called, which resolves DNS first.
+
+    #[tokio::test]
+    async fn fetch_rejects_localhost_literal() {
+        let r = resolve_and_validate_url("https://127.0.0.1/secret").await;
+        assert!(r.is_err(), "literal 127.0.0.1 must be rejected");
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_localhost_domain() {
+        let r = resolve_and_validate_url("https://localhost/secret").await;
+        assert!(r.is_err(), "localhost domain must be rejected");
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_metadata_ip() {
+        let r = resolve_and_validate_url("http://169.254.169.254/latest/meta-data").await;
+        assert!(r.is_err(), "metadata IP must be rejected");
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_private_rfc1918() {
+        assert!(resolve_and_validate_url("http://10.0.0.1/admin").await.is_err());
+        assert!(resolve_and_validate_url("http://192.168.1.1/admin").await.is_err());
+        assert!(resolve_and_validate_url("http://172.16.0.1/admin").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_ipv6_loopback() {
+        let r = resolve_and_validate_url("http://[::1]/secret").await;
+        assert!(r.is_err(), "IPv6 loopback must be rejected");
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_ipv4_mapped_ipv6() {
+        let r = resolve_and_validate_url("http://[::ffff:127.0.0.1]/secret").await;
+        assert!(r.is_err(), "IPv4-mapped IPv6 loopback must be rejected");
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_cgnat_range() {
+        let r = resolve_and_validate_url("http://100.64.0.1/internal").await;
+        assert!(r.is_err(), "CGNAT 100.64/10 must be rejected");
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_ftp_scheme() {
+        let r = resolve_and_validate_url("ftp://evil.com/file").await;
+        assert!(r.is_err(), "non-http(s) schemes must be rejected");
+    }
+
+    #[tokio::test]
+    async fn fetch_accepts_public_https() {
+        // May fail if DNS is down, which is fine -- we just skip.
+        match resolve_and_validate_url("https://example.com/page").await {
+            Ok(()) => {}
+            Err(e) => {
+                let msg = format!("{}", e);
+                if msg.contains("DNS resolution failed") {
+                    return; // DNS unavailable, skip
+                }
+                panic!("unexpected rejection of public URL: {}", e);
+            }
+        }
+    }
 }
