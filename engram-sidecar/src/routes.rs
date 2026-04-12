@@ -144,7 +144,7 @@ async fn recall(
         "latest_only": true,
     });
 
-    let url = format!("{}/memory/search", state.engram_url);
+    let url = format!("{}/search", state.engram_url);
     let mut req = state.client.post(&url).json(&search_req);
     if let Some(ref api_key) = state.engram_api_key {
         req = req.header("Authorization", format!("Bearer {}", api_key));
@@ -347,7 +347,7 @@ async fn end_session(
     })))
 }
 
-/// Request body for Engram server /memory/store endpoint
+/// Request body for Engram server /store endpoint
 #[derive(Serialize)]
 struct StoreRequest {
     content: String,
@@ -374,7 +374,7 @@ async fn flush_pending(state: &SidecarState) -> usize {
         session.id.clone()
     };
 
-    let url = format!("{}/memory/store", state.engram_url);
+    let url = format!("{}/store", state.engram_url);
     let mut stored = 0usize;
 
     for obs in &observations {

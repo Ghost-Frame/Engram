@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Sidecar only uses engram-lib for LLM client - no database needed
+# Sidecar only uses engram-lib for LLM client, but rusqlite still compiles
+# so Windows needs bundled-sqlite to avoid missing sqlite3.lib
 engram-lib = { path = "../engram-lib" }
+
+[target.'cfg(windows)'.dependencies]
+engram-lib = { path = "../engram-lib", features = ["bundled-sqlite"] }
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
