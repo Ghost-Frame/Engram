@@ -7,10 +7,22 @@
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
-.claude/worktrees/
+
+# Agent/IDE config (private)
+.claude/
 .worktrees/
+.codex
+CLAUDE.md
 WORKTREE-SPEC.md
+PLAN.md
+
+# Internal docs
 docs/plans/
 docs/specs/
-.codex/
-PLAN.md
+
+# Node
+node_modules/
+
+# Temp/test files
+clippy_output.txt
+migration-data/
