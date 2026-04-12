@@ -42,7 +42,7 @@ pub fn router(state: SidecarState) -> Router {
 async fn health(State(state): State<SidecarState>) -> Json<Value> {
     let session = state.session.read().await;
     let llm_available = state.llm.as_ref().map(|l| l.is_available()).unwrap_or(false);
-    let has_embedder = state.embedder.is_some();
+    let has_embedder = state.embedder.read().await.is_some();
     Json(json!({
         "status": "ok",
         "session_id": session.id,
@@ -142,22 +142,26 @@ async fn recall(
     State(state): State<SidecarState>,
     Json(body): Json<RecallBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let embedding = if let Some(ref embedder) = state.embedder {
-        match embedder.embed(&body.query).await {
-            Ok(emb) => Some(emb),
-            Err(e) => {
-                tracing::warn!(user_id = state.user_id, error = %e, "embedding failed for recall");
-                None
+    let embedding = {
+        let embedder_guard = state.embedder.read().await;
+        if let Some(ref embedder) = *embedder_guard {
+            match embedder.embed(&body.query).await {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    tracing::warn!(user_id = state.user_id, error = %e, "embedding failed for recall");
+                    None
+                }
             }
+        } else {
+            None
         }
-    } else {
-        None
     };
 
     let req = SearchRequest {
         query: body.query,
         embedding,
-        limit: Some(body.limit),
+        // SECURITY (SEC-MED-6): clamp caller-supplied limit.
+        limit: Some(body.limit.min(100)),
         category: None,
         source: None,
         tags: None,
@@ -173,7 +177,7 @@ async fn recall(
         source_filter: None,
     };
 
-    // SECURITY (SEC-MED-6): do not leak libsql table/column names or the
+    // SECURITY (SEC-MED-6): do not leak table/column names or the
     // inner error string to unauthenticated callers. Log server-side only.
     let results = hybrid_search(&state.db, req).await.map_err(|e| {
         tracing::error!(user_id = state.user_id, error = %e, "sidecar hybrid_search failed");
@@ -372,16 +376,19 @@ async fn flush_pending(state: &SidecarState) -> usize {
 
     let mut stored = 0usize;
     for obs in &observations {
-        let embedding = if let Some(ref embedder) = state.embedder {
-            match embedder.embed(&obs.content).await {
-                Ok(emb) => Some(emb),
-                Err(e) => {
-                    tracing::warn!(user_id = state.user_id, error = %e, "embedding failed for observation");
-                    None
+        let embedding = {
+            let embedder_guard = state.embedder.read().await;
+            if let Some(ref embedder) = *embedder_guard {
+                match embedder.embed(&obs.content).await {
+                    Ok(emb) => Some(emb),
+                    Err(e) => {
+                        tracing::warn!(user_id = state.user_id, error = %e, "embedding failed for observation");
+                        None
+                    }
                 }
+            } else {
+                None
             }
-        } else {
-            None
         };
 
         let req = StoreRequest {
