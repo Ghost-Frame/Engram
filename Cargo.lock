@@ -2256,6 +2256,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "kleos-migrate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "chrono",
+ "clap",
+ "kleos-lib",
+ "futures",
+ "indicatif",
+ "lancedb",
+ "libsql",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kleos-server"
 version = "0.1.0"
 dependencies = [

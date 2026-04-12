@@ -1,0 +1,28 @@
+[package]
+name = "kleos-migrate"
+version = "0.1.0"
+edition = "2021"
+description = "ETL tool to migrate Kleos from libsql to rusqlite + LanceDB"
+
+[[bin]]
+name = "kleos-migrate"
+path = "src/main.rs"
+
+[dependencies]
+kleos-lib = { path = "../kleos-lib" }
+libsql = { workspace = true }
+rusqlite = { workspace = true }
+lancedb = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow = "51"
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+indicatif = "0.17"
+anyhow = "1"
+futures = { workspace = true }

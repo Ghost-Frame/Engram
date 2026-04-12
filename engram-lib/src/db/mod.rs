@@ -3,7 +3,7 @@ pub mod migrations;
 #[cfg(feature = "db_pool")]
 pub mod pool;
 pub mod schema;
-mod schema_sql;
+pub mod schema_sql;
 
 use crate::config::Config;
 use crate::vector::{LanceIndex, VectorIndex};

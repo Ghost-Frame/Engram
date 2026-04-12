@@ -1,0 +1,95 @@
+mod source;
+mod target;
+mod vectors;
+mod tables;
+mod validate;
+
+use anyhow::Result;
+use clap::Parser;
+use std::path::PathBuf;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
+
+#[derive(Parser, Debug)]
+#[command(name = "kleos-migrate")]
+#[command(about = "ETL tool to migrate Kleos from libsql to rusqlite + LanceDB")]
+struct Args {
+    /// Path to source libsql database file
+    #[arg(long)]
+    source: PathBuf,
+
+    /// Directory for target rusqlite db + lance/ subdirectory
+    #[arg(long)]
+    target: PathBuf,
+
+    /// Report table counts and schema diffs without writing
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+
+    /// Copy relational data only, skip embedding extraction
+    #[arg(long, default_value_t = false)]
+    skip_vectors: bool,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive("kleos_migrate=info".parse()?))
+        .init();
+
+    let args = Args::parse();
+
+    info!("kleos-migrate starting");
+    info!("Source: {:?}", args.source);
+    info!("Target: {:?}", args.target);
+    info!("Dry run: {}", args.dry_run);
+    info!("Skip vectors: {}", args.skip_vectors);
+
+    // Phase 1: Initialize
+    info!("Phase 1: Initializing...");
+    let source_db = source::open(&args.source).await?;
+
+    if args.dry_run {
+        info!("Dry run mode -- analyzing source database...");
+        let table_info = source::analyze(&source_db).await?;
+        for (table, count) in &table_info {
+            info!("  {}: {} rows", table, count);
+        }
+        return Ok(());
+    }
+
+    let target_db = target::create(&args.target).await?;
+    let lance_db = if !args.skip_vectors {
+        Some(vectors::open_lance(&args.target).await?)
+    } else {
+        None
+    };
+
+    // Phase 2: Copy relational data
+    info!("Phase 2: Copying relational data...");
+    tables::copy_all(&source_db, &target_db).await?;
+
+    // Phase 3: Extract vectors
+    if let Some(ref lance) = lance_db {
+        info!("Phase 3: Extracting vectors to LanceDB...");
+        vectors::extract_and_insert(&source_db, lance).await?;
+    } else {
+        info!("Phase 3: Skipping vector extraction (--skip-vectors)");
+    }
+
+    // Phase 4: Rebuild FTS indexes
+    info!("Phase 4: Rebuilding FTS indexes...");
+    target::rebuild_fts(&target_db).await?;
+
+    // Phase 5: Validate
+    info!("Phase 5: Validating migration...");
+    validate::run(&source_db, &target_db, lance_db.as_ref()).await?;
+
+    // Phase 6: Stamp metadata
+    info!("Phase 6: Stamping migration metadata...");
+    target::stamp_metadata(&target_db, &args.source, &args.target).await?;
+
+    info!("Migration complete!");
+    Ok(())
+}
