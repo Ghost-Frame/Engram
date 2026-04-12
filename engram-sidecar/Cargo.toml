@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Sidecar only uses kleos-lib for LLM client - no database needed
+kleos-lib = { path = "../kleos-lib" }
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
@@ -16,11 +18,3 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 subtle = { workspace = true }
 rand = { workspace = true }
-
-# Unix: use kleos-lib as-is (system sqlite or libsql)
-[target.'cfg(unix)'.dependencies]
-kleos-lib = { path = "../kleos-lib" }
-
-# Windows: bundle sqlite from source (no system sqlite3.lib)
-[target.'cfg(windows)'.dependencies]
-kleos-lib = { path = "../kleos-lib", features = ["bundled-sqlite"] }
