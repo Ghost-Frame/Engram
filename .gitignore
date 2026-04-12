@@ -26,3 +26,4 @@ node_modules/
 # Temp/test files
 clippy_output.txt
 migration-data/
+data/
