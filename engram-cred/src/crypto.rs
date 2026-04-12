@@ -7,6 +7,7 @@ use aes_gcm::{
 use argon2::{Algorithm, Argon2, Params, Version};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 use crate::{CredError, Result, SecretData};
 
@@ -45,6 +46,11 @@ const LEGACY_ARGON2_ITERATIONS: u32 = 2;
 /// - Salt: fixed "cred-yubikey-v1\0"
 /// - Input: just the YubiKey HMAC response
 /// - Params: m=19MiB, t=2, p=1, output=32 bytes
+///
+/// SECURITY (SEC-LOW-7): this function is ONLY for YubiKey-based single-user
+/// mode (private cred migration path). It MUST NOT be used for new password-
+/// based key derivation -- use [`derive_key`] instead, which mixes in a
+/// per-user deterministic salt and uses stronger params.
 pub fn derive_key_legacy(yubikey_response: &[u8]) -> [u8; KEY_SIZE] {
     let params = Params::new(
         LEGACY_ARGON2_MEMORY_KIB,
@@ -105,6 +111,11 @@ pub fn derive_key(
     argon2
         .hash_password_into(&material, salt, &mut key)
         .expect("argon2id derivation never fails with validated params");
+
+    // SECURITY (SEC-H5): zeroize password material from heap memory to prevent
+    // recovery via core dump, /proc/self/mem, or swap.
+    material.zeroize();
+
     key
 }
 

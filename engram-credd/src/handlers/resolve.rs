@@ -239,7 +239,12 @@ pub async fn proxy_handler(
         None => format!("Bearer {}", secret_value),
     };
 
-    let client = reqwest::Client::new();
+    // SECURITY (SEC-H2): disable redirect following to prevent Authorization
+    // header leakage to attacker-controlled hosts via redirect chains.
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| CredError::InvalidInput(format!("client build failed: {}", e)))?;
     let mut builder = client.request(method, &req.url);
 
     if let Some(headers) = &req.headers {

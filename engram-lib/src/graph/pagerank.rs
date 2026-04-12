@@ -647,22 +647,33 @@ pub async fn compute_pagerank_for_community(
 
     // Build ID set for fast lookup
     let mem_set: std::collections::HashSet<i64> = memory_ids.iter().copied().collect();
-    let id_list = memory_ids
-        .iter()
-        .map(|id| id.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
 
-    // Get edges within this community
-    let edge_sql = format!(
-        "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
-         FROM memory_links ml \
-         WHERE ml.source_id IN ({id_list}) AND ml.target_id IN ({id_list})"
-    );
-
+    // SECURITY (SEC-H6): use a temp table + JOIN instead of a dynamic IN(...)
+    // clause. The old approach built an unbounded SQL string with one element
+    // per memory_id, causing O(n^2) query cost for large communities.
+    let ids_for_sql = memory_ids.clone();
     let edges: Vec<(i64, i64, f64, String)> = db
         .read(move |conn| {
-            let mut stmt = conn.prepare(&edge_sql).map_err(rusqlite_to_eng_error)?;
+            conn.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS _pr_ids (id INTEGER PRIMARY KEY)"
+            ).map_err(rusqlite_to_eng_error)?;
+            conn.execute("DELETE FROM temp._pr_ids", [])
+                .map_err(rusqlite_to_eng_error)?;
+            {
+                let mut ins = conn
+                    .prepare("INSERT OR IGNORE INTO temp._pr_ids (id) VALUES (?1)")
+                    .map_err(rusqlite_to_eng_error)?;
+                for id in &ids_for_sql {
+                    ins.execute(rusqlite::params![id])
+                        .map_err(rusqlite_to_eng_error)?;
+                }
+            }
+            let mut stmt = conn.prepare(
+                "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
+                 FROM memory_links ml \
+                 INNER JOIN temp._pr_ids s ON ml.source_id = s.id \
+                 INNER JOIN temp._pr_ids t ON ml.target_id = t.id"
+            ).map_err(rusqlite_to_eng_error)?;
             let rows = stmt
                 .query_map([], |row| {
                     Ok((

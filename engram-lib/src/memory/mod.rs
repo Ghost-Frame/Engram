@@ -418,6 +418,16 @@ async fn get_internal(db: &Database, id: i64, user_id: i64, sql: &str, log_acces
 }
 
 pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
+    // SECURITY (SEC-C3): user_id MUST be set. Without a tenant filter the
+    // query returns every user's memories. All HTTP handlers set this, but
+    // a missing guard here would silently expose all data if any future
+    // internal caller uses ListOptions::default().
+    if opts.user_id.is_none() {
+        return Err(crate::EngError::InvalidInput(
+            "user_id is required for memory listing".into(),
+        ));
+    }
+
     // Build WHERE clauses with parameterized values to prevent SQL injection
     let mut conditions = vec!["1=1".to_string()];
     let mut param_values: Vec<rusqlite::types::Value> = Vec::new();

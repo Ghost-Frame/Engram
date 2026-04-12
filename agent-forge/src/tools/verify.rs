@@ -17,8 +17,15 @@ pub fn verify(_db: &Database, input: VerifyInput) -> ToolResult {
 
     let expected = input.expected_exit_code.unwrap_or(0);
 
-    let output = Command::new("sh")
-        .args(["-c", &command])
+    // SECURITY (SEC-C1): parse command into argv and execute directly without
+    // a shell. The previous `sh -c` invocation allowed arbitrary shell injection
+    // from LLM-generated input (prompt injection attack surface).
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    if parts.is_empty() {
+        return Err(ToolError::InvalidValue("empty command".into()));
+    }
+    let output = Command::new(parts[0])
+        .args(&parts[1..])
         .output()
         .map_err(|e| ToolError::IoError(e.to_string()))?;
 

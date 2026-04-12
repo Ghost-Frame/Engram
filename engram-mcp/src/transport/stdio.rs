@@ -28,6 +28,17 @@ fn read_message<R: BufRead>(reader: &mut R) -> Result<Option<Value>> {
 
     let len =
         content_length.ok_or_else(|| EngError::Internal("missing Content-Length header".into()))?;
+
+    // SECURITY (SEC-C4): cap allocation to prevent OOM from a malicious
+    // Content-Length value. 10 MiB is generous for any MCP JSON-RPC message.
+    const MAX_MCP_MSG_SIZE: usize = 10 * 1024 * 1024;
+    if len > MAX_MCP_MSG_SIZE {
+        return Err(EngError::Internal(format!(
+            "Content-Length {} exceeds max {}",
+            len, MAX_MCP_MSG_SIZE
+        )));
+    }
+
     let mut buf = vec![0u8; len];
     reader
         .read_exact(&mut buf)

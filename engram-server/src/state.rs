@@ -5,13 +5,13 @@ use kleos_lib::embeddings::EmbeddingProvider;
 use kleos_lib::llm::local::LocalModelClient;
 use kleos_lib::reranker::Reranker;
 use kleos_lib::services::brain::BrainBackend;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch, RwLock};
 
 pub struct SessionBroadcast {
-    pub buffer: Vec<String>,
+    pub buffer: VecDeque<String>,
     pub tx: broadcast::Sender<String>,
 }
 
@@ -19,7 +19,7 @@ impl SessionBroadcast {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(1024);
         SessionBroadcast {
-            buffer: Vec::new(),
+            buffer: VecDeque::new(),
             tx,
         }
     }
