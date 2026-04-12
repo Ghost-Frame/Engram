@@ -111,7 +111,7 @@ pub async fn extract_and_insert(source: &SourceDb, lance: &LanceDb) -> Result<()
 
     let table = if table_names.iter().any(|name| name == TABLE_NAME) {
         // Drop and recreate
-        lance.db.drop_table(TABLE_NAME).await?;
+        lance.db.drop_table(TABLE_NAME, &[]).await?;
         let batches = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
         lance
             .db

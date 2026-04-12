@@ -45,6 +45,7 @@ fn open_access_context() -> AuthContext {
             last_used_at: None,
             expires_at: None,
             created_at: String::new(),
+            hash_version: 1,
         },
         user_id: 1,
     }
