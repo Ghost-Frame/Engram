@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Sidecar only uses engram-lib for LLM client - no database needed
+engram-lib = { path = "../engram-lib" }
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
@@ -16,11 +18,3 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 subtle = { workspace = true }
 rand = { workspace = true }
-
-# Unix: use engram-lib as-is (system sqlite or libsql)
-[target.'cfg(unix)'.dependencies]
-engram-lib = { path = "../engram-lib" }
-
-# Windows: bundle sqlite from source (no system sqlite3.lib)
-[target.'cfg(windows)'.dependencies]
-engram-lib = { path = "../engram-lib", features = ["bundled-sqlite"] }

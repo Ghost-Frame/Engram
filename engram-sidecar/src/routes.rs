@@ -6,12 +6,7 @@ use axum::{
     Json, Router,
 };
 use engram_lib::llm::local::{CallOptions, Priority};
-use engram_lib::memory::{
-    self,
-    search::hybrid_search,
-    types::{SearchRequest, StoreRequest},
-};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::info;
 
@@ -42,14 +37,13 @@ pub fn router(state: SidecarState) -> Router {
 async fn health(State(state): State<SidecarState>) -> Json<Value> {
     let session = state.session.read().await;
     let llm_available = state.llm.as_ref().map(|l| l.is_available()).unwrap_or(false);
-    let has_embedder = state.embedder.read().await.is_some();
     // SECURITY: only expose liveness-level info without auth. Internal state
     // (session_id, counters) is stripped to avoid leaking operational details.
     Json(json!({
         "status": "ok",
         "ended": session.ended,
         "llm_available": llm_available,
-        "embedder_available": has_embedder,
+        "engram_url": state.engram_url,
     }))
 }
 
@@ -141,48 +135,43 @@ async fn recall(
     State(state): State<SidecarState>,
     Json(body): Json<RecallBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let embedding = {
-        let embedder_guard = state.embedder.read().await;
-        if let Some(ref embedder) = *embedder_guard {
-            match embedder.embed(&body.query).await {
-                Ok(emb) => Some(emb),
-                Err(e) => {
-                    tracing::warn!(user_id = state.user_id, error = %e, "embedding failed for recall");
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    };
+    // Build search request for Engram server
+    let search_req = json!({
+        "query": body.query,
+        "limit": body.limit.min(100),
+        "user_id": state.user_id,
+        "include_forgotten": false,
+        "latest_only": true,
+    });
 
-    let req = SearchRequest {
-        query: body.query,
-        embedding,
-        // SECURITY (SEC-MED-6): clamp caller-supplied limit.
-        limit: Some(body.limit.min(100)),
-        category: None,
-        source: None,
-        tags: None,
-        threshold: None,
-        user_id: Some(state.user_id),
-        space_id: None,
-        include_forgotten: Some(false),
-        mode: None,
-        question_type: None,
-        expand_relationships: false,
-        include_links: false,
-        latest_only: true,
-        source_filter: None,
-    };
+    let url = format!("{}/memory/search", state.engram_url);
+    let mut req = state.client.post(&url).json(&search_req);
+    if let Some(ref api_key) = state.engram_api_key {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
 
-    // SECURITY (SEC-MED-6): do not leak table/column names or the
-    // inner error string to unauthenticated callers. Log server-side only.
-    let results = hybrid_search(&state.db, req).await.map_err(|e| {
-        tracing::error!(user_id = state.user_id, error = %e, "sidecar hybrid_search failed");
+    let response = req.send().await.map_err(|e| {
+        tracing::error!(user_id = state.user_id, error = %e, "engram server request failed");
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "engram server unreachable" })),
+        )
+    })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        tracing::error!(user_id = state.user_id, status = %status, "engram server returned error");
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("engram server error: {}", status) })),
+        ));
+    }
+
+    let results: Value = response.json().await.map_err(|e| {
+        tracing::error!(user_id = state.user_id, error = %e, "failed to parse engram response");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "internal error" })),
+            Json(json!({ "error": "invalid response from engram server" })),
         )
     })?;
 
@@ -192,8 +181,8 @@ async fn recall(
     };
 
     Ok(Json(json!({
-        "results": results,
-        "count": results.len(),
+        "results": results.get("results").unwrap_or(&json!([])),
+        "count": results.get("results").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0),
         "session_id": session_id,
     })))
 }
@@ -358,6 +347,18 @@ async fn end_session(
     })))
 }
 
+/// Request body for Engram server /memory/store endpoint
+#[derive(Serialize)]
+struct StoreRequest {
+    content: String,
+    category: String,
+    source: String,
+    importance: i32,
+    tags: Vec<String>,
+    session_id: Option<String>,
+    user_id: Option<i64>,
+}
+
 async fn flush_pending(state: &SidecarState) -> usize {
     let observations = {
         let mut session = state.session.write().await;
@@ -373,48 +374,44 @@ async fn flush_pending(state: &SidecarState) -> usize {
         session.id.clone()
     };
 
+    let url = format!("{}/memory/store", state.engram_url);
     let mut stored = 0usize;
-    for obs in &observations {
-        let embedding = {
-            let embedder_guard = state.embedder.read().await;
-            if let Some(ref embedder) = *embedder_guard {
-                match embedder.embed(&obs.content).await {
-                    Ok(emb) => Some(emb),
-                    Err(e) => {
-                        tracing::warn!(user_id = state.user_id, error = %e, "embedding failed for observation");
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        };
 
+    for obs in &observations {
         let req = StoreRequest {
             content: format!("[{}] {}", obs.tool_name, obs.content),
             category: obs.category.clone(),
             source: state.source.clone(),
             importance: obs.importance,
-            tags: Some(vec!["sidecar".to_string(), obs.tool_name.clone()]),
-            embedding,
+            tags: vec!["sidecar".to_string(), obs.tool_name.clone()],
             session_id: Some(session_id.clone()),
-            is_static: None,
             user_id: Some(state.user_id),
-            space_id: None,
-            parent_memory_id: None,
         };
 
-        match memory::store(&state.db, req).await {
-            Ok(result) => {
+        let mut http_req = state.client.post(&url).json(&req);
+        if let Some(ref api_key) = state.engram_api_key {
+            http_req = http_req.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        match http_req.send().await {
+            Ok(response) if response.status().is_success() => {
                 stored += 1;
-                if result.created {
-                    tracing::debug!(id = result.id, tool = %obs.tool_name, "observation stored");
-                } else if let Some(dup) = result.duplicate_of {
-                    tracing::debug!(dup_of = dup, tool = %obs.tool_name, "observation was duplicate");
-                }
+                tracing::debug!(tool = %obs.tool_name, "observation stored via engram server");
+            }
+            Ok(response) => {
+                tracing::error!(
+                    tool = %obs.tool_name,
+                    status = %response.status(),
+                    "engram server rejected observation"
+                );
             }
             Err(e) => {
-                tracing::error!(tool = %obs.tool_name, user_id = state.user_id, error = %e, "failed to store observation");
+                tracing::error!(
+                    tool = %obs.tool_name,
+                    user_id = state.user_id,
+                    error = %e,
+                    "failed to send observation to engram server"
+                );
             }
         }
     }

@@ -3,10 +3,6 @@ mod routes;
 mod session;
 
 use clap::Parser;
-use engram_lib::config::Config;
-use engram_lib::db::Database;
-use engram_lib::embeddings::onnx::OnnxProvider;
-use engram_lib::embeddings::EmbeddingProvider;
 use engram_lib::llm::local::{LocalModelClient, OllamaConfig};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -36,16 +32,21 @@ struct Cli {
     /// If unset, a fresh token is generated at startup.
     #[arg(long, env = "ENGRAM_SIDECAR_TOKEN")]
     token: Option<String>,
-}
 
-/// Shared embedder slot, populated asynchronously after the server starts.
-pub type SharedEmbedder = Arc<RwLock<Option<Arc<dyn EmbeddingProvider>>>>;
+    /// Engram server URL for memory storage/retrieval.
+    #[arg(long, env = "ENGRAM_URL")]
+    engram_url: String,
+
+    /// API key for authenticating with the Engram server.
+    #[arg(long, env = "ENGRAM_API_KEY")]
+    engram_api_key: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct SidecarState {
-    pub db: Arc<Database>,
-    pub config: Arc<Config>,
-    pub embedder: SharedEmbedder,
+    pub client: reqwest::Client,
+    pub engram_url: String,
+    pub engram_api_key: Option<String>,
     pub llm: Option<Arc<LocalModelClient>>,
     pub session: Arc<RwLock<session::Session>>,
     pub source: String,
@@ -63,13 +64,12 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
-    let config = Config::from_env();
-    let db = Database::connect_with_config(&config, None)
-        .await
-        .expect("failed to connect to database");
 
-    // Embedder loads in the background -- the server starts immediately.
-    let embedder: SharedEmbedder = Arc::new(RwLock::new(None));
+    // HTTP client for Engram server API calls
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("failed to create HTTP client");
 
     // Probe LLM quickly (non-blocking network check).
     let llm: Option<Arc<LocalModelClient>> = {
@@ -117,34 +117,15 @@ async fn main() {
     }
 
     let state = SidecarState {
-        db: Arc::new(db),
-        config: Arc::new(config.clone()),
-        embedder: embedder.clone(),
+        client,
+        engram_url: cli.engram_url,
+        engram_api_key: cli.engram_api_key,
         llm,
         session: Arc::new(RwLock::new(session::Session::new(session_id))),
         source: cli.source,
         user_id: cli.user_id,
         token,
     };
-
-    // Spawn background embedder initialization (non-blocking for server).
-    let embedder_slot = embedder.clone();
-    let embedder_config = config;
-    tokio::spawn(async move {
-        tracing::info!("loading embedding model in background...");
-        match OnnxProvider::new(&embedder_config).await {
-            Ok(provider) => {
-                *embedder_slot.write().await = Some(Arc::new(provider));
-                tracing::info!("embedding provider ready (loaded in background)");
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "embedding provider unavailable: {}. Observations stored without embeddings.",
-                    e
-                );
-            }
-        }
-    });
 
     let app = routes::router(state);
     let addr = format!("{}:{}", cli.host, cli.port);
