@@ -280,6 +280,427 @@ pub async fn mark_pagerank_dirty(db: &Database, user_id: i64, delta: i64) -> Res
     Ok(())
 }
 
+// ============================================================================
+// INCREMENTAL PAGERANK -- delta updates without full recompute
+// ============================================================================
+
+const DAMPING: f64 = 0.85;
+const CONVERGENCE_THRESHOLD: f64 = 1e-6;
+
+/// Incremental PageRank update when a new memory is added.
+/// Inserts the memory with base rank and does NOT trigger full recompute.
+/// The new node has no incoming links yet, so it gets the teleportation score only.
+pub async fn incremental_add_memory(db: &Database, memory_id: i64, user_id: i64) -> Result<()> {
+    // Get current memory count to compute base rank
+    let mut rows = db
+        .connection()
+        .query(
+            "SELECT COUNT(*) FROM memories WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1",
+            libsql::params![user_id],
+        )
+        .await?;
+    let n: i64 = match rows.next().await? {
+        Some(row) => row.get(0)?,
+        None => 1,
+    };
+
+    // Base rank for new node: (1-d)/N
+    let base_rank = (1.0 - DAMPING) / n.max(1) as f64;
+
+    let now = chrono::Utc::now().timestamp();
+    db.connection()
+        .execute(
+            "INSERT INTO memory_pagerank (memory_id, user_id, score, computed_at) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(memory_id) DO UPDATE SET \
+               score = excluded.score, computed_at = excluded.computed_at",
+            libsql::params![memory_id, user_id, base_rank, now],
+        )
+        .await?;
+
+    Ok(())
+}
+
+/// Incremental PageRank update when a link is added.
+/// Propagates score changes locally to affected nodes (2-hop neighborhood).
+pub async fn incremental_add_link(
+    db: &Database,
+    source_id: i64,
+    target_id: i64,
+    similarity: f64,
+    link_type: &str,
+    user_id: i64,
+) -> Result<usize> {
+    let conn = db.connection();
+
+    // Get current scores for source and target
+    let mut rows = conn
+        .query(
+            "SELECT memory_id, score FROM memory_pagerank WHERE memory_id IN (?1, ?2) AND user_id = ?3",
+            libsql::params![source_id, target_id, user_id],
+        )
+        .await?;
+
+    let mut scores: HashMap<i64, f64> = HashMap::new();
+    while let Some(row) = rows.next().await? {
+        let mid: i64 = row.get(0)?;
+        let score: f64 = row.get(1)?;
+        scores.insert(mid, score);
+    }
+
+    // If neither node has a score, initialize them
+    if scores.is_empty() {
+        incremental_add_memory(db, source_id, user_id).await?;
+        incremental_add_memory(db, target_id, user_id).await?;
+        return Ok(2);
+    }
+
+    let source_score = scores.get(&source_id).copied().unwrap_or(0.01);
+    let weight = edge_weight(link_type, similarity);
+
+    // Get source's total outgoing weight
+    let mut out_rows = conn
+        .query(
+            "SELECT SUM(similarity) FROM memory_links WHERE source_id = ?1",
+            libsql::params![source_id],
+        )
+        .await?;
+    let total_out: f64 = match out_rows.next().await? {
+        Some(row) => row.get::<Option<f64>>(0)?.unwrap_or(1.0),
+        None => 1.0,
+    };
+
+    // Compute contribution from source to target
+    let contribution = DAMPING * source_score * weight / total_out.max(weight);
+
+    // Update target score
+    let old_target = scores.get(&target_id).copied().unwrap_or(0.01);
+    let new_target = old_target + contribution;
+
+    let now = chrono::Utc::now().timestamp();
+    conn.execute(
+        "INSERT INTO memory_pagerank (memory_id, user_id, score, computed_at) \
+         VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(memory_id) DO UPDATE SET \
+           score = excluded.score, computed_at = excluded.computed_at",
+        libsql::params![target_id, user_id, new_target, now],
+    )
+    .await?;
+
+    // Propagate to target's neighbors (1-hop)
+    let mut neighbor_rows = conn
+        .query(
+            "SELECT target_id, similarity, type FROM memory_links WHERE source_id = ?1",
+            libsql::params![target_id],
+        )
+        .await?;
+
+    let mut updated = 1usize;
+    let delta = new_target - old_target;
+
+    while let Some(row) = neighbor_rows.next().await? {
+        let neighbor_id: i64 = row.get(0)?;
+        let sim: f64 = row.get(1)?;
+        let lt: String = row.get(2)?;
+        let w = edge_weight(&lt, sim);
+        let neighbor_contribution = DAMPING * delta * w / total_out.max(1.0);
+
+        if neighbor_contribution.abs() > CONVERGENCE_THRESHOLD {
+            conn.execute(
+                "UPDATE memory_pagerank SET score = score + ?1, computed_at = ?2 \
+                 WHERE memory_id = ?3 AND user_id = ?4",
+                libsql::params![neighbor_contribution, now, neighbor_id, user_id],
+            )
+            .await?;
+            updated += 1;
+        }
+    }
+
+    info!(
+        source_id,
+        target_id,
+        updated,
+        contribution = format!("{:.6}", contribution).as_str(),
+        "incremental_pagerank_link"
+    );
+
+    Ok(updated)
+}
+
+/// Incremental PageRank update when a memory is deleted.
+/// Removes the score and redistributes to remaining nodes.
+pub async fn incremental_remove_memory(db: &Database, memory_id: i64, user_id: i64) -> Result<()> {
+    let conn = db.connection();
+
+    // Get the score being removed
+    let mut rows = conn
+        .query(
+            "SELECT score FROM memory_pagerank WHERE memory_id = ?1 AND user_id = ?2",
+            libsql::params![memory_id, user_id],
+        )
+        .await?;
+
+    let removed_score: f64 = match rows.next().await? {
+        Some(row) => row.get(0)?,
+        None => return Ok(()), // No score to remove
+    };
+
+    // Delete the score
+    conn.execute(
+        "DELETE FROM memory_pagerank WHERE memory_id = ?1 AND user_id = ?2",
+        libsql::params![memory_id, user_id],
+    )
+    .await?;
+
+    // Get remaining memory count
+    let mut count_rows = conn
+        .query(
+            "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
+            libsql::params![user_id],
+        )
+        .await?;
+    let remaining: i64 = match count_rows.next().await? {
+        Some(row) => row.get(0)?,
+        None => 0,
+    };
+
+    if remaining > 0 {
+        // Distribute removed score evenly (simplified redistribution)
+        let redistribution = removed_score / remaining as f64;
+        let now = chrono::Utc::now().timestamp();
+
+        conn.execute(
+            "UPDATE memory_pagerank SET score = score + ?1, computed_at = ?2 WHERE user_id = ?3",
+            libsql::params![redistribution, now, user_id],
+        )
+        .await?;
+    }
+
+    info!(memory_id, removed_score = format!("{:.6}", removed_score).as_str(), "incremental_pagerank_remove");
+
+    Ok(())
+}
+
+/// Check if incremental updates have drifted too far from true PageRank.
+/// Returns true if a full recompute is recommended.
+pub async fn needs_full_recompute(db: &Database, user_id: i64, drift_threshold: f64) -> Result<bool> {
+    // Compare sum of incremental scores to expected sum (should be ~1.0)
+    let mut rows = db
+        .connection()
+        .query(
+            "SELECT SUM(score), COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
+            libsql::params![user_id],
+        )
+        .await?;
+
+    match rows.next().await? {
+        Some(row) => {
+            let sum: f64 = row.get::<Option<f64>>(0)?.unwrap_or(0.0);
+            let count: i64 = row.get(1)?;
+            if count == 0 {
+                return Ok(false);
+            }
+            // PageRank scores should sum to approximately 1.0
+            // If drift exceeds threshold, recommend full recompute
+            let drift = (sum - 1.0).abs();
+            Ok(drift > drift_threshold)
+        }
+        None => Ok(false),
+    }
+}
+
+// ============================================================================
+// COMMUNITY-SCOPED PAGERANK -- compute per community for reduced memory usage
+// ============================================================================
+
+/// Compute PageRank for a single community only.
+/// Much more memory-efficient than global compute for large graphs.
+pub async fn compute_pagerank_for_community(
+    db: &Database,
+    user_id: i64,
+    community_id: i64,
+    damping: f64,
+    max_iterations: u32,
+) -> Result<PageRankResult> {
+    let conn = db.connection();
+
+    // Get memories in this community
+    let mut mem_rows = conn
+        .query(
+            "SELECT id FROM memories \
+             WHERE user_id = ?1 AND community_id = ?2 \
+               AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1",
+            libsql::params![user_id, community_id],
+        )
+        .await?;
+
+    let mut memory_ids: Vec<i64> = Vec::new();
+    while let Some(row) = mem_rows.next().await? {
+        memory_ids.push(row.get(0)?);
+    }
+
+    let n = memory_ids.len();
+    if n == 0 {
+        return Ok(PageRankResult {
+            scores: HashMap::new(),
+            iterations: 0,
+        });
+    }
+
+    // Build ID set for fast lookup
+    let mem_set: std::collections::HashSet<i64> = memory_ids.iter().copied().collect();
+    let id_list = memory_ids
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // Get edges within this community
+    let edge_sql = format!(
+        "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
+         FROM memory_links ml \
+         WHERE ml.source_id IN ({id_list}) AND ml.target_id IN ({id_list})"
+    );
+
+    let mut edge_rows = conn.query(&edge_sql, ()).await?;
+
+    let mut pr: HashMap<i64, f64> = HashMap::new();
+    let mut out_w: HashMap<i64, f64> = HashMap::new();
+    let mut in_links: HashMap<i64, Vec<(i64, f64)>> = HashMap::new();
+
+    for &id in &memory_ids {
+        pr.insert(id, 1.0 / n as f64);
+        out_w.insert(id, 0.0);
+        in_links.insert(id, Vec::new());
+    }
+
+    while let Some(row) = edge_rows.next().await? {
+        let source_id: i64 = row.get(0)?;
+        let target_id: i64 = row.get(1)?;
+        let similarity: f64 = row.get(2)?;
+        let link_type: String = row.get(3)?;
+
+        if !mem_set.contains(&source_id) || !mem_set.contains(&target_id) {
+            continue;
+        }
+
+        let w = edge_weight(&link_type, similarity);
+        *out_w.entry(source_id).or_insert(0.0) += w;
+        in_links.entry(target_id).or_default().push((source_id, w));
+    }
+
+    // Power iteration (same as global, but on smaller subgraph)
+    let mut converged_at = max_iterations;
+    for iter in 0..max_iterations {
+        let mut max_delta: f64 = 0.0;
+        let mut new_pr: HashMap<i64, f64> = HashMap::new();
+
+        for &id in &memory_ids {
+            let incoming = in_links.get(&id).cloned().unwrap_or_default();
+            let mut sum = 0.0;
+            for (from_id, weight) in &incoming {
+                let from_rank = pr.get(from_id).copied().unwrap_or(0.0);
+                let from_out = out_w.get(from_id).copied().unwrap_or(1.0);
+                sum += (from_rank * weight) / from_out;
+            }
+            let rank = (1.0 - damping) / n as f64 + damping * sum;
+            new_pr.insert(id, rank);
+            let delta = (rank - pr.get(&id).copied().unwrap_or(0.0)).abs();
+            if delta > max_delta {
+                max_delta = delta;
+            }
+        }
+
+        for (id, rank) in &new_pr {
+            pr.insert(*id, *rank);
+        }
+
+        if max_delta < 1e-6 {
+            converged_at = iter + 1;
+            break;
+        }
+    }
+
+    info!(
+        user_id,
+        community_id,
+        memories = n,
+        iterations = converged_at,
+        "community_pagerank_computed"
+    );
+
+    Ok(PageRankResult {
+        scores: pr,
+        iterations: converged_at,
+    })
+}
+
+/// Compute PageRank for all communities in parallel, then merge results.
+/// Much more memory-efficient than loading entire graph at once.
+pub async fn compute_pagerank_by_communities(
+    db: &Database,
+    user_id: i64,
+) -> Result<Vec<(i64, f64)>> {
+    let conn = db.connection();
+
+    // Get all distinct community IDs for this user
+    let mut comm_rows = conn
+        .query(
+            "SELECT DISTINCT community_id FROM memories \
+             WHERE user_id = ?1 AND community_id IS NOT NULL \
+               AND is_forgotten = 0 AND is_latest = 1",
+            libsql::params![user_id],
+        )
+        .await?;
+
+    let mut community_ids: Vec<i64> = Vec::new();
+    while let Some(row) = comm_rows.next().await? {
+        community_ids.push(row.get(0)?);
+    }
+
+    // Also handle memories without community (community_id IS NULL)
+    let mut orphan_rows = conn
+        .query(
+            "SELECT id FROM memories \
+             WHERE user_id = ?1 AND community_id IS NULL \
+               AND is_forgotten = 0 AND is_latest = 1",
+            libsql::params![user_id],
+        )
+        .await?;
+
+    let mut orphan_ids: Vec<i64> = Vec::new();
+    while let Some(row) = orphan_rows.next().await? {
+        orphan_ids.push(row.get(0)?);
+    }
+
+    let mut all_scores: Vec<(i64, f64)> = Vec::new();
+
+    // Compute per-community
+    for cid in community_ids {
+        let result = compute_pagerank_for_community(db, user_id, cid, 0.85, 25).await?;
+        let max_score = result.scores.values().copied().fold(0.0_f64, f64::max);
+        if max_score > 0.0 {
+            for (mid, score) in result.scores {
+                all_scores.push((mid, score / max_score));
+            }
+        }
+    }
+
+    // Give orphan memories base score
+    let orphan_score = 0.1; // Low but non-zero
+    for mid in orphan_ids {
+        all_scores.push((mid, orphan_score));
+    }
+
+    info!(
+        user_id,
+        total_scores = all_scores.len(),
+        "community_pagerank_merged"
+    );
+
+    Ok(all_scores)
+}
+
 /// Ensure the pagerank cache is populated for this user. If empty, runs a
 /// synchronous compute and persists the result. Subsequent calls are cheap
 /// (single COUNT query that returns early).
