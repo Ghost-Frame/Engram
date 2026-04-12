@@ -1,8 +1,12 @@
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::info;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardRule {
@@ -102,8 +106,6 @@ pub async fn evaluate(db: &Database, content: &str) -> Result<GuardResult> {
 
 /// Create a new guard rule.
 pub async fn create_rule(db: &Database, rule: GuardRule) -> Result<GuardRule> {
-    let conn = db.connection();
-
     // SECURITY: reject over-long patterns at create time so they can never
     // reach the hot evaluate() path and starve CPU.
     const MAX_PATTERN_CHARS: usize = 4_096;
@@ -130,112 +132,126 @@ pub async fn create_rule(db: &Database, rule: GuardRule) -> Result<GuardRule> {
         GuardAction::Block => "block",
         GuardAction::Flag => "flag",
         GuardAction::Redact => "redact",
-    };
+    }
+    .to_string();
 
-    conn.execute(
-        "INSERT INTO audit_log (action, target_type, details, created_at) \
-         VALUES ('create_guard_rule', 'guard_rule', ?1, datetime('now'))",
-        libsql::params![serde_json::json!({
-            "name": rule.name,
-            "pattern": rule.pattern,
-            "action": action_str,
-            "enabled": rule.enabled,
-        })
-        .to_string()],
-    )
+    let audit_details = serde_json::json!({
+        "name": rule.name,
+        "pattern": rule.pattern,
+        "action": action_str,
+        "enabled": rule.enabled,
+    })
+    .to_string();
+
+    let state_key = format!("rule:{}", rule.name);
+    let state_value = serde_json::json!({
+        "name": rule.name,
+        "pattern": rule.pattern,
+        "action": action_str,
+        "enabled": rule.enabled,
+    })
+    .to_string();
+
+    let rule_name_log = rule.name.clone();
+    let action_str_log = action_str.clone();
+
+    db.write(move |conn| {
+        conn.execute(
+            "INSERT INTO audit_log (action, target_type, details, created_at) \
+             VALUES ('create_guard_rule', 'guard_rule', ?1, datetime('now'))",
+            rusqlite::params![audit_details],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+
+        conn.execute(
+            "INSERT INTO current_state (agent, key, value, user_id, created_at, updated_at) \
+             VALUES ('guard', ?1, ?2, 1, datetime('now'), datetime('now')) \
+             ON CONFLICT(agent, key, user_id) DO UPDATE SET \
+               value = excluded.value, \
+               updated_at = datetime('now')",
+            rusqlite::params![state_key, state_value],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+
+        Ok(())
+    })
     .await?;
 
-    // We store guard rules in the audit_log with a special action type,
-    // but ideally they'd have their own table. For now, use a simple approach:
-    // store in a temporary table structure using current_state.
-    conn.execute(
-        "INSERT INTO current_state (agent, key, value, user_id, created_at, updated_at) \
-         VALUES ('guard', ?1, ?2, 1, datetime('now'), datetime('now')) \
-         ON CONFLICT(agent, key, user_id) DO UPDATE SET \
-           value = excluded.value, \
-           updated_at = datetime('now')",
-        libsql::params![
-            format!("rule:{}", rule.name),
-            serde_json::json!({
-                "name": rule.name,
-                "pattern": rule.pattern,
-                "action": action_str,
-                "enabled": rule.enabled,
-            })
-            .to_string()
-        ],
-    )
-    .await?;
-
-    info!(name = %rule.name, action = action_str, "guard_rule_created");
+    info!(name = %rule_name_log, action = action_str_log, "guard_rule_created");
 
     Ok(rule)
 }
 
 /// List all guard rules.
 pub async fn list_rules(db: &Database) -> Result<Vec<GuardRule>> {
-    let conn = db.connection();
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT key, value, created_at FROM current_state \
+                 WHERE agent = 'guard' AND key LIKE 'rule:%' \
+                 ORDER BY created_at ASC",
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut rows = conn
-        .query(
-            "SELECT key, value, created_at FROM current_state \
-             WHERE agent = 'guard' AND key LIKE 'rule:%' \
-             ORDER BY created_at ASC",
-            (),
-        )
-        .await?;
+        let rows = stmt
+            .query_map([], |row| {
+                let _key: String = row.get(0)?;
+                let value: String = row.get(1)?;
+                let created_at_str: String = row.get(2)?;
+                Ok((value, created_at_str))
+            })
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut rules = Vec::new();
+        let mut rules = Vec::new();
 
-    while let Some(row) = rows.next().await? {
-        let _key: String = row.get(0)?;
-        let value: String = row.get(1)?;
-        let created_at_str: String = row.get(2)?;
+        for row_result in rows {
+            let (value, created_at_str) = row_result.map_err(rusqlite_to_eng_error)?;
 
-        // Parse the JSON value
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&value) {
-            let name = parsed
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let pattern = parsed
-                .get("pattern")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let action_str = parsed
-                .get("action")
-                .and_then(|v| v.as_str())
-                .unwrap_or("flag");
-            let enabled = parsed
-                .get("enabled")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&value) {
+                let name = parsed
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let pattern = parsed
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let action_str = parsed
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("flag");
+                let enabled = parsed
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
 
-            let action = match action_str {
-                "block" => GuardAction::Block,
-                "redact" => GuardAction::Redact,
-                _ => GuardAction::Flag,
-            };
+                let action = match action_str {
+                    "block" => GuardAction::Block,
+                    "redact" => GuardAction::Redact,
+                    _ => GuardAction::Flag,
+                };
 
-            let created_at =
-                chrono::NaiveDateTime::parse_from_str(&created_at_str, "%Y-%m-%d %H:%M:%S")
-                    .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
-                    .unwrap_or_else(|_| Utc::now());
+                let created_at =
+                    chrono::NaiveDateTime::parse_from_str(&created_at_str, "%Y-%m-%d %H:%M:%S")
+                        .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
+                        .unwrap_or_else(|_| Utc::now());
 
-            rules.push(GuardRule {
-                id: name.clone(),
-                name,
-                pattern,
-                action,
-                enabled,
-                created_at,
-            });
+                rules.push(GuardRule {
+                    id: name.clone(),
+                    name,
+                    pattern,
+                    action,
+                    enabled,
+                    created_at,
+                });
+            }
         }
-    }
 
-    Ok(rules)
+        Ok(rules)
+    })
+    .await
 }
 
 #[cfg(test)]

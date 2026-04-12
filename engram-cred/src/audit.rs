@@ -1,8 +1,18 @@
 //! Audit logging for credential access.
 
 use kleos_lib::db::Database;
+use kleos_lib::EngError;
 
 use crate::{CredError, Result};
+
+#[allow(dead_code)]
+fn rusqlite_to_cred_error(err: rusqlite::Error) -> CredError {
+    CredError::Database(err.to_string())
+}
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 /// Audit log entry.
 #[derive(Debug, Clone)]
@@ -73,33 +83,45 @@ pub async fn log_audit(
     success: bool,
 ) -> Result<i64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let action_str = action.as_str();
-    let tier_str = access_tier.map(|t| t.as_str());
+    let action_str = action.as_str().to_string();
+    let tier_str = access_tier.map(|t| t.as_str().to_string());
+    let agent_name_owned = agent_name.map(|s| s.to_string());
+    let category_owned = category.to_string();
+    let secret_name_owned = secret_name.to_string();
 
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "INSERT INTO cred_audit (user_id, agent_name, action, category, secret_name, access_tier, success, timestamp)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            libsql::params![
+            rusqlite::params![
                 user_id,
-                agent_name,
+                agent_name_owned,
                 action_str,
-                category,
-                secret_name,
+                category_owned,
+                secret_name_owned,
                 tier_str,
                 success as i32,
                 now
             ],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
 
-    let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = match rows.next().await? {
-        Some(row) => row.get(0)?,
-        None => 0,
-    };
+        Ok(conn.last_insert_rowid())
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
+}
 
-    Ok(id)
+fn collect_audit_rows(
+    stmt: &mut rusqlite::Statement<'_>,
+    params: &[&dyn rusqlite::types::ToSql],
+) -> kleos_lib::Result<Vec<AuditEntry>> {
+    let v: Vec<AuditEntry> = stmt
+        .query_map(params, row_to_audit_entry)
+        .map_err(rusqlite_to_eng_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(rusqlite_to_eng_error)?;
+    Ok(v)
 }
 
 /// Query audit entries for a user.
@@ -110,58 +132,64 @@ pub async fn query_audit(
     category: Option<&str>,
     agent_name: Option<&str>,
 ) -> Result<Vec<AuditEntry>> {
-    let query = match (category, agent_name) {
-        (Some(cat), Some(agent)) => {
-            db.conn
-                .query(
-                    "SELECT id, user_id, agent_name, action, category, secret_name, access_tier, success, timestamp
-                     FROM cred_audit
-                     WHERE user_id = ?1 AND category = ?2 AND agent_name = ?3
-                     ORDER BY timestamp DESC
-                     LIMIT ?4",
-                    libsql::params![user_id, cat, agent, limit as i64],
-                )
-                .await?
-        }
-        (Some(cat), None) => {
-            db.conn
-                .query(
-                    "SELECT id, user_id, agent_name, action, category, secret_name, access_tier, success, timestamp
-                     FROM cred_audit
-                     WHERE user_id = ?1 AND category = ?2
-                     ORDER BY timestamp DESC
-                     LIMIT ?3",
-                    libsql::params![user_id, cat, limit as i64],
-                )
-                .await?
-        }
-        (None, Some(agent)) => {
-            db.conn
-                .query(
-                    "SELECT id, user_id, agent_name, action, category, secret_name, access_tier, success, timestamp
-                     FROM cred_audit
-                     WHERE user_id = ?1 AND agent_name = ?2
-                     ORDER BY timestamp DESC
-                     LIMIT ?3",
-                    libsql::params![user_id, agent, limit as i64],
-                )
-                .await?
-        }
-        (None, None) => {
-            db.conn
-                .query(
-                    "SELECT id, user_id, agent_name, action, category, secret_name, access_tier, success, timestamp
-                     FROM cred_audit
-                     WHERE user_id = ?1
-                     ORDER BY timestamp DESC
-                     LIMIT ?2",
-                    libsql::params![user_id, limit as i64],
-                )
-                .await?
-        }
-    };
+    let category_owned = category.map(|s| s.to_string());
+    let agent_name_owned = agent_name.map(|s| s.to_string());
+    let limit_i64 = limit as i64;
 
-    parse_audit_rows(query).await
+    db.read(move |conn| {
+        match (&category_owned, &agent_name_owned) {
+            (Some(cat), Some(agent)) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, user_id, agent_name, action, category, secret_name, access_tier, success, timestamp
+                         FROM cred_audit
+                         WHERE user_id = ?1 AND category = ?2 AND agent_name = ?3
+                         ORDER BY timestamp DESC
+                         LIMIT ?4",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                collect_audit_rows(&mut stmt, rusqlite::params![user_id, cat, agent, limit_i64])
+            }
+            (Some(cat), None) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, user_id, agent_name, action, category, secret_name, access_tier, success, timestamp
+                         FROM cred_audit
+                         WHERE user_id = ?1 AND category = ?2
+                         ORDER BY timestamp DESC
+                         LIMIT ?3",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                collect_audit_rows(&mut stmt, rusqlite::params![user_id, cat, limit_i64])
+            }
+            (None, Some(agent)) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, user_id, agent_name, action, category, secret_name, access_tier, success, timestamp
+                         FROM cred_audit
+                         WHERE user_id = ?1 AND agent_name = ?2
+                         ORDER BY timestamp DESC
+                         LIMIT ?3",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                collect_audit_rows(&mut stmt, rusqlite::params![user_id, agent, limit_i64])
+            }
+            (None, None) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, user_id, agent_name, action, category, secret_name, access_tier, success, timestamp
+                         FROM cred_audit
+                         WHERE user_id = ?1
+                         ORDER BY timestamp DESC
+                         LIMIT ?2",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                collect_audit_rows(&mut stmt, rusqlite::params![user_id, limit_i64])
+            }
+        }
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
 }
 
 /// Get audit entries for a specific secret.
@@ -172,51 +200,52 @@ pub async fn get_secret_audit(
     secret_name: &str,
     limit: usize,
 ) -> Result<Vec<AuditEntry>> {
-    let rows = db
-        .conn
-        .query(
-            "SELECT id, user_id, agent_name, action, category, secret_name, access_tier, success, timestamp
-             FROM cred_audit
-             WHERE user_id = ?1 AND category = ?2 AND secret_name = ?3
-             ORDER BY timestamp DESC
-             LIMIT ?4",
-            libsql::params![user_id, category, secret_name, limit as i64],
-        )
-        .await?;
+    let category_owned = category.to_string();
+    let secret_name_owned = secret_name.to_string();
+    let limit_i64 = limit as i64;
 
-    parse_audit_rows(rows).await
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, user_id, agent_name, action, category, secret_name, access_tier, success, timestamp
+                 FROM cred_audit
+                 WHERE user_id = ?1 AND category = ?2 AND secret_name = ?3
+                 ORDER BY timestamp DESC
+                 LIMIT ?4",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        collect_audit_rows(
+            &mut stmt,
+            rusqlite::params![user_id, category_owned, secret_name_owned, limit_i64],
+        )
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
 }
 
-async fn parse_audit_rows(mut rows: libsql::Rows) -> Result<Vec<AuditEntry>> {
-    let mut entries = Vec::new();
-    while let Some(row) = rows
-        .next()
-        .await
-        .map_err(|e| CredError::Database(e.to_string()))?
-    {
-        let id: i64 = row.get(0)?;
-        let user_id: i64 = row.get(1)?;
-        let agent_name: Option<String> = row.get(2)?;
-        let action: String = row.get(3)?;
-        let category: String = row.get(4)?;
-        let secret_name: String = row.get(5)?;
-        let access_tier: Option<String> = row.get(6)?;
-        let success: i32 = row.get(7)?;
-        let timestamp: String = row.get(8)?;
+fn row_to_audit_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEntry> {
+    let id: i64 = row.get(0)?;
+    let user_id: i64 = row.get(1)?;
+    let agent_name: Option<String> = row.get(2)?;
+    let action: String = row.get(3)?;
+    let category: String = row.get(4)?;
+    let secret_name: String = row.get(5)?;
+    let access_tier: Option<String> = row.get(6)?;
+    let success: i32 = row.get(7)?;
+    let timestamp: String = row.get(8)?;
 
-        entries.push(AuditEntry {
-            id,
-            user_id,
-            agent_name,
-            action,
-            category,
-            secret_name,
-            access_tier,
-            success: success != 0,
-            timestamp,
-        });
-    }
-    Ok(entries)
+    Ok(AuditEntry {
+        id,
+        user_id,
+        agent_name,
+        action,
+        category,
+        secret_name,
+        access_tier,
+        success: success != 0,
+        timestamp,
+    })
 }
 
 /// Prune old audit entries.
@@ -227,15 +256,17 @@ pub async fn prune_audit(db: &Database, user_id: i64, days_to_keep: u32) -> Resu
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
 
-    let affected = db
-        .conn
-        .execute(
-            "DELETE FROM cred_audit WHERE user_id = ?1 AND timestamp < ?2",
-            libsql::params![user_id, cutoff],
-        )
-        .await?;
-
-    Ok(affected as usize)
+    db.write(move |conn| {
+        let affected = conn
+            .execute(
+                "DELETE FROM cred_audit WHERE user_id = ?1 AND timestamp < ?2",
+                rusqlite::params![user_id, cutoff],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(affected)
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
 }
 
 #[cfg(test)]
@@ -244,8 +275,8 @@ mod tests {
 
     async fn setup_db() -> Database {
         let db = Database::connect_memory().await.expect("db");
-        db.conn
-            .execute(
+        db.write(move |conn| {
+            conn.execute(
                 "CREATE TABLE IF NOT EXISTS cred_audit (
                     id INTEGER PRIMARY KEY,
                     user_id INTEGER NOT NULL,
@@ -257,10 +288,13 @@ mod tests {
                     success INTEGER NOT NULL,
                     timestamp TEXT NOT NULL
                 )",
-                (),
+                [],
             )
-            .await
-            .expect("create table");
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
+        .await
+        .expect("create table");
         db
     }
 

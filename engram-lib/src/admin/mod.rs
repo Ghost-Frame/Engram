@@ -4,8 +4,13 @@ pub mod types;
 
 use self::types::*;
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 use chrono::Utc;
+use rusqlite::params;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 fn scopes_for_role(role: &str) -> Vec<crate::auth::Scope> {
     match role {
@@ -24,30 +29,33 @@ fn scopes_for_role(role: &str) -> Vec<crate::auth::Scope> {
 // ---------------------------------------------------------------------------
 
 pub async fn compact(db: &Database) -> Result<CompactResult> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
-            (),
-        )
+    let size_before: i64 = db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
-    let size_before: i64 = match rows.next().await? {
-        Some(row) => row.get(0).unwrap_or(0),
-        None => 0,
-    };
-    db.conn.execute("VACUUM", ()).await?;
-    db.conn.execute("ANALYZE", ()).await?;
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
-            (),
-        )
+
+    db.write(|conn| {
+        conn.execute_batch("VACUUM; ANALYZE").map_err(rusqlite_to_eng_error)
+    })
+    .await?;
+
+    let size_after: i64 = db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
-    let size_after: i64 = match rows.next().await? {
-        Some(row) => row.get(0).unwrap_or(0),
-        None => 0,
-    };
+
     Ok(CompactResult {
         size_before,
         size_after,
@@ -60,42 +68,58 @@ pub async fn compact(db: &Database) -> Result<CompactResult> {
 // ---------------------------------------------------------------------------
 
 pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
-    let forgotten = match user_id {
-        Some(uid) => {
-            db.conn
-                .execute(
+    let forgotten: i64 = db
+        .write(move |conn| {
+            let n = if let Some(uid) = user_id {
+                conn.execute(
                     "DELETE FROM memories WHERE is_forgotten = 1 AND user_id = ?1",
-                    libsql::params![uid],
+                    params![uid],
                 )
-                .await? as i64
-        }
-        None => {
-            db.conn
-                .execute("DELETE FROM memories WHERE is_forgotten = 1", ())
-                .await? as i64
-        }
-    };
-    let expired = match user_id {
-        Some(uid) => db.conn.execute(
-            "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now') AND user_id = ?1",
-            libsql::params![uid],
-        ).await? as i64,
-        None => db.conn.execute(
-            "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now')",
-            (),
-        ).await? as i64,
-    };
+                .map_err(rusqlite_to_eng_error)?
+            } else {
+                conn.execute("DELETE FROM memories WHERE is_forgotten = 1", [])
+                    .map_err(rusqlite_to_eng_error)?
+            };
+            Ok(n as i64)
+        })
+        .await?;
+
+    let expired: i64 = db
+        .write(move |conn| {
+            let n = if let Some(uid) = user_id {
+                conn.execute(
+                    "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now') AND user_id = ?1",
+                    params![uid],
+                )
+                .map_err(rusqlite_to_eng_error)?
+            } else {
+                conn.execute(
+                    "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now')",
+                    [],
+                )
+                .map_err(rusqlite_to_eng_error)?
+            };
+            Ok(n as i64)
+        })
+        .await?;
+
     let orphaned = 0i64;
-    let old_audit = if user_id.is_none() {
-        db.conn
-            .execute(
-                "DELETE FROM audit_log WHERE created_at < datetime('now', '-90 days')",
-                (),
-            )
-            .await? as i64
+
+    let old_audit: i64 = if user_id.is_none() {
+        db.write(|conn| {
+            let n = conn
+                .execute(
+                    "DELETE FROM audit_log WHERE created_at < datetime('now', '-90 days')",
+                    [],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(n as i64)
+        })
+        .await?
     } else {
         0
     };
+
     let total = forgotten + expired + orphaned + old_audit;
     Ok(GcResult {
         total_cleaned: total,
@@ -113,25 +137,41 @@ pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
 // ---------------------------------------------------------------------------
 
 pub async fn get_schema(db: &Database) -> Result<SchemaResult> {
-    let mut rows = db.conn.query("SELECT name, sql FROM sqlite_master WHERE type = ?1 AND name NOT LIKE ?2 ORDER BY name", libsql::params!["table", "sqlite_%"]).await?;
-    let mut tables = Vec::new();
-    while let Some(row) = rows.next().await? {
-        tables.push(SchemaTable {
-            name: row.get(0).unwrap_or_default(),
-            sql: row.get(1).unwrap_or_default(),
-        });
-    }
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name",
-            libsql::params!["index"],
-        )
+    let tables: Vec<SchemaTable> = db
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name, sql FROM sqlite_master WHERE type = ?1 AND name NOT LIKE ?2 ORDER BY name",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(params!["table", "sqlite_%"], |row| {
+                    Ok(SchemaTable {
+                        name: row.get(0)?,
+                        sql: row.get(1)?,
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(rows)
+        })
         .await?;
-    let mut indexes = Vec::new();
-    while let Some(row) = rows.next().await? {
-        indexes.push(row.get::<String>(0).unwrap_or_default());
-    }
+
+    let indexes: Vec<String> = db
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name")
+                .map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(params!["index"], |row| row.get(0))
+                .map_err(rusqlite_to_eng_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(rows)
+        })
+        .await?;
+
     Ok(SchemaResult { tables, indexes })
 }
 
@@ -140,29 +180,42 @@ pub async fn get_schema(db: &Database) -> Result<SchemaResult> {
 // ---------------------------------------------------------------------------
 
 pub async fn get_maintenance(db: &Database) -> Result<MaintenanceStatus> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT value, updated_at FROM app_state WHERE key = ?1",
-            libsql::params!["maintenance_mode"],
-        )
+    let row_opt: Option<(String, String)> = db
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT value, updated_at FROM app_state WHERE key = ?1")
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(params!["maintenance_mode"])
+                .map_err(rusqlite_to_eng_error)?;
+            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                let val: String = row.get(0).map_err(rusqlite_to_eng_error)?;
+                let since: String = row.get(1).map_err(rusqlite_to_eng_error)?;
+                Ok(Some((val, since)))
+            } else {
+                Ok(None)
+            }
+        })
         .await?;
-    match rows.next().await? {
-        Some(row) => {
-            let val: String = row.get(0).unwrap_or_default();
-            let since: String = row.get(1).unwrap_or_default();
+
+    match row_opt {
+        Some((val, since)) => {
             let enabled = val == "1" || val == "true";
-            let mut msg_rows = db
-                .conn
-                .query(
-                    "SELECT value FROM app_state WHERE key = ?1",
-                    libsql::params!["maintenance_message"],
-                )
+            let message: Option<String> = db
+                .read(|conn| {
+                    let mut stmt = conn
+                        .prepare("SELECT value FROM app_state WHERE key = ?1")
+                        .map_err(rusqlite_to_eng_error)?;
+                    let mut rows = stmt
+                        .query(params!["maintenance_message"])
+                        .map_err(rusqlite_to_eng_error)?;
+                    if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                        Ok(row.get(0).map_err(rusqlite_to_eng_error)?)
+                    } else {
+                        Ok(None)
+                    }
+                })
                 .await?;
-            let message = match msg_rows.next().await? {
-                Some(r) => r.get::<String>(0).ok(),
-                None => None,
-            };
             Ok(MaintenanceStatus {
                 enabled,
                 message,
@@ -196,27 +249,31 @@ pub async fn set_maintenance(
 
 pub async fn get_sla(db: &Database) -> Result<SlaResult> {
     let targets = SlaTargets::default();
-    let mut rows = db.conn.query("SELECT COUNT(*) FROM audit_log", ()).await?;
-    let total_requests = match rows.next().await? {
-        Some(row) => row.get::<i64>(0).unwrap_or(0),
-        None => 0,
-    };
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT COUNT(*) FROM audit_log WHERE action LIKE '%error%'",
-            (),
-        )
+
+    let total_requests: i64 = db
+        .read(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+                .map_err(rusqlite_to_eng_error)
+        })
         .await?;
-    let total_errors = match rows.next().await? {
-        Some(row) => row.get::<i64>(0).unwrap_or(0),
-        None => 0,
-    };
+
+    let total_errors: i64 = db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE action LIKE '%error%'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+
     let error_rate = if total_requests > 0 {
         (total_errors as f64 / total_requests as f64) * 100.0
     } else {
         0.0
     };
+
     Ok(SlaResult {
         targets,
         current_uptime_pct: 100.0, // Would need monitoring data
@@ -231,40 +288,61 @@ pub async fn get_sla(db: &Database) -> Result<SlaResult> {
 // ---------------------------------------------------------------------------
 
 pub async fn get_usage(db: &Database) -> Result<Vec<UsageRow>> {
-    let mut rows = db.conn.query(
-        "SELECT u.id, u.username, COALESCE(m.cnt, 0), COALESCE(c.cnt, 0), COALESCE(k.cnt, 0) FROM users u LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM memories GROUP BY user_id) m ON u.id = m.user_id LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM conversations GROUP BY user_id) c ON u.id = c.user_id LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM api_keys WHERE is_active = 1 GROUP BY user_id) k ON u.id = k.user_id ORDER BY u.id",
-        (),
-    ).await?;
-    let mut result = Vec::new();
-    while let Some(row) = rows.next().await? {
-        result.push(UsageRow {
-            user_id: row.get(0).unwrap_or(0),
-            username: row.get(1).unwrap_or_default(),
-            memory_count: row.get(2).unwrap_or(0),
-            conversation_count: row.get(3).unwrap_or(0),
-            api_key_count: row.get(4).unwrap_or(0),
-        });
-    }
-    Ok(result)
+    db.read(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT u.id, u.username, COALESCE(m.cnt, 0), COALESCE(c.cnt, 0), COALESCE(k.cnt, 0) \
+             FROM users u \
+             LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM memories GROUP BY user_id) m ON u.id = m.user_id \
+             LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM conversations GROUP BY user_id) c ON u.id = c.user_id \
+             LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM api_keys WHERE is_active = 1 GROUP BY user_id) k ON u.id = k.user_id \
+             ORDER BY u.id",
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(UsageRow {
+                    user_id: row.get(0)?,
+                    username: row.get(1)?,
+                    memory_count: row.get(2)?,
+                    conversation_count: row.get(3)?,
+                    api_key_count: row.get(4)?,
+                })
+            })
+            .map_err(rusqlite_to_eng_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(rows)
+    })
+    .await
 }
 
 pub async fn get_tenants(db: &Database) -> Result<Vec<TenantRow>> {
-    let mut rows = db.conn.query(
-        "SELECT u.id, u.username, u.role, COALESCE(m.cnt, 0), COALESCE(k.cnt, 0), u.created_at FROM users u LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM memories GROUP BY user_id) m ON u.id = m.user_id LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM api_keys WHERE is_active = 1 GROUP BY user_id) k ON u.id = k.user_id ORDER BY u.id",
-        (),
-    ).await?;
-    let mut result = Vec::new();
-    while let Some(row) = rows.next().await? {
-        result.push(TenantRow {
-            id: row.get(0).unwrap_or(0),
-            username: row.get(1).unwrap_or_default(),
-            role: row.get(2).unwrap_or_default(),
-            memory_count: row.get(3).unwrap_or(0),
-            key_count: row.get(4).unwrap_or(0),
-            created_at: row.get(5).unwrap_or_default(),
-        });
-    }
-    Ok(result)
+    db.read(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT u.id, u.username, u.role, COALESCE(m.cnt, 0), COALESCE(k.cnt, 0), u.created_at \
+             FROM users u \
+             LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM memories GROUP BY user_id) m ON u.id = m.user_id \
+             LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM api_keys WHERE is_active = 1 GROUP BY user_id) k ON u.id = k.user_id \
+             ORDER BY u.id",
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(TenantRow {
+                    id: row.get(0)?,
+                    username: row.get(1)?,
+                    role: row.get(2)?,
+                    memory_count: row.get(3)?,
+                    key_count: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })
+            .map_err(rusqlite_to_eng_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(rows)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -277,75 +355,75 @@ pub async fn provision_tenant(
     email: Option<&str>,
     role: &str,
 ) -> Result<ProvisionResult> {
-    let is_admin = if role == "admin" { 1 } else { 0 };
-    let mut user_rows = db.conn.query(
-        "INSERT INTO users (username, email, role, is_admin) VALUES (?1, ?2, ?3, ?4) RETURNING id, username",
-        libsql::params![username, email.map(|v| v.to_string()), role, is_admin],
-    ).await?;
-    let user_row = user_rows
-        .next()
-        .await?
-        .ok_or_else(|| crate::EngError::Internal("insert user failed".into()))?;
-    let user_id: i64 = user_row
-        .get(0)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let username: String = user_row
-        .get(1)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
+    let is_admin = if role == "admin" { 1i32 } else { 0i32 };
+    let username_owned = username.to_string();
+    let email_owned = email.map(|v| v.to_string());
+    let role_owned = role.to_string();
 
-    let mut space_rows = db
-        .conn
-        .query(
-            "INSERT INTO spaces (user_id, name, description) VALUES (?1, ?2, ?3) RETURNING id",
-            libsql::params![user_id, "default", Option::<String>::None],
-        )
+    let (user_id, returned_username, space_id) = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO users (username, email, role, is_admin) VALUES (?1, ?2, ?3, ?4)",
+                params![username_owned, email_owned, role_owned, is_admin],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            let user_id = conn.last_insert_rowid();
+            let returned_username: String = conn
+                .query_row(
+                    "SELECT username FROM users WHERE id = ?1",
+                    params![user_id],
+                    |row| row.get(0),
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            conn.execute(
+                "INSERT INTO spaces (user_id, name, description) VALUES (?1, ?2, ?3)",
+                params![user_id, "default", Option::<String>::None],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            let space_id = conn.last_insert_rowid();
+
+            Ok((user_id, returned_username, space_id))
+        })
         .await?;
-    let space_row = space_rows
-        .next()
-        .await?
-        .ok_or_else(|| crate::EngError::Internal("insert default space failed".into()))?;
-    let space_id: i64 = space_row
-        .get(0)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
 
     let scopes = scopes_for_role(role);
     let (_key, raw) = crate::auth::create_key(db, user_id, "default", scopes, None).await?;
     Ok(ProvisionResult {
         user_id,
-        username,
+        username: returned_username,
         api_key: raw,
         space_id,
     })
 }
 
 pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
-    // Revoke all keys
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        // Revoke all keys
+        conn.execute(
             "UPDATE api_keys SET is_active = 0 WHERE user_id = ?1",
-            libsql::params![user_id],
+            params![user_id],
         )
-        .await?;
-    // Delete spaces
-    db.conn
-        .execute(
+        .map_err(rusqlite_to_eng_error)?;
+        // Delete spaces
+        conn.execute(
             "DELETE FROM spaces WHERE user_id = ?1",
-            libsql::params![user_id],
+            params![user_id],
         )
-        .await?;
-    // Soft-delete memories (mark forgotten)
-    db.conn
-        .execute(
+        .map_err(rusqlite_to_eng_error)?;
+        // Soft-delete memories (mark forgotten)
+        conn.execute(
             "UPDATE memories SET is_forgotten = 1 WHERE user_id = ?1",
-            libsql::params![user_id],
+            params![user_id],
         )
-        .await?;
-    // Delete user
-    let affected = db
-        .conn
-        .execute("DELETE FROM users WHERE id = ?1", libsql::params![user_id])
-        .await?;
-    Ok(affected > 0)
+        .map_err(rusqlite_to_eng_error)?;
+        // Delete user
+        let affected = conn
+            .execute("DELETE FROM users WHERE id = ?1", params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(affected > 0)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -353,18 +431,22 @@ pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
 // ---------------------------------------------------------------------------
 
 pub async fn checkpoint(db: &Database) -> Result<serde_json::Value> {
-    db.conn
-        .execute("PRAGMA wal_checkpoint(TRUNCATE)", ())
-        .await?;
+    db.write(|conn| {
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .map_err(rusqlite_to_eng_error)
+    })
+    .await?;
     Ok(serde_json::json!({"status": "ok", "mode": "truncate"}))
 }
 
 pub async fn verify_backup(db: &Database) -> Result<BackupVerifyResult> {
-    let mut rows = db.conn.query("PRAGMA integrity_check", ()).await?;
-    let integrity = match rows.next().await? {
-        Some(row) => row.get::<String>(0).unwrap_or_default(),
-        None => "unknown".to_string(),
-    };
+    let integrity: String = db
+        .read(|conn| {
+            conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))
+                .map_err(rusqlite_to_eng_error)
+        })
+        .await
+        .unwrap_or_else(|_| "unknown".to_string());
     let ok = integrity == "ok";
     Ok(BackupVerifyResult { integrity, ok })
 }
@@ -374,53 +456,72 @@ pub async fn verify_backup(db: &Database) -> Result<BackupVerifyResult> {
 // ---------------------------------------------------------------------------
 
 pub async fn get_state(db: &Database, key: &str) -> Result<Option<StateRow>> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT key, value, updated_at FROM app_state WHERE key = ?1",
-            libsql::params![key],
-        )
-        .await?;
-    match rows.next().await? {
-        Some(row) => Ok(Some(StateRow {
-            key: row.get(0).unwrap_or_default(),
-            value: row.get(1).unwrap_or_default(),
-            updated_at: row.get(2).unwrap_or_default(),
-        })),
-        None => Ok(None),
-    }
+    let key_owned = key.to_string();
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare("SELECT key, value, updated_at FROM app_state WHERE key = ?1")
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(params![key_owned])
+            .map_err(rusqlite_to_eng_error)?;
+        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            Ok(Some(StateRow {
+                key: row.get(0).map_err(rusqlite_to_eng_error)?,
+                value: row.get(1).map_err(rusqlite_to_eng_error)?,
+                updated_at: row.get(2).map_err(rusqlite_to_eng_error)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    })
+    .await
 }
 
 pub async fn upsert_state(db: &Database, key: &str, value: &str) -> Result<()> {
-    db.conn.execute("INSERT INTO app_state (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", libsql::params![key, value]).await?;
-    Ok(())
+    let key_owned = key.to_string();
+    let value_owned = value.to_string();
+    db.write(move |conn| {
+        conn.execute(
+            "INSERT INTO app_state (key, value, updated_at) VALUES (?1, ?2, datetime('now')) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![key_owned, value_owned],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn delete_state(db: &Database, key: &str) -> Result<bool> {
-    let affected = db
-        .conn
-        .execute("DELETE FROM app_state WHERE key = ?1", libsql::params![key])
-        .await?;
-    Ok(affected > 0)
+    let key_owned = key.to_string();
+    db.write(move |conn| {
+        let affected = conn
+            .execute("DELETE FROM app_state WHERE key = ?1", params![key_owned])
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(affected > 0)
+    })
+    .await
 }
 
 pub async fn list_state(db: &Database) -> Result<Vec<StateRow>> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT key, value, updated_at FROM app_state ORDER BY key",
-            (),
-        )
-        .await?;
-    let mut result = Vec::new();
-    while let Some(row) = rows.next().await? {
-        result.push(StateRow {
-            key: row.get(0).unwrap_or_default(),
-            value: row.get(1).unwrap_or_default(),
-            updated_at: row.get(2).unwrap_or_default(),
-        });
-    }
-    Ok(result)
+    db.read(|conn| {
+        let mut stmt = conn
+            .prepare("SELECT key, value, updated_at FROM app_state ORDER BY key")
+            .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(StateRow {
+                    key: row.get(0)?,
+                    value: row.get(1)?,
+                    updated_at: row.get(2)?,
+                })
+            })
+            .map_err(rusqlite_to_eng_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(rows)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -499,23 +600,30 @@ async fn export_table_user(
     sql: &str,
     user_id: i64,
 ) -> Result<Vec<serde_json::Value>> {
-    let mut rows = db.conn.query(sql, libsql::params![user_id]).await?;
-    let mut result = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let mut obj = serde_json::Map::new();
-        for i in 0..20 {
-            match row.get::<String>(i) {
-                Ok(val) => {
-                    obj.insert(format!("col_{}", i), serde_json::Value::String(val));
+    let sql_owned = sql.to_string();
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql_owned).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let mut obj = serde_json::Map::new();
+            for i in 0..20usize {
+                match row.get::<_, String>(i) {
+                    Ok(val) => {
+                        obj.insert(format!("col_{}", i), serde_json::Value::String(val));
+                    }
+                    Err(_) => break,
                 }
-                Err(_) => break,
+            }
+            if !obj.is_empty() {
+                result.push(serde_json::Value::Object(obj));
             }
         }
-        if !obj.is_empty() {
-            result.push(serde_json::Value::Object(obj));
-        }
-    }
-    Ok(result)
+        Ok(result)
+    })
+    .await
 }
 
 pub async fn export_data(db: &Database) -> Result<ExportData> {
@@ -532,24 +640,28 @@ pub async fn export_data(db: &Database) -> Result<ExportData> {
 }
 
 async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>> {
-    let mut rows = db.conn.query(sql, ()).await?;
-    let mut result = Vec::new();
-    while let Some(row) = rows.next().await? {
-        // Build a JSON object from row columns
-        let mut obj = serde_json::Map::new();
-        for i in 0..20 {
-            match row.get::<String>(i) {
-                Ok(val) => {
-                    obj.insert(format!("col_{}", i), serde_json::Value::String(val));
+    let sql_owned = sql.to_string();
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql_owned).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let mut obj = serde_json::Map::new();
+            for i in 0..20usize {
+                match row.get::<_, String>(i) {
+                    Ok(val) => {
+                        obj.insert(format!("col_{}", i), serde_json::Value::String(val));
+                    }
+                    Err(_) => break,
                 }
-                Err(_) => break,
+            }
+            if !obj.is_empty() {
+                result.push(serde_json::Value::Object(obj));
             }
         }
-        if !obj.is_empty() {
-            result.push(serde_json::Value::Object(obj));
-        }
-    }
-    Ok(result)
+        Ok(result)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -562,27 +674,25 @@ async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>
 /// column would leave the live index serving stale vectors and is the
 /// bug pre-round-5 callers hit when swapping models.
 pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
-    let affected = match user_id {
-        Some(uid) => {
-            db.conn
-                .execute(
-                    "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
-                     WHERE user_id = ?1 AND is_forgotten = 0",
-                    libsql::params![uid],
-                )
-                .await?
-        }
-        None => {
-            db.conn
-                .execute(
-                    "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
-                     WHERE is_forgotten = 0",
-                    (),
-                )
-                .await?
-        }
-    };
-    Ok(affected as i64)
+    db.write(move |conn| {
+        let n = if let Some(uid) = user_id {
+            conn.execute(
+                "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
+                 WHERE user_id = ?1 AND is_forgotten = 0",
+                params![uid],
+            )
+            .map_err(rusqlite_to_eng_error)?
+        } else {
+            conn.execute(
+                "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
+                 WHERE is_forgotten = 0",
+                [],
+            )
+            .map_err(rusqlite_to_eng_error)?
+        };
+        Ok(n as i64)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -593,25 +703,25 @@ pub async fn get_memories_without_facts(
     db: &Database,
     limit: i64,
 ) -> Result<Vec<(i64, String, i64)>> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT m.id, m.content, m.user_id FROM memories m \
-         WHERE m.is_forgotten = 0 \
-         AND NOT EXISTS (SELECT 1 FROM structured_facts f WHERE f.memory_id = m.id) \
-         LIMIT ?1",
-            libsql::params![limit],
-        )
-        .await?;
-    let mut result = Vec::new();
-    while let Some(row) = rows.next().await? {
-        result.push((
-            row.get(0).unwrap_or(0),
-            row.get(1).unwrap_or_default(),
-            row.get(2).unwrap_or(0),
-        ));
-    }
-    Ok(result)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.id, m.content, m.user_id FROM memories m \
+                 WHERE m.is_forgotten = 0 \
+                 AND NOT EXISTS (SELECT 1 FROM structured_facts f WHERE f.memory_id = m.id) \
+                 LIMIT ?1",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(rusqlite_to_eng_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(rows)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -619,20 +729,21 @@ pub async fn get_memories_without_facts(
 // ---------------------------------------------------------------------------
 
 pub async fn rebuild_fts(db: &Database) -> Result<i64> {
-    db.conn
-        .execute(
+    db.write(|conn| {
+        conn.execute(
             "INSERT INTO memories_fts(memories_fts) VALUES('rebuild')",
-            (),
+            [],
         )
-        .await?;
-    let mut rows = db
-        .conn
-        .query("SELECT COUNT(*) FROM memories_fts", ())
-        .await?;
-    match rows.next().await? {
-        Some(row) => Ok(row.get(0).unwrap_or(0)),
-        None => Ok(0),
-    }
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await?;
+
+    db.read(|conn| {
+        conn.query_row("SELECT COUNT(*) FROM memories_fts", [], |row| row.get(0))
+            .map_err(rusqlite_to_eng_error)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -660,12 +771,14 @@ pub async fn scale_report(db: &Database) -> Result<serde_json::Value> {
     let mut counts = serde_json::Map::new();
     for table in tables {
         let sql = format!("SELECT COUNT(*) FROM {}", table);
-        match db.conn.query(&sql, ()).await {
-            Ok(mut rows) => {
-                let count: i64 = match rows.next().await {
-                    Ok(Some(row)) => row.get(0).unwrap_or(0),
-                    _ => 0,
-                };
+        let result = db
+            .read(move |conn| {
+                conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
+                    .map_err(rusqlite_to_eng_error)
+            })
+            .await;
+        match result {
+            Ok(count) => {
                 counts.insert(table.to_string(), serde_json::json!(count));
             }
             Err(_) => {
@@ -673,17 +786,18 @@ pub async fn scale_report(db: &Database) -> Result<serde_json::Value> {
             }
         }
     }
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
-            (),
-        )
+
+    let db_size: i64 = db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
-    let db_size: i64 = match rows.next().await? {
-        Some(row) => row.get(0).unwrap_or(0),
-        None => 0,
-    };
+
     Ok(serde_json::json!({ "table_counts": counts, "database_size_bytes": db_size }))
 }
 
@@ -693,19 +807,18 @@ pub async fn scale_report(db: &Database) -> Result<serde_json::Value> {
 
 pub async fn cold_storage_stats(db: &Database, days: i64) -> Result<serde_json::Value> {
     let threshold = format!("-{} days", days);
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT COUNT(*) FROM memories \
-         WHERE is_forgotten = 0 AND is_archived = 0 \
-         AND created_at < datetime('now', ?1)",
-            libsql::params![threshold],
-        )
+    let eligible: i64 = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories \
+                 WHERE is_forgotten = 0 AND is_archived = 0 \
+                 AND created_at < datetime('now', ?1)",
+                params![threshold],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
-    let eligible: i64 = match rows.next().await? {
-        Some(row) => row.get(0).unwrap_or(0),
-        None => 0,
-    };
     Ok(serde_json::json!({ "eligible_count": eligible, "threshold_days": days }))
 }
 
@@ -778,35 +891,42 @@ pub async fn clear_crash_window(db: &Database) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 pub async fn get_stats(db: &Database) -> Result<serde_json::Value> {
-    let mut rows = db
-        .conn
-        .query("SELECT COUNT(*) FROM memories WHERE is_forgotten = 0", ())
+    let memory_count: i64 = db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
-    let memory_count: i64 = match rows.next().await? {
-        Some(r) => r.get(0).unwrap_or(0),
-        None => 0,
-    };
-    let mut rows = db.conn.query("SELECT COUNT(*) FROM users", ()).await?;
-    let user_count: i64 = match rows.next().await? {
-        Some(r) => r.get(0).unwrap_or(0),
-        None => 0,
-    };
-    let mut rows = db
-        .conn
-        .query("SELECT COUNT(*) FROM api_keys WHERE is_active = 1", ())
+
+    let user_count: i64 = db
+        .read(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+                .map_err(rusqlite_to_eng_error)
+        })
         .await?;
-    let key_count: i64 = match rows.next().await? {
-        Some(r) => r.get(0).unwrap_or(0),
-        None => 0,
-    };
-    let mut rows = db
-        .conn
-        .query("SELECT COUNT(*) FROM conversations", ())
+
+    let key_count: i64 = db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM api_keys WHERE is_active = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
-    let conv_count: i64 = match rows.next().await? {
-        Some(r) => r.get(0).unwrap_or(0),
-        None => 0,
-    };
+
+    let conv_count: i64 = db
+        .read(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM conversations", [], |row| row.get(0))
+                .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+
     Ok(serde_json::json!({
         "memories": memory_count,
         "users": user_count,

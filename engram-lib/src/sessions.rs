@@ -2,7 +2,7 @@ pub mod scrub;
 
 use crate::db::Database;
 use crate::Result;
-use libsql::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -27,27 +27,35 @@ pub async fn create_session(
     user_id: i64,
 ) -> Result<SessionInfo> {
     let id = Uuid::new_v4().to_string();
-    db.conn
-        .execute(
+    let agent = req.agent.clone();
+    let id_for_insert = id.clone();
+    db.write(move |conn| {
+        conn.execute(
             "INSERT INTO sessions (id, agent, user_id) VALUES (?1, ?2, ?3)",
-            params![id.clone(), req.agent.clone(), user_id],
+            params![id_for_insert, agent, user_id],
         )
-        .await?;
+        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await?;
 
     // Fetch back the row so timestamps come from the DB (not local clock)
     get_session(db, &id, user_id).await
 }
 
 pub async fn get_session(db: &Database, session_id: &str, user_id: i64) -> Result<SessionInfo> {
-    let mut rows = db.conn.query(
-        "SELECT id, agent, user_id, status, created_at, updated_at FROM sessions WHERE id = ?1 AND user_id = ?2",
-        params![session_id.to_string(), user_id],
-    ).await?;
-    rows.next()
-        .await?
-        .map(|row| row_to_session(&row))
-        .transpose()?
-        .ok_or_else(|| crate::EngError::NotFound(format!("session {} not found", session_id)))
+    let session_id = session_id.to_string();
+    db.read(move |conn| {
+        conn.query_row(
+            "SELECT id, agent, user_id, status, created_at, updated_at FROM sessions WHERE id = ?1 AND user_id = ?2",
+            params![session_id, user_id],
+            |row| row_to_session(row),
+        )
+        .optional()
+        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
+        .ok_or_else(|| crate::EngError::NotFound("session not found".into()))
+    })
+    .await
 }
 
 /// DOS-L4: enforce per-request pagination -- default 50 rows, max 500.
@@ -59,20 +67,23 @@ pub async fn list_sessions(
 ) -> Result<Vec<SessionInfo>> {
     let limit = limit.unwrap_or(50).min(500) as i64;
     let offset = offset.unwrap_or(0) as i64;
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, agent, user_id, status, created_at, updated_at FROM sessions \
-         WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
-            params![user_id, limit, offset],
-        )
-        .await?;
-
-    let mut sessions = Vec::new();
-    while let Some(row) = rows.next().await? {
-        sessions.push(row_to_session(&row)?);
-    }
-    Ok(sessions)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, agent, user_id, status, created_at, updated_at FROM sessions \
+                 WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id, limit, offset], |row| row_to_session(row))
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row.map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?);
+        }
+        Ok(sessions)
+    })
+    .await
 }
 
 pub async fn append_output(
@@ -81,35 +92,54 @@ pub async fn append_output(
     line: &str,
     user_id: i64,
 ) -> Result<()> {
+    let session_id_owned = session_id.to_string();
+    let line_owned = line.to_string();
+
     // Verify session exists and belongs to user
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id FROM sessions WHERE id = ?1 AND user_id = ?2",
-            params![session_id.to_string(), user_id],
-        )
+    let sid_check = session_id_owned.clone();
+    let exists = db
+        .read(move |conn| {
+            let result = conn
+                .query_row(
+                    "SELECT id FROM sessions WHERE id = ?1 AND user_id = ?2",
+                    params![sid_check, user_id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            Ok(result.is_some())
+        })
         .await?;
-    if rows.next().await?.is_none() {
+
+    if !exists {
         return Err(crate::EngError::NotFound(format!(
             "session {} not found",
-            session_id
+            session_id_owned
         )));
     }
 
-    db.conn
-        .execute(
+    let sid_insert = session_id_owned.clone();
+    db.write(move |conn| {
+        conn.execute(
             "INSERT INTO session_output (session_id, line) VALUES (?1, ?2)",
-            params![session_id.to_string(), line.to_string()],
+            params![sid_insert, line_owned],
         )
-        .await?;
+        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await?;
 
     // Update session updated_at
-    db.conn
-        .execute(
+    let sid_update = session_id_owned.clone();
+    db.write(move |conn| {
+        conn.execute(
             "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1",
-            params![session_id.to_string()],
+            params![sid_update],
         )
-        .await?;
+        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await?;
 
     Ok(())
 }
@@ -119,37 +149,51 @@ pub async fn get_session_output(
     session_id: &str,
     user_id: i64,
 ) -> Result<Vec<String>> {
+    let session_id_owned = session_id.to_string();
+
     // Verify ownership
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id FROM sessions WHERE id = ?1 AND user_id = ?2",
-            params![session_id.to_string(), user_id],
-        )
+    let sid_check = session_id_owned.clone();
+    let exists = db
+        .read(move |conn| {
+            let result = conn
+                .query_row(
+                    "SELECT id FROM sessions WHERE id = ?1 AND user_id = ?2",
+                    params![sid_check, user_id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            Ok(result.is_some())
+        })
         .await?;
-    if rows.next().await?.is_none() {
+
+    if !exists {
         return Err(crate::EngError::NotFound(format!(
             "session {} not found",
-            session_id
+            session_id_owned
         )));
     }
 
-    let mut lines_rows = db
-        .conn
-        .query(
-            "SELECT line FROM session_output WHERE session_id = ?1 ORDER BY id ASC LIMIT 10000",
-            params![session_id.to_string()],
-        )
-        .await?;
-
-    let mut lines = Vec::new();
-    while let Some(row) = lines_rows.next().await? {
-        lines.push(row.get::<String>(0)?);
-    }
-    Ok(lines)
+    let sid_query = session_id_owned.clone();
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT line FROM session_output WHERE session_id = ?1 ORDER BY id ASC LIMIT 10000",
+            )
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![sid_query], |row| row.get::<_, String>(0))
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        let mut lines = Vec::new();
+        for row in rows {
+            lines.push(row.map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?);
+        }
+        Ok(lines)
+    })
+    .await
 }
 
-fn row_to_session(row: &libsql::Row) -> Result<SessionInfo> {
+fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionInfo> {
     Ok(SessionInfo {
         id: row.get(0)?,
         agent: row.get(1)?,

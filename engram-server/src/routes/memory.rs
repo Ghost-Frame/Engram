@@ -4,6 +4,7 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use rusqlite::params;
 use kleos_lib::memory::{
     self,
     search::hybrid_search,
@@ -509,15 +510,17 @@ async fn synthesize_profile(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
+    let uid = auth.user_id;
     state
         .db
-        .conn
-        .execute(
-            "DELETE FROM personality_signals WHERE user_id = ?1 AND memory_id IS NOT NULL",
-            libsql::params![auth.user_id],
-        )
-        .await
-        .map_err(kleos_lib::EngError::Database)?;
+        .write(move |conn| {
+            conn.execute(
+                "DELETE FROM personality_signals WHERE user_id = ?1 AND memory_id IS NOT NULL",
+                params![uid],
+            )?;
+            Ok(())
+        })
+        .await?;
 
     let memories = memory::list(
         &state.db,

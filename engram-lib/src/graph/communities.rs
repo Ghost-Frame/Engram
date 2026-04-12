@@ -3,10 +3,14 @@
 // ============================================================================
 
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::info;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 fn edge_weight(link_type: &str, similarity: f64) -> f64 {
     let tw = match link_type {
@@ -53,15 +57,25 @@ pub async fn detect_communities(
     const MAX_ITERATIONS: u32 = 100;
     let max_iterations = max_iterations.clamp(1, MAX_ITERATIONS);
 
-    let conn = db.connection();
-    let mut mem_rows = conn.query(
-        "SELECT id FROM memories WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-         ORDER BY importance DESC, id DESC LIMIT ?2",
-        libsql::params![user_id, MAX_NODES]).await?;
-    let mut memory_ids: Vec<i64> = Vec::new();
-    while let Some(row) = mem_rows.next().await? {
-        memory_ids.push(row.get(0)?);
-    }
+    // --- Load memory ids ---
+    let memory_ids: Vec<i64> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id FROM memories \
+                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                     ORDER BY importance DESC, id DESC LIMIT ?2",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let ids = stmt
+                .query_map(rusqlite::params![user_id, MAX_NODES], |row| row.get(0))
+                .map_err(rusqlite_to_eng_error)?
+                .collect::<std::result::Result<Vec<i64>, _>>()
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(ids)
+        })
+        .await?;
+
     if memory_ids.is_empty() {
         return Ok(CommunitiesResult {
             communities: 0,
@@ -69,17 +83,41 @@ pub async fn detect_communities(
         });
     }
 
-    let mut edge_rows = conn
-        .query(
-            "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
-         FROM memory_links ml \
-         JOIN memories ms ON ms.id = ml.source_id \
-         JOIN memories mt ON mt.id = ml.target_id \
-         WHERE ms.user_id = ?1 AND mt.user_id = ?1 \
-           AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
-           AND ms.is_archived = 0 AND mt.is_archived = 0",
-            libsql::params![user_id],
-        )
+    // --- Load edges ---
+    struct EdgeRow {
+        source_id: i64,
+        target_id: i64,
+        similarity: f64,
+        link_type: String,
+    }
+
+    let edges: Vec<EdgeRow> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
+                     FROM memory_links ml \
+                     JOIN memories ms ON ms.id = ml.source_id \
+                     JOIN memories mt ON mt.id = ml.target_id \
+                     WHERE ms.user_id = ?1 AND mt.user_id = ?1 \
+                       AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
+                       AND ms.is_archived = 0 AND mt.is_archived = 0",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(rusqlite::params![user_id], |row| {
+                    Ok(EdgeRow {
+                        source_id: row.get(0)?,
+                        target_id: row.get(1)?,
+                        similarity: row.get(2)?,
+                        link_type: row.get(3)?,
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(rows)
+        })
         .await?;
 
     let mem_set: std::collections::HashSet<i64> = memory_ids.iter().copied().collect();
@@ -87,23 +125,19 @@ pub async fn detect_communities(
     for &id in &memory_ids {
         adj.insert(id, HashMap::new());
     }
-    while let Some(row) = edge_rows.next().await? {
-        let source_id: i64 = row.get(0)?;
-        let target_id: i64 = row.get(1)?;
-        let similarity: f64 = row.get(2)?;
-        let link_type: String = row.get(3)?;
-        if !mem_set.contains(&source_id) || !mem_set.contains(&target_id) {
+    for edge in edges {
+        if !mem_set.contains(&edge.source_id) || !mem_set.contains(&edge.target_id) {
             continue;
         }
-        let w = edge_weight(&link_type, similarity);
-        adj.entry(source_id)
+        let w = edge_weight(&edge.link_type, edge.similarity);
+        adj.entry(edge.source_id)
             .or_default()
-            .entry(target_id)
+            .entry(edge.target_id)
             .and_modify(|e| *e += w)
             .or_insert(w);
-        adj.entry(target_id)
+        adj.entry(edge.target_id)
             .or_default()
-            .entry(source_id)
+            .entry(edge.source_id)
             .and_modify(|e| *e += w)
             .or_insert(w);
     }
@@ -112,24 +146,21 @@ pub async fn detect_communities(
         .iter()
         .flat_map(|(k, vs)| vs.iter().filter(move |(v, _)| **v > *k).map(|(_, w)| w))
         .sum();
+
     if m == 0.0 {
-        // Wrap batch UPDATEs in transaction for atomicity (S1-5/S1-6 fix).
-        conn.execute("BEGIN IMMEDIATE", ()).await?;
-        let update_result: crate::Result<()> = async {
-            for (idx, &id) in memory_ids.iter().enumerate() {
-                conn.execute(
+        // No edges -- assign each memory its own community.
+        let ids_clone = memory_ids.clone();
+        db.transaction(move |tx| {
+            for (idx, &id) in ids_clone.iter().enumerate() {
+                tx.execute(
                     "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
-                    libsql::params![idx as i64, id, user_id],
+                    rusqlite::params![idx as i64, id, user_id],
                 )
-                .await?;
+                .map_err(rusqlite_to_eng_error)?;
             }
             Ok(())
-        }.await;
-        if update_result.is_err() {
-            let _ = conn.execute("ROLLBACK", ()).await;
-            return Err(update_result.unwrap_err());
-        }
-        conn.execute("COMMIT", ()).await?;
+        })
+        .await?;
 
         return Ok(CommunitiesResult {
             communities: memory_ids.len(),
@@ -206,24 +237,24 @@ pub async fn detect_communities(
             next_community += 1;
         }
     }
-    // Wrap batch UPDATEs in transaction for atomicity (S1-5/S1-6 fix).
-    conn.execute("BEGIN IMMEDIATE", ()).await?;
-    let update_result: crate::Result<()> = async {
-        for (&node_id, &comm) in &community {
-            let cid = label_map.get(&comm).copied().unwrap_or(0);
-            conn.execute(
+
+    // Collect (node_id, community_label) pairs to move into the closure.
+    let updates: Vec<(i64, i64)> = community
+        .iter()
+        .map(|(&node_id, &comm)| (node_id, label_map.get(&comm).copied().unwrap_or(0)))
+        .collect();
+
+    db.transaction(move |tx| {
+        for (node_id, cid) in &updates {
+            tx.execute(
                 "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
-                libsql::params![cid, node_id, user_id],
+                rusqlite::params![cid, node_id, user_id],
             )
-            .await?;
+            .map_err(rusqlite_to_eng_error)?;
         }
         Ok(())
-    }.await;
-    if update_result.is_err() {
-        let _ = conn.execute("ROLLBACK", ()).await;
-        return Err(update_result.unwrap_err());
-    }
-    conn.execute("COMMIT", ()).await?;
+    })
+    .await?;
 
     let num_communities = label_map.len();
     let mut comm_sizes: HashMap<i64, usize> = HashMap::new();
@@ -254,44 +285,58 @@ pub async fn get_community_members(
     user_id: i64,
     limit: usize,
 ) -> Result<Vec<CommunityMember>> {
-    let conn = db.connection();
-    let mut rows = conn
-        .query(
-            "SELECT id, content, category, importance, created_at FROM memories \
-         WHERE community_id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_archived = 0 \
-         ORDER BY importance DESC, created_at DESC LIMIT ?3",
-            libsql::params![community_id, user_id, limit as i64],
-        )
-        .await?;
-    let mut members = Vec::new();
-    while let Some(row) = rows.next().await? {
-        members.push(CommunityMember {
-            id: row.get(0)?,
-            content: row.get(1)?,
-            category: row.get(2)?,
-            importance: row.get(3)?,
-            created_at: row.get(4)?,
-        });
-    }
-    Ok(members)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, content, category, importance, created_at FROM memories \
+                 WHERE community_id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_archived = 0 \
+                 ORDER BY importance DESC, created_at DESC LIMIT ?3",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let members = stmt
+            .query_map(
+                rusqlite::params![community_id, user_id, limit as i64],
+                |row| {
+                    Ok(CommunityMember {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .map_err(rusqlite_to_eng_error)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(members)
+    })
+    .await
 }
 
 pub async fn get_community_stats(db: &Database, user_id: i64) -> Result<Vec<CommunityStats>> {
-    let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT community_id, COUNT(*) as count, ROUND(AVG(importance), 1) as avg_importance, \
-         GROUP_CONCAT(DISTINCT category) as categories \
-         FROM memories WHERE user_id = ?1 AND community_id IS NOT NULL AND is_forgotten = 0 AND is_archived = 0 \
-         GROUP BY community_id ORDER BY count DESC LIMIT 50",
-        libsql::params![user_id]).await?;
-    let mut stats = Vec::new();
-    while let Some(row) = rows.next().await? {
-        stats.push(CommunityStats {
-            community_id: row.get(0)?,
-            count: row.get(1)?,
-            avg_importance: row.get::<f64>(2).unwrap_or(0.0),
-            categories: row.get::<String>(3).unwrap_or_default(),
-        });
-    }
-    Ok(stats)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT community_id, COUNT(*) as count, ROUND(AVG(importance), 1) as avg_importance, \
+                 GROUP_CONCAT(DISTINCT category) as categories \
+                 FROM memories WHERE user_id = ?1 AND community_id IS NOT NULL AND is_forgotten = 0 AND is_archived = 0 \
+                 GROUP BY community_id ORDER BY count DESC LIMIT 50",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let stats = stmt
+            .query_map(rusqlite::params![user_id], |row| {
+                Ok(CommunityStats {
+                    community_id: row.get(0)?,
+                    count: row.get(1)?,
+                    avg_importance: row.get::<_, f64>(2).unwrap_or(0.0),
+                    categories: row.get::<_, String>(3).unwrap_or_default(),
+                })
+            })
+            .map_err(rusqlite_to_eng_error)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(stats)
+    })
+    .await
 }

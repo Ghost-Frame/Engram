@@ -1,7 +1,7 @@
 use super::{row_to_skill, Skill, SKILL_COLUMNS};
 use crate::db::Database;
-use crate::Result;
-use libsql::params;
+use crate::{EngError, Result};
+use rusqlite::params;
 
 /// Search skills using FTS.
 pub async fn search_skills(
@@ -10,8 +10,6 @@ pub async fn search_skills(
     user_id: i64,
     limit: usize,
 ) -> Result<Vec<Skill>> {
-    let conn = db.connection();
-
     // Sanitize query for FTS5
     let sanitized: String = query
         .chars()
@@ -41,12 +39,18 @@ pub async fn search_skills(
         SKILL_COLUMNS
     );
 
-    let mut rows = conn
-        .query(&sql, params![sanitized, user_id, limit as i64])
-        .await?;
-    let mut skills = Vec::new();
-    while let Some(row) = rows.next().await? {
-        skills.push(row_to_skill(&row)?);
-    }
-    Ok(skills)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let skills = stmt
+            .query_map(params![sanitized, user_id, limit as i64], |row| {
+                row_to_skill(row)
+            })
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        Ok(skills)
+    })
+    .await
 }

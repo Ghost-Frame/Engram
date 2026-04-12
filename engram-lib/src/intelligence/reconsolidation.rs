@@ -6,8 +6,12 @@
 
 use crate::db::Database;
 use crate::intelligence::types::{ReconsolidationAction, ReconsolidationResult};
-use crate::Result;
+use crate::{EngError, Result};
 use tracing::{info, warn};
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 /// Re-evaluate a single memory against current knowledge.
 ///
@@ -21,57 +25,79 @@ pub async fn reconsolidate_memory(
     memory_id: i64,
     user_id: i64,
 ) -> Result<ReconsolidationResult> {
-    let conn = db.connection();
-
     // Fetch the memory - MUST belong to caller
-    let mut rows = conn
-        .query(
-            "SELECT id, importance, confidence, is_static, access_count, \
-                    recall_hits, recall_misses, fsrs_stability, created_at \
-             FROM memories WHERE id = ?1 AND user_id = ?2",
-            libsql::params![memory_id, user_id],
-        )
+    let row_opt = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, importance, confidence, is_static, access_count, \
+                            recall_hits, recall_misses, fsrs_stability, created_at \
+                     FROM memories WHERE id = ?1 AND user_id = ?2",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(rusqlite::params![memory_id, user_id])
+                .map_err(rusqlite_to_eng_error)?;
+            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                let importance: i32 = row.get(1).map_err(rusqlite_to_eng_error)?;
+                let confidence: f64 = row.get(2).map_err(rusqlite_to_eng_error)?;
+                let is_static: bool = row
+                    .get::<_, i64>(3)
+                    .map_err(rusqlite_to_eng_error)
+                    .map(|v| v != 0)?;
+                let access_count: i32 = row.get(4).map_err(rusqlite_to_eng_error)?;
+                let recall_hits: i32 = row.get(5).map_err(rusqlite_to_eng_error)?;
+                let recall_misses: i32 = row.get(6).map_err(rusqlite_to_eng_error)?;
+                let fsrs_stability: Option<f64> = row.get(7).map_err(rusqlite_to_eng_error)?;
+                let created_at: String = row.get(8).map_err(rusqlite_to_eng_error)?;
+                Ok(Some((
+                    importance,
+                    confidence,
+                    is_static,
+                    access_count,
+                    recall_hits,
+                    recall_misses,
+                    fsrs_stability,
+                    created_at,
+                )))
+            } else {
+                Ok(None)
+            }
+        })
         .await?;
 
-    let row = match rows.next().await? {
-        Some(r) => r,
-        None => {
-            return Err(crate::EngError::NotFound(format!(
-                "memory {} not found",
-                memory_id
-            )));
-        }
-    };
-
-    let importance: i32 = row.get(1)?;
-    let confidence: f64 = row.get(2)?;
-    let is_static: bool = row.get::<i64>(3).map(|v| v != 0)?;
-    let access_count: i32 = row.get(4)?;
-    let recall_hits: i32 = row.get(5)?;
-    let recall_misses: i32 = row.get(6)?;
-    let fsrs_stability: Option<f64> = row.get(7)?;
-    let created_at: String = row.get(8)?;
+    let (importance, confidence, is_static, access_count, recall_hits, recall_misses, fsrs_stability, created_at) =
+        match row_opt {
+            Some(r) => r,
+            None => {
+                return Err(crate::EngError::NotFound(format!(
+                    "memory {} not found",
+                    memory_id
+                )));
+            }
+        };
 
     let mut new_importance = importance;
     let mut new_confidence = confidence;
     let mut reason = String::new();
 
     // Check 1: Contradictions -- newer memories that supersede this one
-    let mut contra_rows = conn
-        .query(
-            "SELECT COUNT(*) FROM memory_links \
-             WHERE target_id = ?1 AND type IN ('corrects', 'updates', 'contradicts')",
-            libsql::params![memory_id],
-        )
+    let contra_count = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memory_links \
+                 WHERE target_id = ?1 AND type IN ('corrects', 'updates', 'contradicts')",
+                rusqlite::params![memory_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
 
-    if let Some(row) = contra_rows.next().await? {
-        let contra_count: i64 = row.get(0)?;
-        if contra_count > 0 {
-            new_confidence = (new_confidence * 0.5).max(0.1);
-            new_importance = (new_importance - 2).max(1);
-            reason.push_str(&format!("Superseded by {} newer memories. ", contra_count));
-        }
+    if contra_count > 0 {
+        new_confidence = (new_confidence * 0.5).max(0.1);
+        new_importance = (new_importance - 2).max(1);
+        reason.push_str(&format!("Superseded by {} newer memories. ", contra_count));
     }
 
     // Check 2: Access patterns -- adaptive importance
@@ -106,7 +132,8 @@ pub async fn reconsolidate_memory(
     // Parse created_at and compute age in days
     if !is_static && access_count < 3 {
         // Rough age check: if created_at is more than 30 days ago
-        if let Ok(created) = chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S")
+        if let Ok(created) =
+            chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S")
         {
             let now = chrono::Utc::now().naive_utc();
             let age_days = (now - created).num_days();
@@ -130,41 +157,48 @@ pub async fn reconsolidate_memory(
 
     // Apply changes if any
     if action != ReconsolidationAction::Unchanged {
-        conn.execute(
-            "UPDATE memories SET importance = ?1, confidence = ?2, updated_at = datetime('now') \
-             WHERE id = ?3 AND user_id = ?4",
-            libsql::params![new_importance, new_confidence, memory_id, user_id],
-        )
-        .await?;
-
-        // Update adaptive score
         let adaptive_score = if total_recalls > 0 {
             recall_hits as f64 / total_recalls as f64
         } else {
             0.5
         };
-        conn.execute(
-            "UPDATE memories SET adaptive_score = ?1 WHERE id = ?2 AND user_id = ?3",
-            libsql::params![adaptive_score, memory_id, user_id],
-        )
-        .await?;
+        let reason_trimmed = reason.trim().to_string();
+        let old_label = format!("importance:{}, confidence:{:.2}", importance, confidence);
+        let new_label = format!(
+            "importance:{}, confidence:{:.2}",
+            new_importance, new_confidence
+        );
 
-        // Record reconsolidation
-        conn.execute(
-            "INSERT INTO reconsolidations \
-             (memory_id, old_content, new_content, reason, user_id, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
-            libsql::params![
-                memory_id,
-                format!("importance:{}, confidence:{:.2}", importance, confidence),
-                format!(
-                    "importance:{}, confidence:{:.2}",
-                    new_importance, new_confidence
-                ),
-                reason.trim().to_string(),
-                user_id
-            ],
-        )
+        db.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET importance = ?1, confidence = ?2, updated_at = datetime('now') \
+                 WHERE id = ?3 AND user_id = ?4",
+                rusqlite::params![new_importance, new_confidence, memory_id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+            conn.execute(
+                "UPDATE memories SET adaptive_score = ?1 WHERE id = ?2 AND user_id = ?3",
+                rusqlite::params![adaptive_score, memory_id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+            conn.execute(
+                "INSERT INTO reconsolidations \
+                 (memory_id, old_content, new_content, reason, user_id, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+                rusqlite::params![
+                    memory_id,
+                    old_label,
+                    new_label,
+                    reason_trimmed,
+                    user_id
+                ],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+            Ok(())
+        })
         .await?;
 
         info!(
@@ -198,25 +232,29 @@ pub async fn run_reconsolidation_sweep(
     user_id: i64,
     batch_size: usize,
 ) -> Result<Vec<ReconsolidationResult>> {
-    let conn = db.connection();
-
     // Find candidates: old memories with low access, or memories with recall data
-    let mut rows = conn
-        .query(
-            "SELECT id FROM memories \
-             WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 \
-               AND (recall_hits + recall_misses > 0 \
-                    OR (access_count < 3 AND created_at < datetime('now', '-7 days'))) \
-             ORDER BY updated_at ASC \
-             LIMIT ?2",
-            libsql::params![user_id, batch_size as i64],
-        )
+    let candidate_ids: Vec<i64> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id FROM memories \
+                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 \
+                       AND (recall_hits + recall_misses > 0 \
+                            OR (access_count < 3 AND created_at < datetime('now', '-7 days'))) \
+                     ORDER BY updated_at ASC \
+                     LIMIT ?2",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(rusqlite::params![user_id, batch_size as i64])
+                .map_err(rusqlite_to_eng_error)?;
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                ids.push(row.get::<_, i64>(0).map_err(rusqlite_to_eng_error)?);
+            }
+            Ok(ids)
+        })
         .await?;
-
-    let mut candidate_ids: Vec<i64> = Vec::new();
-    while let Some(row) = rows.next().await? {
-        candidate_ids.push(row.get(0)?);
-    }
 
     let mut results = Vec::new();
     let candidate_count = candidate_ids.len();
@@ -252,21 +290,24 @@ pub async fn record_recall_outcome(
     user_id: i64,
     useful: bool,
 ) -> Result<()> {
-    let conn = db.connection();
-
-    let affected = if useful {
-        conn.execute(
-            "UPDATE memories SET recall_hits = recall_hits + 1 WHERE id = ?1 AND user_id = ?2",
-            libsql::params![memory_id, user_id],
-        )
-        .await?
-    } else {
-        conn.execute(
-            "UPDATE memories SET recall_misses = recall_misses + 1 WHERE id = ?1 AND user_id = ?2",
-            libsql::params![memory_id, user_id],
-        )
-        .await?
-    };
+    let affected = db
+        .write(move |conn| {
+            let n = if useful {
+                conn.execute(
+                    "UPDATE memories SET recall_hits = recall_hits + 1 WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![memory_id, user_id],
+                )
+                .map_err(rusqlite_to_eng_error)?
+            } else {
+                conn.execute(
+                    "UPDATE memories SET recall_misses = recall_misses + 1 WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![memory_id, user_id],
+                )
+                .map_err(rusqlite_to_eng_error)?
+            };
+            Ok(n)
+        })
+        .await?;
 
     if affected == 0 {
         return Err(crate::EngError::NotFound(format!(

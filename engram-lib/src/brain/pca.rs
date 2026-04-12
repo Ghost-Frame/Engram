@@ -208,6 +208,10 @@ pub fn l2_normalize(v: &[f32]) -> Vec<f32> {
 // Persistence
 // ---------------------------------------------------------------------------
 
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
 /// Stored PCA model metadata.
 #[derive(Debug, Clone)]
 pub struct PcaModelRow {
@@ -228,22 +232,17 @@ pub async fn store_pca_model(
     let blob = serde_json::to_vec(transform).map_err(|e| EngError::Internal(e.to_string()))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "INSERT INTO brain_pca_models (source_dim, target_dim, fit_at, model_blob)
              VALUES (?1, ?2, ?3, ?4)",
-            libsql::params![source_dim as i64, target_dim as i64, now, blob],
+            rusqlite::params![source_dim as i64, target_dim as i64, now, blob],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
 
-    let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-
-    let id: i64 = match rows.next().await? {
-        Some(row) => row.get(0)?,
-        None => 0,
-    };
-
-    Ok(id)
+        Ok(conn.last_insert_rowid())
+    })
+    .await
 }
 
 /// Load the most recent PCA model for given dimensions.
@@ -252,42 +251,49 @@ pub async fn load_pca_model(
     source_dim: usize,
     target_dim: usize,
 ) -> Result<Option<PcaTransform>> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT model_blob FROM brain_pca_models
-             WHERE source_dim = ?1 AND target_dim = ?2
-             ORDER BY fit_at DESC LIMIT 1",
-            libsql::params![source_dim as i64, target_dim as i64],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT model_blob FROM brain_pca_models
+                 WHERE source_dim = ?1 AND target_dim = ?2
+                 ORDER BY fit_at DESC LIMIT 1",
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    match rows.next().await? {
-        Some(row) => {
-            let blob: Vec<u8> = row.get(0)?;
-            let transform: PcaTransform =
-                serde_json::from_slice(&blob).map_err(|e| EngError::Internal(e.to_string()))?;
-            Ok(Some(transform))
+        let mut rows = stmt
+            .query(rusqlite::params![source_dim as i64, target_dim as i64])
+            .map_err(rusqlite_to_eng_error)?;
+
+        match rows.next().map_err(rusqlite_to_eng_error)? {
+            Some(row) => {
+                let blob: Vec<u8> = row.get(0).map_err(rusqlite_to_eng_error)?;
+                let transform: PcaTransform = serde_json::from_slice(&blob)
+                    .map_err(|e| EngError::Internal(e.to_string()))?;
+                Ok(Some(transform))
+            }
+            None => Ok(None),
         }
-        None => Ok(None),
-    }
+    })
+    .await
 }
 
 /// Delete old PCA models, keeping only the most recent per (source_dim, target_dim).
 pub async fn cleanup_old_models(db: &Database) -> Result<usize> {
-    let affected = db
-        .conn
-        .execute(
-            "DELETE FROM brain_pca_models
-             WHERE id NOT IN (
-                 SELECT MAX(id) FROM brain_pca_models
-                 GROUP BY source_dim, target_dim
-             )",
-            (),
-        )
-        .await?;
+    db.write(move |conn| {
+        let affected = conn
+            .execute(
+                "DELETE FROM brain_pca_models
+                 WHERE id NOT IN (
+                     SELECT MAX(id) FROM brain_pca_models
+                     GROUP BY source_dim, target_dim
+                 )",
+                [],
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    Ok(affected as usize)
+        Ok(affected)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------

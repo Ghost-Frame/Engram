@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use rusqlite::params;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
@@ -96,19 +97,14 @@ pub fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 
 async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
-    let mut rows = state
+    let sql = sql.to_string();
+    state
         .db
-        .conn
-        .query(sql, ())
+        .read(move |conn| {
+            conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
         .await
-        .map_err(kleos_lib::EngError::Database)?;
-    let row = rows
-        .next()
-        .await
-        .map_err(kleos_lib::EngError::Database)?
-        .ok_or_else(|| kleos_lib::EngError::Internal("missing stats row".into()))?;
-    row.get(0)
-        .map_err(kleos_lib::EngError::Database)
         .map_err(AppError)
 }
 
@@ -237,14 +233,16 @@ async fn bootstrap(
     // arriving in the same microsecond cannot both mint an admin key.
     let changes = state
         .db
-        .conn
-        .execute(
-            "INSERT OR IGNORE INTO app_state (key, value, updated_at) \
-             VALUES ('bootstrap_claimed', datetime('now'), datetime('now'))",
-            (),
-        )
+        .write(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO app_state (key, value, updated_at) \
+                 VALUES ('bootstrap_claimed', datetime('now'), datetime('now'))",
+                [],
+            )
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
         .await
-        .map_err(|e| AppError(kleos_lib::EngError::Database(e)))?;
+        .map_err(|e| AppError(e))?;
 
     if changes == 0 {
         return Ok((
@@ -270,14 +268,16 @@ async fn bootstrap(
     // has a real FK target. INSERT OR IGNORE is idempotent.
     state
         .db
-        .conn
-        .execute(
-            "INSERT OR IGNORE INTO users (id, username, role, is_admin) \
-             VALUES (1, 'operator', 'admin', 1)",
-            (),
-        )
+        .write(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, username, role, is_admin) \
+                 VALUES (1, 'operator', 'admin', 1)",
+                [],
+            )
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
         .await
-        .map_err(|e| AppError(kleos_lib::EngError::Database(e)))?;
+        .map_err(|e| AppError(e))?;
 
     let scopes = vec![Scope::Read, Scope::Write, Scope::Admin];
     let (key, raw_key) = create_key(&state.db, 1, "admin", scopes, None).await?;
@@ -558,7 +558,7 @@ async fn admin_tasks(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let stats = kleos_lib::jobs::get_job_stats(&state.db.conn).await?;
+    let stats = kleos_lib::jobs::get_job_stats(&state.db).await?;
     to_json(stats)
 }
 
@@ -858,12 +858,15 @@ async fn backup_handler(
             "backup path contains a single quote".into(),
         )));
     }
+    let vacuum_sql = format!("VACUUM INTO '{}'", tmp);
     state
         .db
-        .conn
-        .execute(&format!("VACUUM INTO '{}'", tmp), ())
+        .write(move |conn| {
+            conn.execute(&vacuum_sql, [])
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
         .await
-        .map_err(kleos_lib::EngError::Database)?;
+        .map_err(AppError)?;
     let bytes = tokio::fs::read(&tmp)
         .await
         .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?;
@@ -910,12 +913,15 @@ async fn reset_user(
     ];
     let mut total = 0i64;
     for sql in tables {
+        let sql_owned = sql.to_string();
         total += state
             .db
-            .conn
-            .execute(sql, libsql::params![uid])
+            .write(move |conn| {
+                conn.execute(&sql_owned, params![uid])
+                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            })
             .await
-            .map_err(kleos_lib::EngError::Database)? as i64;
+            .map_err(AppError)? as i64;
     }
     Ok(Json(json!({ "deleted_rows": total, "user_id": uid })))
 }

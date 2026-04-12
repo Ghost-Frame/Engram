@@ -11,7 +11,12 @@
 
 use crate::db::Database;
 use crate::ingestion::types::{Chunk, ProcessOptions, ProcessResult};
+use crate::EngError;
 use uuid::Uuid;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 /// Process chunks by storing each as a raw memory.
 pub async fn process(db: &Database, chunks: &[Chunk], options: &ProcessOptions) -> ProcessResult {
@@ -26,23 +31,33 @@ pub async fn process(db: &Database, chunks: &[Chunk], options: &ProcessOptions) 
         }
 
         let sync_id = Uuid::new_v4().to_string();
+        let content_owned = content.to_string();
+        let category = options.category.clone();
+        let source = options.source.clone();
+        let user_id = options.user_id;
+        let space_id = options.space_id.clone();
+        let episode_id = options.episode_id.clone();
+        let chunk_index = chunk.index;
 
         match db
-            .conn
-            .execute(
-                "INSERT INTO memories (content, category, source, importance, user_id, space_id, \
-                 episode_id, sync_id, confidence, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, 5, ?4, ?5, ?6, ?7, 1.0, datetime('now'), datetime('now'))",
-                libsql::params![
-                    content.to_string(),
-                    options.category.clone(),
-                    options.source.clone(),
-                    options.user_id,
-                    options.space_id,
-                    options.episode_id,
-                    sync_id
-                ],
-            )
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO memories (content, category, source, importance, user_id, space_id, \
+                     episode_id, sync_id, confidence, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, 5, ?4, ?5, ?6, ?7, 1.0, datetime('now'), datetime('now'))",
+                    rusqlite::params![
+                        content_owned,
+                        category,
+                        source,
+                        user_id,
+                        space_id,
+                        episode_id,
+                        sync_id
+                    ],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                Ok(())
+            })
             .await
         {
             Ok(_) => {
@@ -52,7 +67,7 @@ pub async fn process(db: &Database, chunks: &[Chunk], options: &ProcessOptions) 
                 // TODO: Enqueue post_store job for FSRS init, entity linking, etc.
             }
             Err(e) => {
-                errors.push(format!("Chunk {}: insert failed: {}", chunk.index, e));
+                errors.push(format!("Chunk {}: insert failed: {}", chunk_index, e));
             }
         }
     }

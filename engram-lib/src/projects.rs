@@ -3,7 +3,8 @@
 //! Ports: projects/db.ts, projects/types.ts, projects/routes.ts (logic)
 
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 pub const VALID_PROJECT_STATUSES: &[&str] = &["active", "paused", "completed", "archived"];
@@ -37,6 +38,10 @@ pub struct UpdateProjectBody {
     pub metadata: Option<serde_json::Value>,
 }
 
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
 pub async fn create_project(
     db: &Database,
     name: &str,
@@ -45,32 +50,48 @@ pub async fn create_project(
     metadata: Option<&str>,
     user_id: i64,
 ) -> Result<(i64, String)> {
-    let mut rows = db.conn.query(
-        "INSERT INTO projects (name, description, status, metadata, user_id) VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id, created_at",
-        libsql::params![name.to_string(), description.map(|s| s.to_string()), status.to_string(), metadata.map(|s| s.to_string()), user_id],
-    ).await?;
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| crate::EngError::Internal("insert project failed".into()))?;
-    let id: i64 = row
-        .get(0)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let created_at: String = row
-        .get(1)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    Ok((id, created_at))
+    let name = name.to_string();
+    let description = description.map(|s| s.to_string());
+    let status = status.to_string();
+    let metadata = metadata.map(|s| s.to_string());
+
+    db.write(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO projects (name, description, status, metadata, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id, created_at",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let (id, created_at) = stmt
+            .query_row(
+                rusqlite::params![name, description, status, metadata, user_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(|e| EngError::Internal(e.to_string()))?;
+        Ok((id, created_at))
+    })
+    .await
 }
 
 pub async fn get_project(db: &Database, id: i64, user_id: i64) -> Result<Option<ProjectRow>> {
-    let mut rows = db.conn.query(
-        "SELECT p.id, p.name, p.description, p.status, p.metadata, p.user_id, p.created_at, p.updated_at, (SELECT COUNT(*) FROM memory_projects WHERE project_id = p.id) as memory_count FROM projects p WHERE p.id = ?1 AND p.user_id = ?2",
-        libsql::params![id, user_id],
-    ).await?;
-    match rows.next().await? {
-        Some(row) => Ok(Some(row_to_project(&row)?)),
-        None => Ok(None),
-    }
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.id, p.name, p.description, p.status, p.metadata, p.user_id, \
+                 p.created_at, p.updated_at, \
+                 (SELECT COUNT(*) FROM memory_projects WHERE project_id = p.id) as memory_count \
+                 FROM projects p WHERE p.id = ?1 AND p.user_id = ?2",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        match rows.next().map_err(rusqlite_to_eng_error)? {
+            Some(row) => Ok(Some(row_to_project(row)?)),
+            None => Ok(None),
+        }
+    })
+    .await
 }
 
 pub async fn list_projects(
@@ -78,25 +99,46 @@ pub async fn list_projects(
     user_id: i64,
     status: Option<&str>,
 ) -> Result<Vec<ProjectRow>> {
-    let mut result = Vec::new();
-    if let Some(s) = status {
-        let mut rows = db.conn.query(
-            "SELECT p.id, p.name, p.description, p.status, p.metadata, p.user_id, p.created_at, p.updated_at, (SELECT COUNT(*) FROM memory_projects WHERE project_id = p.id) as memory_count FROM projects p WHERE p.user_id = ?1 AND p.status = ?2 ORDER BY p.name COLLATE NOCASE",
-            libsql::params![user_id, s.to_string()],
-        ).await?;
-        while let Some(row) = rows.next().await? {
-            result.push(row_to_project(&row)?);
+    let status = status.map(|s| s.to_string());
+
+    db.read(move |conn| {
+        let mut result = Vec::new();
+        if let Some(ref s) = status {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT p.id, p.name, p.description, p.status, p.metadata, p.user_id, \
+                     p.created_at, p.updated_at, \
+                     (SELECT COUNT(*) FROM memory_projects WHERE project_id = p.id) as memory_count \
+                     FROM projects p WHERE p.user_id = ?1 AND p.status = ?2 \
+                     ORDER BY p.name COLLATE NOCASE",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(rusqlite::params![user_id, s])
+                .map_err(rusqlite_to_eng_error)?;
+            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                result.push(row_to_project(row)?);
+            }
+        } else {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT p.id, p.name, p.description, p.status, p.metadata, p.user_id, \
+                     p.created_at, p.updated_at, \
+                     (SELECT COUNT(*) FROM memory_projects WHERE project_id = p.id) as memory_count \
+                     FROM projects p WHERE p.user_id = ?1 \
+                     ORDER BY p.status = 'active' DESC, p.name COLLATE NOCASE",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(rusqlite::params![user_id])
+                .map_err(rusqlite_to_eng_error)?;
+            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                result.push(row_to_project(row)?);
+            }
         }
-    } else {
-        let mut rows = db.conn.query(
-            "SELECT p.id, p.name, p.description, p.status, p.metadata, p.user_id, p.created_at, p.updated_at, (SELECT COUNT(*) FROM memory_projects WHERE project_id = p.id) as memory_count FROM projects p WHERE p.user_id = ?1 ORDER BY p.status = 'active' DESC, p.name COLLATE NOCASE",
-            libsql::params![user_id],
-        ).await?;
-        while let Some(row) = rows.next().await? {
-            result.push(row_to_project(&row)?);
-        }
-    }
-    Ok(result)
+        Ok(result)
+    })
+    .await
 }
 
 pub async fn update_project(
@@ -108,21 +150,38 @@ pub async fn update_project(
     status: Option<&str>,
     metadata: Option<&str>,
 ) -> Result<()> {
-    db.conn.execute(
-        "UPDATE projects SET name = COALESCE(?1, name), description = COALESCE(?2, description), status = COALESCE(?3, status), metadata = COALESCE(?4, metadata), updated_at = datetime('now') WHERE id = ?5 AND user_id = ?6",
-        libsql::params![name.map(|s| s.to_string()), description.map(|s| s.to_string()), status.map(|s| s.to_string()), metadata.map(|s| s.to_string()), id, user_id],
-    ).await?;
-    Ok(())
+    let name = name.map(|s| s.to_string());
+    let description = description.map(|s| s.to_string());
+    let status = status.map(|s| s.to_string());
+    let metadata = metadata.map(|s| s.to_string());
+
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE projects SET \
+             name = COALESCE(?1, name), \
+             description = COALESCE(?2, description), \
+             status = COALESCE(?3, status), \
+             metadata = COALESCE(?4, metadata), \
+             updated_at = datetime('now') \
+             WHERE id = ?5 AND user_id = ?6",
+            rusqlite::params![name, description, status, metadata, id, user_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn delete_project(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "DELETE FROM projects WHERE id = ?1 AND user_id = ?2",
-            libsql::params![id, user_id],
+            rusqlite::params![id, user_id],
         )
-        .await?;
-    Ok(())
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn link_memory(
@@ -131,41 +190,49 @@ pub async fn link_memory(
     project_id: i64,
     user_id: i64,
 ) -> Result<()> {
-    // Verify project ownership
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT 1 FROM projects WHERE id = ?1 AND user_id = ?2",
-            libsql::params![project_id, user_id],
-        )
-        .await?;
-    if rows.next().await?.is_none() {
-        return Err(crate::EngError::NotFound(
-            "project not found or not owned by user".to_string(),
-        ));
-    }
+    db.write(move |conn| {
+        // Verify project ownership
+        let project_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM projects WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![project_id, user_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(rusqlite_to_eng_error)?
+            .unwrap_or(false);
 
-    // Verify memory ownership
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
-            libsql::params![memory_id, user_id],
-        )
-        .await?;
-    if rows.next().await?.is_none() {
-        return Err(crate::EngError::NotFound(
-            "memory not found or not owned by user".to_string(),
-        ));
-    }
+        if !project_exists {
+            return Err(EngError::NotFound(
+                "project not found or not owned by user".to_string(),
+            ));
+        }
 
-    db.conn
-        .execute(
+        // Verify memory ownership
+        let memory_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![memory_id, user_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(rusqlite_to_eng_error)?
+            .unwrap_or(false);
+
+        if !memory_exists {
+            return Err(EngError::NotFound(
+                "memory not found or not owned by user".to_string(),
+            ));
+        }
+
+        conn.execute(
             "INSERT OR IGNORE INTO memory_projects (memory_id, project_id) VALUES (?1, ?2)",
-            libsql::params![memory_id, project_id],
+            rusqlite::params![memory_id, project_id],
         )
-        .await?;
-    Ok(())
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn unlink_memory(
@@ -174,27 +241,32 @@ pub async fn unlink_memory(
     project_id: i64,
     user_id: i64,
 ) -> Result<()> {
-    // Verify project ownership before unlinking
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT 1 FROM projects WHERE id = ?1 AND user_id = ?2",
-            libsql::params![project_id, user_id],
-        )
-        .await?;
-    if rows.next().await?.is_none() {
-        return Err(crate::EngError::NotFound(
-            "project not found or not owned by user".to_string(),
-        ));
-    }
+    db.write(move |conn| {
+        // Verify project ownership before unlinking
+        let project_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM projects WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![project_id, user_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(rusqlite_to_eng_error)?
+            .unwrap_or(false);
 
-    db.conn
-        .execute(
+        if !project_exists {
+            return Err(EngError::NotFound(
+                "project not found or not owned by user".to_string(),
+            ));
+        }
+
+        conn.execute(
             "DELETE FROM memory_projects WHERE memory_id = ?1 AND project_id = ?2",
-            libsql::params![memory_id, project_id],
+            rusqlite::params![memory_id, project_id],
         )
-        .await?;
-    Ok(())
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn get_project_memory_ids(
@@ -202,21 +274,27 @@ pub async fn get_project_memory_ids(
     project_id: i64,
     user_id: i64,
 ) -> Result<Vec<i64>> {
-    let mut rows = db.conn.query(
-        "SELECT mp.memory_id FROM memory_projects mp JOIN memories m ON m.id = mp.memory_id WHERE mp.project_id = ?1 AND m.user_id = ?2",
-        libsql::params![project_id, user_id],
-    ).await?;
-    let mut ids = Vec::new();
-    while let Some(row) = rows.next().await? {
-        ids.push(
-            row.get::<i64>(0)
-                .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        );
-    }
-    Ok(ids)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT mp.memory_id FROM memory_projects mp \
+                 JOIN memories m ON m.id = mp.memory_id \
+                 WHERE mp.project_id = ?1 AND m.user_id = ?2",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![project_id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            ids.push(row.get::<_, i64>(0).map_err(rusqlite_to_eng_error)?);
+        }
+        Ok(ids)
+    })
+    .await
 }
 
-fn row_to_project(row: &libsql::Row) -> Result<ProjectRow> {
+fn row_to_project(row: &rusqlite::Row<'_>) -> Result<ProjectRow> {
     Ok(ProjectRow {
         id: row
             .get(0)

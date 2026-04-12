@@ -256,7 +256,7 @@ async fn get_quality(
 
     if degraded_only {
         let tools = qm
-            .get_degraded_tools(&state.db.conn)
+            .get_degraded_tools(&state.db)
             .await
             .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?;
         let records: Vec<Value> = tools
@@ -267,7 +267,7 @@ async fn get_quality(
         Ok(Json(json!({ "records": records, "count": count })))
     } else {
         let records = qm
-            .get_all_records(&state.db.conn, limit as i64)
+            .get_all_records(&state.db, limit as i64)
             .await
             .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?;
         let count = records.len();

@@ -3,9 +3,13 @@ use std::time::Instant;
 use crate::brain::hopfield::network::{self, HopfieldNetwork};
 use crate::brain::hopfield::pattern;
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 
 use super::StageReport;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 /// Similarity threshold above which two patterns are considered redundantly
 /// correlated and eligible for edge weight reduction.
@@ -71,26 +75,29 @@ pub async fn decorrelate(
 
             // Apply a fractional decay to edges between this pair in both directions
             let decay_rate = 1.0 - DECORRELATE_RATE;
-            let affected_ab = db
-                .conn
-                .execute(
-                    "UPDATE brain_edges \
-                     SET weight = weight * ?1 \
-                     WHERE source_id = ?2 AND target_id = ?3 AND user_id = ?4",
-                    libsql::params![decay_rate as f64, id_a, id_b, user_id],
-                )
-                .await?;
-            let affected_ba = db
-                .conn
-                .execute(
-                    "UPDATE brain_edges \
-                     SET weight = weight * ?1 \
-                     WHERE source_id = ?2 AND target_id = ?3 AND user_id = ?4",
-                    libsql::params![decay_rate as f64, id_b, id_a, user_id],
-                )
+            let affected = db
+                .write(move |conn| {
+                    let affected_ab = conn
+                        .execute(
+                            "UPDATE brain_edges \
+                             SET weight = weight * ?1 \
+                             WHERE source_id = ?2 AND target_id = ?3 AND user_id = ?4",
+                            rusqlite::params![decay_rate as f64, id_a, id_b, user_id],
+                        )
+                        .map_err(rusqlite_to_eng_error)?;
+                    let affected_ba = conn
+                        .execute(
+                            "UPDATE brain_edges \
+                             SET weight = weight * ?1 \
+                             WHERE source_id = ?2 AND target_id = ?3 AND user_id = ?4",
+                            rusqlite::params![decay_rate as f64, id_b, id_a, user_id],
+                        )
+                        .map_err(rusqlite_to_eng_error)?;
+                    Ok(affected_ab + affected_ba)
+                })
                 .await?;
 
-            if affected_ab + affected_ba > 0 {
+            if affected > 0 {
                 items_changed += 1;
             }
 

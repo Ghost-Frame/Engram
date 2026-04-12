@@ -53,7 +53,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum EngError {
     #[error("database error: {0}")]
-    Database(#[from] libsql::Error),
+    Database(#[from] rusqlite::Error),
 
     #[error("database error: {0}")]
     DatabaseMessage(String),

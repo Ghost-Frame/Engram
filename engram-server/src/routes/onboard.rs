@@ -4,6 +4,7 @@ use kleos_lib::memory::{
     search::hybrid_search,
     types::{SearchRequest, StoreRequest},
 };
+use rusqlite::params;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -116,21 +117,21 @@ async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json
     ));
 
     // Check spaces
-    let space_count = {
-        let mut rows = state
-            .db
-            .conn
-            .query(
-                "SELECT COUNT(*) FROM spaces WHERE user_id = ?1",
-                libsql::params![auth.user_id],
-            )
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        match rows.next().await {
-            Ok(Some(r)) => r.get::<i64>(0).unwrap_or(0),
-            _ => 0,
-        }
-    };
+    let uid = auth.user_id;
+    let space_count: i64 = state
+        .db
+        .read(move |conn| {
+            let count = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM spaces WHERE user_id = ?1",
+                    params![uid],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            Ok(count)
+        })
+        .await
+        .unwrap_or(0);
     checks.push((
         "spaces",
         space_count > 0,

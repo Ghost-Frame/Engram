@@ -8,7 +8,9 @@
 use crate::db::Database;
 use crate::intelligence::llm::{call_llm, is_llm_available, repair_and_parse_json, LlmOptions};
 use crate::intelligence::types::{DecompositionResult, DecompositionTier, DecompositionWithTier};
-use crate::Result;
+use crate::{EngError, Result};
+use rusqlite::params;
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use tracing::{info, warn};
 
@@ -69,41 +71,55 @@ struct LlmDecompositionResponse {
     skip: Option<bool>,
 }
 
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
 /// Decompose a memory into atomic facts.
 /// Returns the decomposed memory IDs (newly created child facts).
 pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Vec<i64>> {
-    let conn = db.connection();
-
     // Fetch the memory content - MUST belong to caller
-    let mut rows = conn
-        .query(
-            "SELECT content, category, source, importance, space_id, \
-                    episode_id, tags, session_id \
-             FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
-            libsql::params![memory_id, user_id],
-        )
+    let row_opt = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT content, category, source, importance, space_id, \
+                        episode_id, tags, session_id \
+                 FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
+                params![memory_id, user_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
 
-    let row = match rows.next().await? {
-        Some(r) => r,
-        None => return Ok(Vec::new()),
-    };
-
-    let content: String = row.get(0)?;
-    let category: String = row.get(1)?;
-    let _source: String = row.get(2)?;
-    let importance: i64 = row.get(3)?;
-    let space_id: Option<i64> = row.get(4)?;
-    let episode_id: Option<i64> = row.get(5)?;
-    let tags: Option<String> = row.get(6)?;
-    let _session_id: Option<String> = row.get(7)?;
+    let (content, category, _source, importance, space_id, episode_id, tags, _session_id) =
+        match row_opt {
+            Some(r) => r,
+            None => return Ok(Vec::new()),
+        };
 
     // Skip if too short or is a fact/consolidation already
     if content.len() < MIN_LENGTH {
-        conn.execute(
-            "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
-            libsql::params![memory_id, user_id],
-        )
+        db.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
+                params![memory_id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
         .await?;
         return Ok(Vec::new());
     }
@@ -122,10 +138,14 @@ pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Ve
     let decomp = match decomposition {
         Some(d) if !d.result.skip && !d.result.facts.is_empty() => d,
         _ => {
-            conn.execute(
-                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
-                libsql::params![memory_id, user_id],
-            )
+            db.write(move |conn| {
+                conn.execute(
+                    "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
+                    params![memory_id, user_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                Ok(())
+            })
             .await?;
             return Ok(Vec::new());
         }
@@ -136,50 +156,59 @@ pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Ve
     let capped = &decomp.result.facts[..decomp.result.facts.len().min(MAX_FACTS)];
 
     for fact_content in capped {
-        let trimmed = fact_content.trim();
+        let trimmed = fact_content.trim().to_string();
         if trimmed.len() < 5 {
             continue;
         }
 
-        conn.execute(
-            "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-             parent_memory_id, source_count, is_static, is_forgotten, is_fact, confidence, \
-             status, user_id, space_id, episode_id, tags, created_at, updated_at) \
-             VALUES (?1, 'fact', 'decomposition', ?2, 1, 1, ?3, 1, 0, 0, 1, 1.0, \
-             'approved', ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))",
-            libsql::params![
-                trimmed.to_string(),
-                importance,
-                memory_id,
-                user_id,
-                space_id,
-                episode_id,
-                tags.clone()
-            ],
-        )
-        .await?;
+        let tags_clone = tags.clone();
+        let new_id = db
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO memories (content, category, source, importance, version, is_latest, \
+                     parent_memory_id, source_count, is_static, is_forgotten, is_fact, confidence, \
+                     status, user_id, space_id, episode_id, tags, created_at, updated_at) \
+                     VALUES (?1, 'fact', 'decomposition', ?2, 1, 1, ?3, 1, 0, 0, 1, 1.0, \
+                     'approved', ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))",
+                    params![
+                        trimmed,
+                        importance,
+                        memory_id,
+                        user_id,
+                        space_id,
+                        episode_id,
+                        tags_clone
+                    ],
+                )
+                .map_err(rusqlite_to_eng_error)?;
 
-        let mut id_row = conn.query("SELECT last_insert_rowid()", ()).await?;
-        if let Some(r) = id_row.next().await? {
-            let new_id: i64 = r.get(0)?;
-            created_ids.push(new_id);
+                let inserted_id = conn.last_insert_rowid();
 
-            // Link parent -> child
-            conn.execute(
-                "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) \
-                 VALUES (?1, ?2, 1.0, 'has_fact')",
-                libsql::params![memory_id, new_id],
-            )
+                // Link parent -> child
+                conn.execute(
+                    "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) \
+                     VALUES (?1, ?2, 1.0, 'has_fact')",
+                    params![memory_id, inserted_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+                Ok(inserted_id)
+            })
             .await?;
-        }
+
+        created_ids.push(new_id);
     }
 
     // Mark parent as decomposed
     if !created_ids.is_empty() {
-        conn.execute(
-            "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
-            libsql::params![memory_id, user_id],
-        )
+        db.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
+                params![memory_id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
         .await?;
 
         info!(

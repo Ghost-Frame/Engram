@@ -63,34 +63,31 @@ async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Respons
     let mut lines = Vec::new();
 
     // Memory counts
-    let mem_count: i64 = async {
-        let mut rows = state
-            .db
-            .conn
-            .query("SELECT COUNT(*) FROM memories WHERE is_forgotten = 0", ())
-            .await
-            .ok()?;
-        let row = rows.next().await.ok()??;
-        row.get::<i64>(0).ok()
-    }
-    .await
-    .unwrap_or(0);
-
-    let emb_count: i64 = async {
-        let mut rows = state
-            .db
-            .conn
-            .query(
-                "SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL AND is_forgotten = 0",
-                (),
+    let mem_count: i64 = state
+        .db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0",
+                [],
+                |row| row.get(0),
             )
-            .await
-            .ok()?;
-        let row = rows.next().await.ok()??;
-        row.get::<i64>(0).ok()
-    }
-    .await
-    .unwrap_or(0);
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .unwrap_or(0);
+
+    let emb_count: i64 = state
+        .db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL AND is_forgotten = 0",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .unwrap_or(0);
 
     lines.push("# HELP kleos_memories_total Total non-forgotten memories".to_string());
     lines.push("# TYPE kleos_memories_total gauge".to_string());
@@ -103,7 +100,7 @@ async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Respons
     lines.push(String::new());
 
     // Job stats
-    if let Ok(stats) = jobs::get_job_stats(&state.db.conn).await {
+    if let Ok(stats) = jobs::get_job_stats(&state.db).await {
         lines.push("# HELP kleos_jobs_total Jobs by status".to_string());
         lines.push("# TYPE kleos_jobs_total gauge".to_string());
         lines.push(format!(

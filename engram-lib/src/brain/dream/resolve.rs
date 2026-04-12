@@ -4,9 +4,13 @@ use crate::brain::hopfield::edges::{self, EdgeType};
 use crate::brain::hopfield::network::HopfieldNetwork;
 use crate::brain::hopfield::pattern;
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 
 use super::StageReport;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 /// Strength boost applied to the winner of a contradiction pair.
 const WINNER_BOOST: f32 = 0.05;
@@ -31,22 +35,30 @@ pub async fn resolve(
     let start = Instant::now();
 
     // Load all contradiction edges for this user
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT source_id, target_id, weight FROM brain_edges \
-             WHERE user_id = ?1 AND edge_type = ?2 \
-             ORDER BY weight DESC",
-            libsql::params![user_id, EdgeType::Contradiction.to_string()],
-        )
-        .await?;
+    let edge_type_str = EdgeType::Contradiction.to_string();
+    let contradiction_pairs: Vec<(i64, i64)> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT source_id, target_id FROM brain_edges \
+                     WHERE user_id = ?1 AND edge_type = ?2 \
+                     ORDER BY weight DESC",
+                )
+                .map_err(rusqlite_to_eng_error)?;
 
-    let mut contradiction_pairs: Vec<(i64, i64)> = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let src: i64 = row.get(0)?;
-        let tgt: i64 = row.get(1)?;
-        contradiction_pairs.push((src, tgt));
-    }
+            let pairs = stmt
+                .query_map(rusqlite::params![user_id, edge_type_str], |row| {
+                    let src: i64 = row.get(0)?;
+                    let tgt: i64 = row.get(1)?;
+                    Ok((src, tgt))
+                })
+                .map_err(rusqlite_to_eng_error)?
+                .map(|r| r.map_err(rusqlite_to_eng_error))
+                .collect::<Result<Vec<(i64, i64)>>>()?;
+
+            Ok(pairs)
+        })
+        .await?;
 
     let items_processed = contradiction_pairs.len().min(budget as usize);
     let mut items_changed = 0usize;

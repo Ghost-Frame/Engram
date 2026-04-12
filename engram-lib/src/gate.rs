@@ -1,7 +1,12 @@
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateCheckRequest {
@@ -124,44 +129,45 @@ pub async fn respond_to_gate(
     user_id: i64,
 ) -> Result<Value> {
     let status = if approved { "approved" } else { "denied" };
-    let reason_str = reason.unwrap_or(if approved {
-        "approved by user"
-    } else {
-        "denied by user"
-    });
+    let reason_str = reason
+        .unwrap_or(if approved { "approved by user" } else { "denied by user" })
+        .to_string();
+    let approved_copy = approved;
 
-    let rows_affected = db
-        .conn
-        .execute(
-            "UPDATE gate_requests SET status = ?1, reason = ?2, updated_at = datetime('now')
-         WHERE id = ?3 AND user_id = ?4",
-            libsql::params![status.to_string(), reason_str.to_string(), gate_id, user_id],
-        )
-        .await?;
-
-    if rows_affected == 0 {
-        return Err(crate::EngError::NotFound(format!(
-            "gate request {} not found",
-            gate_id
-        )));
-    }
-
-    // Return the (possibly resolved) command if approved
-    if approved {
-        let mut rows = db
-            .conn
-            .query(
-                "SELECT command FROM gate_requests WHERE id = ?1 AND user_id = ?2",
-                libsql::params![gate_id, user_id],
+    db.write(move |conn| {
+        let rows_affected = conn
+            .execute(
+                "UPDATE gate_requests SET status = ?1, reason = ?2, updated_at = datetime('now')
+             WHERE id = ?3 AND user_id = ?4",
+                rusqlite::params![status, reason_str, gate_id, user_id],
             )
-            .await?;
-        if let Some(row) = rows.next().await? {
-            let command: String = row.get(0)?;
-            return Ok(serde_json::json!({ "ok": true, "approved": true, "command": command }));
-        }
-    }
+            .map_err(rusqlite_to_eng_error)?;
 
-    Ok(serde_json::json!({ "ok": true, "approved": approved }))
+        if rows_affected == 0 {
+            return Err(EngError::NotFound(format!(
+                "gate request {} not found",
+                gate_id
+            )));
+        }
+
+        if approved_copy {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT command FROM gate_requests WHERE id = ?1 AND user_id = ?2",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let command: Option<String> = stmt
+                .query_row(rusqlite::params![gate_id, user_id], |row| row.get(0))
+                .optional()
+                .map_err(rusqlite_to_eng_error)?;
+            if let Some(cmd) = command {
+                return Ok(serde_json::json!({ "ok": true, "approved": true, "command": cmd }));
+            }
+        }
+
+        Ok(serde_json::json!({ "ok": true, "approved": approved_copy }))
+    })
+    .await
 }
 
 /// Mark a gate request as complete and scrub sensitive data from output.
@@ -174,20 +180,25 @@ pub async fn complete_gate(
 ) -> Result<()> {
     let scrubbed = scrub_output(output, known_secrets);
 
-    let rows_affected = db.conn.execute(
-        "UPDATE gate_requests SET status = 'completed', output = ?1, updated_at = datetime('now')
-         WHERE id = ?2 AND user_id = ?3",
-        libsql::params![scrubbed, gate_id, user_id],
-    ).await?;
+    db.write(move |conn| {
+        let rows_affected = conn
+            .execute(
+                "UPDATE gate_requests SET status = 'completed', output = ?1, updated_at = datetime('now')
+             WHERE id = ?2 AND user_id = ?3",
+                rusqlite::params![scrubbed, gate_id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    if rows_affected == 0 {
-        return Err(crate::EngError::NotFound(format!(
-            "gate request {} not found",
-            gate_id
-        )));
-    }
+        if rows_affected == 0 {
+            return Err(EngError::NotFound(format!(
+                "gate request {} not found",
+                gate_id
+            )));
+        }
 
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 // -- Internal helpers --
@@ -201,27 +212,23 @@ async fn store_gate_request(
     status: &str,
     reason: Option<&str>,
 ) -> Result<i64> {
-    db.conn
-        .execute(
-            "INSERT INTO gate_requests (user_id, agent, command, context, status, reason)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            libsql::params![
-                user_id,
-                agent.to_string(),
-                command.to_string(),
-                context.map(|s| s.to_string()),
-                status.to_string(),
-                reason.map(|s| s.to_string()),
-            ],
-        )
-        .await?;
+    let agent = agent.to_string();
+    let command = command.to_string();
+    let context = context.map(|s| s.to_string());
+    let status = status.to_string();
+    let reason = reason.map(|s| s.to_string());
 
-    let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| crate::EngError::Internal("no rowid".into()))?;
-    Ok(row.get(0)?)
+    db.write(move |conn| {
+        conn.execute(
+            "INSERT INTO gate_requests (user_id, agent, command, context, status, reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![user_id, agent, command, context, status, reason],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+
+        Ok(conn.last_insert_rowid())
+    })
+    .await
 }
 
 /// Check a command against static dangerous patterns.

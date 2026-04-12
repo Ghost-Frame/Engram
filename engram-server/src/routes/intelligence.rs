@@ -26,6 +26,8 @@ use kleos_lib::memory;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use rusqlite::params;
+
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
 // ---------------------------------------------------------------------------
@@ -468,40 +470,38 @@ async fn sentiment_history_handler(
     let limit = params.limit.unwrap_or(20).min(100);
     let since = params.since.as_deref().unwrap_or("1970-01-01");
 
-    let mut rows = state
+    let since_owned = since.to_string();
+    let history = state
         .db
-        .conn
-        .query(
-            "SELECT id, content, created_at FROM memories \
-             WHERE user_id = ?1 AND is_forgotten = 0 AND created_at >= ?2 \
-             ORDER BY created_at DESC LIMIT ?3",
-            libsql::params![auth.user_id, since.to_string(), limit],
-        )
-        .await
-        .map_err(|e| AppError::from(kleos_lib::EngError::Database(e)))?;
-
-    let mut history = Vec::new();
-    while let Some(row) = rows
-        .next()
-        .await
-        .map_err(|e| AppError::from(kleos_lib::EngError::Database(e)))?
-    {
-        let id: i64 = row
-            .get(0)
-            .map_err(|e| AppError::from(kleos_lib::EngError::Database(e)))?;
-        let content: String = row
-            .get(1)
-            .map_err(|e| AppError::from(kleos_lib::EngError::Database(e)))?;
-        let created_at: String = row
-            .get(2)
-            .map_err(|e| AppError::from(kleos_lib::EngError::Database(e)))?;
-        let score = sentiment::score_text(&content);
-        history.push(json!({
-            "memory_id": id,
-            "score": score,
-            "created_at": created_at,
-        }));
-    }
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, content, created_at FROM memories \
+                     WHERE user_id = ?1 AND is_forgotten = 0 AND created_at >= ?2 \
+                     ORDER BY created_at DESC LIMIT ?3",
+                )
+                .map_err(kleos_lib::EngError::Database)?;
+            let rows = stmt
+                .query_map(params![auth.user_id, since_owned, limit], |row| {
+                    let id: i64 = row.get(0)?;
+                    let content: String = row.get(1)?;
+                    let created_at: String = row.get(2)?;
+                    Ok((id, content, created_at))
+                })
+                .map_err(kleos_lib::EngError::Database)?;
+            let mut history = Vec::new();
+            for row in rows {
+                let (id, content, created_at) = row.map_err(kleos_lib::EngError::Database)?;
+                let score = sentiment::score_text(&content);
+                history.push(serde_json::json!({
+                    "memory_id": id,
+                    "score": score,
+                    "created_at": created_at,
+                }));
+            }
+            Ok(history)
+        })
+        .await?;
 
     Ok(Json(json!({ "history": history })))
 }

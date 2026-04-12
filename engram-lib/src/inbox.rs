@@ -3,8 +3,12 @@
 //! Ports: inbox/db.ts, inbox/routes.ts (logic)
 
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingMemory {
@@ -28,78 +32,91 @@ pub async fn list_pending(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<PendingMemory>> {
-    let mut rows = db.conn.query(
-        "SELECT id, content, category, source, session_id, importance, created_at, tags, confidence, decay_score, status, model FROM memories WHERE status = 'pending' AND is_forgotten = 0 AND user_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
-        libsql::params![user_id, limit, offset],
-    ).await?;
-    let mut result = Vec::new();
-    while let Some(row) = rows.next().await? {
-        result.push(PendingMemory {
-            id: row
-                .get(0)
-                .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-            content: row
-                .get(1)
-                .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-            category: row
-                .get(2)
-                .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-            source: row.get(3).unwrap_or(None),
-            session_id: row.get(4).unwrap_or(None),
-            importance: row
-                .get(5)
-                .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-            created_at: row
-                .get(6)
-                .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-            tags: row.get(7).unwrap_or(None),
-            confidence: row.get(8).unwrap_or(None),
-            decay_score: row.get(9).unwrap_or(None),
-            status: row
-                .get(10)
-                .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-            model: row.get(11).unwrap_or(None),
-        });
-    }
-    Ok(result)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, content, category, source, session_id, importance, created_at, tags, confidence, decay_score, status, model \
+                 FROM memories \
+                 WHERE status = 'pending' AND is_forgotten = 0 AND user_id = ?1 \
+                 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![user_id, limit, offset], |row| {
+                Ok(PendingMemory {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get(2)?,
+                    source: row.get(3)?,
+                    session_id: row.get(4)?,
+                    importance: row.get(5)?,
+                    created_at: row.get(6)?,
+                    tags: row.get(7)?,
+                    confidence: row.get(8)?,
+                    decay_score: row.get(9)?,
+                    status: row.get(10)?,
+                    model: row.get(11)?,
+                })
+            })
+            .map_err(rusqlite_to_eng_error)?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(rusqlite_to_eng_error)?);
+        }
+        Ok(result)
+    })
+    .await
 }
 
 pub async fn count_pending(db: &Database, user_id: i64) -> Result<i64> {
-    let mut rows = db.conn.query(
-        "SELECT COUNT(*) FROM memories WHERE status = 'pending' AND is_forgotten = 0 AND user_id = ?1",
-        libsql::params![user_id],
-    ).await?;
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| crate::EngError::Internal("count query empty".into()))?;
-    Ok(row.get::<i64>(0).unwrap_or(0))
+    db.read(move |conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE status = 'pending' AND is_forgotten = 0 AND user_id = ?1",
+            rusqlite::params![user_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(rusqlite_to_eng_error)
+    })
+    .await
 }
 
 pub async fn approve_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    db.conn.execute(
-        "UPDATE memories SET status = 'approved', updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-        libsql::params![id, user_id],
-    ).await?;
-    Ok(())
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE memories SET status = 'approved', updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+            rusqlite::params![id, user_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn reject_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    db.conn.execute(
-        "UPDATE memories SET status = 'rejected', is_archived = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-        libsql::params![id, user_id],
-    ).await?;
-    Ok(())
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE memories SET status = 'rejected', is_archived = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+            rusqlite::params![id, user_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn set_forget_reason(db: &Database, id: i64, reason: &str, user_id: i64) -> Result<()> {
-    db.conn
-        .execute(
+    let reason = reason.to_string();
+    db.write(move |conn| {
+        conn.execute(
             "UPDATE memories SET forget_reason = ?1 WHERE id = ?2 AND user_id = ?3",
-            libsql::params![reason.to_string(), id, user_id],
+            rusqlite::params![reason, id, user_id],
         )
-        .await?;
-    Ok(())
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn edit_and_approve(
@@ -115,36 +132,40 @@ pub async fn edit_and_approve(
         "status = 'approved'".to_string(),
         "updated_at = datetime('now')".to_string(),
     ];
-    let mut vals: Vec<libsql::Value> = Vec::new();
+    let mut vals: Vec<rusqlite::types::Value> = Vec::new();
     let mut idx = 1;
     if let Some(c) = content {
         sets.push(format!("content = ?{}", idx));
-        vals.push(c.to_string().into());
+        vals.push(rusqlite::types::Value::Text(c.to_string()));
         idx += 1;
     }
     if let Some(c) = category {
         sets.push(format!("category = ?{}", idx));
-        vals.push(c.to_string().into());
+        vals.push(rusqlite::types::Value::Text(c.to_string()));
         idx += 1;
     }
     if let Some(i) = importance {
         sets.push(format!("importance = ?{}", idx));
-        vals.push(i.into());
+        vals.push(rusqlite::types::Value::Integer(i));
         idx += 1;
     }
     if let Some(t) = tags {
         sets.push(format!("tags = ?{}", idx));
-        vals.push(t.to_string().into());
+        vals.push(rusqlite::types::Value::Text(t.to_string()));
         idx += 1;
     }
-    vals.push(id.into());
-    vals.push(user_id.into());
+    vals.push(rusqlite::types::Value::Integer(id));
+    vals.push(rusqlite::types::Value::Integer(user_id));
     let sql = format!(
         "UPDATE memories SET {} WHERE id = ?{} AND user_id = ?{}",
         sets.join(", "),
         idx,
         idx + 1
     );
-    db.conn.execute(&sql, vals).await?;
-    Ok(())
+    db.write(move |conn| {
+        conn.execute(&sql, rusqlite::params_from_iter(vals.iter().cloned()))
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }

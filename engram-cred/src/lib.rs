@@ -57,8 +57,8 @@ pub enum CredError {
 
 pub type Result<T> = std::result::Result<T, CredError>;
 
-impl From<libsql::Error> for CredError {
-    fn from(e: libsql::Error) -> Self {
+impl From<rusqlite::Error> for CredError {
+    fn from(e: rusqlite::Error) -> Self {
         CredError::Database(e.to_string())
     }
 }

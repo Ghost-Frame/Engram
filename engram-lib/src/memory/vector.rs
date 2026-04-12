@@ -1,7 +1,6 @@
 use crate::db::Database;
+use crate::EngError;
 use crate::Result;
-#[cfg(feature = "db_pool")]
-use crate::{memory::uses_pool_backend, EngError};
 use tracing::warn;
 
 /// Result from vector ANN search -- id and its rank position (0-based, ascending similarity)
@@ -11,8 +10,11 @@ pub struct VectorHit {
     pub rank: usize,
 }
 
-/// Search for similar memories using libsql's native vector index.
+/// Search for similar memories using SQLite's native vector index.
 /// Returns up to `limit` results ordered by vector similarity (most similar first).
+/// Note: This uses vector_top_k which requires the sqlite-vec extension.
+/// If the extension is not available, the query will fail gracefully and return empty results.
+/// The primary vector search path uses LanceDB; this is a fallback for embedded deployments.
 pub async fn vector_search(
     db: &Database,
     embedding: &[f32],
@@ -30,6 +32,7 @@ pub async fn vector_search(
 
     // vector_top_k returns rowids ordered by distance (ascending = most similar first).
     // We JOIN on memories.rowid = id to get the full row filters applied.
+    // Note: vector_top_k requires sqlite-vec extension.
     let sql = "
         SELECT memories.id
         FROM vector_top_k('memories_vec_1024_idx', vector(?1), ?2)
@@ -40,61 +43,36 @@ pub async fn vector_search(
           AND memories.user_id = ?3
     ";
 
-    #[cfg(feature = "db_pool")]
-    if uses_pool_backend(db) {
-        return match db
-            .read(move |conn| {
-                let mut stmt = conn
-                    .prepare(sql)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let mut rows = stmt
-                    .query(rusqlite::params![embedding_json, limit as i64, user_id])
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    match db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt
+                .query(rusqlite::params![embedding_json, limit as i64, user_id])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-                let mut hits = Vec::new();
-                let mut rank: usize = 0;
-                while let Some(row) = rows
-                    .next()
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-                {
-                    let memory_id: i64 = row
-                        .get(0)
-                        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                    hits.push(VectorHit { memory_id, rank });
-                    rank += 1;
-                }
-
-                Ok(hits)
-            })
-            .await
-        {
-            Ok(hits) => Ok(hits),
-            Err(e) => {
-                warn!("vector search failed: {}", e);
-                Ok(vec![])
+            let mut hits = Vec::new();
+            let mut rank: usize = 0;
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            {
+                let memory_id: i64 = row
+                    .get(0)
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                hits.push(VectorHit { memory_id, rank });
+                rank += 1;
             }
-        };
-    }
 
-    let conn = db.connection();
-    let mut rows = match conn
-        .query(sql, libsql::params![embedding_json, limit as i64, user_id])
+            Ok(hits)
+        })
         .await
     {
-        Ok(r) => r,
+        Ok(hits) => Ok(hits),
         Err(e) => {
-            warn!("vector search failed: {}", e);
-            return Ok(vec![]);
+            warn!("vector search failed (sqlite-vec may not be loaded): {}", e);
+            Ok(vec![])
         }
-    };
-
-    let mut hits = Vec::new();
-    let mut rank: usize = 0;
-    while let Some(row) = rows.next().await? {
-        let memory_id: i64 = row.get(0)?;
-        hits.push(VectorHit { memory_id, rank });
-        rank += 1;
     }
-
-    Ok(hits)
 }

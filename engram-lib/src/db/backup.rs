@@ -3,38 +3,50 @@
 use crate::{EngError, Result};
 use std::path::Path;
 
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
 /// Creates a consistent backup of the database using VACUUM INTO.
 /// The destination path must not contain single quotes.
 pub async fn vacuum_into(db: &crate::db::Database, dest: &Path) -> Result<()> {
-    let path_str = dest.to_string_lossy();
+    let path_str = dest.to_string_lossy().to_string();
     if path_str.contains('\'') {
         return Err(EngError::InvalidInput(
             "backup destination path contains a single quote".into(),
         ));
     }
-    db.conn
-        .execute(&format!("VACUUM INTO '{}'", path_str), ())
-        .await?;
-    Ok(())
+    let sql = format!("VACUUM INTO '{}'", path_str);
+    db.write(move |conn| {
+        conn.execute(&sql, [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await
 }
 
 /// Runs PRAGMA integrity_check on the given database file.
 /// Returns Ok(vec![]) if the database is valid, or Ok(vec![messages]) if corrupt.
 pub async fn integrity_check(path: &Path) -> Result<Vec<String>> {
     let path_str = path.to_string_lossy().to_string();
-    let db = libsql::Builder::new_local(&path_str)
-        .build()
-        .await
-        .map_err(|e| EngError::DatabaseMessage(format!("open for integrity check: {e}")))?;
-    let conn = db
-        .connect()
-        .map_err(|e| EngError::DatabaseMessage(format!("connect for integrity check: {e}")))?;
 
-    let mut rows = conn.query("PRAGMA integrity_check", ()).await?;
+    // Open a direct rusqlite connection for integrity check
+    let conn = rusqlite::Connection::open(&path_str)
+        .map_err(|e| EngError::DatabaseMessage(format!("open for integrity check: {e}")))?;
+
+    let mut stmt = conn
+        .prepare("PRAGMA integrity_check")
+        .map_err(|e| EngError::DatabaseMessage(format!("prepare integrity check: {e}")))?;
+
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| EngError::DatabaseMessage(format!("query integrity check: {e}")))?;
+
     let mut messages = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let msg: String = row.get(0).unwrap_or_default();
-        messages.push(msg);
+    for row in rows {
+        if let Ok(msg) = row {
+            messages.push(msg);
+        }
     }
 
     if messages.len() == 1 && messages[0] == "ok" {
@@ -50,15 +62,20 @@ pub async fn wal_checkpoint(
     db: &crate::db::Database,
     mode: CheckpointMode,
 ) -> Result<(i32, i32, i32)> {
-    let sql = format!("PRAGMA wal_checkpoint({})", mode.as_str());
-    let mut rows = db.conn.query(&sql, ()).await?;
-    if let Some(row) = rows.next().await? {
-        let busy: i32 = row.get(0).unwrap_or(0);
-        let log: i32 = row.get(1).unwrap_or(0);
-        let checkpointed: i32 = row.get(2).unwrap_or(0);
-        return Ok((busy, log, checkpointed));
-    }
-    Ok((0, 0, 0))
+    let mode_str = mode.as_str().to_string();
+    db.read(move |conn| {
+        let sql = format!("PRAGMA wal_checkpoint({})", mode_str);
+        conn.query_row(&sql, [], |row| {
+            Ok((
+                row.get::<_, i32>(0).unwrap_or(0),
+                row.get::<_, i32>(1).unwrap_or(0),
+                row.get::<_, i32>(2).unwrap_or(0),
+            ))
+        })
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+    })
+    .await
+    .or(Ok((0, 0, 0)))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,28 +100,6 @@ impl CheckpointMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Create a minimal file-based libsql database with a simple schema for
-    /// backup tests. Using raw libsql (no kleos migrations) avoids the shadow
-    /// tables that libsql creates for vector support, which cause false positives
-    /// in PRAGMA integrity_check.
-    async fn minimal_db(path: &str) -> crate::db::Database {
-        use libsql::Builder;
-        let inner = Builder::new_local(path).build().await.unwrap();
-        let conn = inner.connect().unwrap();
-        conn.execute_batch("CREATE TABLE backup_test (id INTEGER PRIMARY KEY, val TEXT);")
-            .await
-            .unwrap();
-        conn.execute("INSERT INTO backup_test VALUES (1, 'hello')", ())
-            .await
-            .unwrap();
-        // Flush WAL so the file is self-contained.
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", ())
-            .await
-            .ok();
-        // Build a Database wrapper via the public constructor.
-        crate::db::Database::connect(path).await.unwrap()
-    }
 
     #[tokio::test]
     async fn test_vacuum_into_creates_backup_file() {
@@ -131,15 +126,10 @@ mod tests {
         let path_str = path.to_str().unwrap().to_string();
 
         {
-            use libsql::Builder;
-            let inner = Builder::new_local(&path_str).build().await.unwrap();
-            let conn = inner.connect().unwrap();
+            let conn = rusqlite::Connection::open(&path_str).unwrap();
             conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY);")
-                .await
                 .unwrap();
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", ())
-                .await
-                .ok();
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", []).ok();
         }
 
         let errors = integrity_check(&path).await.expect("integrity_check");

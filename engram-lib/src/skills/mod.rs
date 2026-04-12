@@ -10,7 +10,7 @@ pub mod types;
 
 use crate::db::Database;
 use crate::{EngError, Result};
-use libsql::params;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 // -- Types --
@@ -106,7 +106,7 @@ pub(crate) const SKILL_COLUMNS: &str = "id, name, agent, description, code, lang
 
 // -- Helpers --
 
-pub(crate) fn row_to_skill(row: &libsql::Row) -> Result<Skill> {
+pub(crate) fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
     Ok(Skill {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -122,8 +122,8 @@ pub(crate) fn row_to_skill(row: &libsql::Row) -> Result<Skill> {
         failure_count: row.get(11)?,
         execution_count: row.get(12)?,
         avg_duration_ms: row.get(13)?,
-        is_active: row.get::<i32>(14)? != 0,
-        is_deprecated: row.get::<i32>(15)? != 0,
+        is_active: row.get::<_, i32>(14)? != 0,
+        is_deprecated: row.get::<_, i32>(15)? != 0,
         metadata: row.get(16)?,
         user_id: row.get(17)?,
         created_at: row.get(18)?,
@@ -134,7 +134,6 @@ pub(crate) fn row_to_skill(row: &libsql::Row) -> Result<Skill> {
 // -- CRUD --
 
 pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skill> {
-    let conn = db.connection();
     let user_id = req
         .user_id
         .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
@@ -142,16 +141,24 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
 
     // Determine version and root. Parent must belong to the same tenant.
     let (version, root_skill_id) = if let Some(parent_id) = req.parent_skill_id {
-        let mut rows = conn
-            .query(
-                "SELECT version, root_skill_id FROM skill_records \
-                 WHERE id = ?1 AND user_id = ?2",
-                params![parent_id, user_id],
-            )
-            .await?;
-        if let Some(row) = rows.next().await? {
-            let pv: i32 = row.get(0)?;
-            let pr: Option<i64> = row.get(1)?;
+        let result = db
+            .read(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT version, root_skill_id FROM skill_records \
+                     WHERE id = ?1 AND user_id = ?2",
+                )?;
+                let mut rows = stmt.query(params![parent_id, user_id])?;
+                if let Some(row) = rows.next()? {
+                    let pv: i32 = row.get(0)?;
+                    let pr: Option<i64> = row.get(1)?;
+                    Ok(Some((pv, pr)))
+                } else {
+                    Ok(None)
+                }
+            })
+            .await
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        if let Some((pv, pr)) = result {
             (pv + 1, pr.or(Some(parent_id)))
         } else {
             return Err(EngError::NotFound(format!(
@@ -163,75 +170,93 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
         (1, None)
     };
 
-    let mut id_rows = conn
-        .query(
-            "INSERT INTO skill_records (name, agent, description, code, language, version, \
-             parent_skill_id, root_skill_id, user_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id",
-            params![
-                req.name,
-                req.agent,
-                req.description,
-                req.code,
-                language,
-                version,
-                req.parent_skill_id,
-                root_skill_id,
-                user_id
-            ],
-        )
-        .await?;
-    let id: i64 = if let Some(row) = id_rows.next().await? {
-        row.get(0)?
-    } else {
-        return Err(EngError::Internal("failed to insert skill".into()));
-    };
+    let name = req.name.clone();
+    let agent = req.agent.clone();
+    let description = req.description.clone();
+    let code = req.code.clone();
+    let language_clone = language.clone();
+    let parent_skill_id = req.parent_skill_id;
+    let tags = req.tags.clone();
+    let tool_deps = req.tool_deps.clone();
 
-    // Record lineage
-    if let Some(parent_id) = req.parent_skill_id {
-        conn.execute(
-            "INSERT OR IGNORE INTO skill_lineage_parents (skill_id, parent_id) VALUES (?1, ?2)",
-            params![id, parent_id],
-        )
-        .await?;
-    }
-
-    // Insert tags
-    if let Some(ref tags) = req.tags {
-        for tag in tags {
+    let id = db
+        .write(move |conn| {
             conn.execute(
-                "INSERT OR IGNORE INTO skill_tags (skill_id, tag) VALUES (?1, ?2)",
-                params![id, tag.as_str()],
+                "INSERT INTO skill_records (name, agent, description, code, language, version, \
+                 parent_skill_id, root_skill_id, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    name,
+                    agent,
+                    description,
+                    code,
+                    language_clone,
+                    version,
+                    parent_skill_id,
+                    root_skill_id,
+                    user_id
+                ],
             )
-            .await?;
-        }
-    }
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let id = conn.last_insert_rowid();
 
-    // Insert tool deps
-    if let Some(ref deps) = req.tool_deps {
-        for dep in deps {
-            conn.execute(
-                "INSERT OR IGNORE INTO skill_tool_deps (skill_id, tool_name, is_optional) VALUES (?1, ?2, 0)",
-                params![id, dep.as_str()],
-            ).await?;
-        }
-    }
+            // Record lineage
+            if let Some(parent_id) = parent_skill_id {
+                conn.execute(
+                    "INSERT OR IGNORE INTO skill_lineage_parents (skill_id, parent_id) VALUES (?1, ?2)",
+                    params![id, parent_id],
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            }
+
+            // Insert tags
+            if let Some(ref t) = tags {
+                for tag in t {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO skill_tags (skill_id, tag) VALUES (?1, ?2)",
+                        params![id, tag],
+                    )
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                }
+            }
+
+            // Insert tool deps
+            if let Some(ref deps) = tool_deps {
+                for dep in deps {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO skill_tool_deps (skill_id, tool_name, is_optional) VALUES (?1, ?2, 0)",
+                        params![id, dep],
+                    )
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                }
+            }
+
+            Ok(id)
+        })
+        .await?;
 
     get_skill(db, id, user_id).await
 }
 
 pub async fn get_skill(db: &Database, id: i64, user_id: i64) -> Result<Skill> {
-    let conn = db.connection();
     let sql = format!(
         "SELECT {} FROM skill_records WHERE id = ?1 AND user_id = ?2",
         SKILL_COLUMNS
     );
-    let mut rows = conn.query(&sql, params![id, user_id]).await?;
-    rows.next()
-        .await?
-        .map(|row| row_to_skill(&row))
-        .transpose()?
-        .ok_or_else(|| EngError::NotFound(format!("skill {} not found", id)))
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![id, user_id])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        rows.next()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .map(|row| row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string())))
+            .transpose()?
+            .ok_or_else(|| EngError::NotFound(format!("skill {} not found", id)))
+    })
+    .await
 }
 
 /// Hard upper bound on how many skill rows `list_skills` will ever return in
@@ -249,35 +274,42 @@ pub async fn list_skills(
     offset: usize,
 ) -> Result<Vec<Skill>> {
     let limit = limit.clamp(1, MAX_SKILLS_LIMIT);
-    let conn = db.connection();
-    let (sql, has_agent) = if agent.is_some() {
-        (format!(
-            "SELECT {} FROM skill_records WHERE user_id = ?1 AND agent = ?2 AND is_active = 1 ORDER BY trust_score DESC LIMIT ?3 OFFSET ?4",
-            SKILL_COLUMNS
-        ), true)
-    } else {
-        (format!(
-            "SELECT {} FROM skill_records WHERE user_id = ?1 AND is_active = 1 ORDER BY trust_score DESC LIMIT ?2 OFFSET ?3",
-            SKILL_COLUMNS
-        ), false)
-    };
+    let agent_owned = agent.map(|s| s.to_string());
 
-    let mut rows = if has_agent {
-        conn.query(
-            &sql,
-            params![user_id, agent.unwrap_or(""), limit as i64, offset as i64],
-        )
-        .await?
-    } else {
-        conn.query(&sql, params![user_id, limit as i64, offset as i64])
-            .await?
-    };
-
-    let mut skills = Vec::new();
-    while let Some(row) = rows.next().await? {
-        skills.push(row_to_skill(&row)?);
-    }
-    Ok(skills)
+    db.read(move |conn| {
+        let mut skills = Vec::new();
+        if let Some(ref agent_str) = agent_owned {
+            let sql = format!(
+                "SELECT {} FROM skill_records WHERE user_id = ?1 AND agent = ?2 AND is_active = 1 ORDER BY trust_score DESC LIMIT ?3 OFFSET ?4",
+                SKILL_COLUMNS
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt
+                .query(params![user_id, agent_str, limit as i64, offset as i64])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            while let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+                skills.push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            }
+        } else {
+            let sql = format!(
+                "SELECT {} FROM skill_records WHERE user_id = ?1 AND is_active = 1 ORDER BY trust_score DESC LIMIT ?2 OFFSET ?3",
+                SKILL_COLUMNS
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt
+                .query(params![user_id, limit as i64, offset as i64])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            while let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+                skills.push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            }
+        };
+        Ok(skills)
+    })
+    .await
 }
 
 pub async fn update_skill(
@@ -286,36 +318,67 @@ pub async fn update_skill(
     req: UpdateSkillRequest,
     user_id: i64,
 ) -> Result<Skill> {
-    let conn = db.connection();
     // Verify ownership
     get_skill(db, id, user_id).await?;
 
-    if let Some(ref code) = req.code {
-        conn.execute("UPDATE skill_records SET code = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3", params![code.as_str(), id, user_id]).await?;
-    }
-    if let Some(ref desc) = req.description {
-        conn.execute("UPDATE skill_records SET description = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3", params![desc.as_str(), id, user_id]).await?;
-    }
-    if let Some(active) = req.is_active {
-        conn.execute("UPDATE skill_records SET is_active = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3", params![active as i32, id, user_id]).await?;
-    }
-    if let Some(deprecated) = req.is_deprecated {
-        conn.execute("UPDATE skill_records SET is_deprecated = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3", params![deprecated as i32, id, user_id]).await?;
-    }
-    if let Some(ref meta) = req.metadata {
-        conn.execute("UPDATE skill_records SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3", params![meta.as_str(), id, user_id]).await?;
-    }
+    let code = req.code.clone();
+    let desc = req.description.clone();
+    let is_active = req.is_active;
+    let is_deprecated = req.is_deprecated;
+    let meta = req.metadata.clone();
+
+    db.write(move |conn| {
+        if let Some(ref c) = code {
+            conn.execute(
+                "UPDATE skill_records SET code = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
+                params![c, id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        }
+        if let Some(ref d) = desc {
+            conn.execute(
+                "UPDATE skill_records SET description = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
+                params![d, id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        }
+        if let Some(active) = is_active {
+            conn.execute(
+                "UPDATE skill_records SET is_active = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
+                params![active as i32, id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        }
+        if let Some(deprecated) = is_deprecated {
+            conn.execute(
+                "UPDATE skill_records SET is_deprecated = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
+                params![deprecated as i32, id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        }
+        if let Some(ref m) = meta {
+            conn.execute(
+                "UPDATE skill_records SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
+                params![m, id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        }
+        Ok(())
+    })
+    .await?;
 
     get_skill(db, id, user_id).await
 }
 
 pub async fn delete_skill(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    let conn = db.connection();
-    let affected = conn
-        .execute(
-            "DELETE FROM skill_records WHERE id = ?1 AND user_id = ?2",
-            params![id, user_id],
-        )
+    let affected = db
+        .write(move |conn| {
+            conn.execute(
+                "DELETE FROM skill_records WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
         .await?;
     if affected == 0 {
         return Err(EngError::NotFound(format!("skill {} not found", id)));
@@ -334,48 +397,53 @@ pub async fn record_execution(
     error_type: Option<&str>,
     error_message: Option<&str>,
 ) -> Result<()> {
-    let conn = db.connection();
-
     // Fail closed if the skill does not belong to this tenant.
     get_skill(db, skill_id, user_id).await?;
 
-    conn.execute(
-        "INSERT INTO execution_analyses (skill_id, success, duration_ms, error_type, error_message) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![skill_id, success as i32, duration_ms, error_type, error_message],
-    ).await?;
+    let error_type_owned = error_type.map(|s| s.to_string());
+    let error_message_owned = error_message.map(|s| s.to_string());
 
-    // Update skill counters. Scope UPDATEs by user_id as defense in depth.
-    if success {
+    db.write(move |conn| {
         conn.execute(
-            "UPDATE skill_records SET success_count = success_count + 1, \
-             execution_count = execution_count + 1, updated_at = datetime('now') \
-             WHERE id = ?1 AND user_id = ?2",
-            params![skill_id, user_id],
+            "INSERT INTO execution_analyses (skill_id, success, duration_ms, error_type, error_message) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![skill_id, success as i32, duration_ms, error_type_owned, error_message_owned],
         )
-        .await?;
-    } else {
-        conn.execute(
-            "UPDATE skill_records SET failure_count = failure_count + 1, \
-             execution_count = execution_count + 1, updated_at = datetime('now') \
-             WHERE id = ?1 AND user_id = ?2",
-            params![skill_id, user_id],
-        )
-        .await?;
-    }
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    // Update avg_duration_ms
-    if let Some(dur) = duration_ms {
-        conn.execute(
-            "UPDATE skill_records SET avg_duration_ms = \
-             COALESCE((avg_duration_ms * (execution_count - 1) + ?1) / execution_count, ?1), \
-             updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
-            params![dur, skill_id, user_id],
-        )
-        .await?;
-    }
+        // Update skill counters. Scope UPDATEs by user_id as defense in depth.
+        if success {
+            conn.execute(
+                "UPDATE skill_records SET success_count = success_count + 1, \
+                 execution_count = execution_count + 1, updated_at = datetime('now') \
+                 WHERE id = ?1 AND user_id = ?2",
+                params![skill_id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        } else {
+            conn.execute(
+                "UPDATE skill_records SET failure_count = failure_count + 1, \
+                 execution_count = execution_count + 1, updated_at = datetime('now') \
+                 WHERE id = ?1 AND user_id = ?2",
+                params![skill_id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        }
 
-    Ok(())
+        // Update avg_duration_ms
+        if let Some(dur) = duration_ms {
+            conn.execute(
+                "UPDATE skill_records SET avg_duration_ms = \
+                 COALESCE((avg_duration_ms * (execution_count - 1) + ?1) / execution_count, ?1), \
+                 updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
+                params![dur, skill_id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        }
+
+        Ok(())
+    })
+    .await
 }
 
 /// Get execution history for a skill.
@@ -385,37 +453,43 @@ pub async fn get_executions(
     user_id: i64,
     limit: usize,
 ) -> Result<Vec<ExecutionRecord>> {
-    let conn = db.connection();
     // Fail closed if the skill does not belong to this tenant.
     get_skill(db, skill_id, user_id).await?;
-    let mut rows = conn
-        .query(
-            "SELECT ea.id, ea.skill_id, ea.success, ea.duration_ms, ea.error_type, ea.error_message, \
-         ea.input_hash, ea.output_hash, ea.metadata, ea.created_at \
-         FROM execution_analyses ea \
-         INNER JOIN skill_records sr ON sr.id = ea.skill_id \
-         WHERE ea.skill_id = ?1 AND sr.user_id = ?2 \
-         ORDER BY ea.id DESC LIMIT ?3",
-            params![skill_id, user_id, limit as i64],
-        )
-        .await?;
 
-    let mut records = Vec::new();
-    while let Some(row) = rows.next().await? {
-        records.push(ExecutionRecord {
-            id: row.get(0)?,
-            skill_id: row.get(1)?,
-            success: row.get::<i32>(2)? != 0,
-            duration_ms: row.get(3)?,
-            error_type: row.get(4)?,
-            error_message: row.get(5)?,
-            input_hash: row.get(6)?,
-            output_hash: row.get(7)?,
-            metadata: row.get(8)?,
-            created_at: row.get(9)?,
-        });
-    }
-    Ok(records)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT ea.id, ea.skill_id, ea.success, ea.duration_ms, ea.error_type, ea.error_message, \
+                 ea.input_hash, ea.output_hash, ea.metadata, ea.created_at \
+                 FROM execution_analyses ea \
+                 INNER JOIN skill_records sr ON sr.id = ea.skill_id \
+                 WHERE ea.skill_id = ?1 AND sr.user_id = ?2 \
+                 ORDER BY ea.id DESC LIMIT ?3",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+        let records = stmt
+            .query_map(params![skill_id, user_id, limit as i64], |row| {
+                Ok(ExecutionRecord {
+                    id: row.get(0)?,
+                    skill_id: row.get(1)?,
+                    success: row.get::<_, i32>(2)? != 0,
+                    duration_ms: row.get(3)?,
+                    error_type: row.get(4)?,
+                    error_message: row.get(5)?,
+                    input_hash: row.get(6)?,
+                    output_hash: row.get(7)?,
+                    metadata: row.get(8)?,
+                    created_at: row.get(9)?,
+                })
+            })
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+        Ok(records)
+    })
+    .await
 }
 
 // -- Judgments --
@@ -428,31 +502,34 @@ pub async fn add_judgment(
     score: f64,
     rationale: Option<&str>,
 ) -> Result<SkillJudgment> {
-    let conn = db.connection();
     // Fail closed if the skill does not belong to this tenant.
     get_skill(db, skill_id, user_id).await?;
 
-    let mut rows = conn
-        .query(
-            "INSERT INTO skill_judgments (skill_id, judge_agent, score, rationale) \
-             VALUES (?1, ?2, ?3, ?4) RETURNING id",
-            params![skill_id, judge_agent, score, rationale],
-        )
-        .await?;
-    let id: i64 = if let Some(row) = rows.next().await? {
-        row.get(0)?
-    } else {
-        return Err(EngError::Internal("failed to insert judgment".into()));
-    };
+    let judge_agent_owned = judge_agent.to_string();
+    let rationale_owned = rationale.map(|s| s.to_string());
 
-    // Update trust_score as weighted average of all judgments. Scope update by user_id.
-    conn.execute(
-        "UPDATE skill_records SET trust_score = \
-         (SELECT AVG(score) FROM skill_judgments WHERE skill_id = ?1), \
-         updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-        params![skill_id, user_id],
-    )
-    .await?;
+    let id = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO skill_judgments (skill_id, judge_agent, score, rationale) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![skill_id, judge_agent_owned, score, rationale_owned],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let id = conn.last_insert_rowid();
+
+            // Update trust_score as weighted average of all judgments. Scope update by user_id.
+            conn.execute(
+                "UPDATE skill_records SET trust_score = \
+                 (SELECT AVG(score) FROM skill_judgments WHERE skill_id = ?1), \
+                 updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+                params![skill_id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+            Ok(id)
+        })
+        .await?;
 
     Ok(SkillJudgment {
         id,
@@ -469,31 +546,37 @@ pub async fn get_judgments(
     skill_id: i64,
     user_id: i64,
 ) -> Result<Vec<SkillJudgment>> {
-    let conn = db.connection();
     get_skill(db, skill_id, user_id).await?;
-    let mut rows = conn
-        .query(
-            "SELECT sj.id, sj.skill_id, sj.judge_agent, sj.score, sj.rationale, sj.created_at \
-         FROM skill_judgments sj \
-         INNER JOIN skill_records sr ON sr.id = sj.skill_id \
-         WHERE sj.skill_id = ?1 AND sr.user_id = ?2 \
-         ORDER BY sj.id DESC",
-            params![skill_id, user_id],
-        )
-        .await?;
 
-    let mut judgments = Vec::new();
-    while let Some(row) = rows.next().await? {
-        judgments.push(SkillJudgment {
-            id: row.get(0)?,
-            skill_id: row.get(1)?,
-            judge_agent: row.get(2)?,
-            score: row.get(3)?,
-            rationale: row.get(4)?,
-            created_at: row.get(5)?,
-        });
-    }
-    Ok(judgments)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT sj.id, sj.skill_id, sj.judge_agent, sj.score, sj.rationale, sj.created_at \
+                 FROM skill_judgments sj \
+                 INNER JOIN skill_records sr ON sr.id = sj.skill_id \
+                 WHERE sj.skill_id = ?1 AND sr.user_id = ?2 \
+                 ORDER BY sj.id DESC",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+        let judgments = stmt
+            .query_map(params![skill_id, user_id], |row| {
+                Ok(SkillJudgment {
+                    id: row.get(0)?,
+                    skill_id: row.get(1)?,
+                    judge_agent: row.get(2)?,
+                    score: row.get(3)?,
+                    rationale: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+        Ok(judgments)
+    })
+    .await
 }
 
 // -- Tool quality --
@@ -506,31 +589,54 @@ pub async fn record_tool_quality(
     latency_ms: Option<f64>,
     error_type: Option<&str>,
 ) -> Result<()> {
-    let conn = db.connection();
-    conn.execute(
-        "INSERT INTO tool_quality_records (tool_name, agent, success, latency_ms, error_type) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![tool_name, agent, success as i32, latency_ms, error_type],
-    )
-    .await?;
-    Ok(())
+    let tool_name_owned = tool_name.to_string();
+    let agent_owned = agent.to_string();
+    let error_type_owned = error_type.map(|s| s.to_string());
+
+    db.write(move |conn| {
+        conn.execute(
+            "INSERT INTO tool_quality_records (tool_name, agent, success, latency_ms, error_type) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![tool_name_owned, agent_owned, success as i32, latency_ms, error_type_owned],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn get_tool_quality(db: &Database, tool_name: &str) -> Result<serde_json::Value> {
-    let conn = db.connection();
-    let mut rows = conn
-        .query(
-            "SELECT COUNT(*) as total, SUM(CASE WHEN success THEN 1 ELSE 0 END) as successes, \
-         AVG(latency_ms) as avg_latency \
-         FROM tool_quality_records WHERE tool_name = ?1",
-            params![tool_name],
-        )
+    let tool_name_owned = tool_name.to_string();
+
+    let result = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT COUNT(*) as total, SUM(CASE WHEN success THEN 1 ELSE 0 END) as successes, \
+                     AVG(latency_ms) as avg_latency \
+                     FROM tool_quality_records WHERE tool_name = ?1",
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt
+                .query(params![tool_name_owned])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            if let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+                let total: i64 =
+                    row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let successes: i64 = row
+                    .get::<_, Option<i64>>(1)
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                    .unwrap_or(0);
+                let avg_latency: Option<f64> =
+                    row.get(2).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                Ok(Some((total, successes, avg_latency)))
+            } else {
+                Ok(None)
+            }
+        })
         .await?;
 
-    if let Some(row) = rows.next().await? {
-        let total: i64 = row.get(0)?;
-        let successes: i64 = row.get::<Option<i64>>(1)?.unwrap_or(0);
-        let avg_latency: Option<f64> = row.get(2)?;
+    if let Some((total, successes, avg_latency)) = result {
         Ok(serde_json::json!({
             "tool_name": tool_name,
             "total_executions": total,
@@ -546,41 +652,47 @@ pub async fn get_tool_quality(db: &Database, tool_name: &str) -> Result<serde_js
 // -- Skill tags --
 
 pub async fn get_skill_tags(db: &Database, skill_id: i64, user_id: i64) -> Result<Vec<String>> {
-    let conn = db.connection();
     get_skill(db, skill_id, user_id).await?;
-    let mut rows = conn
-        .query(
-            "SELECT st.tag FROM skill_tags st \
-             INNER JOIN skill_records sr ON sr.id = st.skill_id \
-             WHERE st.skill_id = ?1 AND sr.user_id = ?2",
-            params![skill_id, user_id],
-        )
-        .await?;
-    let mut tags = Vec::new();
-    while let Some(row) = rows.next().await? {
-        tags.push(row.get::<String>(0)?);
-    }
-    Ok(tags)
+
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT st.tag FROM skill_tags st \
+                 INNER JOIN skill_records sr ON sr.id = st.skill_id \
+                 WHERE st.skill_id = ?1 AND sr.user_id = ?2",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let tags = stmt
+            .query_map(params![skill_id, user_id], |row| row.get(0))
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        Ok(tags)
+    })
+    .await
 }
 
 // -- Tool deps --
 
 pub async fn get_tool_deps(db: &Database, skill_id: i64, user_id: i64) -> Result<Vec<String>> {
-    let conn = db.connection();
     get_skill(db, skill_id, user_id).await?;
-    let mut rows = conn
-        .query(
-            "SELECT std.tool_name FROM skill_tool_deps std \
-             INNER JOIN skill_records sr ON sr.id = std.skill_id \
-             WHERE std.skill_id = ?1 AND sr.user_id = ?2",
-            params![skill_id, user_id],
-        )
-        .await?;
-    let mut deps = Vec::new();
-    while let Some(row) = rows.next().await? {
-        deps.push(row.get::<String>(0)?);
-    }
-    Ok(deps)
+
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT std.tool_name FROM skill_tool_deps std \
+                 INNER JOIN skill_records sr ON sr.id = std.skill_id \
+                 WHERE std.skill_id = ?1 AND sr.user_id = ?2",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let deps = stmt
+            .query_map(params![skill_id, user_id], |row| row.get(0))
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        Ok(deps)
+    })
+    .await
 }
 
 /// Check if all required tools for a skill are available.
@@ -591,21 +703,23 @@ pub fn check_tool_safety(required_tools: &[String], available_tools: &[String]) 
 // -- Skill lineage --
 
 pub async fn get_lineage(db: &Database, skill_id: i64, user_id: i64) -> Result<Vec<i64>> {
-    let conn = db.connection();
     get_skill(db, skill_id, user_id).await?;
     // Only return parents that also belong to the caller; filter out any foreign-tenant ids
     // even if the lineage table ever held one from a pre-patch row.
-    let mut rows = conn
-        .query(
-            "SELECT slp.parent_id FROM skill_lineage_parents slp \
-             INNER JOIN skill_records psr ON psr.id = slp.parent_id \
-             WHERE slp.skill_id = ?1 AND psr.user_id = ?2",
-            params![skill_id, user_id],
-        )
-        .await?;
-    let mut parents = Vec::new();
-    while let Some(row) = rows.next().await? {
-        parents.push(row.get::<i64>(0)?);
-    }
-    Ok(parents)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT slp.parent_id FROM skill_lineage_parents slp \
+                 INNER JOIN skill_records psr ON psr.id = slp.parent_id \
+                 WHERE slp.skill_id = ?1 AND psr.user_id = ?2",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let parents = stmt
+            .query_map(params![skill_id, user_id], |row| row.get(0))
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<i64>>>()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        Ok(parents)
+    })
+    .await
 }

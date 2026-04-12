@@ -4,7 +4,11 @@ use tracing::warn;
 use crate::db::Database;
 use crate::sessions::scrub::scrub_message;
 use crate::{EngError, Result};
-use libsql::params;
+use rusqlite::{params, OptionalExtension};
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 const CONVERSATION_COLUMNS: &str =
     "id, agent, session_id, title, metadata, user_id, started_at, updated_at";
@@ -121,53 +125,53 @@ pub struct SearchMessagesRequest {
 // Row mappers
 // ---------------------------------------------------------------------------
 
-fn row_to_conversation(row: &libsql::Row) -> Result<Conversation> {
+fn row_to_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
     Ok(Conversation {
-        id: row.get::<i64>(0)?,
-        agent: row.get::<String>(1)?,
-        session_id: row.get::<Option<String>>(2)?,
-        title: row.get::<Option<String>>(3)?,
-        metadata: row.get::<Option<String>>(4)?,
-        user_id: row.get::<i64>(5)?,
-        started_at: row.get::<String>(6)?,
-        updated_at: row.get::<String>(7)?,
+        id: row.get(0)?,
+        agent: row.get(1)?,
+        session_id: row.get(2)?,
+        title: row.get(3)?,
+        metadata: row.get(4)?,
+        user_id: row.get(5)?,
+        started_at: row.get(6)?,
+        updated_at: row.get(7)?,
     })
 }
 
-fn row_to_conversation_list_item(row: &libsql::Row) -> Result<ConversationListItem> {
+fn row_to_conversation_list_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationListItem> {
     Ok(ConversationListItem {
-        id: row.get::<i64>(0)?,
-        agent: row.get::<String>(1)?,
-        session_id: row.get::<Option<String>>(2)?,
-        title: row.get::<Option<String>>(3)?,
-        metadata: row.get::<Option<String>>(4)?,
-        started_at: row.get::<String>(5)?,
-        updated_at: row.get::<String>(6)?,
-        message_count: row.get::<i64>(7)?,
+        id: row.get(0)?,
+        agent: row.get(1)?,
+        session_id: row.get(2)?,
+        title: row.get(3)?,
+        metadata: row.get(4)?,
+        started_at: row.get(5)?,
+        updated_at: row.get(6)?,
+        message_count: row.get(7)?,
     })
 }
 
-fn row_to_message(row: &libsql::Row) -> Result<Message> {
+fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
     Ok(Message {
-        id: row.get::<i64>(0)?,
-        conversation_id: row.get::<i64>(1)?,
-        role: row.get::<String>(2)?,
-        content: row.get::<String>(3)?,
-        metadata: row.get::<Option<String>>(4)?,
-        created_at: row.get::<String>(5)?,
+        id: row.get(0)?,
+        conversation_id: row.get(1)?,
+        role: row.get(2)?,
+        content: row.get(3)?,
+        metadata: row.get(4)?,
+        created_at: row.get(5)?,
     })
 }
 
-fn row_to_message_search_result(row: &libsql::Row) -> Result<MessageSearchResult> {
+fn row_to_message_search_result(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageSearchResult> {
     Ok(MessageSearchResult {
-        id: row.get::<i64>(0)?,
-        conversation_id: row.get::<i64>(1)?,
-        role: row.get::<String>(2)?,
-        content: row.get::<String>(3)?,
-        metadata: row.get::<Option<String>>(4)?,
-        created_at: row.get::<String>(5)?,
-        agent: row.get::<String>(6)?,
-        conv_title: row.get::<Option<String>>(7)?,
+        id: row.get(0)?,
+        conversation_id: row.get(1)?,
+        role: row.get(2)?,
+        content: row.get(3)?,
+        metadata: row.get(4)?,
+        created_at: row.get(5)?,
+        agent: row.get(6)?,
+        conv_title: row.get(7)?,
     })
 }
 
@@ -203,19 +207,19 @@ pub async fn create_conversation(
     user_id: i64,
 ) -> Result<Conversation> {
     let meta_str = metadata_to_string(&req.metadata);
-    db.conn.execute(
-        "INSERT INTO conversations (agent, session_id, title, metadata, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![req.agent.clone(), req.session_id.clone(), req.title.clone(), meta_str, user_id],
-    ).await?;
-    let mut id_rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-    let new_id: i64 = match id_rows.next().await? {
-        Some(row) => row.get(0)?,
-        None => {
-            return Err(EngError::Internal(
-                "failed to get last insert id for conversation".into(),
-            ))
-        }
-    };
+    let agent = req.agent.clone();
+    let session_id = req.session_id.clone();
+    let title = req.title.clone();
+    let new_id: i64 = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO conversations (agent, session_id, title, metadata, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![agent, session_id, title, meta_str, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await?;
     get_conversation_for_user(db, new_id, user_id).await
 }
 
@@ -228,11 +232,13 @@ pub async fn get_conversation_for_user(
         "SELECT {} FROM conversations WHERE id = ?1 AND user_id = ?2",
         CONVERSATION_COLUMNS
     );
-    let mut rows = db.conn.query(&sql, params![id, user_id]).await?;
-    match rows.next().await? {
-        Some(row) => row_to_conversation(&row),
-        None => Err(EngError::NotFound(format!("conversation {} not found", id))),
-    }
+    db.read(move |conn| {
+        conn.query_row(&sql, params![id, user_id], |row| row_to_conversation(row))
+            .optional()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .ok_or_else(|| EngError::NotFound(format!("conversation {} not found", id)))
+    })
+    .await
 }
 
 pub async fn get_conversation_by_session(
@@ -241,18 +247,20 @@ pub async fn get_conversation_by_session(
     session_id: &str,
     user_id: i64,
 ) -> Result<Option<Conversation>> {
+    let agent = agent.to_string();
+    let session_id = session_id.to_string();
     let sql = format!(
         "SELECT {} FROM conversations WHERE agent = ?1 AND session_id = ?2 AND user_id = ?3 ORDER BY started_at DESC LIMIT 1",
         CONVERSATION_COLUMNS
     );
-    let mut rows = db
-        .conn
-        .query(&sql, params![agent, session_id, user_id])
-        .await?;
-    match rows.next().await? {
-        Some(row) => Ok(Some(row_to_conversation(&row)?)),
-        None => Ok(None),
-    }
+    db.read(move |conn| {
+        conn.query_row(&sql, params![agent, session_id, user_id], |row| {
+            row_to_conversation(row)
+        })
+        .optional()
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+    })
+    .await
 }
 
 pub async fn list_conversations(
@@ -264,12 +272,22 @@ pub async fn list_conversations(
         "SELECT {} FROM conversations c WHERE c.user_id = ?1 ORDER BY c.updated_at DESC LIMIT ?2",
         CONVERSATION_LIST_COLUMNS
     );
-    let mut rows = db.conn.query(&sql, params![user_id, limit as i64]).await?;
-    let mut convs = Vec::new();
-    while let Some(row) = rows.next().await? {
-        convs.push(row_to_conversation_list_item(&row)?);
-    }
-    Ok(convs)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id, limit as i64], |row| {
+                row_to_conversation_list_item(row)
+            })
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut convs = Vec::new();
+        for row in rows {
+            convs.push(row.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+        }
+        Ok(convs)
+    })
+    .await
 }
 
 pub async fn list_conversations_by_agent(
@@ -278,19 +296,27 @@ pub async fn list_conversations_by_agent(
     agent: &str,
     limit: usize,
 ) -> Result<Vec<ConversationListItem>> {
+    let agent = agent.to_string();
     let sql = format!(
         "SELECT {} FROM conversations c WHERE c.user_id = ?1 AND c.agent = ?2 ORDER BY c.updated_at DESC LIMIT ?3",
         CONVERSATION_LIST_COLUMNS
     );
-    let mut rows = db
-        .conn
-        .query(&sql, params![user_id, agent, limit as i64])
-        .await?;
-    let mut convs = Vec::new();
-    while let Some(row) = rows.next().await? {
-        convs.push(row_to_conversation_list_item(&row)?);
-    }
-    Ok(convs)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id, agent, limit as i64], |row| {
+                row_to_conversation_list_item(row)
+            })
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut convs = Vec::new();
+        for row in rows {
+            convs.push(row.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+        }
+        Ok(convs)
+    })
+    .await
 }
 
 pub async fn update_conversation(
@@ -300,21 +326,29 @@ pub async fn update_conversation(
     req: UpdateConversationRequest,
 ) -> Result<Conversation> {
     let meta_str = metadata_to_string(&req.metadata);
-    db.conn.execute(
-        "UPDATE conversations SET title = COALESCE(?1, title), metadata = COALESCE(?2, metadata), \
-         updated_at = datetime('now') WHERE id = ?3 AND user_id = ?4",
-        params![req.title.clone(), meta_str, id, user_id],
-    ).await?;
+    let title = req.title.clone();
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE conversations SET title = COALESCE(?1, title), metadata = COALESCE(?2, metadata), \
+             updated_at = datetime('now') WHERE id = ?3 AND user_id = ?4",
+            params![title, meta_str, id, user_id],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await?;
     get_conversation_for_user(db, id, user_id).await
 }
 
 pub async fn delete_conversation(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
-        .conn
-        .execute(
-            "DELETE FROM conversations WHERE id = ?1 AND user_id = ?2",
-            params![id, user_id],
-        )
+        .write(move |conn| {
+            conn.execute(
+                "DELETE FROM conversations WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
         .await?;
     if affected == 0 {
         return Err(EngError::NotFound(format!("conversation {} not found", id)));
@@ -323,13 +357,15 @@ pub async fn delete_conversation(db: &Database, id: i64, user_id: i64) -> Result
 }
 
 pub async fn touch_conversation(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
         )
-        .await?;
-    Ok(())
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -349,19 +385,17 @@ pub async fn add_message(
     let conversation = get_conversation_for_user(db, conversation_id, user_id).await?;
     let meta_str = metadata_to_string(&req.metadata);
     let content = scrub_message(db, credd, user_id, &conversation.agent, &req.content).await?;
-    db.conn.execute(
-        "INSERT INTO messages (conversation_id, role, content, metadata) VALUES (?1, ?2, ?3, ?4)",
-        params![conversation_id, req.role.clone(), content, meta_str],
-    ).await?;
-    let mut id_rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-    let new_id: i64 = match id_rows.next().await? {
-        Some(row) => row.get(0)?,
-        None => {
-            return Err(EngError::Internal(
-                "failed to get last insert id for message".into(),
-            ))
-        }
-    };
+    let role = req.role.clone();
+    let new_id: i64 = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO messages (conversation_id, role, content, metadata) VALUES (?1, ?2, ?3, ?4)",
+                params![conversation_id, role, content, meta_str],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await?;
     // Touch the conversation updated_at (scoped by user_id).
     let _ = touch_conversation(db, conversation_id, user_id).await;
     let qualified_cols = MESSAGE_COLUMNS
@@ -375,13 +409,13 @@ pub async fn add_message(
          WHERE m.id = ?1 AND c.user_id = ?2",
         qualified_cols
     );
-    let mut rows = db.conn.query(&sql, params![new_id, user_id]).await?;
-    match rows.next().await? {
-        Some(row) => row_to_message(&row),
-        None => Err(EngError::Internal(
-            "failed to fetch newly created message".into(),
-        )),
-    }
+    db.read(move |conn| {
+        conn.query_row(&sql, params![new_id, user_id], |row| row_to_message(row))
+            .optional()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .ok_or_else(|| EngError::Internal("failed to fetch newly created message".into()))
+    })
+    .await
 }
 
 pub async fn list_messages(
@@ -404,18 +438,23 @@ pub async fn list_messages(
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let mut rows = db
-        .conn
-        .query(
-            &sql,
-            params![conversation_id, user_id, limit as i64, offset as i64],
-        )
-        .await?;
-    let mut msgs = Vec::new();
-    while let Some(row) = rows.next().await? {
-        msgs.push(row_to_message(&row)?);
-    }
-    Ok(msgs)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt
+            .query_map(
+                params![conversation_id, user_id, limit as i64, offset as i64],
+                |row| row_to_message(row),
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut msgs = Vec::new();
+        for row in rows {
+            msgs.push(row.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+        }
+        Ok(msgs)
+    })
+    .await
 }
 
 pub async fn search_messages(
@@ -434,23 +473,32 @@ pub async fn search_messages(
          JOIN messages m ON f.rowid = m.id \
          JOIN conversations c ON m.conversation_id = c.id \
          WHERE messages_fts MATCH ?1 AND c.user_id = ?2 \
-         ORDER BY m.created_at DESC LIMIT ?3";
-    let mut rows = match db
-        .conn
-        .query(sql, params![sanitized, user_id, limit as i64])
+         ORDER BY m.created_at DESC LIMIT ?3"
+        .to_string();
+    match db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![sanitized, user_id, limit as i64], |row| {
+                    row_to_message_search_result(row)
+                })
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            }
+            Ok(results)
+        })
         .await
     {
-        Ok(r) => r,
+        Ok(r) => Ok(r),
         Err(e) => {
             warn!("message FTS search failed: {}", e);
-            return Ok(vec![]);
+            Ok(vec![])
         }
-    };
-    let mut results = Vec::new();
-    while let Some(row) = rows.next().await? {
-        results.push(row_to_message_search_result(&row)?);
     }
-    Ok(results)
 }
 
 // ---------------------------------------------------------------------------
@@ -464,29 +512,21 @@ pub async fn bulk_insert_conversation(
     user_id: i64,
 ) -> Result<Conversation> {
     let meta_str = metadata_to_string(&req.metadata);
+    let agent = req.agent.clone();
+    let session_id = req.session_id.clone();
+    let title = req.title.clone();
     // INSERT ... RETURNING avoids the cross-connection last_insert_rowid race.
-    let mut id_rows = db
-        .conn
-        .query(
-            "INSERT INTO conversations (agent, session_id, title, metadata, user_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
-            params![
-                req.agent.clone(),
-                req.session_id.clone(),
-                req.title.clone(),
-                meta_str,
-                user_id
-            ],
-        )
+    let conv_id: i64 = db
+        .write(move |conn| {
+            conn.query_row(
+                "INSERT INTO conversations (agent, session_id, title, metadata, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
+                params![agent, session_id, title, meta_str, user_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
         .await?;
-    let conv_id: i64 = match id_rows.next().await? {
-        Some(row) => row.get(0)?,
-        None => {
-            return Err(EngError::Internal(
-                "bulk conversation insert RETURNING row was empty".into(),
-            ))
-        }
-    };
     for msg in req.messages {
         add_message(
             db,

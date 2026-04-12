@@ -16,6 +16,8 @@ use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
+use rusqlite::params;
+
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
 /// SECURITY/DoS: cap how many memories a single import call can ingest.
@@ -188,21 +190,23 @@ async fn import_json(
         };
         let sync_id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
-        let created_at = m.created_at.as_deref().unwrap_or(&now);
-        let updated_at = m.updated_at.as_deref().unwrap_or(&now);
-        match state.db.conn.execute(
-            "INSERT INTO memories (content, category, source, session_id, importance, tags, confidence, is_static, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            libsql::params![
-                content,
-                m.category.clone().unwrap_or_else(|| "general".to_string()),
-                m.source.clone().unwrap_or_else(|| "import".to_string()),
-                m.session_id.clone(), m.importance.unwrap_or(5), tags_str.clone(),
-                m.confidence.unwrap_or(1.0),
-                if m.is_static.unwrap_or(false) { 1 } else { 0 },
-                auth.user_id, sync_id, created_at.to_string(), updated_at.to_string()
-            ],
-        ).await {
-            Ok(_) => imported += 1,
+        let created_at = m.created_at.clone().unwrap_or_else(|| now.clone());
+        let updated_at = m.updated_at.clone().unwrap_or_else(|| now.clone());
+        let category = m.category.clone().unwrap_or_else(|| "general".to_string());
+        let source = m.source.clone().unwrap_or_else(|| "import".to_string());
+        let session_id = m.session_id.clone();
+        let importance = m.importance.unwrap_or(5);
+        let confidence = m.confidence.unwrap_or(1.0);
+        let is_static = if m.is_static.unwrap_or(false) { 1i32 } else { 0i32 };
+        let user_id = auth.user_id;
+        match state.db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, source, session_id, importance, tags, confidence, is_static, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![content, category, source, session_id, importance, tags_str, confidence, is_static, user_id, sync_id, created_at, updated_at],
+            ).map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        }).await {
+            Ok(()) => imported += 1,
             Err(e) => { tracing::warn!("import_memory_failed: {}", e); skipped += 1; }
         }
     }
@@ -264,10 +268,18 @@ async fn import_mem0(
             .unwrap_or_else(|| json!(["mem0-import"]));
         let tags_str = serde_json::to_string(&tags).unwrap_or_default();
         let sync_id = Uuid::new_v4().to_string();
-        let _ = state.db.conn.execute(
-            "INSERT INTO memories (content, category, source, importance, tags, confidence, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, datetime('now'), datetime('now'))",
-            libsql::params![content, category.to_string(), source.to_string(), importance, tags_str, auth.user_id, sync_id],
-        ).await.map(|_| imported += 1);
+        let category_s = category.to_string();
+        let source_s = source.to_string();
+        let user_id = auth.user_id;
+        if state.db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, source, importance, tags, confidence, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, datetime('now'), datetime('now'))",
+                params![content, category_s, source_s, importance, tags_str, user_id, sync_id],
+            ).map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        }).await.is_ok() {
+            imported += 1;
+        }
     }
     Ok(Json(json!({ "imported": imported, "source": "mem0" })))
 }
@@ -373,11 +385,17 @@ async fn import_supermemory(
             })
             .unwrap_or("supermemory-import");
         let sync_id = Uuid::new_v4().to_string();
-        match state.db.conn.execute(
-            "INSERT INTO memories (content, category, source, importance, tags, confidence, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, datetime('now'), datetime('now'))",
-            libsql::params![content, category.to_string(), source.to_string(), importance, tags_str, auth.user_id, sync_id],
-        ).await {
-            Ok(_) => imported += 1,
+        let category_s = category.to_string();
+        let source_s = source.to_string();
+        let user_id = auth.user_id;
+        match state.db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, source, importance, tags, confidence, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, datetime('now'), datetime('now'))",
+                params![content, category_s, source_s, importance, tags_str, user_id, sync_id],
+            ).map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        }).await {
+            Ok(()) => imported += 1,
             Err(_) => { skipped += 1; }
         }
     }

@@ -28,6 +28,10 @@ use crate::db::Database;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Report types
 // ---------------------------------------------------------------------------
@@ -148,27 +152,19 @@ impl StageCounts {
 
 /// Insert a new brain_dream_runs row, returning the new run_id.
 async fn insert_dream_run(db: &Database, user_id: i64) -> Result<i64> {
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "INSERT INTO brain_dream_runs \
              (user_id, started_at, replay_count, merge_count, prune_count, \
               discover_count, decorrelate_count, resolve_count) \
              VALUES (?1, datetime('now'), 0, 0, 0, 0, 0, 0)",
-            libsql::params![user_id],
+            rusqlite::params![user_id],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
 
-    let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-
-    match rows.next().await? {
-        Some(row) => {
-            let id: i64 = row.get(0)?;
-            Ok(id)
-        }
-        None => Err(EngError::Internal(
-            "failed to retrieve dream run id".to_string(),
-        )),
-    }
+        Ok(conn.last_insert_rowid())
+    })
+    .await
 }
 
 /// Update an existing brain_dream_runs row with final counts and finish time.
@@ -178,8 +174,15 @@ async fn finish_dream_run(
     user_id: i64,
     counts: &StageCounts,
 ) -> Result<()> {
-    db.conn
-        .execute(
+    let replay_count = counts.replay_count as i64;
+    let merge_count = counts.merge_count as i64;
+    let prune_count = counts.prune_count as i64;
+    let discover_count = counts.discover_count as i64;
+    let decorrelate_count = counts.decorrelate_count as i64;
+    let resolve_count = counts.resolve_count as i64;
+
+    db.write(move |conn| {
+        conn.execute(
             "UPDATE brain_dream_runs SET \
              finished_at = datetime('now'), \
              replay_count = ?1, \
@@ -189,17 +192,20 @@ async fn finish_dream_run(
              decorrelate_count = ?5, \
              resolve_count = ?6 \
              WHERE id = ?7 AND user_id = ?8",
-            libsql::params![
-                counts.replay_count as i64,
-                counts.merge_count as i64,
-                counts.prune_count as i64,
-                counts.discover_count as i64,
-                counts.decorrelate_count as i64,
-                counts.resolve_count as i64,
+            rusqlite::params![
+                replay_count,
+                merge_count,
+                prune_count,
+                discover_count,
+                decorrelate_count,
+                resolve_count,
                 run_id,
                 user_id
             ],
         )
-        .await?;
-    Ok(())
+        .map_err(rusqlite_to_eng_error)?;
+
+        Ok(())
+    })
+    .await
 }

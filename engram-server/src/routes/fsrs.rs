@@ -4,6 +4,7 @@ use axum::{
     Json, Router,
 };
 use kleos_lib::fsrs;
+use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -48,42 +49,51 @@ async fn review(
         _ => unreachable!(),
     };
 
-    // Verify memory belongs to user
-    let mut rows = state
+    // Verify memory belongs to user and fetch FSRS state
+    let row_data = state
         .db
-        .conn
-        .query(
-            "SELECT user_id, fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
-            libsql::params![id],
-        )
-        .await
-        .map_err(kleos_lib::EngError::Database)?;
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT user_id, fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<f64>>(1)?,
+                        row.get::<_, Option<f64>>(2)?,
+                        row.get::<_, Option<f64>>(3)?,
+                        row.get::<_, Option<f64>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, Option<i64>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, String>(9)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?;
 
-    let row = rows
-        .next()
-        .await
-        .map_err(kleos_lib::EngError::Database)?
-        .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("not found".into())))?;
+    let (owner, stability, difficulty, storage, retrieval, learning_state_int, reps, lapses, last_review, created_at) =
+        row_data.ok_or_else(|| AppError(kleos_lib::EngError::NotFound("not found".into())))?;
 
-    let owner: i64 = row
-        .get(0)
-        .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
     if owner != auth.user_id {
         return Err(AppError(kleos_lib::EngError::NotFound("not found".into())));
     }
 
     // Build current FSRS state if it exists
-    let stability: Option<f64> = row.get(1).unwrap_or(None);
     let current_state = if let Some(s) = stability {
-        let difficulty: f64 = row.get::<f64>(2).unwrap_or(5.0);
-        let storage: f64 = row.get::<f64>(3).unwrap_or(1.0);
-        let retrieval: f64 = row.get::<f64>(4).unwrap_or(1.0);
-        let learning_state_int: i64 = row.get::<i64>(5).unwrap_or(0);
-        let reps: i64 = row.get::<i64>(6).unwrap_or(0);
-        let lapses: i64 = row.get::<i64>(7).unwrap_or(0);
-        let last_review: String = row.get::<String>(8).unwrap_or_default();
+        let difficulty_val = difficulty.unwrap_or(5.0);
+        let storage_val = storage.unwrap_or(1.0);
+        let retrieval_val = retrieval.unwrap_or(1.0);
+        let ls_int = learning_state_int.unwrap_or(0);
+        let reps_val = reps.unwrap_or(0);
+        let lapses_val = lapses.unwrap_or(0);
+        let last_review_str = last_review.unwrap_or_default();
 
-        let learning_state = match learning_state_int {
+        let learning_state = match ls_int {
             1 => fsrs::LearningState::Learning,
             2 => fsrs::LearningState::Review,
             3 => fsrs::LearningState::Relearning,
@@ -92,50 +102,59 @@ async fn review(
 
         Some(fsrs::FsrsState {
             stability: s as f32,
-            difficulty: difficulty as f32,
-            storage_strength: storage as f32,
-            retrieval_strength: retrieval as f32,
+            difficulty: difficulty_val as f32,
+            storage_strength: storage_val as f32,
+            retrieval_strength: retrieval_val as f32,
             learning_state,
-            reps: reps as i32,
-            lapses: lapses as i32,
-            last_review_at: last_review,
+            reps: reps_val as i32,
+            lapses: lapses_val as i32,
+            last_review_at: last_review_str,
         })
     } else {
         None
     };
 
     // Calculate elapsed days
-    let created_at: String = row.get::<String>(9).unwrap_or_default();
-    let last_review_str = current_state
+    let last_review_str_for_elapsed = current_state
         .as_ref()
-        .map(|s| s.last_review_at.as_str())
-        .unwrap_or(&created_at);
-    let elapsed_days = calculate_elapsed_days(last_review_str);
+        .map(|s| s.last_review_at.clone())
+        .unwrap_or_else(|| created_at.clone());
+    let elapsed_days = calculate_elapsed_days(&last_review_str_for_elapsed);
 
     // Process review
     let new_state = fsrs::process_review(current_state.as_ref(), grade, elapsed_days);
 
     // Update the memory's FSRS columns
-    let learning_state_int = new_state.learning_state as i64;
+    let learning_state_int_new = new_state.learning_state as i64;
+    let stability_new = new_state.stability as f64;
+    let difficulty_new = new_state.difficulty as f64;
+    let storage_strength_new = new_state.storage_strength as f64;
+    let retrieval_strength_new = new_state.retrieval_strength as f64;
+    let reps_new = new_state.reps as i64;
+    let lapses_new = new_state.lapses as i64;
+    let last_review_at_new = new_state.last_review_at.clone();
+
     state
         .db
-        .conn
-        .execute(
-            "UPDATE memories SET fsrs_stability = ?1, fsrs_difficulty = ?2, fsrs_storage_strength = ?3, fsrs_retrieval_strength = ?4, fsrs_learning_state = ?5, fsrs_reps = ?6, fsrs_lapses = ?7, fsrs_last_review_at = ?8, access_count = access_count + 1, last_accessed_at = datetime('now') WHERE id = ?9",
-            libsql::params![
-                new_state.stability as f64,
-                new_state.difficulty as f64,
-                new_state.storage_strength as f64,
-                new_state.retrieval_strength as f64,
-                learning_state_int,
-                new_state.reps as i64,
-                new_state.lapses as i64,
-                new_state.last_review_at.clone(),
-                id
-            ],
-        )
-        .await
-        .map_err(kleos_lib::EngError::Database)?;
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET fsrs_stability = ?1, fsrs_difficulty = ?2, fsrs_storage_strength = ?3, fsrs_retrieval_strength = ?4, fsrs_learning_state = ?5, fsrs_reps = ?6, fsrs_lapses = ?7, fsrs_last_review_at = ?8, access_count = access_count + 1, last_accessed_at = datetime('now') WHERE id = ?9",
+                params![
+                    stability_new,
+                    difficulty_new,
+                    storage_strength_new,
+                    retrieval_strength_new,
+                    learning_state_int_new,
+                    reps_new,
+                    lapses_new,
+                    last_review_at_new,
+                    id
+                ],
+            )
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        })
+        .await?;
 
     Ok(Json(json!({ "id": id, "fsrs": new_state })))
 }
@@ -154,38 +173,38 @@ async fn get_state(
         .id
         .ok_or_else(|| AppError(kleos_lib::EngError::InvalidInput("id required".into())))?;
 
-    let mut rows = state
+    let row_data = state
         .db
-        .conn
-        .query(
-            "SELECT user_id, fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
-            libsql::params![id],
-        )
-        .await
-        .map_err(kleos_lib::EngError::Database)?;
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT user_id, fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<f64>>(1)?,
+                        row.get::<_, Option<f64>>(2)?,
+                        row.get::<_, Option<f64>>(3)?,
+                        row.get::<_, Option<f64>>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, String>(9)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?;
 
-    let row = rows
-        .next()
-        .await
-        .map_err(kleos_lib::EngError::Database)?
-        .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("not found".into())))?;
+    let (owner, stability, difficulty, storage_strength, retrieval_strength, learning_state, reps, lapses, last_review_at, created_at) =
+        row_data.ok_or_else(|| AppError(kleos_lib::EngError::NotFound("not found".into())))?;
 
-    let owner: i64 = row
-        .get(0)
-        .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
     if owner != auth.user_id {
         return Err(AppError(kleos_lib::EngError::NotFound("not found".into())));
     }
-
-    let stability: Option<f64> = row.get(1).unwrap_or(None);
-    let difficulty: Option<f64> = row.get(2).unwrap_or(None);
-    let storage_strength: Option<f64> = row.get(3).unwrap_or(None);
-    let retrieval_strength: Option<f64> = row.get(4).unwrap_or(None);
-    let learning_state: i64 = row.get::<i64>(5).unwrap_or(0);
-    let reps: i64 = row.get::<i64>(6).unwrap_or(0);
-    let lapses: i64 = row.get::<i64>(7).unwrap_or(0);
-    let last_review_at: Option<String> = row.get(8).unwrap_or(None);
-    let created_at: String = row.get::<String>(9).unwrap_or_default();
 
     // Calculate retrievability
     let ref_str = last_review_at.as_deref().unwrap_or(&created_at);
@@ -214,49 +233,56 @@ async fn init_backfill(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     // Find memories without FSRS state
-    let mut rows = state
+    let ids: Vec<i64> = state
         .db
-        .conn
-        .query(
-            "SELECT id FROM memories WHERE user_id = ?1 AND fsrs_stability IS NULL",
-            libsql::params![auth.user_id],
-        )
-        .await
-        .map_err(kleos_lib::EngError::Database)?;
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT id FROM memories WHERE user_id = ?1 AND fsrs_stability IS NULL")
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt
+                .query(params![auth.user_id])
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            let mut results = Vec::new();
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+            {
+                let id: i64 = row
+                    .get(0)
+                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                results.push(id);
+            }
+            Ok(results)
+        })
+        .await?;
 
-    let mut ids = Vec::new();
-    while let Some(r) = rows.next().await.map_err(kleos_lib::EngError::Database)? {
-        let id: i64 = r
-            .get(0)
-            .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
-        ids.push(id);
-    }
+    let count = ids.len() as i64;
 
-    let mut count = 0i64;
-    for id in &ids {
-        let init = fsrs::process_review(None, fsrs::Rating::Good, 0.0);
-        let learning_state_int = init.learning_state as i64;
-        state
-            .db
-            .conn
-            .execute(
-                "UPDATE memories SET fsrs_stability = ?1, fsrs_difficulty = ?2, fsrs_storage_strength = ?3, fsrs_retrieval_strength = ?4, fsrs_learning_state = ?5, fsrs_reps = ?6, fsrs_lapses = ?7, fsrs_last_review_at = ?8 WHERE id = ?9",
-                libsql::params![
-                    init.stability as f64,
-                    init.difficulty as f64,
-                    init.storage_strength as f64,
-                    init.retrieval_strength as f64,
-                    learning_state_int,
-                    init.reps as i64,
-                    init.lapses as i64,
-                    init.last_review_at.clone(),
-                    *id
-                ],
-            )
-            .await
-            .map_err(kleos_lib::EngError::Database)?;
-        count += 1;
-    }
+    state
+        .db
+        .write(move |conn| {
+            for id in &ids {
+                let init = fsrs::process_review(None, fsrs::Rating::Good, 0.0);
+                let learning_state_int = init.learning_state as i64;
+                conn.execute(
+                    "UPDATE memories SET fsrs_stability = ?1, fsrs_difficulty = ?2, fsrs_storage_strength = ?3, fsrs_retrieval_strength = ?4, fsrs_learning_state = ?5, fsrs_reps = ?6, fsrs_lapses = ?7, fsrs_last_review_at = ?8 WHERE id = ?9",
+                    params![
+                        init.stability as f64,
+                        init.difficulty as f64,
+                        init.storage_strength as f64,
+                        init.retrieval_strength as f64,
+                        learning_state_int,
+                        init.reps as i64,
+                        init.lapses as i64,
+                        init.last_review_at,
+                        *id
+                    ],
+                )
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            }
+            Ok(())
+        })
+        .await?;
 
     Ok(Json(json!({ "initialized": count })))
 }

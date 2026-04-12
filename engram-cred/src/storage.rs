@@ -1,10 +1,15 @@
 //! Database storage layer for encrypted secrets.
 
 use kleos_lib::db::Database;
+use kleos_lib::EngError;
 
 use crate::crypto::{decrypt_secret, encrypt_secret, KEY_SIZE, NONCE_SIZE};
 use crate::types::{SecretData, SecretType};
 use crate::{CredError, Result};
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 /// A stored secret row from the database.
 #[derive(Debug, Clone)]
@@ -28,31 +33,33 @@ pub async fn store_secret(
     key: &[u8; KEY_SIZE],
 ) -> Result<i64> {
     let (encrypted, nonce) = encrypt_secret(key, data)?;
-    let secret_type = data.secret_type().as_str();
+    let secret_type = data.secret_type().as_str().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let name = name.to_string();
+    let category = category.to_string();
 
-    db.conn
-        .execute(
-            "INSERT INTO cred_secrets (user_id, name, category, secret_type, encrypted_data, nonce, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            libsql::params![
-                user_id,
-                name,
-                category,
-                secret_type,
-                encrypted.as_slice(),
-                nonce.as_slice(),
-                now.clone(),
-                now
-            ],
-        )
-        .await?;
+    let id = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO cred_secrets (user_id, name, category, secret_type, encrypted_data, nonce, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    user_id,
+                    name,
+                    category,
+                    secret_type,
+                    encrypted.as_slice(),
+                    nonce.as_slice(),
+                    now.clone(),
+                    now
+                ],
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = match rows.next().await? {
-        Some(row) => row.get(0)?,
-        None => 0,
-    };
+            Ok(conn.last_insert_rowid())
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
 
     Ok(id)
 }
@@ -65,30 +72,47 @@ pub async fn get_secret(
     name: &str,
     key: &[u8; KEY_SIZE],
 ) -> Result<(SecretRow, SecretData)> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, user_id, name, category, secret_type, encrypted_data, nonce, created_at, updated_at
-             FROM cred_secrets
-             WHERE user_id = ?1 AND category = ?2 AND name = ?3",
-            libsql::params![user_id, category, name],
-        )
-        .await?;
+    let category = category.to_string();
+    let name = name.to_string();
+    let category_name = format!("{}/{}", category, name);
 
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| CredError::NotFound(format!("{}/{}", category, name)))?;
+    type RawRow = (i64, i64, String, String, String, Vec<u8>, Vec<u8>, String, String);
 
-    let id: i64 = row.get(0)?;
-    let user_id: i64 = row.get(1)?;
-    let name: String = row.get(2)?;
-    let category: String = row.get(3)?;
-    let secret_type_str: String = row.get(4)?;
-    let encrypted_data: Vec<u8> = row.get(5)?;
-    let nonce_vec: Vec<u8> = row.get(6)?;
-    let created_at: String = row.get(7)?;
-    let updated_at: String = row.get(8)?;
+    let raw: Option<RawRow> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, user_id, name, category, secret_type, encrypted_data, nonce, created_at, updated_at
+                     FROM cred_secrets
+                     WHERE user_id = ?1 AND category = ?2 AND name = ?3",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            let mut rows = stmt
+                .query(rusqlite::params![user_id, category, name])
+                .map_err(rusqlite_to_eng_error)?;
+
+            match rows.next().map_err(rusqlite_to_eng_error)? {
+                Some(row) => {
+                    let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+                    let uid: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
+                    let rname: String = row.get(2).map_err(rusqlite_to_eng_error)?;
+                    let rcat: String = row.get(3).map_err(rusqlite_to_eng_error)?;
+                    let stype: String = row.get(4).map_err(rusqlite_to_eng_error)?;
+                    let enc: Vec<u8> = row.get(5).map_err(rusqlite_to_eng_error)?;
+                    let nonce: Vec<u8> = row.get(6).map_err(rusqlite_to_eng_error)?;
+                    let created: String = row.get(7).map_err(rusqlite_to_eng_error)?;
+                    let updated: String = row.get(8).map_err(rusqlite_to_eng_error)?;
+                    Ok(Some((id, uid, rname, rcat, stype, enc, nonce, created, updated)))
+                }
+                None => Ok(None),
+            }
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
+
+    let (id, uid, rname, rcat, secret_type_str, encrypted_data, nonce_vec, created_at, updated_at) =
+        raw.ok_or_else(|| CredError::NotFound(category_name))?;
 
     let secret_type = SecretType::parse(&secret_type_str).ok_or_else(|| {
         CredError::InvalidInput(format!("unknown secret type: {}", secret_type_str))
@@ -104,9 +128,9 @@ pub async fn get_secret(
 
     let secret_row = SecretRow {
         id,
-        user_id,
-        name,
-        category,
+        user_id: uid,
+        name: rname,
+        category: rcat,
         secret_type,
         created_at,
         updated_at,
@@ -121,53 +145,71 @@ pub async fn list_secrets(
     user_id: i64,
     category: Option<&str>,
 ) -> Result<Vec<SecretRow>> {
-    let mut rows = match category {
-        Some(cat) => {
-            db.conn
-                .query(
+    type RawRow = (i64, i64, String, String, String, String, String);
+
+    let category = category.map(|s| s.to_string());
+
+    let rows: Vec<RawRow> = db
+        .read(move |conn| {
+            let (sql, with_cat) = match &category {
+                Some(_) => (
                     "SELECT id, user_id, name, category, secret_type, created_at, updated_at
                      FROM cred_secrets
                      WHERE user_id = ?1 AND category = ?2
                      ORDER BY category, name",
-                    libsql::params![user_id, cat],
-                )
-                .await?
-        }
-        None => {
-            db.conn
-                .query(
+                    true,
+                ),
+                None => (
                     "SELECT id, user_id, name, category, secret_type, created_at, updated_at
                      FROM cred_secrets
                      WHERE user_id = ?1
                      ORDER BY category, name",
-                    libsql::params![user_id],
-                )
-                .await?
-        }
-    };
+                    false,
+                ),
+            };
 
-    let mut secrets = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let id: i64 = row.get(0)?;
-        let user_id: i64 = row.get(1)?;
-        let name: String = row.get(2)?;
-        let category: String = row.get(3)?;
-        let secret_type_str: String = row.get(4)?;
-        let created_at: String = row.get(5)?;
-        let updated_at: String = row.get(6)?;
+            let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
 
-        let secret_type = SecretType::parse(&secret_type_str).unwrap_or(SecretType::Note);
+            fn map_row(row: &rusqlite::Row<'_>) -> std::result::Result<(i64, i64, String, String, String, String, String), rusqlite::Error> {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            }
 
-        secrets.push(SecretRow {
-            id,
-            user_id,
-            name,
-            category,
-            secret_type,
-            created_at,
-            updated_at,
-        });
-    }
+            if with_cat {
+                stmt.query_map(rusqlite::params![user_id, category.as_deref()], map_row)
+                    .and_then(|rows| rows.collect::<std::result::Result<Vec<_>, _>>())
+                    .map_err(rusqlite_to_eng_error)
+            } else {
+                stmt.query_map(rusqlite::params![user_id], map_row)
+                    .and_then(|rows| rows.collect::<std::result::Result<Vec<_>, _>>())
+                    .map_err(rusqlite_to_eng_error)
+            }
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
+
+    let secrets = rows
+        .into_iter()
+        .map(|(id, uid, name, cat, stype_str, created, updated)| {
+            let secret_type = SecretType::parse(&stype_str).unwrap_or(SecretType::Note);
+            SecretRow {
+                id,
+                user_id: uid,
+                name,
+                category: cat,
+                secret_type,
+                created_at: created,
+                updated_at: updated,
+            }
+        })
+        .collect();
 
     Ok(secrets)
 }
@@ -182,29 +224,37 @@ pub async fn update_secret(
     key: &[u8; KEY_SIZE],
 ) -> Result<()> {
     let (encrypted, nonce) = encrypt_secret(key, data)?;
-    let secret_type = data.secret_type().as_str();
+    let secret_type = data.secret_type().as_str().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let category = category.to_string();
+    let name = name.to_string();
+    let category_name = format!("{}/{}", category, name);
 
     let affected = db
-        .conn
-        .execute(
-            "UPDATE cred_secrets
-             SET encrypted_data = ?1, nonce = ?2, secret_type = ?3, updated_at = ?4
-             WHERE user_id = ?5 AND category = ?6 AND name = ?7",
-            libsql::params![
-                encrypted.as_slice(),
-                nonce.as_slice(),
-                secret_type,
-                now,
-                user_id,
-                category,
-                name
-            ],
-        )
-        .await?;
+        .write(move |conn| {
+            let n = conn
+                .execute(
+                    "UPDATE cred_secrets
+                     SET encrypted_data = ?1, nonce = ?2, secret_type = ?3, updated_at = ?4
+                     WHERE user_id = ?5 AND category = ?6 AND name = ?7",
+                    rusqlite::params![
+                        encrypted.as_slice(),
+                        nonce.as_slice(),
+                        secret_type,
+                        now,
+                        user_id,
+                        category,
+                        name
+                    ],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(n)
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
 
     if affected == 0 {
-        return Err(CredError::NotFound(format!("{}/{}", category, name)));
+        return Err(CredError::NotFound(category_name));
     }
 
     Ok(())
@@ -212,16 +262,25 @@ pub async fn update_secret(
 
 /// Delete a secret.
 pub async fn delete_secret(db: &Database, user_id: i64, category: &str, name: &str) -> Result<()> {
+    let category = category.to_string();
+    let name = name.to_string();
+    let category_name = format!("{}/{}", category, name);
+
     let affected = db
-        .conn
-        .execute(
-            "DELETE FROM cred_secrets WHERE user_id = ?1 AND category = ?2 AND name = ?3",
-            libsql::params![user_id, category, name],
-        )
-        .await?;
+        .write(move |conn| {
+            let n = conn
+                .execute(
+                    "DELETE FROM cred_secrets WHERE user_id = ?1 AND category = ?2 AND name = ?3",
+                    rusqlite::params![user_id, category, name],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(n)
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
 
     if affected == 0 {
-        return Err(CredError::NotFound(format!("{}/{}", category, name)));
+        return Err(CredError::NotFound(category_name));
     }
 
     Ok(())
@@ -234,8 +293,8 @@ mod tests {
 
     async fn setup_db() -> Database {
         let db = Database::connect_memory().await.expect("db");
-        db.conn
-            .execute(
+        db.write(|conn| {
+            conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS cred_secrets (
                     id INTEGER PRIMARY KEY,
                     user_id INTEGER NOT NULL,
@@ -247,11 +306,12 @@ mod tests {
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE(user_id, category, name)
-                )",
-                (),
+                );",
             )
-            .await
-            .expect("create table");
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .expect("create table");
         db
     }
 

@@ -39,17 +39,17 @@ async fn list_jobs(
 
     let (jobs, total) = match status {
         "failed" => {
-            let jobs = list_failed_jobs(&state.db.conn, limit, offset).await?;
-            let total = count_failed_jobs(&state.db.conn).await?;
+            let jobs = list_failed_jobs(&state.db, limit, offset).await?;
+            let total = count_failed_jobs(&state.db).await?;
             (jobs, total)
         }
         "pending" => {
-            let jobs = list_pending_jobs(&state.db.conn, limit, offset).await?;
+            let jobs = list_pending_jobs(&state.db, limit, offset).await?;
             let total = jobs.len() as i64;
             (jobs, total)
         }
         "running" => {
-            let jobs = list_running_jobs(&state.db.conn).await?;
+            let jobs = list_running_jobs(&state.db).await?;
             let total = jobs.len() as i64;
             (jobs, total)
         }
@@ -107,7 +107,7 @@ async fn retry_job_handler(
         )));
     }
 
-    let retried = retry_failed_job(&state.db.conn, body.id).await?;
+    let retried = retry_failed_job(&state.db, body.id).await?;
     if !retried {
         return Err(AppError::from(kleos_lib::EngError::NotFound(
             "Job not found or not in failed state".into(),
@@ -135,7 +135,7 @@ async fn purge_jobs_handler(
     }
 
     let days = body.older_than_days.unwrap_or(7);
-    let purged = purge_failed_jobs(&state.db.conn, days).await?;
+    let purged = purge_failed_jobs(&state.db, days).await?;
 
     Ok(Json(json!({
         "purged": purged,
@@ -154,7 +154,7 @@ async fn job_stats_handler(
         )));
     }
 
-    let stats = jobs::get_job_stats(&state.db.conn).await?;
+    let stats = jobs::get_job_stats(&state.db).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -178,7 +178,7 @@ async fn list_pending_handler(
     }
     let limit = params.limit.unwrap_or(50).min(200);
     let offset = params.offset.unwrap_or(0);
-    let jobs = list_pending_jobs(&state.db.conn, limit, offset).await?;
+    let jobs = list_pending_jobs(&state.db, limit, offset).await?;
     let jobs_json: Vec<Value> = jobs
         .into_iter()
         .map(|j| {
@@ -206,7 +206,7 @@ async fn list_running_handler(
             "Admin required".into(),
         )));
     }
-    let jobs = list_running_jobs(&state.db.conn).await?;
+    let jobs = list_running_jobs(&state.db).await?;
     let jobs_json: Vec<Value> = jobs
         .into_iter()
         .map(|j| {
@@ -238,8 +238,8 @@ async fn list_failed_handler(
     }
     let limit = params.limit.unwrap_or(50).min(200);
     let offset = params.offset.unwrap_or(0);
-    let jobs = list_failed_jobs(&state.db.conn, limit, offset).await?;
-    let total = count_failed_jobs(&state.db.conn).await?;
+    let jobs = list_failed_jobs(&state.db, limit, offset).await?;
+    let total = count_failed_jobs(&state.db).await?;
     let jobs_json: Vec<Value> = jobs
         .into_iter()
         .map(|j| {
@@ -272,7 +272,7 @@ async fn retry_job_by_id_handler(
             "Admin required".into(),
         )));
     }
-    let retried = retry_failed_job(&state.db.conn, id).await?;
+    let retried = retry_failed_job(&state.db, id).await?;
     if !retried {
         return Err(AppError::from(kleos_lib::EngError::NotFound(
             "Job not found or not in failed state".into(),
@@ -297,7 +297,7 @@ async fn cleanup_jobs_handler(
         )));
     }
     let days = body.older_than_days.unwrap_or(30);
-    let deleted = cleanup_jobs(&state.db.conn, days).await?;
+    let deleted = cleanup_jobs(&state.db, days).await?;
     Ok(Json(json!({
         "deleted": deleted,
         "older_than_days": days,

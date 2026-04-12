@@ -9,15 +9,12 @@ brain_hopfield = []
 test-utils = []
 # Enable per-tenant sharding (rusqlite-based). Mutually exclusive with libsql tests.
 tenant-sharding = []
-# Enable the deadpool-sqlite-backed connection pool backend.
-db_pool = ["dep:deadpool-sqlite"]
 credd-raw = []
 
 [dependencies]
-libsql = { workspace = true }
 rusqlite = { workspace = true }
 tokio-rusqlite = { workspace = true }
-deadpool-sqlite = { workspace = true, features = ["tracing"], optional = true }
+deadpool-sqlite = { workspace = true, features = ["tracing"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

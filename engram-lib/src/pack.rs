@@ -3,8 +3,12 @@
 //! Ports: pack/index.ts
 
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -42,61 +46,82 @@ pub async fn pack_memories(
     format: PackFormat,
     user_id: i64,
 ) -> Result<PackResult> {
-    let mut candidates: Vec<PackCandidate> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
     // Layer 1: Static facts
-    let mut rows = db.conn.query(
-        "SELECT id, content, category, importance FROM memories WHERE is_static = 1 AND is_forgotten = 0 AND is_archived = 0 AND is_consolidated = 0 AND user_id = ?1",
-        libsql::params![user_id],
-    ).await?;
-    while let Some(row) = rows.next().await? {
-        let id: i64 = row
-            .get(0)
-            .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-        if seen.insert(id) {
-            candidates.push(PackCandidate {
-                id,
-                content: row
-                    .get(1)
-                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-                category: row
-                    .get(2)
-                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-                importance: row
-                    .get(3)
-                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-                score: 100.0,
-                source: "static".into(),
-            });
-        }
-    }
+    let static_candidates: Vec<PackCandidate> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, content, category, importance \
+                     FROM memories \
+                     WHERE is_static = 1 AND is_forgotten = 0 AND is_archived = 0 \
+                       AND is_consolidated = 0 AND user_id = ?1",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(rusqlite::params![user_id], |row| {
+                    Ok(PackCandidate {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                        score: 100.0,
+                        source: "static".to_string(),
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?;
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row.map_err(rusqlite_to_eng_error)?);
+            }
+            Ok(results)
+        })
+        .await?;
 
     // Layer 2: High-importance memories
-    let mut rows = db.conn.query(
-        "SELECT id, content, category, importance, COALESCE(decay_score, importance) as ds FROM memories WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 AND is_consolidated = 0 AND user_id = ?1 ORDER BY ds DESC LIMIT 30",
-        libsql::params![user_id],
-    ).await?;
-    while let Some(row) = rows.next().await? {
-        let id: i64 = row
-            .get(0)
-            .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-        if seen.insert(id) {
-            let ds: f64 = row.get(4).unwrap_or(5.0);
-            candidates.push(PackCandidate {
-                id,
-                content: row
-                    .get(1)
-                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-                category: row
-                    .get(2)
-                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-                importance: row
-                    .get(3)
-                    .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-                score: ds * 2.0,
-                source: "important".into(),
-            });
+    let important_candidates: Vec<PackCandidate> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, content, category, importance, \
+                            COALESCE(decay_score, importance) as ds \
+                     FROM memories \
+                     WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                       AND is_consolidated = 0 AND user_id = ?1 \
+                     ORDER BY ds DESC LIMIT 30",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(rusqlite::params![user_id], |row| {
+                    let ds: f64 = row.get::<_, f64>(4).unwrap_or(5.0);
+                    Ok(PackCandidate {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                        score: ds * 2.0,
+                        source: "important".to_string(),
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?;
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row.map_err(rusqlite_to_eng_error)?);
+            }
+            Ok(results)
+        })
+        .await?;
+
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates: Vec<PackCandidate> = Vec::new();
+
+    for c in static_candidates {
+        if seen.insert(c.id) {
+            candidates.push(c);
+        }
+    }
+    for c in important_candidates {
+        if seen.insert(c.id) {
+            candidates.push(c);
         }
     }
 
@@ -131,9 +156,17 @@ pub async fn pack_memories(
             parts.join("\n")
         }
         PackFormat::Json => {
-            let items: Vec<serde_json::Value> = packed.iter().map(|p| {
-                serde_json::json!({"id": p.id, "content": p.content, "category": p.category, "importance": p.importance})
-            }).collect();
+            let items: Vec<serde_json::Value> = packed
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "id": p.id,
+                        "content": p.content,
+                        "category": p.category,
+                        "importance": p.importance
+                    })
+                })
+                .collect();
             serde_json::to_string(&items).unwrap_or_default()
         }
         PackFormat::Text => {

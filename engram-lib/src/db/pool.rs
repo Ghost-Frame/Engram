@@ -35,8 +35,6 @@ pub struct DatabasePools {
 
 impl DatabasePools {
     pub async fn new(db_path: &str, config: DbPoolConfig) -> Result<Self> {
-        ensure_libsql_initialized().await?;
-
         let reader = build_pool(db_path, config.max_readers, config)?;
         let writer = build_pool(db_path, config.writer_count.max(1), config)?;
 
@@ -174,14 +172,6 @@ fn build_pool(db_path: &str, max_size: usize, config: DbPoolConfig) -> Result<Po
         }))
         .build()
         .map_err(|e| EngError::Internal(format!("failed to build sqlite pool for {db_path}: {e}")))
-}
-
-async fn ensure_libsql_initialized() -> Result<()> {
-    let db = libsql::Builder::new_local(":memory:").build().await?;
-    let conn = db.connect()?;
-    drop(conn);
-    drop(db);
-    Ok(())
 }
 
 fn apply_pragmas(

@@ -80,7 +80,7 @@ pub fn start_job_cleanup_task(db: Arc<Database>) -> CancellationToken {
                     break;
                 }
                 _ = tokio::time::sleep(sleep_dur) => {
-                    match kleos_lib::jobs::cleanup_completed_jobs(&db.conn).await {
+                    match kleos_lib::jobs::cleanup_completed_jobs(&db).await {
                         Ok(n) => {
                             info!(deleted = n, "job cleanup complete");
                             consecutive_failures = 0;

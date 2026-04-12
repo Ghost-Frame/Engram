@@ -5,8 +5,13 @@
 
 use crate::db::Database;
 use crate::intelligence::types::{PredictedProject, PredictiveContext, ProactiveMemory};
-use crate::Result;
+use crate::{EngError, Result};
+use rusqlite::params;
 use tracing::info;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 /// Track that a memory category was accessed at this time.
 /// Builds the temporal pattern database over time.
@@ -16,29 +21,27 @@ pub async fn track_temporal_access(
     category: &str,
     project_id: Option<i64>,
 ) -> Result<()> {
-    let conn = db.connection();
     let now = chrono::Utc::now();
     let dow = now.format("%w").to_string().parse::<i32>().unwrap_or(0); // 0=Sun, 6=Sat
     let hour = now.format("%H").to_string().parse::<i32>().unwrap_or(0);
+    let description = format!("dow:{},hour:{},category:{}", dow, hour, category);
+    let project_str = project_id.map(|p| p.to_string()).unwrap_or_default();
 
-    conn.execute(
-        "INSERT INTO temporal_patterns (pattern_type, description, memory_ids, confidence, user_id, created_at) \
-         VALUES ('access', ?1, ?2, 1.0, ?3, datetime('now'))",
-        libsql::params![
-            format!("dow:{},hour:{},category:{}", dow, hour, category),
-            project_id.map(|p| p.to_string()).unwrap_or_default(),
-            user_id
-        ],
-    )
-    .await?;
-
-    Ok(())
+    db.write(move |conn| {
+        conn.execute(
+            "INSERT INTO temporal_patterns (pattern_type, description, memory_ids, confidence, user_id, created_at) \
+             VALUES ('access', ?1, ?2, 1.0, ?3, datetime('now'))",
+            params![description, project_str, user_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 /// Generate proactive context for the current moment.
 /// Called at session start or periodically.
 pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<PredictiveContext> {
-    let conn = db.connection();
     let now = chrono::Utc::now();
     let dow = now.format("%w").to_string().parse::<i32>().unwrap_or(0);
     let hour = now.format("%H").to_string().parse::<i32>().unwrap_or(0);
@@ -65,132 +68,175 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
 
     // Get temporal patterns for this time slot
     let pattern_query = format!("%dow:{},hour:{}%", dow, hour);
-    let mut pattern_rows = conn
-        .query(
-            "SELECT description FROM temporal_patterns \
-             WHERE user_id = ?1 AND description LIKE ?2 \
-             ORDER BY created_at DESC LIMIT 20",
-            libsql::params![user_id, pattern_query],
-        )
-        .await?;
-
-    let mut predicted_categories: Vec<String> = Vec::new();
-    while let Some(row) = pattern_rows.next().await? {
-        let desc: String = row.get(0)?;
-        // Parse category from "dow:X,hour:Y,category:Z"
-        if let Some(cat_start) = desc.find("category:") {
-            let cat = &desc[cat_start + 9..];
-            if !predicted_categories.contains(&cat.to_string()) {
-                predicted_categories.push(cat.to_string());
+    let predicted_categories: Vec<String> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT description FROM temporal_patterns \
+                     WHERE user_id = ?1 AND description LIKE ?2 \
+                     ORDER BY created_at DESC LIMIT 20",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(params![user_id, pattern_query], |row| row.get::<_, String>(0))
+                .map_err(rusqlite_to_eng_error)?;
+            let descs: Vec<String> = rows
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(descs)
+        })
+        .await?
+        .into_iter()
+        .fold(Vec::new(), |mut acc, desc| {
+            if let Some(cat_start) = desc.find("category:") {
+                let cat = desc[cat_start + 9..].to_string();
+                if !acc.contains(&cat) {
+                    acc.push(cat);
+                }
             }
-        }
-    }
+            acc
+        });
 
     // Get unfinished tasks (recent, not completed)
-    let mut task_rows = conn
-        .query(
-            "SELECT id, content, category, importance \
-             FROM memories \
-             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-               AND category = 'task' AND is_static = 0 \
-               AND created_at > datetime('now', '-3 days') \
-             ORDER BY importance DESC, created_at DESC LIMIT 5",
-            libsql::params![user_id],
-        )
+    struct MemRow {
+        id: i64,
+        content: String,
+        category: String,
+        importance: i32,
+    }
+
+    let task_rows: Vec<MemRow> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, content, category, importance \
+                     FROM memories \
+                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                       AND category = 'task' AND is_static = 0 \
+                       AND created_at > datetime('now', '-3 days') \
+                     ORDER BY importance DESC, created_at DESC LIMIT 5",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(params![user_id], |row| {
+                    Ok(MemRow {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(rusqlite_to_eng_error)
+        })
         .await?;
 
     let mut proactive_memories: Vec<ProactiveMemory> = Vec::new();
     let mut suggested_actions: Vec<String> = Vec::new();
 
-    while let Some(row) = task_rows.next().await? {
-        let id: i64 = row.get(0)?;
-        let content: String = row.get(1)?;
-        let category: String = row.get(2)?;
-        let importance: i32 = row.get(3)?;
-
+    for row in task_rows {
         if suggested_actions.is_empty() {
-            let truncated = if content.len() > 80 {
-                &content[..80]
+            let truncated = if row.content.len() > 80 {
+                &row.content[..80]
             } else {
-                &content
+                &row.content
             };
             suggested_actions.push(format!("Continue: {}", truncated));
         }
-
         proactive_memories.push(ProactiveMemory {
-            id,
-            content,
-            category,
-            importance,
+            id: row.id,
+            content: row.content,
+            category: row.category,
+            importance: row.importance,
             reason: "unfinished_task".to_string(),
-            score: importance as f64 / 10.0 + 0.3,
+            score: row.importance as f64 / 10.0 + 0.3,
         });
     }
 
     // Get active issues
-    let mut issue_rows = conn
-        .query(
-            "SELECT id, content, category, importance \
-             FROM memories \
-             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-               AND category = 'issue' \
-               AND created_at > datetime('now', '-7 days') \
-             ORDER BY importance DESC LIMIT 3",
-            libsql::params![user_id],
-        )
+    let issue_rows: Vec<MemRow> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, content, category, importance \
+                     FROM memories \
+                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                       AND category = 'issue' \
+                       AND created_at > datetime('now', '-7 days') \
+                     ORDER BY importance DESC LIMIT 3",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(params![user_id], |row| {
+                    Ok(MemRow {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(rusqlite_to_eng_error)
+        })
         .await?;
 
-    while let Some(row) = issue_rows.next().await? {
-        let id: i64 = row.get(0)?;
-        let content: String = row.get(1)?;
-        let category: String = row.get(2)?;
-        let importance: i32 = row.get(3)?;
-
+    for row in issue_rows {
         if suggested_actions.len() < 3 {
-            let truncated = if content.len() > 80 {
-                &content[..80]
+            let truncated = if row.content.len() > 80 {
+                &row.content[..80]
             } else {
-                &content
+                &row.content
             };
             suggested_actions.push(format!("Address issue: {}", truncated));
         }
-
         proactive_memories.push(ProactiveMemory {
-            id,
-            content,
-            category,
-            importance,
+            id: row.id,
+            content: row.content,
+            category: row.category,
+            importance: row.importance,
             reason: "active_issue".to_string(),
-            score: importance as f64 / 10.0 + 0.2,
+            score: row.importance as f64 / 10.0 + 0.2,
         });
     }
 
     // Get recent memories for session continuity
-    let mut recent_rows = conn
-        .query(
-            "SELECT id, content, category, importance \
-             FROM memories \
-             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-             ORDER BY created_at DESC LIMIT 3",
-            libsql::params![user_id],
-        )
+    let recent_rows: Vec<MemRow> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, content, category, importance \
+                     FROM memories \
+                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                     ORDER BY created_at DESC LIMIT 3",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(params![user_id], |row| {
+                    Ok(MemRow {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(rusqlite_to_eng_error)
+        })
         .await?;
 
-    while let Some(row) = recent_rows.next().await? {
-        let id: i64 = row.get(0)?;
-        let content: String = row.get(1)?;
-        let category: String = row.get(2)?;
-        let importance: i32 = row.get(3)?;
-
+    for row in recent_rows {
         // Avoid duplicates
-        if !proactive_memories.iter().any(|m| m.id == id) {
+        if !proactive_memories.iter().any(|m| m.id == row.id) {
             proactive_memories.push(ProactiveMemory {
-                id,
-                content,
-                category,
-                importance,
+                id: row.id,
+                content: row.content,
+                category: row.category,
+                importance: row.importance,
                 reason: "session_continuity".to_string(),
-                score: importance as f64 / 10.0,
+                score: row.importance as f64 / 10.0,
             });
         }
     }
@@ -228,30 +274,32 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
 
 /// Predict which project the user is likely working on based on recent memory-project links.
 async fn predict_project(db: &Database, user_id: i64) -> Result<Option<PredictedProject>> {
-    let conn = db.connection();
-
-    let mut rows = conn
-        .query(
-            "SELECT p.id, p.name, COUNT(*) as cnt \
-             FROM memory_projects mp \
-             JOIN projects p ON p.id = mp.project_id \
-             JOIN memories m ON m.id = mp.memory_id \
-             WHERE p.user_id = ?1 AND m.created_at > datetime('now', '-24 hours') \
-             GROUP BY p.id, p.name \
-             ORDER BY cnt DESC \
-             LIMIT 1",
-            libsql::params![user_id],
-        )
-        .await?;
-
-    if let Some(row) = rows.next().await? {
-        Ok(Some(PredictedProject {
-            id: row.get(0)?,
-            name: row.get(1)?,
-        }))
-    } else {
-        Ok(None)
-    }
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.id, p.name, COUNT(*) as cnt \
+                 FROM memory_projects mp \
+                 JOIN projects p ON p.id = mp.project_id \
+                 JOIN memories m ON m.id = mp.memory_id \
+                 WHERE p.user_id = ?1 AND m.created_at > datetime('now', '-24 hours') \
+                 GROUP BY p.id, p.name \
+                 ORDER BY cnt DESC \
+                 LIMIT 1",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            Ok(Some(PredictedProject {
+                id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                name: row.get(1).map_err(rusqlite_to_eng_error)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    })
+    .await
 }
 
 #[cfg(test)]

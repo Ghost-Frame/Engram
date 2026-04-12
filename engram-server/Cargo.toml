@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 kleos-lib = { path = "../kleos-lib" }
-libsql = { workspace = true }
 axum = { workspace = true, features = ["ws"] }
 hmac = { workspace = true }
 sha2 = { workspace = true }
@@ -26,6 +25,7 @@ url = { workspace = true }
 hex = "0.4"
 rand = { workspace = true }
 futures = { workspace = true }
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 kleos-lib = { path = "../kleos-lib", features = ["test-utils"] }

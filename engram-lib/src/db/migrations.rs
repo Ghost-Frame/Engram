@@ -1,7 +1,5 @@
-#[cfg(feature = "db_pool")]
 use crate::EngError;
 use crate::Result;
-use libsql::Connection;
 use tracing::info;
 
 /// Migration versions - add new migrations here
@@ -25,185 +23,7 @@ const MIGRATION_CRED_TABLES: i64 = 17;
 const MIGRATION_API_KEY_HASH_UNIQUE: i64 = 18;
 
 /// Run ordered, idempotent migrations and record applied versions.
-pub async fn run_migrations(conn: &Connection) -> Result<()> {
-    // Create schema_version table if it doesn't exist
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS schema_version (
-            version INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        ",
-    )
-    .await?;
-
-    let mut rows = conn
-        .query("SELECT COALESCE(MAX(version), 0) FROM schema_version", ())
-        .await?;
-    let current_version: i64 = match rows.next().await? {
-        Some(row) => row.get(0)?,
-        None => 0,
-    };
-
-    // Migration 1: Create initial schema
-    if current_version < MIGRATION_CREATE_SCHEMA {
-        info!("Running migration 1: create_tables");
-        super::schema::create_tables(conn).await?;
-        record_migration(conn, MIGRATION_CREATE_SCHEMA, "create_tables").await?;
-    }
-
-    // Migration 2: Add any missing indexes (idempotent - CREATE INDEX IF NOT EXISTS)
-    // This ensures existing DBs get new indexes added in schema.rs updates
-    if current_version < MIGRATION_ADD_MISSING_INDEXES {
-        info!("Running migration 2: add_missing_indexes");
-        run_migration_add_missing_indexes(conn).await?;
-        record_migration(conn, MIGRATION_ADD_MISSING_INDEXES, "add_missing_indexes").await?;
-    }
-
-    // Migration 3: Add pagerank cache and dirty-tracking tables
-    if current_version < MIGRATION_PAGERANK_TABLES {
-        info!("Running migration 3: add_pagerank_tables");
-        run_migration_pagerank_tables(conn).await?;
-        record_migration(conn, MIGRATION_PAGERANK_TABLES, "add_pagerank_tables").await?;
-    }
-
-    // Migration 4: Add user_id to thymus session_quality and
-    // behavioral_drift_events so cross-tenant BOLA is impossible.
-    if current_version < MIGRATION_THYMUS_TENANT_SCOPE {
-        info!("Running migration 4: thymus_tenant_scope");
-        run_migration_thymus_tenant_scope(conn).await?;
-        record_migration(conn, MIGRATION_THYMUS_TENANT_SCOPE, "thymus_tenant_scope").await?;
-    }
-
-    // Migration 5: app_state table for the bootstrap sentinel and other
-    // single-row flags the admin module already references.
-    if current_version < MIGRATION_APP_STATE_TABLE {
-        info!("Running migration 5: app_state_table");
-        run_migration_app_state_table(conn).await?;
-        record_migration(conn, MIGRATION_APP_STATE_TABLE, "app_state_table").await?;
-    }
-
-    // Migration 6: backfill any session_quality / behavioral_drift_events
-    // rows that landed with the legacy DEFAULT 0 user_id. User 0 never
-    // exists; re-home those rows onto the admin user (id = 1) so tenant
-    // scoping queries actually see them.
-    if current_version < MIGRATION_BACKFILL_THYMUS_USER_ID {
-        info!("Running migration 6: backfill_thymus_user_id");
-        run_migration_backfill_thymus_user_id(conn).await?;
-        record_migration(
-            conn,
-            MIGRATION_BACKFILL_THYMUS_USER_ID,
-            "backfill_thymus_user_id",
-        )
-        .await?;
-    }
-
-    // Migration 7: vector_sync_pending table used by memory::store and
-    // memory::update to record LanceDB inserts/deletes that failed at write
-    // time. A sweep task can replay rows and mark them resolved.
-    if current_version < MIGRATION_VECTOR_SYNC_PENDING {
-        info!("Running migration 7: vector_sync_pending");
-        run_migration_vector_sync_pending(conn).await?;
-        record_migration(conn, MIGRATION_VECTOR_SYNC_PENDING, "vector_sync_pending").await?;
-    }
-
-    // Migration 8: community_id column on memories. graph::communities reads
-    // and writes this column but earlier builds never created it; community
-    // detection and stats would fail at runtime.
-    if current_version < MIGRATION_ADD_COMMUNITY_ID {
-        info!("Running migration 8: add_community_id");
-        run_migration_add_community_id(conn).await?;
-        record_migration(conn, MIGRATION_ADD_COMMUNITY_ID, "add_community_id").await?;
-    }
-
-    // Migration 9: drop is_inference dead column. Never written by any
-    // INSERT, never read by any filter, always false. Remove from the
-    // schema so row mappers stop paying the offset tax.
-    if current_version < MIGRATION_DROP_IS_INFERENCE {
-        info!("Running migration 9: drop_is_inference");
-        run_migration_drop_is_inference(conn).await?;
-        record_migration(conn, MIGRATION_DROP_IS_INFERENCE, "drop_is_inference").await?;
-    }
-
-    // Migration 10: port the full kleos services schema (axon pub/sub,
-    // broca action log, chiasm task tracking with history, soma agent
-    // registry and groups, jobs durable queue, scheduler leases). Matches
-    // the node production shape one-to-one so the kleos-migrate ETL can
-    // copy rows via ATTACH + column intersection.
-    if current_version < MIGRATION_KLEOS_SERVICES {
-        info!("Running migration 10: kleos_services");
-        run_migration_kleos_services(conn).await?;
-        record_migration(conn, MIGRATION_KLEOS_SERVICES, "kleos_services").await?;
-    }
-
-    // Migration 11: brain_patterns + brain_edges tables for the Hopfield
-    // neural substrate. Enables in-process associative recall without the
-    // eidolon subprocess dependency.
-    if current_version < MIGRATION_BRAIN_PATTERNS {
-        info!("Running migration 11: brain_patterns");
-        run_migration_brain_patterns(conn).await?;
-        record_migration(conn, MIGRATION_BRAIN_PATTERNS, "brain_patterns").await?;
-    }
-
-    // Migration 12: approvals table for human-in-the-loop approval workflow.
-    // TUI clients poll pending approvals; gate integration can block on
-    // approval decision within a 120s window.
-    if current_version < MIGRATION_APPROVALS {
-        info!("Running migration 12: approvals");
-        run_migration_approvals(conn).await?;
-        record_migration(conn, MIGRATION_APPROVALS, "approvals").await?;
-    }
-
-    // Migration 13: error_events table for centralized error aggregation.
-    if current_version < MIGRATION_ERROR_EVENTS {
-        info!("Running migration 13: error_events");
-        run_migration_error_events(conn).await?;
-        record_migration(conn, MIGRATION_ERROR_EVENTS, "error_events").await?;
-    }
-
-    // Migration 14: brain_meta key-value table for brain-level metadata
-    // (e.g. instincts_seeded_at per user).
-    if current_version < MIGRATION_BRAIN_META {
-        info!("Running migration 14: brain_meta");
-        run_migration_brain_meta(conn).await?;
-        record_migration(conn, MIGRATION_BRAIN_META, "brain_meta").await?;
-    }
-
-    // Migration 15: brain_pca_models table for PCA dimensionality reduction.
-    if current_version < MIGRATION_PCA_MODELS {
-        info!("Running migration 15: brain_pca_models");
-        run_migration_pca_models(conn).await?;
-        record_migration(conn, MIGRATION_PCA_MODELS, "brain_pca_models").await?;
-    }
-
-    // Migration 16: brain_dream_runs table for dream cycle audit trail.
-    if current_version < MIGRATION_BRAIN_DREAM_RUNS {
-        info!("Running migration 16: brain_dream_runs");
-        run_migration_brain_dream_runs(conn).await?;
-        record_migration(conn, MIGRATION_BRAIN_DREAM_RUNS, "brain_dream_runs").await?;
-    }
-
-    // Migration 17: cred tables for credential management.
-    if current_version < MIGRATION_CRED_TABLES {
-        info!("Running migration 17: cred_tables");
-        run_migration_cred_tables(conn).await?;
-        record_migration(conn, MIGRATION_CRED_TABLES, "cred_tables").await?;
-    }
-
-    // Migration 18: add UNIQUE index on api_keys(key_hash) to prevent duplicate
-    // hashes that could allow hash-collision auth bypass (RB-L7).
-    if current_version < MIGRATION_API_KEY_HASH_UNIQUE {
-        info!("Running migration 18: api_key_hash_unique");
-        run_migration_api_key_hash_unique(conn).await?;
-        record_migration(conn, MIGRATION_API_KEY_HASH_UNIQUE, "api_key_hash_unique").await?;
-    }
-
-    Ok(())
-}
-
-#[cfg(feature = "db_pool")]
-pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -225,38 +45,38 @@ pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
 
     if current_version < MIGRATION_CREATE_SCHEMA {
         info!("Running migration 1: create_tables");
-        super::schema::create_tables_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_CREATE_SCHEMA, "create_tables")?;
+        super::schema::create_tables(conn)?;
+        record_migration(conn, MIGRATION_CREATE_SCHEMA, "create_tables")?;
     }
 
     if current_version < MIGRATION_ADD_MISSING_INDEXES {
         info!("Running migration 2: add_missing_indexes");
-        run_migration_add_missing_indexes_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_ADD_MISSING_INDEXES, "add_missing_indexes")?;
+        run_migration_add_missing_indexes(conn)?;
+        record_migration(conn, MIGRATION_ADD_MISSING_INDEXES, "add_missing_indexes")?;
     }
 
     if current_version < MIGRATION_PAGERANK_TABLES {
         info!("Running migration 3: add_pagerank_tables");
-        run_migration_pagerank_tables_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_PAGERANK_TABLES, "add_pagerank_tables")?;
+        run_migration_pagerank_tables(conn)?;
+        record_migration(conn, MIGRATION_PAGERANK_TABLES, "add_pagerank_tables")?;
     }
 
     if current_version < MIGRATION_THYMUS_TENANT_SCOPE {
         info!("Running migration 4: thymus_tenant_scope");
-        run_migration_thymus_tenant_scope_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_THYMUS_TENANT_SCOPE, "thymus_tenant_scope")?;
+        run_migration_thymus_tenant_scope(conn)?;
+        record_migration(conn, MIGRATION_THYMUS_TENANT_SCOPE, "thymus_tenant_scope")?;
     }
 
     if current_version < MIGRATION_APP_STATE_TABLE {
         info!("Running migration 5: app_state_table");
-        run_migration_app_state_table_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_APP_STATE_TABLE, "app_state_table")?;
+        run_migration_app_state_table(conn)?;
+        record_migration(conn, MIGRATION_APP_STATE_TABLE, "app_state_table")?;
     }
 
     if current_version < MIGRATION_BACKFILL_THYMUS_USER_ID {
         info!("Running migration 6: backfill_thymus_user_id");
-        run_migration_backfill_thymus_user_id_rusqlite(conn)?;
-        record_migration_rusqlite(
+        run_migration_backfill_thymus_user_id(conn)?;
+        record_migration(
             conn,
             MIGRATION_BACKFILL_THYMUS_USER_ID,
             "backfill_thymus_user_id",
@@ -265,349 +85,80 @@ pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
 
     if current_version < MIGRATION_VECTOR_SYNC_PENDING {
         info!("Running migration 7: vector_sync_pending");
-        run_migration_vector_sync_pending_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_VECTOR_SYNC_PENDING, "vector_sync_pending")?;
+        run_migration_vector_sync_pending(conn)?;
+        record_migration(conn, MIGRATION_VECTOR_SYNC_PENDING, "vector_sync_pending")?;
     }
 
     if current_version < MIGRATION_ADD_COMMUNITY_ID {
         info!("Running migration 8: add_community_id");
-        run_migration_add_community_id_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_ADD_COMMUNITY_ID, "add_community_id")?;
+        run_migration_add_community_id(conn)?;
+        record_migration(conn, MIGRATION_ADD_COMMUNITY_ID, "add_community_id")?;
     }
 
     if current_version < MIGRATION_DROP_IS_INFERENCE {
         info!("Running migration 9: drop_is_inference");
-        run_migration_drop_is_inference_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_DROP_IS_INFERENCE, "drop_is_inference")?;
+        run_migration_drop_is_inference(conn)?;
+        record_migration(conn, MIGRATION_DROP_IS_INFERENCE, "drop_is_inference")?;
     }
 
     if current_version < MIGRATION_KLEOS_SERVICES {
         info!("Running migration 10: kleos_services");
-        run_migration_kleos_services_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_KLEOS_SERVICES, "kleos_services")?;
+        run_migration_kleos_services(conn)?;
+        record_migration(conn, MIGRATION_KLEOS_SERVICES, "kleos_services")?;
     }
 
     if current_version < MIGRATION_BRAIN_PATTERNS {
         info!("Running migration 11: brain_patterns");
-        run_migration_brain_patterns_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_BRAIN_PATTERNS, "brain_patterns")?;
+        run_migration_brain_patterns(conn)?;
+        record_migration(conn, MIGRATION_BRAIN_PATTERNS, "brain_patterns")?;
     }
 
     if current_version < MIGRATION_APPROVALS {
         info!("Running migration 12: approvals");
-        run_migration_approvals_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_APPROVALS, "approvals")?;
+        run_migration_approvals(conn)?;
+        record_migration(conn, MIGRATION_APPROVALS, "approvals")?;
     }
 
     if current_version < MIGRATION_ERROR_EVENTS {
         info!("Running migration 13: error_events");
-        run_migration_error_events_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_ERROR_EVENTS, "error_events")?;
+        run_migration_error_events(conn)?;
+        record_migration(conn, MIGRATION_ERROR_EVENTS, "error_events")?;
     }
 
     if current_version < MIGRATION_BRAIN_META {
         info!("Running migration 14: brain_meta");
-        run_migration_brain_meta_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_BRAIN_META, "brain_meta")?;
+        run_migration_brain_meta(conn)?;
+        record_migration(conn, MIGRATION_BRAIN_META, "brain_meta")?;
     }
 
     if current_version < MIGRATION_PCA_MODELS {
         info!("Running migration 15: brain_pca_models");
-        run_migration_pca_models_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_PCA_MODELS, "brain_pca_models")?;
+        run_migration_pca_models(conn)?;
+        record_migration(conn, MIGRATION_PCA_MODELS, "brain_pca_models")?;
     }
 
     if current_version < MIGRATION_BRAIN_DREAM_RUNS {
         info!("Running migration 16: brain_dream_runs");
-        run_migration_brain_dream_runs_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_BRAIN_DREAM_RUNS, "brain_dream_runs")?;
+        run_migration_brain_dream_runs(conn)?;
+        record_migration(conn, MIGRATION_BRAIN_DREAM_RUNS, "brain_dream_runs")?;
     }
 
     if current_version < MIGRATION_CRED_TABLES {
         info!("Running migration 17: cred_tables");
-        run_migration_cred_tables_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_CRED_TABLES, "cred_tables")?;
+        run_migration_cred_tables(conn)?;
+        record_migration(conn, MIGRATION_CRED_TABLES, "cred_tables")?;
     }
 
     if current_version < MIGRATION_API_KEY_HASH_UNIQUE {
         info!("Running migration 18: api_key_hash_unique");
-        run_migration_api_key_hash_unique_rusqlite(conn)?;
-        record_migration_rusqlite(conn, MIGRATION_API_KEY_HASH_UNIQUE, "api_key_hash_unique")?;
+        run_migration_api_key_hash_unique(conn)?;
+        record_migration(conn, MIGRATION_API_KEY_HASH_UNIQUE, "api_key_hash_unique")?;
     }
 
     Ok(())
 }
 
-/// Record that a migration has been applied
-async fn record_migration(conn: &Connection, version: i64, name: &str) -> Result<()> {
-    conn.execute(
-        "INSERT INTO schema_version (version, name) VALUES (?1, ?2)",
-        libsql::params![version, name],
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 2: Ensure all indexes from schema.rs exist
-/// This is safe to run multiple times due to IF NOT EXISTS
-async fn run_migration_add_missing_indexes(conn: &Connection) -> Result<()> {
-    // Re-run index creation from schema to catch any new indexes
-    // All indexes use CREATE INDEX IF NOT EXISTS so this is idempotent
-    conn.execute_batch(
-        "
-        -- Memory indexes
-        CREATE INDEX IF NOT EXISTS idx_memories_root ON memories(root_memory_id);
-        CREATE INDEX IF NOT EXISTS idx_memories_superseded ON memories(is_superseded) WHERE is_superseded = 1;
-        CREATE INDEX IF NOT EXISTS idx_memories_consolidated ON memories(is_consolidated) WHERE is_consolidated = 1;
-        CREATE INDEX IF NOT EXISTS idx_memories_parent ON memories(parent_memory_id);
-        CREATE INDEX IF NOT EXISTS idx_memories_latest ON memories(is_latest) WHERE is_latest = 1;
-        CREATE INDEX IF NOT EXISTS idx_memories_forgotten ON memories(is_forgotten);
-        CREATE INDEX IF NOT EXISTS idx_memories_archived ON memories(is_archived) WHERE is_archived = 1;
-        CREATE INDEX IF NOT EXISTS idx_memories_forget_after ON memories(forget_after) WHERE forget_after IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(tags) WHERE tags IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS idx_memories_episode ON memories(episode_id) WHERE episode_id IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS idx_memories_access ON memories(access_count DESC);
-        CREATE INDEX IF NOT EXISTS idx_memories_decay ON memories(decay_score DESC);
-        CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
-        CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
-        CREATE INDEX IF NOT EXISTS idx_memories_space ON memories(space_id);
-        CREATE INDEX IF NOT EXISTS idx_memories_fsrs_stability ON memories(fsrs_stability) WHERE fsrs_stability IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
-        CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source);
-        CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
-        CREATE INDEX IF NOT EXISTS idx_memories_user_latest ON memories(user_id, is_latest, is_forgotten);
-
-        -- Composite indexes for common query patterns
-        CREATE INDEX IF NOT EXISTS idx_memories_search_composite ON memories(user_id, is_forgotten, is_latest, category);
-        ",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 4: Ensure session_quality and behavioral_drift_events carry user_id
-/// so every read/write enforces tenant ownership. New columns default to the
-/// admin user (id = 1) because user 0 never exists in the users table.
-/// Databases that already ran an earlier build with DEFAULT 0 are repaired
-/// by migration 6.
-async fn run_migration_thymus_tenant_scope(conn: &Connection) -> Result<()> {
-    add_column_if_not_exists(
-        conn,
-        "session_quality",
-        "user_id",
-        "INTEGER NOT NULL DEFAULT 1",
-    )
-    .await?;
-    add_column_if_not_exists(
-        conn,
-        "behavioral_drift_events",
-        "user_id",
-        "INTEGER NOT NULL DEFAULT 1",
-    )
-    .await?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_session_quality_user ON session_quality(user_id);
-         CREATE INDEX IF NOT EXISTS idx_behavioral_drift_user ON behavioral_drift_events(user_id);",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 8: add community_id column to memories so Louvain community
-/// detection has a place to persist cluster assignments.
-async fn run_migration_add_community_id(conn: &Connection) -> Result<()> {
-    add_column_if_not_exists(conn, "memories", "community_id", "INTEGER").await?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_memories_community \
-            ON memories(community_id) WHERE community_id IS NOT NULL;",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 9: drop the is_inference dead column from memories.
-/// Idempotent: only runs DROP COLUMN if the column still exists.
-/// Requires SQLite 3.35+ (libsql bundles 3.42+).
-async fn run_migration_drop_is_inference(conn: &Connection) -> Result<()> {
-    let mut rows = conn
-        .query(
-            "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = ?1",
-            libsql::params!["is_inference"],
-        )
-        .await?;
-    let exists: i64 = if let Some(row) = rows.next().await? {
-        row.get(0)?
-    } else {
-        0
-    };
-    if exists > 0 {
-        conn.execute("ALTER TABLE memories DROP COLUMN is_inference", ())
-            .await?;
-        info!("Dropped memories.is_inference column");
-    }
-    Ok(())
-}
-
-/// Migration 10: port the full kleos services schema. Creates the 13
-/// tables (axon_channels, axon_events, axon_subscriptions, axon_cursors,
-/// broca_actions, chiasm_tasks, chiasm_task_updates, soma_agents,
-/// soma_groups, soma_agent_groups, soma_agent_logs, jobs, scheduler_leases)
-/// plus their indexes and seeds the five default axon channels. The SQL
-/// lives in schema_sql::KLEOS_SERVICES_SQL and is fully idempotent
-/// (IF NOT EXISTS / INSERT OR IGNORE) so re-running is safe.
-async fn run_migration_kleos_services(conn: &Connection) -> Result<()> {
-    conn.execute_batch(crate::db::schema_sql::KLEOS_SERVICES_SQL)
-        .await?;
-    Ok(())
-}
-
-/// Migration 11: brain_patterns + brain_edges tables for the Hopfield
-/// neural substrate. All statements are idempotent.
-async fn run_migration_brain_patterns(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS brain_patterns (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            pattern BLOB NOT NULL,
-            strength REAL NOT NULL DEFAULT 1.0,
-            importance INTEGER NOT NULL DEFAULT 5,
-            access_count INTEGER NOT NULL DEFAULT 0,
-            last_activated_at TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_brain_patterns_user ON brain_patterns(user_id);
-        CREATE INDEX IF NOT EXISTS idx_brain_patterns_strength ON brain_patterns(strength);
-
-        CREATE TABLE IF NOT EXISTS brain_edges (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_id INTEGER NOT NULL,
-            target_id INTEGER NOT NULL,
-            weight REAL NOT NULL DEFAULT 1.0,
-            edge_type TEXT NOT NULL DEFAULT 'association',
-            user_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(source_id, target_id, edge_type)
-        );
-        CREATE INDEX IF NOT EXISTS idx_brain_edges_source ON brain_edges(source_id);
-        CREATE INDEX IF NOT EXISTS idx_brain_edges_target ON brain_edges(target_id);
-        CREATE INDEX IF NOT EXISTS idx_brain_edges_user ON brain_edges(user_id);
-        ",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 12: approvals table for human-in-the-loop approval workflow.
-async fn run_migration_approvals(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS approvals (
-            id TEXT PRIMARY KEY,
-            action TEXT NOT NULL,
-            context TEXT,
-            requester TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            decision_by TEXT,
-            decision_reason TEXT,
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            decided_at TEXT,
-            user_id INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
-        CREATE INDEX IF NOT EXISTS idx_approvals_expires ON approvals(expires_at);
-        CREATE INDEX IF NOT EXISTS idx_approvals_user ON approvals(user_id);
-        CREATE INDEX IF NOT EXISTS idx_approvals_user_status ON approvals(user_id, status);
-        ",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 7: track failed LanceDB writes so they can be replayed.
-/// The table is intentionally append-only; a sweeper deletes rows after a
-/// successful replay.
-async fn run_migration_vector_sync_pending(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS vector_sync_pending (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            memory_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            op TEXT NOT NULL,
-            error TEXT,
-            attempts INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            last_attempt_at TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_vector_sync_memory
-            ON vector_sync_pending(memory_id);
-        CREATE INDEX IF NOT EXISTS idx_vector_sync_user
-            ON vector_sync_pending(user_id);
-        ",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 6: backfill session_quality / behavioral_drift_events rows that
-/// were inserted with user_id = 0 (the legacy DEFAULT from migration 4).
-/// Re-home them onto the admin user (id = 1) so tenant scoping queries work.
-async fn run_migration_backfill_thymus_user_id(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "UPDATE session_quality SET user_id = 1 WHERE user_id = 0",
-        (),
-    )
-    .await?;
-    conn.execute(
-        "UPDATE behavioral_drift_events SET user_id = 1 WHERE user_id = 0",
-        (),
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 5: add the app_state key/value table used by admin settings and
-/// the atomic bootstrap claim sentinel.
-async fn run_migration_app_state_table(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS app_state (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 3: Create pagerank cache and dirty-tracking tables
-async fn run_migration_pagerank_tables(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS memory_pagerank (
-            memory_id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            score REAL NOT NULL,
-            computed_at INTEGER NOT NULL,
-            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
-        );
-        CREATE INDEX IF NOT EXISTS idx_pagerank_user ON memory_pagerank(user_id);
-        CREATE INDEX IF NOT EXISTS idx_pagerank_score ON memory_pagerank(score DESC);
-
-        CREATE TABLE IF NOT EXISTS pagerank_dirty (
-            user_id INTEGER PRIMARY KEY,
-            dirty_count INTEGER NOT NULL DEFAULT 0,
-            last_refresh INTEGER NOT NULL DEFAULT 0
-        );
-        ",
-    )
-    .await?;
-    Ok(())
-}
-#[cfg(feature = "db_pool")]
-fn record_migration_rusqlite(conn: &rusqlite::Connection, version: i64, name: &str) -> Result<()> {
+fn record_migration(conn: &rusqlite::Connection, version: i64, name: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO schema_version (version, name) VALUES (?1, ?2)",
         rusqlite::params![version, name],
@@ -616,8 +167,7 @@ fn record_migration_rusqlite(conn: &rusqlite::Connection, version: i64, name: &s
     Ok(())
 }
 
-#[cfg(feature = "db_pool")]
-fn run_migration_add_missing_indexes_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+fn run_migration_add_missing_indexes(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "
         -- Memory indexes
@@ -650,8 +200,7 @@ fn run_migration_add_missing_indexes_rusqlite(conn: &rusqlite::Connection) -> Re
     Ok(())
 }
 
-#[cfg(feature = "db_pool")]
-fn run_migration_pagerank_tables_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+fn run_migration_pagerank_tables(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS memory_pagerank (
@@ -675,15 +224,14 @@ fn run_migration_pagerank_tables_rusqlite(conn: &rusqlite::Connection) -> Result
     Ok(())
 }
 
-#[cfg(feature = "db_pool")]
-fn run_migration_thymus_tenant_scope_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
-    add_column_if_not_exists_rusqlite(
+fn run_migration_thymus_tenant_scope(conn: &rusqlite::Connection) -> Result<()> {
+    add_column_if_not_exists(
         conn,
         "session_quality",
         "user_id",
         "INTEGER NOT NULL DEFAULT 1",
     )?;
-    add_column_if_not_exists_rusqlite(
+    add_column_if_not_exists(
         conn,
         "behavioral_drift_events",
         "user_id",
@@ -697,8 +245,7 @@ fn run_migration_thymus_tenant_scope_rusqlite(conn: &rusqlite::Connection) -> Re
     Ok(())
 }
 
-#[cfg(feature = "db_pool")]
-fn run_migration_app_state_table_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+fn run_migration_app_state_table(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS app_state (
             key TEXT PRIMARY KEY,
@@ -710,8 +257,7 @@ fn run_migration_app_state_table_rusqlite(conn: &rusqlite::Connection) -> Result
     Ok(())
 }
 
-#[cfg(feature = "db_pool")]
-fn run_migration_backfill_thymus_user_id_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+fn run_migration_backfill_thymus_user_id(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute(
         "UPDATE session_quality SET user_id = 1 WHERE user_id = 0",
         [],
@@ -725,8 +271,7 @@ fn run_migration_backfill_thymus_user_id_rusqlite(conn: &rusqlite::Connection) -
     Ok(())
 }
 
-#[cfg(feature = "db_pool")]
-fn run_migration_vector_sync_pending_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+fn run_migration_vector_sync_pending(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS vector_sync_pending (
@@ -749,9 +294,8 @@ fn run_migration_vector_sync_pending_rusqlite(conn: &rusqlite::Connection) -> Re
     Ok(())
 }
 
-#[cfg(feature = "db_pool")]
-fn run_migration_add_community_id_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
-    add_column_if_not_exists_rusqlite(conn, "memories", "community_id", "INTEGER")?;
+fn run_migration_add_community_id(conn: &rusqlite::Connection) -> Result<()> {
+    add_column_if_not_exists(conn, "memories", "community_id", "INTEGER")?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_memories_community \
             ON memories(community_id) WHERE community_id IS NOT NULL;",
@@ -760,11 +304,10 @@ fn run_migration_add_community_id_rusqlite(conn: &rusqlite::Connection) -> Resul
     Ok(())
 }
 
-/// Migration 9 (rusqlite): drop the is_inference dead column from memories.
+/// Migration 9: drop the is_inference dead column from memories.
 /// Idempotent: only runs DROP COLUMN if the column still exists.
 /// Requires SQLite 3.35+ (bundled rusqlite is 3.44+).
-#[cfg(feature = "db_pool")]
-fn run_migration_drop_is_inference_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+fn run_migration_drop_is_inference(conn: &rusqlite::Connection) -> Result<()> {
     let exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = ?1",
@@ -780,19 +323,17 @@ fn run_migration_drop_is_inference_rusqlite(conn: &rusqlite::Connection) -> Resu
     Ok(())
 }
 
-/// Migration 10 (rusqlite): port the full kleos services schema. Mirrors
+/// Migration 10: port the full kleos services schema. Mirrors
 /// the async variant exactly by running the shared KLEOS_SERVICES_SQL
 /// const through execute_batch.
-#[cfg(feature = "db_pool")]
-fn run_migration_kleos_services_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+fn run_migration_kleos_services(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(crate::db::schema_sql::KLEOS_SERVICES_SQL)
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
 }
 
-/// Migration 11 (rusqlite): brain_patterns + brain_edges tables.
-#[cfg(feature = "db_pool")]
-fn run_migration_brain_patterns_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+/// Migration 11: brain_patterns + brain_edges tables.
+fn run_migration_brain_patterns(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS brain_patterns (
@@ -827,9 +368,8 @@ fn run_migration_brain_patterns_rusqlite(conn: &rusqlite::Connection) -> Result<
     Ok(())
 }
 
-/// Migration 12 (rusqlite): approvals table for human-in-the-loop approval workflow.
-#[cfg(feature = "db_pool")]
-fn run_migration_approvals_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+/// Migration 12: approvals table for human-in-the-loop approval workflow.
+fn run_migration_approvals(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS approvals (
@@ -855,8 +395,7 @@ fn run_migration_approvals_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "db_pool")]
-fn add_column_if_not_exists_rusqlite(
+fn add_column_if_not_exists(
     conn: &rusqlite::Connection,
     table: &str,
     column: &str,
@@ -878,9 +417,8 @@ fn add_column_if_not_exists_rusqlite(
     Ok(())
 }
 
-/// Migration 11 (rusqlite): error_events table.
-#[cfg(feature = "db_pool")]
-fn run_migration_error_events_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+/// Migration 13: error_events table.
+fn run_migration_error_events(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS error_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -899,9 +437,8 @@ fn run_migration_error_events_rusqlite(conn: &rusqlite::Connection) -> Result<()
     Ok(())
 }
 
-/// Migration 14 (rusqlite): brain_meta key-value table.
-#[cfg(feature = "db_pool")]
-fn run_migration_brain_meta_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+/// Migration 14: brain_meta key-value table.
+fn run_migration_brain_meta(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS brain_meta (
             key TEXT PRIMARY KEY,
@@ -912,8 +449,7 @@ fn run_migration_brain_meta_rusqlite(conn: &rusqlite::Connection) -> Result<()> 
     Ok(())
 }
 
-#[cfg(feature = "db_pool")]
-fn run_migration_pca_models_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+fn run_migration_pca_models(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS brain_pca_models (
             id INTEGER PRIMARY KEY,
@@ -929,9 +465,8 @@ fn run_migration_pca_models_rusqlite(conn: &rusqlite::Connection) -> Result<()> 
     Ok(())
 }
 
-/// Migration 16 (rusqlite): brain_dream_runs table for dream cycle audit trail.
-#[cfg(feature = "db_pool")]
-fn run_migration_brain_dream_runs_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+/// Migration 16: brain_dream_runs table for dream cycle audit trail.
+fn run_migration_brain_dream_runs(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS brain_dream_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -954,9 +489,8 @@ fn run_migration_brain_dream_runs_rusqlite(conn: &rusqlite::Connection) -> Resul
     Ok(())
 }
 
-/// Migration 17 (rusqlite): cred tables for credential management.
-#[cfg(feature = "db_pool")]
-fn run_migration_cred_tables_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+/// Migration 17: cred tables for credential management.
+fn run_migration_cred_tables(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "-- Encrypted secrets storage
         CREATE TABLE IF NOT EXISTS cred_secrets (
@@ -1014,11 +548,10 @@ fn run_migration_cred_tables_rusqlite(conn: &rusqlite::Connection) -> Result<()>
     Ok(())
 }
 
-/// Migration 18 (rusqlite): add UNIQUE index on api_keys(key_hash).
+/// Migration 18: add UNIQUE index on api_keys(key_hash).
 /// Checks for pre-existing duplicates first; skips index creation if any are
 /// found rather than failing the migration (RB-L7).
-#[cfg(feature = "db_pool")]
-fn run_migration_api_key_hash_unique_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+fn run_migration_api_key_hash_unique(conn: &rusqlite::Connection) -> Result<()> {
     // Check for existing duplicate key_hash values.
     let dup_count: i64 = conn
         .query_row(
@@ -1041,203 +574,6 @@ fn run_migration_api_key_hash_unique_rusqlite(conn: &rusqlite::Connection) -> Re
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
-}
-
-/// Add a new column to a table if it doesn't exist
-/// SQLite doesn't have IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check first
-async fn add_column_if_not_exists(
-    conn: &Connection,
-    table: &str,
-    column: &str,
-    column_def: &str,
-) -> Result<()> {
-    // Check if column exists
-    let check_sql = format!(
-        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1",
-        table
-    );
-    let mut rows = conn.query(&check_sql, libsql::params![column]).await?;
-    let exists: i64 = if let Some(row) = rows.next().await? {
-        row.get(0)?
-    } else {
-        0
-    };
-
-    if exists == 0 {
-        let alter_sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, column_def);
-        conn.execute(&alter_sql, ()).await?;
-        info!("Added column {}.{}", table, column);
-    }
-
-    Ok(())
-}
-
-/// Migration 11: error_events table for centralised error aggregation.
-async fn run_migration_error_events(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS error_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            level TEXT NOT NULL,
-            message TEXT NOT NULL,
-            context TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            user_id TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_error_events_level ON error_events(level);
-        CREATE INDEX IF NOT EXISTS idx_error_events_source ON error_events(source);
-        CREATE INDEX IF NOT EXISTS idx_error_events_created_at ON error_events(created_at);",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 14: brain_meta key-value table for brain-level metadata.
-async fn run_migration_brain_meta(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS brain_meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );",
-    )
-    .await?;
-    Ok(())
-}
-
-async fn run_migration_pca_models(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS brain_pca_models (
-            id INTEGER PRIMARY KEY,
-            source_dim INTEGER NOT NULL,
-            target_dim INTEGER NOT NULL,
-            fit_at TEXT NOT NULL,
-            model_blob BLOB NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_pca_models_dims
-            ON brain_pca_models(source_dim, target_dim);",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 16: brain_dream_runs table for dream cycle audit trail.
-async fn run_migration_brain_dream_runs(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS brain_dream_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            started_at TEXT NOT NULL DEFAULT (datetime('now')),
-            finished_at TEXT,
-            replay_count INTEGER NOT NULL DEFAULT 0,
-            merge_count INTEGER NOT NULL DEFAULT 0,
-            prune_count INTEGER NOT NULL DEFAULT 0,
-            discover_count INTEGER NOT NULL DEFAULT 0,
-            decorrelate_count INTEGER NOT NULL DEFAULT 0,
-            resolve_count INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_brain_dream_runs_user
-            ON brain_dream_runs(user_id);
-        CREATE INDEX IF NOT EXISTS idx_brain_dream_runs_started
-            ON brain_dream_runs(started_at);",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 17: cred tables for credential management.
-async fn run_migration_cred_tables(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "-- Encrypted secrets storage
-        CREATE TABLE IF NOT EXISTS cred_secrets (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            category TEXT NOT NULL,
-            secret_type TEXT NOT NULL,
-            encrypted_data BLOB NOT NULL,
-            nonce BLOB NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(user_id, category, name)
-        );
-
-        -- Agent keys for service authentication
-        CREATE TABLE IF NOT EXISTS cred_agent_keys (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            key_hash TEXT NOT NULL UNIQUE,
-            name TEXT NOT NULL,
-            permissions TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            revoked_at TEXT,
-            UNIQUE(user_id, name)
-        );
-
-        -- Audit log
-        CREATE TABLE IF NOT EXISTS cred_audit (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            agent_name TEXT,
-            action TEXT NOT NULL,
-            category TEXT NOT NULL,
-            secret_name TEXT NOT NULL,
-            access_tier TEXT,
-            success INTEGER NOT NULL,
-            timestamp TEXT NOT NULL
-        );
-
-        -- Recovery keys
-        CREATE TABLE IF NOT EXISTS cred_recovery (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL UNIQUE,
-            encrypted_master BLOB NOT NULL,
-            recovery_hint TEXT,
-            created_at TEXT NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_cred_secrets_user ON cred_secrets(user_id);
-        CREATE INDEX IF NOT EXISTS idx_cred_audit_user ON cred_audit(user_id, timestamp);
-        CREATE INDEX IF NOT EXISTS idx_cred_agent_keys_user ON cred_agent_keys(user_id);",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Migration 18: add UNIQUE index on api_keys(key_hash).
-/// Checks for pre-existing duplicates first; skips index creation if any are
-/// found rather than failing the migration (RB-L7).
-async fn run_migration_api_key_hash_unique(conn: &Connection) -> Result<()> {
-    // Check for existing duplicate key_hash values.
-    let mut rows = conn
-        .query(
-            "SELECT COUNT(*) FROM (SELECT key_hash FROM api_keys GROUP BY key_hash HAVING COUNT(*) > 1)",
-            (),
-        )
-        .await?;
-    let dup_count: i64 = match rows.next().await? {
-        Some(row) => row.get(0).unwrap_or(0),
-        None => 0,
-    };
-
-    if dup_count > 0 {
-        tracing::warn!(
-            duplicates = dup_count,
-            "api_keys has duplicate key_hash rows; skipping UNIQUE index creation (RB-L7)"
-        );
-        return Ok(());
-    }
-
-    conn.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);",
-    )
-    .await?;
-    Ok(())
-}
-
-/// Ensure schema/migrations are applied before any TypeScript import flow.
-/// Source import is intentionally a no-op for now; schema setup is guaranteed.
-pub async fn migrate_from_typescript(conn: &Connection, _source_path: &str) -> Result<()> {
-    run_migrations(conn).await
 }
 
 /// Summary of post-import integrity checks. Each field is a row count for a
@@ -1278,23 +614,16 @@ impl PostImportValidation {
 /// Run a set of read-only integrity queries the migrate tool can surface in a
 /// pre-flight report. Every query is tolerant of missing tables so operators
 /// running this against a partially-migrated DB still get a useful summary.
-pub async fn validate_post_import(conn: &Connection) -> Result<PostImportValidation> {
-    async fn count(conn: &Connection, sql: &str) -> Result<i64> {
-        match conn.query(sql, ()).await {
-            Ok(mut rows) => match rows.next().await? {
-                Some(row) => Ok(row.get(0).unwrap_or(0)),
-                None => Ok(0),
-            },
-            Err(_) => Ok(0),
-        }
+pub fn validate_post_import(conn: &rusqlite::Connection) -> Result<PostImportValidation> {
+    fn count(conn: &rusqlite::Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |row| row.get(0)).unwrap_or(0)
     }
 
     let memories_orphan_user = count(
         conn,
         "SELECT COUNT(*) FROM memories \
          WHERE user_id NOT IN (SELECT id FROM users)",
-    )
-    .await?;
+    );
 
     let memories_duplicate_latest = count(
         conn,
@@ -1303,38 +632,32 @@ pub async fn validate_post_import(conn: &Connection) -> Result<PostImportValidat
             WHERE is_latest = 1 AND root_memory_id IS NOT NULL
             GROUP BY root_memory_id HAVING COUNT(*) > 1
          )",
-    )
-    .await?;
+    );
 
     let memories_missing_embedding = count(
         conn,
         "SELECT COUNT(*) FROM memories WHERE embedding_vec_1024 IS NULL \
          AND is_latest = 1 AND is_forgotten = 0",
-    )
-    .await?;
+    );
 
     let links_orphan = count(
         conn,
         "SELECT COUNT(*) FROM memory_links \
          WHERE source_id NOT IN (SELECT id FROM memories) \
             OR target_id NOT IN (SELECT id FROM memories)",
-    )
-    .await?;
+    );
 
-    let audit_log_null_user =
-        count(conn, "SELECT COUNT(*) FROM audit_log WHERE user_id IS NULL").await?;
+    let audit_log_null_user = count(conn, "SELECT COUNT(*) FROM audit_log WHERE user_id IS NULL");
 
     let session_quality_zero_user = count(
         conn,
         "SELECT COUNT(*) FROM session_quality WHERE user_id = 0",
-    )
-    .await?;
+    );
 
     let behavioral_drift_zero_user = count(
         conn,
         "SELECT COUNT(*) FROM behavioral_drift_events WHERE user_id = 0",
-    )
-    .await?;
+    );
 
     Ok(PostImportValidation {
         memories_orphan_user,
@@ -1350,49 +673,18 @@ pub async fn validate_post_import(conn: &Connection) -> Result<PostImportValidat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsql::Builder;
 
     #[tokio::test]
     async fn test_migrations_idempotent() -> Result<()> {
-        let db_path =
-            std::env::temp_dir().join(format!("kleos-migrations-{}.db", uuid::Uuid::new_v4()));
-        let db = Builder::new_local(db_path.to_string_lossy().as_ref())
-            .build()
-            .await?;
-        let conn = db.connect()?;
-
-        run_migrations(&conn).await?;
-        run_migrations(&conn).await?;
-
-        let mut rows = conn
-            .query(
-                "SELECT COUNT(*) FROM schema_version WHERE version = ?1",
-                libsql::params![MIGRATION_CREATE_SCHEMA],
-            )
-            .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| crate::EngError::Internal("missing schema_version row".to_string()))?;
-        let count: i64 = row.get(0)?;
-        assert_eq!(count, 1);
-
-        let _ = std::fs::remove_file(&db_path);
-        Ok(())
-    }
-
-    #[cfg(feature = "db_pool")]
-    #[tokio::test]
-    async fn test_rusqlite_migrations_idempotent() -> Result<()> {
         let db_path = std::env::temp_dir().join(format!(
-            "kleos-rusqlite-migrations-{}.db",
+            "kleos-migrations-{}.db",
             uuid::Uuid::new_v4()
         ));
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
 
-        run_migrations_rusqlite(&conn)?;
-        run_migrations_rusqlite(&conn)?;
+        run_migrations(&conn)?;
+        run_migrations(&conn)?;
 
         let count: i64 = conn
             .query_row(

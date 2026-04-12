@@ -15,6 +15,10 @@ use crate::db::Database;
 use crate::embeddings::EmbeddingProvider;
 use crate::{EngError, Result};
 
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // BrainBackend trait -- unifies subprocess and in-process Hopfield
 // ---------------------------------------------------------------------------
@@ -939,38 +943,43 @@ impl BrainBackend for HopfieldBrainManager {
 /// memories table (pattern may have been created directly).
 #[cfg(feature = "brain_hopfield")]
 async fn load_brain_memory(db: &Database, memory_id: i64, user_id: i64) -> Result<BrainMemory> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, content, category, source, importance, created_at, tags
-             FROM memories WHERE id = ?1 AND user_id = ?2",
-            libsql::params![memory_id, user_id],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, content, category, source, importance, created_at, tags
+                 FROM memories WHERE id = ?1 AND user_id = ?2",
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    if let Some(row) = rows.next().await? {
-        let id: i64 = row.get(0)?;
-        let content: String = row.get(1)?;
-        let category: String = row.get(2)?;
-        let source: String = row.get(3)?;
-        let importance: f64 = row.get(4)?;
-        let created_at: Option<String> = row.get(5)?;
-        let tags_raw: Option<String> = row.get(6)?;
-        let tags = tags_raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
+        let mut rows = stmt
+            .query(rusqlite::params![memory_id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
 
-        Ok(BrainMemory {
-            id,
-            content,
-            category,
-            source,
-            importance,
-            activation: 0.0, // Will be set by caller
-            created_at,
-            tags,
-        })
-    } else {
-        Err(EngError::NotFound(format!("memory {}", memory_id)))
-    }
+        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+            let content: String = row.get(1).map_err(rusqlite_to_eng_error)?;
+            let category: String = row.get(2).map_err(rusqlite_to_eng_error)?;
+            let source: String = row.get(3).map_err(rusqlite_to_eng_error)?;
+            let importance: f64 = row.get(4).map_err(rusqlite_to_eng_error)?;
+            let created_at: Option<String> = row.get(5).map_err(rusqlite_to_eng_error)?;
+            let tags_raw: Option<String> = row.get(6).map_err(rusqlite_to_eng_error)?;
+            let tags = tags_raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
+
+            Ok(BrainMemory {
+                id,
+                content,
+                category,
+                source,
+                importance,
+                activation: 0.0, // Will be set by caller
+                created_at,
+                tags,
+            })
+        } else {
+            Err(EngError::NotFound(format!("memory {}", memory_id)))
+        }
+    })
+    .await
 }
 
 /// Factory function to create the appropriate brain backend based on the
@@ -1069,39 +1078,44 @@ pub async fn get_memory_for_absorb(
     id: i64,
     user_id: i64,
 ) -> Result<AbsorbMemoryData> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, content, category, source, importance, created_at, tags
-             FROM memories WHERE id = ?1 AND user_id = ?2",
-            libsql::params![id, user_id],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, content, category, source, importance, created_at, tags
+                 FROM memories WHERE id = ?1 AND user_id = ?2",
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| EngError::NotFound(format!("memory {}", id)))?;
+        let mut rows = stmt
+            .query(rusqlite::params![id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mem_id: i64 = row.get(0)?;
-    let content: String = row.get(1)?;
-    let category: String = row.get(2)?;
-    let source: String = row.get(3)?;
-    let importance: f64 = row.get(4)?;
-    let created_at: String = row.get(5)?;
-    let tags_raw: Option<String> = row.get(6)?;
+        let row = rows
+            .next()
+            .map_err(rusqlite_to_eng_error)?
+            .ok_or_else(|| EngError::NotFound(format!("memory {}", id)))?;
 
-    let tags = tags_raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
+        let mem_id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+        let content: String = row.get(1).map_err(rusqlite_to_eng_error)?;
+        let category: String = row.get(2).map_err(rusqlite_to_eng_error)?;
+        let source: String = row.get(3).map_err(rusqlite_to_eng_error)?;
+        let importance: f64 = row.get(4).map_err(rusqlite_to_eng_error)?;
+        let created_at: String = row.get(5).map_err(rusqlite_to_eng_error)?;
+        let tags_raw: Option<String> = row.get(6).map_err(rusqlite_to_eng_error)?;
 
-    Ok(AbsorbMemoryData {
-        id: mem_id,
-        content,
-        category,
-        source,
-        importance,
-        created_at,
-        tags,
+        let tags = tags_raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
+
+        Ok(AbsorbMemoryData {
+            id: mem_id,
+            content,
+            category,
+            source,
+            importance,
+            created_at,
+            tags,
+        })
     })
+    .await
 }
 /// Verify that all memory IDs belong to the given user. Returns true if all match.
 pub async fn verify_memory_ownership(
@@ -1120,24 +1134,29 @@ pub async fn verify_memory_ownership(
         memory_ids.len() + 1
     );
 
-    let mut params: Vec<libsql::Value> = memory_ids
+    let mut params: Vec<rusqlite::types::Value> = memory_ids
         .iter()
-        .map(|id| libsql::Value::Integer(*id))
+        .map(|id| rusqlite::types::Value::Integer(*id))
         .collect();
-    params.push(libsql::Value::Integer(user_id));
+    params.push(rusqlite::types::Value::Integer(user_id));
 
-    let mut rows = db
-        .conn
-        .query(&sql, libsql::params_from_iter(params))
-        .await?;
+    let expected = memory_ids.len() as i64;
 
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| EngError::Internal("count query failed".into()))?;
-    let count: i64 = row.get(0)?;
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params.iter().cloned()))
+            .map_err(rusqlite_to_eng_error)?;
 
-    Ok(count == memory_ids.len() as i64)
+        let row = rows
+            .next()
+            .map_err(rusqlite_to_eng_error)?
+            .ok_or_else(|| EngError::Internal("count query failed".into()))?;
+        let count: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+
+        Ok(count == expected)
+    })
+    .await
 }
 // ---------------------------------------------------------------------------
 // Oracle (from oracle.ts)

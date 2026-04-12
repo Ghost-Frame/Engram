@@ -317,13 +317,25 @@ pub async fn get_by_content_hash(app: &App, args: Value) -> Result<Value> {
         .get("content_hash")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid_input("content_hash required"))?;
-    let mut rows = app.db.conn.query(
-        "SELECT id FROM memories WHERE content_hash = ?1 AND user_id = ?2 AND is_forgotten = 0 ORDER BY id DESC",
-        libsql::params![content_hash, auth.user_id],
-    ).await?;
+    let content_hash_owned = content_hash.to_string();
+    let user_id = auth.user_id;
+
+    let ids: Vec<i64> = app.db.read(move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM memories WHERE content_hash = ?1 AND user_id = ?2 AND is_forgotten = 0 ORDER BY id DESC"
+        ).map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        let mut rows = stmt.query(rusqlite::params![content_hash_owned, user_id])
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))? {
+            let id: i64 = row.get(0).map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ids.push(id);
+        }
+        Ok(ids)
+    }).await?;
+
     let mut memories = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let id: i64 = row.get(0)?;
+    for id in ids {
         memories.push(memory::get(&app.db, id, auth.user_id).await?);
     }
     Ok(json!({"memories": memories}))

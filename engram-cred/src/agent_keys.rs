@@ -1,7 +1,9 @@
 //! Agent key management with permission scoping and revocation.
 
 use kleos_lib::db::Database;
+use kleos_lib::EngError;
 use rand::RngCore;
+use rusqlite::params;
 
 use crate::crypto::hash_key;
 use crate::{CredError, Result};
@@ -124,34 +126,31 @@ pub async fn create_agent_key(
     let (raw_key, key_hash) = generate_agent_key();
     let permissions_json = permissions.to_json();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let name_owned = name.to_string();
+    let permissions_clone = permissions.clone();
+    let key_hash_ret = key_hash.clone();
+    let now_ret = now.clone();
 
-    db.conn
-        .execute(
-            "INSERT INTO cred_agent_keys (user_id, key_hash, name, permissions, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            libsql::params![
-                user_id,
-                key_hash.clone(),
-                name,
-                permissions_json,
-                now.clone()
-            ],
-        )
-        .await?;
-
-    let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = match rows.next().await? {
-        Some(row) => row.get(0)?,
-        None => 0,
-    };
+    let id = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO cred_agent_keys (user_id, key_hash, name, permissions, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![user_id, key_hash, name_owned, permissions_json, now],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
 
     let key = AgentKey {
         id,
         user_id,
-        key_hash: key_hash.clone(),
+        key_hash: key_hash_ret,
         name: name.to_string(),
-        permissions: permissions.clone(),
-        created_at: now,
+        permissions: permissions_clone,
+        created_at: now_ret,
         revoked_at: None,
     };
 
@@ -162,40 +161,44 @@ pub async fn create_agent_key(
 pub async fn validate_agent_key(db: &Database, raw_key: &[u8]) -> Result<AgentKey> {
     let key_hash = hash_key(raw_key);
 
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, user_id, key_hash, name, permissions, created_at, revoked_at
-             FROM cred_agent_keys
-             WHERE key_hash = ?1",
-            libsql::params![key_hash],
-        )
-        .await?;
-
-    let row = rows
-        .next()
-        .await?
+    let key = db
+        .read(move |conn| {
+            let result = conn.query_row(
+                "SELECT id, user_id, key_hash, name, permissions, created_at, revoked_at
+                 FROM cred_agent_keys
+                 WHERE key_hash = ?1",
+                params![key_hash],
+                |row| {
+                    let id: i64 = row.get(0)?;
+                    let user_id: i64 = row.get(1)?;
+                    let key_hash: String = row.get(2)?;
+                    let name: String = row.get(3)?;
+                    let permissions_json: String = row.get(4)?;
+                    let created_at: String = row.get(5)?;
+                    let revoked_at: Option<String> = row.get(6)?;
+                    Ok((id, user_id, key_hash, name, permissions_json, created_at, revoked_at))
+                },
+            );
+            match result {
+                Ok((id, user_id, key_hash, name, permissions_json, created_at, revoked_at)) => {
+                    let permissions = AgentKeyPermissions::from_json(&permissions_json);
+                    Ok(Some(AgentKey {
+                        id,
+                        user_id,
+                        key_hash,
+                        name,
+                        permissions,
+                        created_at,
+                        revoked_at,
+                    }))
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(EngError::DatabaseMessage(e.to_string())),
+            }
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?
         .ok_or_else(|| CredError::AuthFailed("invalid agent key".into()))?;
-
-    let id: i64 = row.get(0)?;
-    let user_id: i64 = row.get(1)?;
-    let key_hash: String = row.get(2)?;
-    let name: String = row.get(3)?;
-    let permissions_json: String = row.get(4)?;
-    let created_at: String = row.get(5)?;
-    let revoked_at: Option<String> = row.get(6)?;
-
-    let permissions = AgentKeyPermissions::from_json(&permissions_json);
-
-    let key = AgentKey {
-        id,
-        user_id,
-        key_hash,
-        name,
-        permissions,
-        created_at,
-        revoked_at,
-    };
 
     if !key.is_valid() {
         return Err(CredError::KeyRevoked(key.name.clone()));
@@ -206,54 +209,66 @@ pub async fn validate_agent_key(db: &Database, raw_key: &[u8]) -> Result<AgentKe
 
 /// List agent keys for a user.
 pub async fn list_agent_keys(db: &Database, user_id: i64) -> Result<Vec<AgentKey>> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, user_id, key_hash, name, permissions, created_at, revoked_at
-             FROM cred_agent_keys
-             WHERE user_id = ?1
-             ORDER BY created_at DESC",
-            libsql::params![user_id],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, user_id, key_hash, name, permissions, created_at, revoked_at
+                 FROM cred_agent_keys
+                 WHERE user_id = ?1
+                 ORDER BY created_at DESC",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    let mut keys = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let id: i64 = row.get(0)?;
-        let user_id: i64 = row.get(1)?;
-        let key_hash: String = row.get(2)?;
-        let name: String = row.get(3)?;
-        let permissions_json: String = row.get(4)?;
-        let created_at: String = row.get(5)?;
-        let revoked_at: Option<String> = row.get(6)?;
+        let rows = stmt
+            .query_map(params![user_id], |row| {
+                let id: i64 = row.get(0)?;
+                let user_id: i64 = row.get(1)?;
+                let key_hash: String = row.get(2)?;
+                let name: String = row.get(3)?;
+                let permissions_json: String = row.get(4)?;
+                let created_at: String = row.get(5)?;
+                let revoked_at: Option<String> = row.get(6)?;
+                Ok((id, user_id, key_hash, name, permissions_json, created_at, revoked_at))
+            })
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-        let permissions = AgentKeyPermissions::from_json(&permissions_json);
+        let mut keys = Vec::new();
+        for row_result in rows {
+            let (id, user_id, key_hash, name, permissions_json, created_at, revoked_at) =
+                row_result.map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let permissions = AgentKeyPermissions::from_json(&permissions_json);
+            keys.push(AgentKey {
+                id,
+                user_id,
+                key_hash,
+                name,
+                permissions,
+                created_at,
+                revoked_at,
+            });
+        }
 
-        keys.push(AgentKey {
-            id,
-            user_id,
-            key_hash,
-            name,
-            permissions,
-            created_at,
-            revoked_at,
-        });
-    }
-
-    Ok(keys)
+        Ok(keys)
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
 }
 
 /// Revoke an agent key.
 pub async fn revoke_agent_key(db: &Database, user_id: i64, name: &str) -> Result<()> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let name_owned = name.to_string();
 
     let affected = db
-        .conn
-        .execute(
-            "UPDATE cred_agent_keys SET revoked_at = ?1 WHERE user_id = ?2 AND name = ?3 AND revoked_at IS NULL",
-            libsql::params![now, user_id, name],
-        )
-        .await?;
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE cred_agent_keys SET revoked_at = ?1 WHERE user_id = ?2 AND name = ?3 AND revoked_at IS NULL",
+                params![now, user_id, name_owned],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
 
     if affected == 0 {
         return Err(CredError::NotFound(format!("agent key: {}", name)));
@@ -264,13 +279,18 @@ pub async fn revoke_agent_key(db: &Database, user_id: i64, name: &str) -> Result
 
 /// Delete an agent key entirely (for cleanup).
 pub async fn delete_agent_key(db: &Database, user_id: i64, name: &str) -> Result<()> {
+    let name_owned = name.to_string();
+
     let affected = db
-        .conn
-        .execute(
-            "DELETE FROM cred_agent_keys WHERE user_id = ?1 AND name = ?2",
-            libsql::params![user_id, name],
-        )
-        .await?;
+        .write(move |conn| {
+            conn.execute(
+                "DELETE FROM cred_agent_keys WHERE user_id = ?1 AND name = ?2",
+                params![user_id, name_owned],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
 
     if affected == 0 {
         return Err(CredError::NotFound(format!("agent key: {}", name)));

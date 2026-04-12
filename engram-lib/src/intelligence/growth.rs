@@ -8,9 +8,14 @@ use crate::cred::{has_secret_patterns, CreddClient};
 use crate::db::Database;
 use crate::intelligence::llm::{call_llm, is_llm_available, LlmOptions};
 use crate::intelligence::types::{GrowthReflectRequest, GrowthReflectResult};
-use crate::Result;
+use crate::{EngError, Result};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrowthObservation {
@@ -26,63 +31,63 @@ pub async fn list_observations(
     user_id: i64,
     limit: usize,
 ) -> Result<Vec<GrowthObservation>> {
-    let conn = db.connection();
-    let mut rows = conn
-        .query(
-            "SELECT id, content, source, importance, created_at \
-             FROM memories \
-             WHERE category = 'growth' AND is_forgotten = 0 AND user_id = ?1 \
-             ORDER BY created_at DESC LIMIT ?2",
-            libsql::params![user_id, limit as i64],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, content, source, importance, created_at \
+                 FROM memories \
+                 WHERE category = 'growth' AND is_forgotten = 0 AND user_id = ?1 \
+                 ORDER BY created_at DESC LIMIT ?2",
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut observations = Vec::new();
-    while let Some(row) = rows.next().await? {
-        observations.push(GrowthObservation {
-            id: row.get(0)?,
-            content: row.get(1)?,
-            source: row.get(2)?,
-            importance: row.get(3)?,
-            created_at: row.get(4)?,
-        });
-    }
-    Ok(observations)
+        let observations = stmt
+            .query_map(rusqlite::params![user_id, limit as i64], |row| {
+                Ok(GrowthObservation {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    source: row.get(2)?,
+                    importance: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })
+            .map_err(rusqlite_to_eng_error)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(rusqlite_to_eng_error)?;
+
+        Ok(observations)
+    })
+    .await
 }
 
 pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Result<i64> {
-    let conn = db.connection();
-    let mut rows = conn
-        .query(
-            "SELECT content, source FROM memories WHERE id = ?1 AND user_id = ?2 AND category = 'growth'",
-            libsql::params![observation_id, user_id],
+    db.write(move |conn| {
+        let result: Option<(String, String)> = conn
+            .query_row(
+                "SELECT content, source FROM memories WHERE id = ?1 AND user_id = ?2 AND category = 'growth'",
+                rusqlite::params![observation_id, user_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(rusqlite_to_eng_error)?;
+
+        let (content, source) = result.ok_or_else(|| {
+            EngError::NotFound(format!("growth observation {} not found", observation_id))
+        })?;
+
+        conn.execute(
+            "INSERT INTO memories (content, category, source, importance, version, is_latest, \
+             source_count, is_static, is_forgotten, confidence, status, user_id, \
+             created_at, updated_at) \
+             VALUES (?1, 'insight', ?2, 8, 1, 1, 1, 1, 0, 1.0, 'approved', ?3, \
+             datetime('now'), datetime('now'))",
+            rusqlite::params![content, source, user_id],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
 
-    let row = rows.next().await?.ok_or_else(|| {
-        crate::EngError::NotFound(format!("growth observation {} not found", observation_id))
-    })?;
-
-    let content: String = row.get(0)?;
-    let source: String = row.get(1)?;
-
-    conn.execute(
-        "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-         source_count, is_static, is_forgotten, confidence, status, user_id, \
-         created_at, updated_at) \
-         VALUES (?1, 'insight', ?2, 8, 1, 1, 1, 1, 0, 1.0, 'approved', ?3, \
-         datetime('now'), datetime('now'))",
-        libsql::params![content, source, user_id],
-    )
-    .await?;
-
-    let mut id_rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = if let Some(id_row) = id_rows.next().await? {
-        id_row.get(0)?
-    } else {
-        0
-    };
-    Ok(id)
+        Ok(conn.last_insert_rowid())
+    })
+    .await
 }
 
 /// Service-specific reflection prompts.
@@ -156,8 +161,6 @@ pub async fn reflect(
     req: &GrowthReflectRequest,
     user_id: i64,
 ) -> Result<GrowthReflectResult> {
-    let conn = db.connection();
-
     if req.context.is_empty() {
         return Err(crate::EngError::InvalidInput(
             "context array is required and must not be empty".to_string(),
@@ -232,38 +235,36 @@ pub async fn reflect(
     // Store as growth memory
     let source = format!("{}-growth", req.service);
 
-    conn.execute(
-        "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-         source_count, is_static, is_forgotten, confidence, status, user_id, \
-         created_at, updated_at) \
-         VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1.0, 'approved', ?3, \
-         datetime('now'), datetime('now'))",
-        libsql::params![trimmed.clone(), source.clone(), user_id],
-    )
-    .await?;
+    let trimmed_for_closure = trimmed.clone();
+    let source_c = source.clone();
+    let (memory_id, reflection_id) = db
+        .write(move |conn| {
+            let trimmed_refl = trimmed_for_closure.clone();
+            conn.execute(
+                "INSERT INTO memories (content, category, source, importance, version, is_latest, \
+                 source_count, is_static, is_forgotten, confidence, status, user_id, \
+                 created_at, updated_at) \
+                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1.0, 'approved', ?3, \
+                 datetime('now'), datetime('now'))",
+                rusqlite::params![trimmed_for_closure, source_c, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut id_row = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let memory_id: i64 = if let Some(row) = id_row.next().await? {
-        row.get(0)?
-    } else {
-        0
-    };
+            let memory_id = conn.last_insert_rowid();
 
-    // Store in reflections table
-    conn.execute(
-        "INSERT INTO reflections (content, reflection_type, source_memory_ids, \
-         confidence, user_id, created_at) \
-         VALUES (?1, 'growth', ?2, 1.0, ?3, datetime('now'))",
-        libsql::params![trimmed.clone(), format!("[{}]", memory_id), user_id],
-    )
-    .await?;
+            conn.execute(
+                "INSERT INTO reflections (content, reflection_type, source_memory_ids, \
+                 confidence, user_id, created_at) \
+                 VALUES (?1, 'growth', ?2, 1.0, ?3, datetime('now'))",
+                rusqlite::params![trimmed_refl, format!("[{}]", memory_id), user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut refl_id_row = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let reflection_id: i64 = if let Some(row) = refl_id_row.next().await? {
-        row.get(0)?
-    } else {
-        0
-    };
+            let reflection_id = conn.last_insert_rowid();
+
+            Ok((memory_id, reflection_id))
+        })
+        .await?;
 
     info!(
         service = %req.service,
@@ -283,21 +284,18 @@ pub async fn reflect(
 /// Self-reflection for Kleos -- called periodically (e.g., every hour).
 /// Gathers memory stats, builds context, and generates a growth observation.
 pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectResult> {
-    let conn = db.connection();
-
     // Min activity threshold: 50 new memories in last hour
-    let mut count_row = conn
-        .query(
-            "SELECT COUNT(*) FROM memories \
-             WHERE created_at > datetime('now', '-1 hour') AND user_id = ?1",
-            libsql::params![user_id],
-        )
+    let recent_count: i64 = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories \
+                 WHERE created_at > datetime('now', '-1 hour') AND user_id = ?1",
+                rusqlite::params![user_id],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
-    let recent_count: i64 = if let Some(row) = count_row.next().await? {
-        row.get(0)?
-    } else {
-        0
-    };
 
     if recent_count < 50 {
         return Ok(GrowthReflectResult {
@@ -317,28 +315,27 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
     }
 
     // Build context from memory stats
-    let mut stats_row = conn
-        .query(
-            "SELECT COUNT(*) as total, \
-                    SUM(CASE WHEN access_count = 0 THEN 1 ELSE 0 END) as never_accessed, \
-                    SUM(CASE WHEN category = 'growth' THEN 1 ELSE 0 END) as growth_count, \
-                    AVG(importance) as avg_importance \
-             FROM memories WHERE is_forgotten = 0 AND user_id = ?1",
-            libsql::params![user_id],
-        )
-        .await?;
-
-    let (total, never_accessed, growth_count, avg_importance) =
-        if let Some(row) = stats_row.next().await? {
-            (
-                row.get::<i64>(0).unwrap_or(0),
-                row.get::<i64>(1).unwrap_or(0),
-                row.get::<i64>(2).unwrap_or(0),
-                row.get::<f64>(3).unwrap_or(0.0),
+    let (total, never_accessed, growth_count, avg_importance): (i64, i64, i64, f64) = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT COUNT(*) as total, \
+                        SUM(CASE WHEN access_count = 0 THEN 1 ELSE 0 END) as never_accessed, \
+                        SUM(CASE WHEN category = 'growth' THEN 1 ELSE 0 END) as growth_count, \
+                        AVG(importance) as avg_importance \
+                 FROM memories WHERE is_forgotten = 0 AND user_id = ?1",
+                rusqlite::params![user_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0).unwrap_or(0),
+                        row.get::<_, i64>(1).unwrap_or(0),
+                        row.get::<_, i64>(2).unwrap_or(0),
+                        row.get::<_, f64>(3).unwrap_or(0.0),
+                    ))
+                },
             )
-        } else {
-            (0, 0, 0, 0.0)
-        };
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
 
     let context = vec![
         format!(
@@ -349,20 +346,28 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
     ];
 
     // Get existing growth for anti-repeat
-    let mut growth_rows = conn
-        .query(
-            "SELECT content FROM memories \
-             WHERE category = 'growth' AND source = 'kleos-growth' AND is_forgotten = 0 AND user_id = ?1 \
-             ORDER BY created_at DESC LIMIT 10",
-            libsql::params![user_id],
-        )
-        .await?;
+    let existing_lines: Vec<String> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT content FROM memories \
+                     WHERE category = 'growth' AND source = 'kleos-growth' AND is_forgotten = 0 AND user_id = ?1 \
+                     ORDER BY created_at DESC LIMIT 10",
+                )
+                .map_err(rusqlite_to_eng_error)?;
 
-    let mut existing_lines = Vec::new();
-    while let Some(row) = growth_rows.next().await? {
-        let content: String = row.get(0)?;
-        existing_lines.push(format!("- {}", content));
-    }
+            let lines = stmt
+                .query_map(rusqlite::params![user_id], |row| {
+                    let content: String = row.get(0)?;
+                    Ok(format!("- {}", content))
+                })
+                .map_err(rusqlite_to_eng_error)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(rusqlite_to_eng_error)?;
+
+            Ok(lines)
+        })
+        .await?;
 
     let req = GrowthReflectRequest {
         service: "kleos".to_string(),

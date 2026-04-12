@@ -5,11 +5,13 @@
 //! If the YubiKey is lost, the recovery key can be used to re-derive the master key.
 
 use rand::RngCore;
+use rusqlite::params;
 
 use crate::crypto::{decrypt_secret, encrypt_secret, KEY_SIZE};
 use crate::types::SecretData;
 use crate::{CredError, Result};
 use kleos_lib::db::Database;
+use kleos_lib::EngError;
 
 /// Recovery key length (256 bits = 32 bytes, displayed as 64 hex chars).
 pub const RECOVERY_KEY_SIZE: usize = 32;
@@ -78,33 +80,32 @@ pub async fn store_recovery_key(
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    // Delete any existing recovery key for this user
-    db.conn
-        .execute(
-            "DELETE FROM cred_recovery WHERE user_id = ?1",
-            libsql::params![user_id],
-        )
-        .await?;
-
-    // Store the new recovery key
+    // Prepend nonce to encrypted blob
     let mut encrypted_blob = nonce.to_vec();
     encrypted_blob.extend_from_slice(&encrypted);
 
-    db.conn
-        .execute(
+    let hint_owned = hint.map(|s| s.to_string());
+
+    db.write(move |conn| {
+        // Delete any existing recovery key for this user
+        conn.execute(
+            "DELETE FROM cred_recovery WHERE user_id = ?1",
+            params![user_id],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+        // Store the new recovery key
+        conn.execute(
             "INSERT INTO cred_recovery (user_id, encrypted_master, recovery_hint, created_at)
              VALUES (?1, ?2, ?3, ?4)",
-            libsql::params![user_id, encrypted_blob, hint, now],
+            params![user_id, encrypted_blob, hint_owned, now],
         )
-        .await?;
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = match rows.next().await? {
-        Some(row) => row.get(0)?,
-        None => 0,
-    };
-
-    Ok(id)
+        Ok(conn.last_insert_rowid())
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
 }
 
 /// Recover the master key using a recovery key.
@@ -113,20 +114,31 @@ pub async fn recover_master_key(
     user_id: i64,
     recovery_key: &[u8; RECOVERY_KEY_SIZE],
 ) -> Result<[u8; KEY_SIZE]> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT encrypted_master FROM cred_recovery WHERE user_id = ?1",
-            libsql::params![user_id],
-        )
-        .await?;
+    let encrypted_blob: Option<Vec<u8>> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT encrypted_master FROM cred_recovery WHERE user_id = ?1")
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| CredError::NotFound("no recovery key stored".into()))?;
+            let mut rows = stmt
+                .query(params![user_id])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    let encrypted_blob: Vec<u8> = row.get(0)?;
+            match rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+                Some(row) => {
+                    let blob: Vec<u8> = row
+                        .get(0)
+                        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    Ok(Some(blob))
+                }
+                None => Ok(None),
+            }
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
+
+    let encrypted_blob =
+        encrypted_blob.ok_or_else(|| CredError::NotFound("no recovery key stored".into()))?;
 
     if encrypted_blob.len() < 12 {
         return Err(CredError::Decryption("invalid recovery data".into()));
@@ -159,54 +171,76 @@ pub async fn recover_master_key(
 
 /// Check if a user has a recovery key stored.
 pub async fn has_recovery_key(db: &Database, user_id: i64) -> Result<bool> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id FROM cred_recovery WHERE user_id = ?1",
-            libsql::params![user_id],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare("SELECT id FROM cred_recovery WHERE user_id = ?1")
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    Ok(rows.next().await?.is_some())
+        let mut rows = stmt
+            .query(params![user_id])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+        let found = rows
+            .next()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .is_some();
+
+        Ok(found)
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
 }
 
 /// Get recovery key info for a user.
 pub async fn get_recovery_info(db: &Database, user_id: i64) -> Result<Option<RecoveryInfo>> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, user_id, recovery_hint, created_at FROM cred_recovery WHERE user_id = ?1",
-            libsql::params![user_id],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, user_id, recovery_hint, created_at FROM cred_recovery WHERE user_id = ?1",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    match rows.next().await? {
-        Some(row) => {
-            let id: i64 = row.get(0)?;
-            let user_id: i64 = row.get(1)?;
-            let hint: Option<String> = row.get(2)?;
-            let created_at: String = row.get(3)?;
+        let mut rows = stmt
+            .query(params![user_id])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-            Ok(Some(RecoveryInfo {
-                id,
-                user_id,
-                hint,
-                created_at,
-            }))
+        match rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+            Some(row) => {
+                let id: i64 = row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let uid: i64 = row.get(1).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let hint: Option<String> =
+                    row.get(2).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let created_at: String =
+                    row.get(3).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+                Ok(Some(RecoveryInfo {
+                    id,
+                    user_id: uid,
+                    hint,
+                    created_at,
+                }))
+            }
+            None => Ok(None),
         }
-        None => Ok(None),
-    }
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
 }
 
 /// Delete the recovery key for a user.
 pub async fn delete_recovery_key(db: &Database, user_id: i64) -> Result<()> {
     let affected = db
-        .conn
-        .execute(
-            "DELETE FROM cred_recovery WHERE user_id = ?1",
-            libsql::params![user_id],
-        )
-        .await?;
+        .write(move |conn| {
+            let n = conn
+                .execute(
+                    "DELETE FROM cred_recovery WHERE user_id = ?1",
+                    params![user_id],
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(n)
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
 
     if affected == 0 {
         return Err(CredError::NotFound("no recovery key to delete".into()));
@@ -222,8 +256,8 @@ mod tests {
 
     async fn setup_db() -> Database {
         let db = Database::connect_memory().await.expect("db");
-        db.conn
-            .execute(
+        db.write(move |conn| {
+            conn.execute(
                 "CREATE TABLE IF NOT EXISTS cred_recovery (
                     id INTEGER PRIMARY KEY,
                     user_id INTEGER NOT NULL UNIQUE,
@@ -231,10 +265,13 @@ mod tests {
                     recovery_hint TEXT,
                     created_at TEXT NOT NULL
                 )",
-                (),
+                [],
             )
-            .await
-            .expect("create table");
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .expect("create table");
         db
     }
 

@@ -10,6 +10,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use rusqlite::params;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::routing::get;
@@ -253,34 +255,29 @@ async fn body_json(res: axum::response::Response) -> Value {
 }
 
 async fn pagerank_count_for_user(db: &Database, user_id: i64) -> i64 {
-    let mut rows = db
-        .conn
-        .query(
+    db.read(move |conn| {
+        conn.query_row(
             "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
-            libsql::params![user_id],
+            params![user_id],
+            |row| row.get(0),
         )
-        .await
-        .expect("query pagerank count");
-    rows.next()
-        .await
-        .expect("read count row")
-        .expect("count row exists")
-        .get(0)
-        .expect("count value")
+        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+    })
+    .await
+    .expect("query pagerank count")
 }
 
 async fn distinct_pagerank_users(db: &Database) -> i64 {
-    let mut rows = db
-        .conn
-        .query("SELECT COUNT(DISTINCT user_id) FROM memory_pagerank", ())
-        .await
-        .expect("query distinct pagerank users");
-    rows.next()
-        .await
-        .expect("read distinct row")
-        .expect("distinct row exists")
-        .get(0)
-        .expect("distinct count value")
+    db.read(move |conn| {
+        conn.query_row(
+            "SELECT COUNT(DISTINCT user_id) FROM memory_pagerank",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+    })
+    .await
+    .expect("query distinct pagerank users")
 }
 
 // ---------------------------------------------------------------------------

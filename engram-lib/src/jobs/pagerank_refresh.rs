@@ -13,26 +13,31 @@ use crate::db::Database;
 use crate::graph::pagerank::{
     compute_pagerank_for_user, persist_pagerank_with_snapshot, snapshot_pagerank_dirty,
 };
+use crate::EngError;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 /// Query users whose pagerank cache needs refreshing based on dirty_count or
 /// elapsed time since last_refresh.
 async fn dirty_users(db: &Database, threshold: u32, interval_secs: u64) -> crate::Result<Vec<i64>> {
     let threshold_i64 = threshold as i64;
     let interval_i64 = interval_secs as i64;
-    let sql = format!(
-        "SELECT user_id FROM pagerank_dirty \
-         WHERE dirty_count >= ?1 \
-            OR last_refresh <= strftime('%s','now') - {interval_i64}",
-    );
-    let mut rows = db
-        .connection()
-        .query(&sql, libsql::params![threshold_i64])
-        .await?;
-    let mut user_ids = Vec::new();
-    while let Some(row) = rows.next().await? {
-        user_ids.push(row.get::<i64>(0)?);
-    }
-    Ok(user_ids)
+    db.read(move |conn| {
+        let sql = format!(
+            "SELECT user_id FROM pagerank_dirty \
+             WHERE dirty_count >= ?1 \
+                OR last_refresh <= strftime('%s','now') - {interval_i64}",
+        );
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let rows = stmt
+            .query_map(rusqlite::params![threshold_i64], |row| row.get(0))
+            .map_err(rusqlite_to_eng_error)?;
+        rows.collect::<std::result::Result<Vec<i64>, _>>()
+            .map_err(rusqlite_to_eng_error)
+    })
+    .await
 }
 
 /// Run a single refresh cycle: find dirty users, recompute + persist (bounded
@@ -204,20 +209,16 @@ mod tests {
     }
 
     async fn pagerank_count(db: &Database, user_id: i64) -> i64 {
-        let mut rows = db
-            .connection()
-            .query(
+        db.read(move |conn| {
+            conn.query_row(
                 "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
-                libsql::params![user_id],
+                rusqlite::params![user_id],
+                |row| row.get(0),
             )
-            .await
-            .expect("query pagerank count");
-        rows.next()
-            .await
-            .expect("read count row")
-            .expect("count row exists")
-            .get(0)
-            .expect("count value")
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .expect("query pagerank count")
     }
 
     #[tokio::test]

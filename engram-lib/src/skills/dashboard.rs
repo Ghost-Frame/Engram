@@ -1,6 +1,6 @@
 use crate::db::Database;
-use crate::Result;
-use libsql::params;
+use crate::{EngError, Result};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 /// Compute a weighted skill score.
@@ -47,28 +47,30 @@ pub struct SkillOverview {
 
 /// Get dashboard overview stats.
 pub async fn get_overview(db: &Database, user_id: i64) -> Result<SkillOverview> {
-    let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT COUNT(*), SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), SUM(CASE WHEN is_deprecated = 1 THEN 1 ELSE 0 END), SUM(execution_count), AVG(trust_score) FROM skill_records WHERE user_id = ?1",
-        params![user_id],
-    ).await?;
-    if let Some(row) = rows.next().await? {
-        Ok(SkillOverview {
-            total_skills: row.get::<i64>(0)?,
-            active_skills: row.get::<Option<i64>>(1)?.unwrap_or(0),
-            deprecated_skills: row.get::<Option<i64>>(2)?.unwrap_or(0),
-            total_executions: row.get::<Option<i64>>(3)?.unwrap_or(0),
-            avg_trust_score: row.get::<Option<f64>>(4)?.unwrap_or(0.0),
-        })
-    } else {
-        Ok(SkillOverview {
-            total_skills: 0,
-            active_skills: 0,
-            deprecated_skills: 0,
-            total_executions: 0,
-            avg_trust_score: 0.0,
-        })
-    }
+    db.read(move |conn| {
+        conn.query_row(
+            "SELECT COUNT(*), SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), SUM(CASE WHEN is_deprecated = 1 THEN 1 ELSE 0 END), SUM(execution_count), AVG(trust_score) FROM skill_records WHERE user_id = ?1",
+            params![user_id],
+            |row| {
+                Ok(SkillOverview {
+                    total_skills: row.get(0)?,
+                    active_skills: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    deprecated_skills: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    total_executions: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    avg_trust_score: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        .ok_or_else(|| EngError::Internal("no result from overview query".into()))
+    }).await.or_else(|_| Ok(SkillOverview {
+        total_skills: 0,
+        active_skills: 0,
+        deprecated_skills: 0,
+        total_executions: 0,
+        avg_trust_score: 0.0,
+    }))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,7 +91,6 @@ pub async fn get_skill_stats(
     sort_by: Option<&str>,
     limit: usize,
 ) -> Result<Vec<SkillStats>> {
-    let conn = db.connection();
     let order = match sort_by {
         Some("trust") => "trust_score DESC",
         Some("executions") => "execution_count DESC",
@@ -97,110 +98,122 @@ pub async fn get_skill_stats(
         _ => "trust_score DESC",
     };
     let sql = format!("SELECT id, name, execution_count, success_count, failure_count, trust_score, updated_at FROM skill_records WHERE user_id = ?1 AND is_active = 1 ORDER BY {} LIMIT ?2", order);
-    let mut rows = conn.query(&sql, params![user_id, limit as i64]).await?;
-    let mut stats = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let updated: String = row.get(6)?;
-        let ec: i32 = row.get(2)?;
-        let sc: i32 = row.get(3)?;
-        let fc: i32 = row.get(4)?;
-        let ds = days_since(&updated);
-        stats.push(SkillStats {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            execution_count: ec,
-            success_count: sc,
-            failure_count: fc,
-            trust_score: row.get(5)?,
-            computed_score: compute_skill_score(sc, fc, ec, ds),
-        });
-    }
-    Ok(stats)
+    let limit = limit as i64;
+
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt.query_map(params![user_id, limit], |row| {
+            let updated: String = row.get(6)?;
+            let ec: i32 = row.get(2)?;
+            let sc: i32 = row.get(3)?;
+            let fc: i32 = row.get(4)?;
+            let ds = days_since(&updated);
+            Ok(SkillStats {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                execution_count: ec,
+                success_count: sc,
+                failure_count: fc,
+                trust_score: row.get(5)?,
+                computed_score: compute_skill_score(sc, fc, ec, ds),
+            })
+        }).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+    }).await
 }
+
 /// Get detailed info for a single skill.
 pub async fn get_skill_detail(db: &Database, skill_id: i64) -> Result<serde_json::Value> {
-    let conn = db.connection();
-    let mut rows = conn.query(
-        "SELECT id, name, agent, description, trust_score, execution_count, success_count, failure_count, avg_duration_ms, version, created_at, updated_at FROM skill_records WHERE id = ?1",
-        params![skill_id],
-    ).await?;
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| crate::EngError::NotFound(format!("skill {} not found", skill_id)))?;
-
-    let updated: String = row.get(11)?;
-    let ec: i32 = row.get(5)?;
-    let sc: i32 = row.get(6)?;
-    let fc: i32 = row.get(7)?;
-
-    let mut tag_rows = conn
-        .query(
-            "SELECT tag FROM skill_tags WHERE skill_id = ?1",
+    db.read(move |conn| {
+        let row = conn.query_row(
+            "SELECT id, name, agent, description, trust_score, execution_count, success_count, failure_count, avg_duration_ms, version, created_at, updated_at FROM skill_records WHERE id = ?1",
             params![skill_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, f64>(4)?,
+                    row.get::<_, i32>(5)?,
+                    row.get::<_, i32>(6)?,
+                    row.get::<_, i32>(7)?,
+                    row.get::<_, Option<f64>>(8)?,
+                    row.get::<_, i32>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                ))
+            },
         )
-        .await?;
-    let mut tags = Vec::new();
-    while let Some(tr) = tag_rows.next().await? {
-        tags.push(tr.get::<String>(0)?);
-    }
+        .optional()
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        .ok_or_else(|| EngError::NotFound(format!("skill {} not found", skill_id)))?;
 
-    let mut lin_rows = conn
-        .query(
-            "SELECT parent_id FROM skill_lineage_parents WHERE skill_id = ?1",
-            params![skill_id],
-        )
-        .await?;
-    let mut parents = Vec::new();
-    while let Some(lr) = lin_rows.next().await? {
-        parents.push(lr.get::<i64>(0)?);
-    }
+        let (id, name, agent, description, trust_score, ec, sc, fc, avg_duration_ms, version, created_at, updated) = row;
 
-    let mut exec_rows = conn.query(
-        "SELECT id, success, duration_ms, error_type, created_at FROM execution_analyses WHERE skill_id = ?1 ORDER BY id DESC LIMIT 10",
-        params![skill_id],
-    ).await?;
-    let mut executions = Vec::new();
-    while let Some(er) = exec_rows.next().await? {
-        executions.push(serde_json::json!({
-            "id": er.get::<i64>(0)?,
-            "success": er.get::<i32>(1)? != 0,
-            "duration_ms": er.get::<Option<f64>>(2)?,
-            "error_type": er.get::<Option<String>>(3)?,
-            "created_at": er.get::<String>(4)?,
-        }));
-    }
+        // Get tags
+        let mut stmt = conn.prepare("SELECT tag FROM skill_tags WHERE skill_id = ?1")
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let tags: Vec<String> = stmt.query_map(params![skill_id], |row| row.get(0))
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
 
-    Ok(serde_json::json!({
-        "id": row.get::<i64>(0)?,
-        "name": row.get::<String>(1)?,
-        "agent": row.get::<String>(2)?,
-        "description": row.get::<Option<String>>(3)?,
-        "trust_score": row.get::<f64>(4)?,
-        "execution_count": ec,
-        "success_count": sc,
-        "failure_count": fc,
-        "avg_duration_ms": row.get::<Option<f64>>(8)?,
-        "version": row.get::<i32>(9)?,
-        "created_at": row.get::<String>(10)?,
-        "updated_at": &updated,
-        "computed_score": compute_skill_score(sc, fc, ec, days_since(&updated)),
-        "tags": tags,
-        "parent_ids": parents,
-        "recent_executions": executions,
-    }))
+        // Get parents
+        let mut stmt = conn.prepare("SELECT parent_id FROM skill_lineage_parents WHERE skill_id = ?1")
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let parents: Vec<i64> = stmt.query_map(params![skill_id], |row| row.get(0))
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Get recent executions
+        let mut stmt = conn.prepare(
+            "SELECT id, success, duration_ms, error_type, created_at FROM execution_analyses WHERE skill_id = ?1 ORDER BY id DESC LIMIT 10"
+        ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let executions: Vec<serde_json::Value> = stmt.query_map(params![skill_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "success": row.get::<_, i32>(1)? != 0,
+                "duration_ms": row.get::<_, Option<f64>>(2)?,
+                "error_type": row.get::<_, Option<String>>(3)?,
+                "created_at": row.get::<_, String>(4)?,
+            }))
+        })
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+        Ok(serde_json::json!({
+            "id": id,
+            "name": name,
+            "agent": agent,
+            "description": description,
+            "trust_score": trust_score,
+            "execution_count": ec,
+            "success_count": sc,
+            "failure_count": fc,
+            "avg_duration_ms": avg_duration_ms,
+            "version": version,
+            "created_at": created_at,
+            "updated_at": &updated,
+            "computed_score": compute_skill_score(sc, fc, ec, days_since(&updated)),
+            "tags": tags,
+            "parent_ids": parents,
+            "recent_executions": executions,
+        }))
+    }).await
 }
 
 /// Health check for the skills subsystem.
 pub async fn health_check(db: &Database) -> Result<serde_json::Value> {
-    let conn = db.connection();
-    let mut rows = conn.query("SELECT COUNT(*) FROM skill_records", ()).await?;
-    let count: i64 = if let Some(row) = rows.next().await? {
-        row.get(0)?
-    } else {
-        0
-    };
-    Ok(serde_json::json!({ "status": "ok", "skills_count": count }))
+    db.read(move |conn| {
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM skill_records", [], |row| row.get(0))
+            .unwrap_or(0);
+        Ok(serde_json::json!({ "status": "ok", "skills_count": count }))
+    }).await
 }
 
 #[cfg(test)]

@@ -24,7 +24,7 @@ tokio.workspace = true
 async-trait.workspace = true
 
 # Database
-libsql.workspace = true
+rusqlite.workspace = true
 
 # Utils
 chrono.workspace = true

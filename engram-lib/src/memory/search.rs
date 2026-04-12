@@ -1,8 +1,6 @@
 use super::fts::fts_search;
 use super::vector::vector_search;
-use super::{row_to_memory, MEMORY_COLUMNS};
-#[cfg(feature = "db_pool")]
-use super::{row_to_memory_rusqlite, rusqlite_to_eng_error, uses_pool_backend};
+use super::{row_to_memory, rusqlite_to_eng_error, MEMORY_COLUMNS};
 use crate::db::Database;
 use crate::memory::scoring::{
     self, blend_strategies, classify_question_mixed, question_strategy, rrf_score, DECAY_FLOOR,
@@ -95,63 +93,38 @@ async fn hydrate_candidates(
         placeholders
     );
 
-    #[cfg(feature = "db_pool")]
-    if uses_pool_backend(db) {
-        return db
-            .read(move |conn| {
-                let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-                let mut rows = stmt
-                    .query(rusqlite::params![user_id])
-                    .map_err(rusqlite_to_eng_error)?;
-                let mut hydrated = Vec::new();
-                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                    hydrated.push(HydratedCandidateRow {
-                        id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                        created_at: row.get(1).map_err(rusqlite_to_eng_error)?,
-                        importance: row.get(2).map_err(rusqlite_to_eng_error)?,
-                        is_static: row.get::<_, i32>(3).map_err(rusqlite_to_eng_error)? != 0,
-                        source_count: row.get(4).map_err(rusqlite_to_eng_error)?,
-                        version: row.get(5).map_err(rusqlite_to_eng_error)?,
-                        is_latest: row
-                            .get::<_, Option<i32>>(6)
-                            .map_err(rusqlite_to_eng_error)?
-                            .map(|value| value != 0),
-                        source: row.get(7).map_err(rusqlite_to_eng_error)?,
-                        model: row.get(8).map_err(rusqlite_to_eng_error)?,
-                        access_count: row.get(9).map_err(rusqlite_to_eng_error)?,
-                        pagerank_score: row
-                            .get::<_, Option<f64>>(10)
-                            .map_err(rusqlite_to_eng_error)?
-                            .unwrap_or(0.0),
-                        content: row.get(11).map_err(rusqlite_to_eng_error)?,
-                        category: row.get(12).map_err(rusqlite_to_eng_error)?,
-                    });
-                }
-                Ok(hydrated)
-            })
-            .await;
-    }
-
-    let mut rows = db.conn.query(&sql, libsql::params![user_id]).await?;
-    let mut hydrated = Vec::new();
-    while let Some(row) = rows.next().await? {
-        hydrated.push(HydratedCandidateRow {
-            id: row.get(0)?,
-            created_at: row.get::<String>(1).unwrap_or_default(),
-            importance: row.get::<i32>(2).unwrap_or(5),
-            is_static: row.get::<i32>(3).unwrap_or(0) != 0,
-            source_count: row.get::<i32>(4).unwrap_or(1),
-            version: row.get::<Option<i32>>(5).unwrap_or(None),
-            is_latest: Some(row.get::<i32>(6).unwrap_or(1) != 0),
-            source: row.get::<Option<String>>(7).unwrap_or(None),
-            model: row.get::<Option<String>>(8).unwrap_or(None),
-            access_count: row.get::<i32>(9).unwrap_or(0),
-            pagerank_score: row.get::<Option<f64>>(10).unwrap_or(None).unwrap_or(0.0),
-            content: row.get::<String>(11).unwrap_or_default(),
-            category: row.get::<String>(12).unwrap_or_default(),
-        });
-    }
-    Ok(hydrated)
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        let mut hydrated = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            hydrated.push(HydratedCandidateRow {
+                id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                created_at: row.get(1).map_err(rusqlite_to_eng_error)?,
+                importance: row.get(2).map_err(rusqlite_to_eng_error)?,
+                is_static: row.get::<_, i32>(3).map_err(rusqlite_to_eng_error)? != 0,
+                source_count: row.get(4).map_err(rusqlite_to_eng_error)?,
+                version: row.get(5).map_err(rusqlite_to_eng_error)?,
+                is_latest: row
+                    .get::<_, Option<i32>>(6)
+                    .map_err(rusqlite_to_eng_error)?
+                    .map(|value| value != 0),
+                source: row.get(7).map_err(rusqlite_to_eng_error)?,
+                model: row.get(8).map_err(rusqlite_to_eng_error)?,
+                access_count: row.get(9).map_err(rusqlite_to_eng_error)?,
+                pagerank_score: row
+                    .get::<_, Option<f64>>(10)
+                    .map_err(rusqlite_to_eng_error)?
+                    .unwrap_or(0.0),
+                content: row.get(11).map_err(rusqlite_to_eng_error)?,
+                category: row.get(12).map_err(rusqlite_to_eng_error)?,
+            });
+        }
+        Ok(hydrated)
+    })
+    .await
 }
 
 async fn fetch_graph_neighbors(
@@ -171,60 +144,32 @@ async fn fetch_graph_neighbors(
         FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
         WHERE ml.target_id = ?1 AND m.user_id = ?2";
 
-    #[cfg(feature = "db_pool")]
-    if uses_pool_backend(db) {
-        return db
-            .read(move |conn| {
-                let mut stmt = conn.prepare(link_sql).map_err(rusqlite_to_eng_error)?;
-                let mut rows = stmt
-                    .query(rusqlite::params![seed_id, user_id])
-                    .map_err(rusqlite_to_eng_error)?;
-                let mut linked = Vec::new();
-                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                    linked.push(GraphExpansionRow {
-                        link_id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                        similarity: row.get(1).map_err(rusqlite_to_eng_error)?,
-                        link_type: row.get(2).map_err(rusqlite_to_eng_error)?,
-                        content: row.get(3).map_err(rusqlite_to_eng_error)?,
-                        category: row.get(4).map_err(rusqlite_to_eng_error)?,
-                        importance: row.get(5).map_err(rusqlite_to_eng_error)?,
-                        created_at: row.get(6).map_err(rusqlite_to_eng_error)?,
-                        is_latest: row.get::<_, i32>(7).map_err(rusqlite_to_eng_error)? != 0,
-                        is_forgotten: row.get::<_, i32>(8).map_err(rusqlite_to_eng_error)? != 0,
-                        version: row.get(9).map_err(rusqlite_to_eng_error)?,
-                        source_count: row.get(10).map_err(rusqlite_to_eng_error)?,
-                        model: row.get(11).map_err(rusqlite_to_eng_error)?,
-                        source: row.get(12).map_err(rusqlite_to_eng_error)?,
-                    });
-                }
-                Ok(linked)
-            })
-            .await;
-    }
-
-    let mut rows = db
-        .conn
-        .query(link_sql, libsql::params![seed_id, user_id])
-        .await?;
-    let mut linked = Vec::new();
-    while let Some(row) = rows.next().await? {
-        linked.push(GraphExpansionRow {
-            link_id: row.get(0).unwrap_or(0),
-            similarity: row.get(1).unwrap_or(0.0),
-            link_type: row.get(2).unwrap_or_default(),
-            content: row.get(3).unwrap_or_default(),
-            category: row.get(4).unwrap_or_default(),
-            importance: row.get(5).unwrap_or(5),
-            created_at: row.get(6).unwrap_or_default(),
-            is_latest: row.get::<i32>(7).unwrap_or(1) != 0,
-            is_forgotten: row.get::<i32>(8).unwrap_or(0) != 0,
-            version: row.get::<Option<i32>>(9).unwrap_or(None),
-            source_count: row.get(10).unwrap_or(1),
-            model: row.get::<Option<String>>(11).unwrap_or(None),
-            source: row.get::<Option<String>>(12).unwrap_or(None),
-        });
-    }
-    Ok(linked)
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(link_sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![seed_id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        let mut linked = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            linked.push(GraphExpansionRow {
+                link_id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                similarity: row.get(1).map_err(rusqlite_to_eng_error)?,
+                link_type: row.get(2).map_err(rusqlite_to_eng_error)?,
+                content: row.get(3).map_err(rusqlite_to_eng_error)?,
+                category: row.get(4).map_err(rusqlite_to_eng_error)?,
+                importance: row.get(5).map_err(rusqlite_to_eng_error)?,
+                created_at: row.get(6).map_err(rusqlite_to_eng_error)?,
+                is_latest: row.get::<_, i32>(7).map_err(rusqlite_to_eng_error)? != 0,
+                is_forgotten: row.get::<_, i32>(8).map_err(rusqlite_to_eng_error)? != 0,
+                version: row.get(9).map_err(rusqlite_to_eng_error)?,
+                source_count: row.get(10).map_err(rusqlite_to_eng_error)?,
+                model: row.get(11).map_err(rusqlite_to_eng_error)?,
+                source: row.get(12).map_err(rusqlite_to_eng_error)?,
+            });
+        }
+        Ok(linked)
+    })
+    .await
 }
 
 async fn fetch_memory_for_search(
@@ -239,31 +184,18 @@ async fn fetch_memory_for_search(
         MEMORY_COLUMNS
     );
 
-    #[cfg(feature = "db_pool")]
-    if uses_pool_backend(db) {
-        return db
-            .read(move |conn| {
-                let mut stmt = conn.prepare(&fetch_sql).map_err(rusqlite_to_eng_error)?;
-                let mut rows = stmt
-                    .query(rusqlite::params![id, user_id])
-                    .map_err(rusqlite_to_eng_error)?;
-                if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                    Ok(Some(row_to_memory_rusqlite(row)?))
-                } else {
-                    Ok(None)
-                }
-            })
-            .await;
-    }
-
-    let mut rows = db
-        .conn
-        .query(&fetch_sql, libsql::params![id, user_id])
-        .await?;
-    match rows.next().await? {
-        Some(row) => Ok(Some(row_to_memory(&row)?)),
-        None => Ok(None),
-    }
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&fetch_sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            Ok(Some(row_to_memory(row)?))
+        } else {
+            Ok(None)
+        }
+    })
+    .await
 }
 
 async fn fetch_links_for_search(
@@ -281,54 +213,29 @@ async fn fetch_links_for_search(
         FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
         WHERE ml.target_id = ?1 AND m.user_id = ?2";
 
-    #[cfg(feature = "db_pool")]
-    if uses_pool_backend(db) {
-        return db
-            .read(move |conn| {
-                let mut stmt = conn.prepare(link_sql).map_err(rusqlite_to_eng_error)?;
-                let mut rows = stmt
-                    .query(rusqlite::params![memory_id, user_id])
-                    .map_err(rusqlite_to_eng_error)?;
-                let mut links = Vec::new();
-                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                    if row.get::<_, i32>(5).map_err(rusqlite_to_eng_error)? != 0 {
-                        continue;
-                    }
-                    links.push(LinkedMemory {
-                        id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                        similarity: ((row.get::<_, f64>(1).map_err(rusqlite_to_eng_error)?
-                            * 1000.0)
-                            .round())
-                            / 1000.0,
-                        link_type: row.get(2).map_err(rusqlite_to_eng_error)?,
-                        content: row.get(3).map_err(rusqlite_to_eng_error)?,
-                        category: row.get(4).map_err(rusqlite_to_eng_error)?,
-                    });
-                }
-                Ok(links)
-            })
-            .await;
-    }
-
-    let mut rows = db
-        .conn
-        .query(link_sql, libsql::params![memory_id, user_id])
-        .await?;
-    let mut links = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let is_forgotten: i32 = row.get(5).unwrap_or(0);
-        if is_forgotten != 0 {
-            continue;
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(link_sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![memory_id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        let mut links = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            if row.get::<_, i32>(5).map_err(rusqlite_to_eng_error)? != 0 {
+                continue;
+            }
+            links.push(LinkedMemory {
+                id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                similarity: ((row.get::<_, f64>(1).map_err(rusqlite_to_eng_error)? * 1000.0)
+                    .round())
+                    / 1000.0,
+                link_type: row.get(2).map_err(rusqlite_to_eng_error)?,
+                content: row.get(3).map_err(rusqlite_to_eng_error)?,
+                category: row.get(4).map_err(rusqlite_to_eng_error)?,
+            });
         }
-        links.push(LinkedMemory {
-            id: row.get(0).unwrap_or(0),
-            similarity: ((row.get::<f64>(1).unwrap_or(0.0) * 1000.0).round()) / 1000.0,
-            link_type: row.get(2).unwrap_or_default(),
-            content: row.get(3).unwrap_or_default(),
-            category: row.get(4).unwrap_or_default(),
-        });
-    }
-    Ok(links)
+        Ok(links)
+    })
+    .await
 }
 
 async fn fetch_version_chain_for_search(
@@ -340,42 +247,23 @@ async fn fetch_version_chain_for_search(
         WHERE (root_memory_id = ?1 OR id = ?1) AND user_id = ?2 \
         ORDER BY version ASC";
 
-    #[cfg(feature = "db_pool")]
-    if uses_pool_backend(db) {
-        return db
-            .read(move |conn| {
-                let mut stmt = conn.prepare(chain_sql).map_err(rusqlite_to_eng_error)?;
-                let mut rows = stmt
-                    .query(rusqlite::params![root_id, user_id])
-                    .map_err(rusqlite_to_eng_error)?;
-                let mut chain = Vec::new();
-                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                    chain.push(VersionChainEntry {
-                        id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                        content: row.get(1).map_err(rusqlite_to_eng_error)?,
-                        version: row.get(2).map_err(rusqlite_to_eng_error)?,
-                        is_latest: row.get::<_, i32>(3).map_err(rusqlite_to_eng_error)? != 0,
-                    });
-                }
-                Ok(chain)
-            })
-            .await;
-    }
-
-    let mut rows = db
-        .conn
-        .query(chain_sql, libsql::params![root_id, user_id])
-        .await?;
-    let mut chain = Vec::new();
-    while let Some(row) = rows.next().await? {
-        chain.push(VersionChainEntry {
-            id: row.get(0).unwrap_or(0),
-            content: row.get(1).unwrap_or_default(),
-            version: row.get(2).unwrap_or(1),
-            is_latest: row.get::<i32>(3).unwrap_or(0) != 0,
-        });
-    }
-    Ok(chain)
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(chain_sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![root_id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        let mut chain = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            chain.push(VersionChainEntry {
+                id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                content: row.get(1).map_err(rusqlite_to_eng_error)?,
+                version: row.get(2).map_err(rusqlite_to_eng_error)?,
+                is_latest: row.get::<_, i32>(3).map_err(rusqlite_to_eng_error)? != 0,
+            });
+        }
+        Ok(chain)
+    })
+    .await
 }
 
 /// Resolve question type and search strategy from request.
@@ -425,7 +313,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                     .collect()),
                 Err(e) => {
                     warn!(
-                        "LanceDB vector search failed, falling back to libsql vectors: {}",
+                        "LanceDB vector search failed, falling back to SQLite vectors: {}",
                         e
                     );
                     vector_search(db, embedding, candidate_target, user_id).await

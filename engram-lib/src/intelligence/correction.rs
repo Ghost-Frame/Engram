@@ -3,7 +3,11 @@
 use crate::db::Database;
 use crate::memory;
 use crate::memory::types::{Memory, StoreRequest};
-use crate::Result;
+use crate::{EngError, Result};
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 /// Correct a memory: create a new version with corrected content, link it to
 /// the original via 'supersedes', and mark the original as superseded.
@@ -45,30 +49,32 @@ pub async fn correct_memory(
     memory::insert_link(db, new_id, memory_id, 1.0, "supersedes", user_id).await?;
 
     // Mark original as superseded
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "UPDATE memories SET is_superseded = 1, updated_at = datetime('now') \
              WHERE id = ?1 AND user_id = ?2",
-            libsql::params![memory_id, user_id],
+            rusqlite::params![memory_id, user_id],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await?;
 
     // Record the correction in reconsolidations table
-    let reason_text = reason.unwrap_or("manual correction");
-    db.conn
-        .execute(
+    let reason_text = reason.unwrap_or("manual correction").to_string();
+    let old_content = original.content.clone();
+    let new_content = corrected_content.to_string();
+    db.write(move |conn| {
+        conn.execute(
             "INSERT INTO reconsolidations \
              (memory_id, old_content, new_content, reason, user_id, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
-            libsql::params![
-                memory_id,
-                original.content,
-                corrected_content.to_string(),
-                reason_text.to_string(),
-                user_id
-            ],
+            rusqlite::params![memory_id, old_content, new_content, reason_text, user_id],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await?;
 
     // Return the new memory
     memory::get(db, new_id, user_id).await

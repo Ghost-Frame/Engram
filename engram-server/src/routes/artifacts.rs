@@ -6,6 +6,7 @@ use axum::{
     Json, Router,
 };
 use kleos_lib::artifacts;
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
@@ -36,25 +37,19 @@ async fn list_for_memory(
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     // Verify the memory belongs to this user
-    let mut rows = state
+    let owner: i64 = state
         .db
-        .conn
-        .query(
-            "SELECT user_id FROM memories WHERE id = ?1",
-            libsql::params![memory_id],
-        )
-        .await
-        .map_err(kleos_lib::EngError::Database)?;
-
-    let row = rows
-        .next()
-        .await
-        .map_err(kleos_lib::EngError::Database)?
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT user_id FROM memories WHERE id = ?1",
+                rusqlite::params![memory_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Not found".into())))?;
-
-    let owner: i64 = row
-        .get(0)
-        .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
     if owner != auth.user_id {
         return Err(AppError(kleos_lib::EngError::NotFound("Not found".into())));
     }
@@ -82,30 +77,21 @@ async fn download_artifact(
         ))
     })?;
 
-    let mut rows = state
+    let owner: i64 = state
         .db
-        .conn
-        .query(
-            "SELECT user_id FROM memories WHERE id = ?1",
-            libsql::params![memory_id],
-        )
-        .await
-        .map_err(kleos_lib::EngError::Database)?;
-
-    let row = rows.next().await.map_err(kleos_lib::EngError::Database)?;
-
-    match row {
-        Some(r) => {
-            let owner: i64 = r
-                .get(0)
-                .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
-            if owner != auth.user_id {
-                return Err(AppError(kleos_lib::EngError::NotFound("Not found".into())));
-            }
-        }
-        None => {
-            return Err(AppError(kleos_lib::EngError::NotFound("Not found".into())));
-        }
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT user_id FROM memories WHERE id = ?1",
+                rusqlite::params![memory_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?
+        .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Not found".into())))?;
+    if owner != auth.user_id {
+        return Err(AppError(kleos_lib::EngError::NotFound("Not found".into())));
     }
 
     // Get artifact data (inline storage only for now)

@@ -1,7 +1,11 @@
 use crate::db::Database;
 use crate::{EngError, Result};
-use libsql::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 // -- Types ---
 
@@ -47,28 +51,28 @@ const STATE_COLUMNS: &str = "id, agent, key, value, user_id, created_at, updated
 
 // -- Helpers ---
 
-fn row_to_fact(row: &libsql::Row) -> Result<StructuredFact> {
+fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<StructuredFact> {
     Ok(StructuredFact {
-        id: row.get::<i64>(0)?,
-        memory_id: row.get::<Option<i64>>(1)?,
-        subject: row.get::<String>(2)?,
-        predicate: row.get::<String>(3)?,
-        object: row.get::<String>(4)?,
-        confidence: row.get::<f64>(5)?,
-        user_id: row.get::<i64>(6)?,
-        created_at: row.get::<String>(7)?,
+        id: row.get(0)?,
+        memory_id: row.get(1)?,
+        subject: row.get(2)?,
+        predicate: row.get(3)?,
+        object: row.get(4)?,
+        confidence: row.get(5)?,
+        user_id: row.get(6)?,
+        created_at: row.get(7)?,
     })
 }
 
-fn row_to_state(row: &libsql::Row) -> Result<CurrentState> {
+fn row_to_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<CurrentState> {
     Ok(CurrentState {
-        id: row.get::<i64>(0)?,
-        agent: row.get::<String>(1)?,
-        key: row.get::<String>(2)?,
-        value: row.get::<String>(3)?,
-        user_id: row.get::<i64>(4)?,
-        created_at: row.get::<String>(5)?,
-        updated_at: row.get::<String>(6)?,
+        id: row.get(0)?,
+        agent: row.get(1)?,
+        key: row.get(2)?,
+        value: row.get(3)?,
+        user_id: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
     })
 }
 
@@ -82,14 +86,20 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
     let confidence = req.confidence.unwrap_or(1.0);
 
     if let Some(mid) = req.memory_id {
-        let mut rows = db
-            .conn
-            .query(
-                "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
-                params![mid, user_id],
-            )
+        let exists = db
+            .read(move |conn| {
+                let result = conn
+                    .query_row(
+                        "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+                        params![mid, user_id],
+                        |_| Ok(()),
+                    )
+                    .optional()
+                    .map_err(rusqlite_to_eng_error)?;
+                Ok(result.is_some())
+            })
             .await?;
-        if rows.next().await?.is_none() {
+        if !exists {
             return Err(EngError::NotFound(format!(
                 "memory {} not found for user",
                 mid
@@ -97,30 +107,23 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
         }
     }
 
-    db.conn
-        .execute(
-            "INSERT INTO structured_facts \
-             (memory_id, subject, predicate, object, confidence, user_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                req.memory_id,
-                req.subject,
-                req.predicate,
-                req.object,
-                confidence,
-                user_id
-            ],
-        )
-        .await?;
+    let memory_id = req.memory_id;
+    let subject = req.subject.clone();
+    let predicate = req.predicate.clone();
+    let object = req.object.clone();
 
-    let mut id_rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
-    let new_id: i64 = if let Some(row) = id_rows.next().await? {
-        row.get(0)?
-    } else {
-        return Err(EngError::Internal(
-            "failed to get last insert id for structured_fact".to_string(),
-        ));
-    };
+    let new_id: i64 = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO structured_facts \
+                 (memory_id, subject, predicate, object, confidence, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![memory_id, subject, predicate, object, confidence, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await?;
 
     // SECURITY (MT-F6): scope the re-fetch by user_id even though we just
     // inserted the row. Defense-in-depth against any future change that
@@ -129,14 +132,13 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
         "SELECT {} FROM structured_facts WHERE id = ?1 AND user_id = ?2",
         FACT_COLUMNS
     );
-    let mut rows = db.conn.query(&sql, params![new_id, user_id]).await?;
-    if let Some(row) = rows.next().await? {
-        row_to_fact(&row)
-    } else {
-        Err(EngError::Internal(
-            "failed to fetch newly created fact".to_string(),
-        ))
-    }
+    db.read(move |conn| {
+        conn.query_row(&sql, params![new_id, user_id], |row| row_to_fact(row))
+            .optional()
+            .map_err(rusqlite_to_eng_error)?
+            .ok_or_else(|| EngError::Internal("failed to fetch newly created fact".to_string()))
+    })
+    .await
 }
 
 /// List structured facts for a user, optionally filtered by memory_id.
@@ -165,22 +167,32 @@ pub async fn list_facts(
         )
     };
 
-    let mut rows = db.conn.query(&sql, params![user_id]).await?;
-    let mut facts = Vec::new();
-    while let Some(row) = rows.next().await? {
-        facts.push(row_to_fact(&row)?);
-    }
-    Ok(facts)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt
+            .query_map(params![user_id], |row| row_to_fact(row))
+            .map_err(rusqlite_to_eng_error)?;
+        let mut facts = Vec::new();
+        for row in rows {
+            facts.push(row.map_err(rusqlite_to_eng_error)?);
+        }
+        Ok(facts)
+    })
+    .await
 }
 
 /// Hard-delete a structured fact by id (tenant-scoped).
 pub async fn delete_fact(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
-        .conn
-        .execute(
-            "DELETE FROM structured_facts WHERE id = ?1 AND user_id = ?2",
-            params![id, user_id],
-        )
+        .write(move |conn| {
+            conn.execute(
+                "DELETE FROM structured_facts WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
 
     if affected == 0 {
@@ -202,18 +214,26 @@ pub async fn set_state(
     value: &str,
     user_id: i64,
 ) -> Result<CurrentState> {
-    db.conn
-        .execute(
+    let agent_owned = agent.to_string();
+    let key_owned = key.to_string();
+    let value_owned = value.to_string();
+    let agent_for_get = agent_owned.clone();
+    let key_for_get = key_owned.clone();
+    db.write(move |conn| {
+        conn.execute(
             "INSERT INTO current_state (agent, key, value, user_id) \
              VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(agent, key, user_id) DO UPDATE SET \
                  value = excluded.value, \
                  updated_at = datetime('now')",
-            params![agent, key, value, user_id],
+            params![agent_owned, key_owned, value_owned, user_id],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await?;
 
-    get_state(db, agent, key, user_id).await
+    get_state(db, &agent_for_get, &key_for_get, user_id).await
 }
 
 /// Fetch a single state entry for the given agent/key/user.
@@ -223,32 +243,42 @@ pub async fn get_state(
     key: &str,
     user_id: i64,
 ) -> Result<CurrentState> {
+    let agent = agent.to_string();
+    let key = key.to_string();
     let sql = format!(
         "SELECT {} FROM current_state WHERE agent = ?1 AND key = ?2 AND user_id = ?3",
         STATE_COLUMNS
     );
-    let mut rows = db.conn.query(&sql, params![agent, key, user_id]).await?;
-
-    if let Some(row) = rows.next().await? {
-        row_to_state(&row)
-    } else {
-        Err(EngError::NotFound(format!(
-            "state {}/{} not found for user {}",
-            agent, key, user_id
-        )))
-    }
+    db.read(move |conn| {
+        conn.query_row(&sql, params![agent, key, user_id], |row| row_to_state(row))
+            .optional()
+            .map_err(rusqlite_to_eng_error)?
+            .ok_or_else(|| {
+                EngError::NotFound(format!("state not found for user {}", user_id))
+            })
+    })
+    .await
 }
 
 /// List all state entries for the given agent and user.
 pub async fn list_state(db: &Database, agent: &str, user_id: i64) -> Result<Vec<CurrentState>> {
+    let agent = agent.to_string();
     let sql = format!(
         "SELECT {} FROM current_state WHERE agent = ?1 AND user_id = ?2 ORDER BY key ASC",
         STATE_COLUMNS
     );
-    let mut rows = db.conn.query(&sql, params![agent, user_id]).await?;
-    let mut entries = Vec::new();
-    while let Some(row) = rows.next().await? {
-        entries.push(row_to_state(&row)?);
-    }
-    Ok(entries)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt
+            .query_map(params![agent, user_id], |row| row_to_state(row))
+            .map_err(rusqlite_to_eng_error)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row.map_err(rusqlite_to_eng_error)?);
+        }
+        Ok(entries)
+    })
+    .await
 }

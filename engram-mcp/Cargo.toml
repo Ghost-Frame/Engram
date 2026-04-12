@@ -9,7 +9,7 @@ http = ["dep:axum"]
 
 [dependencies]
 kleos-lib = { path = "../kleos-lib" }
-libsql = { workspace = true }
+rusqlite = { workspace = true }
 axum = { workspace = true, optional = true }
 clap = { workspace = true }
 serde = { workspace = true }

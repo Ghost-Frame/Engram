@@ -2,12 +2,17 @@
 //!
 //! Ports: artifacts/encryption.ts, artifacts/fts.ts, artifacts/storage.ts
 
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 
 const ARTIFACT_FTS_MAX_SIZE: usize = 1_048_576;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactRow {
@@ -81,19 +86,24 @@ pub async fn index_artifact(
         Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
         _ => return false,
     };
-    let owned = match db
-        .conn
-        .query(
-            "SELECT 1 FROM artifacts a \
-             INNER JOIN memories m ON a.memory_id = m.id \
-             WHERE a.id = ?1 AND m.user_id = ?2",
-            libsql::params![artifact_id, user_id],
-        )
+
+    let owned = db
+        .read(move |conn| {
+            let found = conn
+                .query_row(
+                    "SELECT 1 FROM artifacts a \
+                     INNER JOIN memories m ON a.memory_id = m.id \
+                     WHERE a.id = ?1 AND m.user_id = ?2",
+                    params![artifact_id, user_id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(found.is_some())
+        })
         .await
-    {
-        Ok(mut rows) => matches!(rows.next().await, Ok(Some(_))),
-        Err(_) => false,
-    };
+        .unwrap_or(false);
+
     if !owned {
         tracing::warn!(
             artifact_id,
@@ -102,25 +112,28 @@ pub async fn index_artifact(
         );
         return false;
     }
-    if db
-        .conn
-        .execute(
-            "INSERT INTO artifacts_fts (rowid, content) VALUES (?1, ?2)",
-            libsql::params![artifact_id, text.clone()],
-        )
-        .await
-        .is_err()
-    {
+
+    let indexed = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO artifacts_fts (rowid, content) VALUES (?1, ?2)",
+                params![artifact_id, text],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            conn.execute(
+                "UPDATE artifacts SET is_indexed = 1 WHERE id = ?1",
+                params![artifact_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
+        .await;
+
+    if indexed.is_err() {
         tracing::warn!(artifact_id, "artifact FTS index failed");
         return false;
     }
-    let _ = db
-        .conn
-        .execute(
-            "UPDATE artifacts SET is_indexed = 1 WHERE id = ?1",
-            libsql::params![artifact_id],
-        )
-        .await;
+
     true
 }
 
@@ -144,29 +157,48 @@ pub async fn store_artifact(
     disk_path: Option<&str>,
     is_encrypted: bool,
 ) -> Result<i64> {
-    let mut owner_rows = db
-        .conn
-        .query(
-            "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
-            libsql::params![memory_id, user_id],
-        )
-        .await?;
-    if owner_rows.next().await?.is_none() {
-        return Err(crate::EngError::NotFound(
-            "memory not found for this tenant".into(),
-        ));
-    }
+    let filename = filename.to_string();
+    let mime_type = mime_type.to_string();
+    let sha256 = sha256.to_string();
+    let storage_mode = storage_mode.to_string();
+    let disk_path = disk_path.map(|s| s.to_string());
 
-    let mut rows = db.conn.query(
-        "INSERT INTO artifacts (memory_id, filename, mime_type, size_bytes, sha256, storage_mode, data, disk_path, is_encrypted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id",
-        libsql::params![memory_id, filename.to_string(), mime_type.to_string(), size_bytes, sha256.to_string(), storage_mode.to_string(), data, disk_path.map(|s| s.to_string()), is_encrypted as i64],
-    ).await?;
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| crate::EngError::Internal("failed to insert artifact".into()))?;
-    row.get::<i64>(0)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))
+    db.write(move |conn| {
+        let owned = conn
+            .query_row(
+                "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+                params![memory_id, user_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(rusqlite_to_eng_error)?;
+
+        if owned.is_none() {
+            return Err(crate::EngError::NotFound(
+                "memory not found for this tenant".into(),
+            ));
+        }
+
+        conn.query_row(
+            "INSERT INTO artifacts \
+             (memory_id, filename, mime_type, size_bytes, sha256, storage_mode, data, disk_path, is_encrypted) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id",
+            params![
+                memory_id,
+                filename,
+                mime_type,
+                size_bytes,
+                sha256,
+                storage_mode,
+                data,
+                disk_path,
+                is_encrypted as i64
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| crate::EngError::Internal(format!("failed to insert artifact: {e}")))
+    })
+    .await
 }
 
 pub async fn get_artifacts_by_memory(
@@ -174,18 +206,25 @@ pub async fn get_artifacts_by_memory(
     memory_id: i64,
     user_id: i64,
 ) -> Result<Vec<ArtifactRow>> {
-    let mut rows = db.conn.query(
-        "SELECT a.id, a.memory_id, a.filename, a.mime_type, a.size_bytes, a.sha256, a.storage_mode, a.is_encrypted, a.is_indexed, a.created_at
-         FROM artifacts a
-         INNER JOIN memories m ON a.memory_id = m.id
-         WHERE a.memory_id = ?1 AND m.user_id = ?2",
-        libsql::params![memory_id, user_id],
-    ).await?;
-    let mut result = Vec::new();
-    while let Some(row) = rows.next().await? {
-        result.push(row_to_artifact(&row)?);
-    }
-    Ok(result)
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.id, a.memory_id, a.filename, a.mime_type, a.size_bytes, \
+                        a.sha256, a.storage_mode, a.is_encrypted, a.is_indexed, a.created_at \
+                 FROM artifacts a \
+                 INNER JOIN memories m ON a.memory_id = m.id \
+                 WHERE a.memory_id = ?1 AND m.user_id = ?2",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        let rows = stmt
+            .query_map(params![memory_id, user_id], row_to_artifact)
+            .map_err(rusqlite_to_eng_error)?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(rusqlite_to_eng_error)
+    })
+    .await
 }
 
 pub async fn get_artifact_by_id(
@@ -193,17 +232,20 @@ pub async fn get_artifact_by_id(
     artifact_id: i64,
     user_id: i64,
 ) -> Result<Option<ArtifactRow>> {
-    let mut rows = db.conn.query(
-        "SELECT a.id, a.memory_id, a.filename, a.mime_type, a.size_bytes, a.sha256, a.storage_mode, a.is_encrypted, a.is_indexed, a.created_at
-         FROM artifacts a
-         INNER JOIN memories m ON a.memory_id = m.id
-         WHERE a.id = ?1 AND m.user_id = ?2",
-        libsql::params![artifact_id, user_id],
-    ).await?;
-    match rows.next().await? {
-        Some(row) => Ok(Some(row_to_artifact(&row)?)),
-        None => Ok(None),
-    }
+    db.read(move |conn| {
+        conn.query_row(
+            "SELECT a.id, a.memory_id, a.filename, a.mime_type, a.size_bytes, \
+                    a.sha256, a.storage_mode, a.is_encrypted, a.is_indexed, a.created_at \
+             FROM artifacts a \
+             INNER JOIN memories m ON a.memory_id = m.id \
+             WHERE a.id = ?1 AND m.user_id = ?2",
+            params![artifact_id, user_id],
+            row_to_artifact,
+        )
+        .optional()
+        .map_err(rusqlite_to_eng_error)
+    })
+    .await
 }
 
 /// Per-tenant artifact statistics (SECURITY: MT-F4).
@@ -213,9 +255,8 @@ pub async fn get_artifact_by_id(
 /// backdoor reachable from an otherwise tenant-scoped handler. Split into
 /// two explicit entry points so the scope is obvious at the call site.
 pub async fn get_artifact_stats(db: &Database, user_id: i64) -> Result<ArtifactStats> {
-    let mut rows = db
-        .conn
-        .query(
+    db.read(move |conn| {
+        conn.query_row(
             "SELECT COUNT(*), \
                     COALESCE(SUM(a.size_bytes),0), \
                     COALESCE(SUM(CASE WHEN a.storage_mode='inline' THEN a.size_bytes ELSE 0 END),0), \
@@ -225,18 +266,19 @@ pub async fn get_artifact_stats(db: &Database, user_id: i64) -> Result<ArtifactS
              FROM artifacts a \
              JOIN memories m ON a.memory_id = m.id \
              WHERE m.user_id = ?1",
-            libsql::params![user_id],
+            params![user_id],
+            stats_from_row,
         )
-        .await?;
-    stats_from_row(&mut rows).await
+        .map_err(rusqlite_to_eng_error)
+    })
+    .await
 }
 
 /// Cluster-wide artifact statistics. Only call from explicitly admin-gated
 /// routes. Never expose to tenant-scoped handlers.
 pub async fn get_artifact_stats_all(db: &Database) -> Result<ArtifactStats> {
-    let mut rows = db
-        .conn
-        .query(
+    db.read(move |conn| {
+        conn.query_row(
             "SELECT COUNT(*), \
                     COALESCE(SUM(size_bytes),0), \
                     COALESCE(SUM(CASE WHEN storage_mode='inline' THEN size_bytes ELSE 0 END),0), \
@@ -244,25 +286,12 @@ pub async fn get_artifact_stats_all(db: &Database) -> Result<ArtifactStats> {
                     COALESCE(SUM(CASE WHEN storage_mode='inline' THEN 1 ELSE 0 END),0), \
                     COALESCE(SUM(CASE WHEN storage_mode='disk' THEN 1 ELSE 0 END),0) \
              FROM artifacts",
-            libsql::params![],
+            [],
+            stats_from_row,
         )
-        .await?;
-    stats_from_row(&mut rows).await
-}
-
-async fn stats_from_row(rows: &mut libsql::Rows) -> Result<ArtifactStats> {
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| crate::EngError::Internal("stats query empty".into()))?;
-    Ok(ArtifactStats {
-        total_count: row.get::<i64>(0).unwrap_or(0),
-        total_bytes: row.get::<i64>(1).unwrap_or(0),
-        inline_bytes: row.get::<i64>(2).unwrap_or(0),
-        disk_bytes: row.get::<i64>(3).unwrap_or(0),
-        inline_count: row.get::<i64>(4).unwrap_or(0),
-        disk_count: row.get::<i64>(5).unwrap_or(0),
+        .map_err(rusqlite_to_eng_error)
     })
+    .await
 }
 
 pub async fn enrich_with_artifacts(
@@ -294,45 +323,44 @@ pub async fn get_artifact_data(
     artifact_id: i64,
     user_id: i64,
 ) -> Result<Option<Vec<u8>>> {
-    let mut rows = db
-        .conn
-        .query(
+    db.read(move |conn| {
+        conn.query_row(
             "SELECT a.data FROM artifacts a \
              INNER JOIN memories m ON a.memory_id = m.id \
              WHERE a.id = ?1 AND m.user_id = ?2",
-            libsql::params![artifact_id, user_id],
+            params![artifact_id, user_id],
+            |row| row.get::<_, Option<Vec<u8>>>(0),
         )
-        .await?;
-    match rows.next().await? {
-        Some(row) => Ok(row.get(0).unwrap_or(None)),
-        None => Ok(None),
-    }
+        .optional()
+        .map(|opt| opt.flatten())
+        .map_err(rusqlite_to_eng_error)
+    })
+    .await
 }
 
-fn row_to_artifact(row: &libsql::Row) -> Result<ArtifactRow> {
+fn stats_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactStats> {
+    Ok(ArtifactStats {
+        total_count: row.get::<_, i64>(0).unwrap_or(0),
+        total_bytes: row.get::<_, i64>(1).unwrap_or(0),
+        inline_bytes: row.get::<_, i64>(2).unwrap_or(0),
+        disk_bytes: row.get::<_, i64>(3).unwrap_or(0),
+        inline_count: row.get::<_, i64>(4).unwrap_or(0),
+        disk_count: row.get::<_, i64>(5).unwrap_or(0),
+    })
+}
+
+fn row_to_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactRow> {
     Ok(ArtifactRow {
-        id: row
-            .get(0)
-            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        memory_id: row.get(1).unwrap_or(None),
-        filename: row
-            .get(2)
-            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        mime_type: row
-            .get(3)
-            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        size_bytes: row
-            .get(4)
-            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        sha256: row.get(5).unwrap_or(None),
-        storage_mode: row
-            .get(6)
-            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        is_encrypted: row.get::<i64>(7).unwrap_or(0) != 0,
-        is_indexed: row.get::<i64>(8).unwrap_or(0) != 0,
-        created_at: row
-            .get(9)
-            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        id: row.get(0)?,
+        memory_id: row.get(1)?,
+        filename: row.get(2)?,
+        mime_type: row.get(3)?,
+        size_bytes: row.get(4)?,
+        sha256: row.get(5)?,
+        storage_mode: row.get(6)?,
+        is_encrypted: row.get::<_, i64>(7).unwrap_or(0) != 0,
+        is_indexed: row.get::<_, i64>(8).unwrap_or(0) != 0,
+        created_at: row.get(9)?,
     })
 }
 

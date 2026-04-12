@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::{EngError, Result};
-use libsql::params;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 pub const FIX_SYSTEM_PROMPT: &str =
@@ -71,62 +71,82 @@ pub async fn persist_evolved_skill(
     tags: &[String],
     user_id: i64,
 ) -> Result<i64> {
-    let conn = db.connection();
-    let (version, root_id) = if let Some(&parent_id) = parent_ids.first() {
-        let mut rows = conn
-            .query(
-                "SELECT version, root_skill_id FROM skill_records WHERE id = ?1",
-                params![parent_id],
-            )
-            .await?;
-        if let Some(row) = rows.next().await? {
-            let pv: i32 = row.get(0)?;
-            let pr: Option<i64> = row.get(1)?;
-            (pv + 1, pr.or(Some(parent_id)))
+    let name_owned = name.to_string();
+    let description_owned = description.to_string();
+    let code_owned = code.to_string();
+    let agent_owned = agent.to_string();
+    let parent_ids_owned = parent_ids.to_vec();
+    let tags_owned = tags.to_vec();
+
+    db.write(move |conn| {
+        let (version, root_id) = if let Some(&parent_id) = parent_ids_owned.first() {
+            let mut stmt = conn
+                .prepare("SELECT version, root_skill_id FROM skill_records WHERE id = ?1")
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt
+                .query(params![parent_id])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            if let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+                let pv: i32 =
+                    row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let pr: Option<i64> =
+                    row.get(1).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                (pv + 1, pr.or(Some(parent_id)))
+            } else {
+                (1, None)
+            }
         } else {
             (1, None)
+        };
+
+        conn.execute(
+            "INSERT INTO skill_records (name, agent, description, code, language, version, parent_skill_id, root_skill_id, user_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                name_owned,
+                agent_owned,
+                description_owned,
+                code_owned,
+                "markdown".to_string(),
+                version,
+                parent_ids_owned.first().copied(),
+                root_id,
+                user_id
+            ],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+        let new_id = conn.last_insert_rowid();
+
+        for &pid in &parent_ids_owned {
+            conn.execute(
+                "INSERT OR IGNORE INTO skill_lineage_parents (skill_id, parent_id) VALUES (?1, ?2)",
+                params![new_id, pid],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         }
-    } else {
-        (1, None)
-    };
-
-    conn.execute(
-        "INSERT INTO skill_records (name, agent, description, code, language, version, parent_skill_id, root_skill_id, user_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![name.to_string(), agent.to_string(), description.to_string(), code.to_string(), "markdown".to_string(), version, parent_ids.first().copied(), root_id, user_id],
-    ).await?;
-
-    let mut id_rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let new_id: i64 = if let Some(row) = id_rows.next().await? {
-        row.get(0)?
-    } else {
-        return Err(EngError::Internal("failed to get new skill id".into()));
-    };
-    for &pid in parent_ids {
-        conn.execute(
-            "INSERT OR IGNORE INTO skill_lineage_parents (skill_id, parent_id) VALUES (?1, ?2)",
-            params![new_id, pid],
-        )
-        .await?;
-    }
-    for tag in tags {
-        conn.execute(
-            "INSERT OR IGNORE INTO skill_tags (skill_id, tag) VALUES (?1, ?2)",
-            params![new_id, tag.clone()],
-        )
-        .await?;
-    }
-    Ok(new_id)
+        for tag in &tags_owned {
+            conn.execute(
+                "INSERT OR IGNORE INTO skill_tags (skill_id, tag) VALUES (?1, ?2)",
+                params![new_id, tag],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        }
+        Ok(new_id)
+    })
+    .await
 }
 
 /// Deactivate a skill (soft-delete).
 pub async fn deactivate_skill(db: &Database, skill_id: i64) -> Result<()> {
-    let conn = db.connection();
-    conn.execute(
-        "UPDATE skill_records SET is_active = 0, updated_at = datetime('now') WHERE id = ?1",
-        params![skill_id],
-    )
-    .await?;
-    Ok(())
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE skill_records SET is_active = 0, updated_at = datetime('now') WHERE id = ?1",
+            params![skill_id],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await
 }
 
 /// Stub: fix a failing skill.
@@ -136,19 +156,25 @@ pub async fn fix_skill(
     _agent: &str,
     _user_id: i64,
 ) -> Result<EvolutionResult> {
-    let conn = db.connection();
-    let mut rows = conn
-        .query(
-            "SELECT name FROM skill_records WHERE id = ?1",
-            params![skill_id],
-        )
+    let name = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT name FROM skill_records WHERE id = ?1")
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt
+                .query(params![skill_id])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            rows.next()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .map(|r| {
+                    r.get::<_, String>(0)
+                        .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                })
+                .transpose()?
+                .ok_or_else(|| EngError::NotFound(format!("skill {} not found", skill_id)))
+        })
         .await?;
-    let name: String = rows
-        .next()
-        .await?
-        .map(|r| r.get::<String>(0))
-        .transpose()?
-        .ok_or_else(|| EngError::NotFound(format!("skill {} not found", skill_id)))?;
+
     Ok(EvolutionResult {
         success: false,
         skill_id: Some(skill_id),
@@ -170,17 +196,29 @@ pub async fn derive_skill(
             "derive requires at least one parent".into(),
         ));
     }
-    let conn = db.connection();
-    for &pid in parent_ids {
-        let mut rows = conn
-            .query("SELECT id FROM skill_records WHERE id = ?1", params![pid])
-            .await?;
-        if rows.next().await?.is_none() {
-            return Err(EngError::NotFound(format!(
-                "parent skill {} not found",
-                pid
-            )));
-        }
+    let parent_ids_owned = parent_ids.to_vec();
+    for pid in &parent_ids_owned {
+        let pid = *pid;
+        db.read(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT id FROM skill_records WHERE id = ?1")
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt
+                .query(params![pid])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            if rows
+                .next()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .is_none()
+            {
+                return Err(EngError::NotFound(format!(
+                    "parent skill {} not found",
+                    pid
+                )));
+            }
+            Ok(())
+        })
+        .await?;
     }
     Ok(EvolutionResult {
         success: false,
@@ -188,7 +226,7 @@ pub async fn derive_skill(
         evolution_type: "derived".into(),
         message: format!(
             "LLM not yet wired. Derive {:?}, direction: {}",
-            parent_ids, direction
+            parent_ids_owned, direction
         ),
     })
 }

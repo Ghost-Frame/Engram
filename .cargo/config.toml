@@ -1,2 +1,3 @@
+# PROTOC configured via system install on Windows
+# Linux CI uses protoc-bin-vendored dependency
 [env]
-PROTOC = { value = "scripts/protoc-vendored.sh", relative = true }

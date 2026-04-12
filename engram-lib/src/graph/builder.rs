@@ -1,9 +1,13 @@
 use super::types::{GraphBuildOptions, GraphEdge, GraphNode, LinkType};
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tracing::info;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphBuildResult {
@@ -25,54 +29,65 @@ pub async fn build_graph(db: &Database) -> Result<(Vec<GraphNode>, Vec<GraphEdge
 /// Phase 3: Batch fetch links as edges
 /// Phase 4: Prune orphan memory nodes (no edges)
 pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result<GraphBuildResult> {
-    let conn = db.connection();
     let limit = opts.limit.unwrap_or(500) as i64;
     let user_id = opts.user_id;
 
     // -- Phase 1: Collect top-scored memory nodes ---------------------------------
-    let mut rows = conn
-        .query(
-            "SELECT id, content, category, importance, pagerank_score \
-             FROM memories \
-             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-             ORDER BY COALESCE(decay_score, importance) DESC \
-             LIMIT ?2",
-            libsql::params![user_id, limit],
-        )
+    let (nodes, memory_ids) = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, content, category, importance, pagerank_score \
+                     FROM memories \
+                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                     ORDER BY COALESCE(decay_score, importance) DESC \
+                     LIMIT ?2",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            let rows = stmt
+                .query_map(rusqlite::params![user_id, limit], |row| {
+                    let id: i64 = row.get(0)?;
+                    let content: String = row.get(1)?;
+                    let importance: i64 = row.get(3)?;
+                    let pagerank: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
+                    Ok((id, content, importance, pagerank))
+                })
+                .map_err(rusqlite_to_eng_error)?;
+
+            let mut nodes: Vec<GraphNode> = Vec::new();
+            let mut memory_ids: Vec<i64> = Vec::new();
+
+            for row in rows {
+                let (id, content, importance, pagerank) =
+                    row.map_err(rusqlite_to_eng_error)?;
+
+                let label = if content.len() > 60 {
+                    format!(
+                        "{}...",
+                        &content[..content
+                            .char_indices()
+                            .nth(60)
+                            .map_or(content.len(), |(i, _)| i)]
+                    )
+                } else {
+                    content
+                };
+
+                nodes.push(GraphNode {
+                    id: format!("m{}", id),
+                    label,
+                    weight: importance as f32 * 1.5 + pagerank as f32 * 5.0,
+                    pagerank: Some(pagerank as f32),
+                    community: None,
+                    metadata: None,
+                });
+                memory_ids.push(id);
+            }
+
+            Ok((nodes, memory_ids))
+        })
         .await?;
-
-    let mut nodes = Vec::new();
-    let mut memory_ids: Vec<i64> = Vec::new();
-
-    while let Some(row) = rows.next().await? {
-        let id: i64 = row.get(0)?;
-        let content: String = row.get(1)?;
-        let _category: String = row.get(2)?;
-        let importance: i64 = row.get(3)?;
-        let pagerank: f64 = row.get::<f64>(4).unwrap_or(0.0);
-
-        let label = if content.len() > 60 {
-            format!(
-                "{}...",
-                &content[..content
-                    .char_indices()
-                    .nth(60)
-                    .map_or(content.len(), |(i, _)| i)]
-            )
-        } else {
-            content
-        };
-
-        nodes.push(GraphNode {
-            id: format!("m{}", id),
-            label,
-            weight: importance as f32 * 1.5 + pagerank as f32 * 5.0,
-            pagerank: Some(pagerank as f32),
-            community: None,
-            metadata: None,
-        });
-        memory_ids.push(id);
-    }
 
     if memory_ids.is_empty() {
         return Ok(GraphBuildResult {
@@ -85,48 +100,68 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
     // SECURITY (MT-F2): link fetch JOINs on `memories` at both ends with
     // `user_id = ?1` so we never surface an edge whose endpoint belongs to
     // another tenant, even if the id-list coincidentally matched one.
-    let placeholders: String = std::iter::repeat_n("?", memory_ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let edges = db
+        .read(move |conn| {
+            let placeholders: String = std::iter::repeat_n("?", memory_ids.len())
+                .collect::<Vec<_>>()
+                .join(", ");
 
-    let query = format!(
-        "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
-         FROM memory_links ml \
-         JOIN memories ms ON ms.id = ml.source_id AND ms.user_id = ?1 \
-         JOIN memories mt ON mt.id = ml.target_id AND mt.user_id = ?1 \
-         WHERE ml.source_id IN ({placeholders}) OR ml.target_id IN ({placeholders})"
-    );
+            let query = format!(
+                "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
+                 FROM memory_links ml \
+                 JOIN memories ms ON ms.id = ml.source_id AND ms.user_id = ?1 \
+                 JOIN memories mt ON mt.id = ml.target_id AND mt.user_id = ?1 \
+                 WHERE ml.source_id IN ({placeholders}) OR ml.target_id IN ({placeholders})"
+            );
 
-    let mut params: Vec<libsql::Value> = Vec::with_capacity(1 + memory_ids.len() * 2);
-    params.push(libsql::Value::Integer(user_id));
-    for &id in memory_ids.iter().chain(memory_ids.iter()) {
-        params.push(libsql::Value::Integer(id));
-    }
+            // Build parameter list: user_id first, then ids twice (source IN, target IN)
+            let mut params: Vec<rusqlite::types::Value> =
+                Vec::with_capacity(1 + memory_ids.len() * 2);
+            params.push(rusqlite::types::Value::Integer(user_id));
+            for &id in memory_ids.iter().chain(memory_ids.iter()) {
+                params.push(rusqlite::types::Value::Integer(id));
+            }
 
-    let mut edge_rows = conn.query(&query, params).await?;
+            let valid_set: HashSet<i64> = memory_ids.iter().copied().collect();
 
-    let valid_set: HashSet<i64> = memory_ids.iter().copied().collect();
-    let mut edges = Vec::new();
+            let mut stmt = conn
+                .prepare(&query)
+                .map_err(rusqlite_to_eng_error)?;
 
-    while let Some(row) = edge_rows.next().await? {
-        let source_id: i64 = row.get(0)?;
-        let target_id: i64 = row.get(1)?;
-        let similarity: f64 = row.get(2)?;
-        let link_type_str: String = row.get::<String>(3).unwrap_or_else(|_| "cite".to_string());
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                    let source_id: i64 = row.get(0)?;
+                    let target_id: i64 = row.get(1)?;
+                    let similarity: f64 = row.get(2)?;
+                    let link_type_str: String =
+                        row.get::<_, String>(3).unwrap_or_else(|_| "cite".to_string());
+                    Ok((source_id, target_id, similarity, link_type_str))
+                })
+                .map_err(rusqlite_to_eng_error)?;
 
-        if !valid_set.contains(&source_id) || !valid_set.contains(&target_id) {
-            continue;
-        }
+            let mut edges: Vec<GraphEdge> = Vec::new();
 
-        let link_type = parse_link_type(&link_type_str);
+            for row in rows {
+                let (source_id, target_id, similarity, link_type_str) =
+                    row.map_err(rusqlite_to_eng_error)?;
 
-        edges.push(GraphEdge {
-            source: format!("m{}", source_id),
-            target: format!("m{}", target_id),
-            link_type,
-            weight: similarity as f32,
-        });
-    }
+                if !valid_set.contains(&source_id) || !valid_set.contains(&target_id) {
+                    continue;
+                }
+
+                let link_type = parse_link_type(&link_type_str);
+
+                edges.push(GraphEdge {
+                    source: format!("m{}", source_id),
+                    target: format!("m{}", target_id),
+                    link_type,
+                    weight: similarity as f32,
+                });
+            }
+
+            Ok(edges)
+        })
+        .await?;
 
     // -- Phase 3: Prune orphan memory nodes (no edges) ----------------------------
     let connected_ids: HashSet<String> = edges
@@ -134,6 +169,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
         .flat_map(|e| [e.source.clone(), e.target.clone()])
         .collect();
 
+    let mut nodes = nodes;
     nodes.retain(|n| connected_ids.contains(&n.id));
 
     info!(

@@ -1,8 +1,12 @@
 use super::types::{Entity, GraphEdge, LinkType};
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 use std::collections::HashMap;
 use tracing::info;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 /// Build co-occurrence edges by sliding a window over recent memories.
 ///
@@ -14,37 +18,40 @@ pub async fn build_cooccurrence_edges(
     window_size: usize,
     user_id: i64,
 ) -> Result<Vec<GraphEdge>> {
-    let conn = db.connection();
-
     // Fetch recent memories with their entity links
-    let mut rows = conn
-        .query(
-            "SELECT m.id, me.entity_id \
-             FROM memories m \
-             JOIN memory_entities me ON me.memory_id = m.id \
-             WHERE m.user_id = ?1 AND m.is_forgotten = 0 AND m.is_archived = 0 AND m.is_latest = 1 \
-             ORDER BY m.created_at DESC \
-             LIMIT 2000",
-            libsql::params![user_id],
-        )
+    let (memory_order, memory_entities) = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT m.id, me.entity_id \
+                     FROM memories m \
+                     JOIN memory_entities me ON me.memory_id = m.id \
+                     WHERE m.user_id = ?1 AND m.is_forgotten = 0 AND m.is_archived = 0 AND m.is_latest = 1 \
+                     ORDER BY m.created_at DESC \
+                     LIMIT 2000",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            let mut memory_order: Vec<i64> = Vec::new();
+            let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
+
+            let rows = stmt
+                .query_map(rusqlite::params![user_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(rusqlite_to_eng_error)?;
+
+            for row in rows {
+                let (memory_id, entity_id) = row.map_err(rusqlite_to_eng_error)?;
+                if !memory_entities.contains_key(&memory_id) {
+                    memory_order.push(memory_id);
+                }
+                memory_entities.entry(memory_id).or_default().push(entity_id);
+            }
+
+            Ok((memory_order, memory_entities))
+        })
         .await?;
-
-    // Group entity IDs by memory ID (preserving order)
-    let mut memory_order: Vec<i64> = Vec::new();
-    let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
-
-    while let Some(row) = rows.next().await? {
-        let memory_id: i64 = row.get(0)?;
-        let entity_id: i64 = row.get(1)?;
-
-        if !memory_entities.contains_key(&memory_id) {
-            memory_order.push(memory_id);
-        }
-        memory_entities
-            .entry(memory_id)
-            .or_default()
-            .push(entity_id);
-    }
 
     // Sliding window: for each window of `window_size` memories, pair all
     // entities that appear in the window
@@ -81,15 +88,19 @@ pub async fn build_cooccurrence_edges(
 
     for (&(entity_a, entity_b), &count) in &pair_counts {
         // Upsert into entity_cooccurrences table
-        conn.execute(
-            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count, user_id) \
-             VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET \
-               count = count + ?3, \
-               user_id = excluded.user_id, \
-               last_seen_at = datetime('now')",
-            libsql::params![entity_a, entity_b, count, user_id],
-        )
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count, user_id) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET \
+                   count = count + ?3, \
+                   user_id = excluded.user_id, \
+                   last_seen_at = datetime('now')",
+                rusqlite::params![entity_a, entity_b, count, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
         .await?;
 
         let weight = (count as f32).ln().clamp(0.1, 1.0);
@@ -126,55 +137,68 @@ pub async fn record_cooccurrence(
     } else {
         (entity_b, entity_a)
     };
-    db.connection()
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count, user_id) \
              VALUES (?1, ?2, 1, ?3) \
              ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET \
                count = count + 1, \
                user_id = excluded.user_id, \
                last_seen_at = datetime('now')",
-            libsql::params![lo, hi, user_id],
+            rusqlite::params![lo, hi, user_id],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await?;
     Ok(())
 }
 
 /// Full rebuild of co-occurrence table for a user.
 /// Clears existing co-occurrences and recomputes from all memory-entity links.
 pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
-    let conn = db.connection();
-
     // Clear existing co-occurrences for entities owned by this user
-    conn.execute(
-        "DELETE FROM entity_cooccurrences \
-         WHERE entity_a_id IN (SELECT id FROM entities WHERE user_id = ?1) \
-            OR entity_b_id IN (SELECT id FROM entities WHERE user_id = ?1)",
-        libsql::params![user_id],
-    )
+    db.write(move |conn| {
+        conn.execute(
+            "DELETE FROM entity_cooccurrences \
+             WHERE entity_a_id IN (SELECT id FROM entities WHERE user_id = ?1) \
+                OR entity_b_id IN (SELECT id FROM entities WHERE user_id = ?1)",
+            rusqlite::params![user_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
     .await?;
 
     // Fetch all memory -> entity links for this user's memories
-    let mut rows = conn
-        .query(
-            "SELECT m.id, me.entity_id \
-             FROM memories m \
-             JOIN memory_entities me ON me.memory_id = m.id \
-             WHERE m.user_id = ?1 AND m.is_forgotten = 0 AND m.is_archived = 0 \
-             ORDER BY m.created_at DESC",
-            libsql::params![user_id],
-        )
-        .await?;
+    let memory_entities: HashMap<i64, Vec<i64>> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT m.id, me.entity_id \
+                     FROM memories m \
+                     JOIN memory_entities me ON me.memory_id = m.id \
+                     WHERE m.user_id = ?1 AND m.is_forgotten = 0 AND m.is_archived = 0 \
+                     ORDER BY m.created_at DESC",
+                )
+                .map_err(rusqlite_to_eng_error)?;
 
-    let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
-    while let Some(row) = rows.next().await? {
-        let memory_id: i64 = row.get(0)?;
-        let entity_id: i64 = row.get(1)?;
-        memory_entities
-            .entry(memory_id)
-            .or_default()
-            .push(entity_id);
-    }
+            let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
+
+            let rows = stmt
+                .query_map(rusqlite::params![user_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(rusqlite_to_eng_error)?;
+
+            for row in rows {
+                let (memory_id, entity_id) = row.map_err(rusqlite_to_eng_error)?;
+                memory_entities.entry(memory_id).or_default().push(entity_id);
+            }
+
+            Ok(memory_entities)
+        })
+        .await?;
 
     // For each memory, create co-occurrence pairs from its entities
     let mut total_pairs: i64 = 0;
@@ -203,48 +227,53 @@ pub async fn get_cooccurring_entities(
     user_id: i64,
     limit: usize,
 ) -> Result<Vec<Entity>> {
-    let conn = db.connection();
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT e.id, e.name, e.entity_type, e.description, e.aliases, \
+                        e.user_id, e.space_id, e.confidence, e.occurrence_count, \
+                        e.first_seen_at, e.last_seen_at, e.created_at, \
+                        co.count as cooccurrence_count \
+                 FROM entity_cooccurrences co \
+                 JOIN entities e ON e.id = CASE \
+                     WHEN co.entity_a_id = ?1 THEN co.entity_b_id \
+                     ELSE co.entity_a_id \
+                 END \
+                 WHERE (co.entity_a_id = ?1 OR co.entity_b_id = ?1) \
+                   AND e.user_id = ?2 \
+                   AND co.user_id = ?2 \
+                 ORDER BY co.count DESC \
+                 LIMIT ?3",
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut rows = conn
-        .query(
-            "SELECT e.id, e.name, e.entity_type, e.description, e.aliases, \
-                    e.user_id, e.space_id, e.confidence, e.occurrence_count, \
-                    e.first_seen_at, e.last_seen_at, e.created_at, \
-                    co.count as cooccurrence_count \
-             FROM entity_cooccurrences co \
-             JOIN entities e ON e.id = CASE \
-                 WHEN co.entity_a_id = ?1 THEN co.entity_b_id \
-                 ELSE co.entity_a_id \
-             END \
-             WHERE (co.entity_a_id = ?1 OR co.entity_b_id = ?1) \
-               AND e.user_id = ?2 \
-               AND co.user_id = ?2 \
-             ORDER BY co.count DESC \
-             LIMIT ?3",
-            libsql::params![entity_id, user_id, limit as i64],
-        )
-        .await?;
+        let rows = stmt
+            .query_map(rusqlite::params![entity_id, user_id, limit as i64], |row| {
+                Ok(Entity {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    entity_type: row.get(2)?,
+                    description: row.get(3)?,
+                    aliases: row.get(4)?,
+                    user_id: row.get(5)?,
+                    space_id: row.get(6)?,
+                    confidence: row.get(7)?,
+                    occurrence_count: row.get(8)?,
+                    first_seen_at: row.get(9)?,
+                    last_seen_at: row.get(10)?,
+                    created_at: row.get(11)?,
+                })
+            })
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut entities = Vec::new();
+        let mut entities = Vec::new();
+        for row in rows {
+            entities.push(row.map_err(rusqlite_to_eng_error)?);
+        }
 
-    while let Some(row) = rows.next().await? {
-        entities.push(Entity {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            entity_type: row.get(2)?,
-            description: row.get(3)?,
-            aliases: row.get(4)?,
-            user_id: row.get(5)?,
-            space_id: row.get(6)?,
-            confidence: row.get(7)?,
-            occurrence_count: row.get(8)?,
-            first_seen_at: row.get(9)?,
-            last_seen_at: row.get(10)?,
-            created_at: row.get(11)?,
-        });
-    }
-
-    Ok(entities)
+        Ok(entities)
+    })
+    .await
 }
 
 #[cfg(test)]

@@ -3,9 +3,14 @@
 
 use crate::db::Database;
 use crate::memory::types::Memory;
-use crate::Result;
+use crate::{EngError, Result};
+use rusqlite::params;
 use serde::Serialize;
 use tracing::info;
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Contradiction {
@@ -21,64 +26,84 @@ pub struct Contradiction {
 /// against existing facts with the same subject+predicate. If the object
 /// differs, flags as a contradiction.
 pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec<Contradiction>> {
-    let conn = db.connection();
-    let mut contradictions = Vec::new();
+    let memory_id = memory.id;
+    let user_id = memory.user_id;
 
     // Get structured facts for this memory (tenant-scoped)
-    let mut fact_rows = conn
-        .query(
-            "SELECT id, subject, predicate, object, confidence \
-             FROM structured_facts \
-             WHERE memory_id = ?1 AND user_id = ?2",
-            libsql::params![memory.id, memory.user_id],
-        )
+    let new_facts: Vec<(i64, String, String, String, f64)> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, subject, predicate, object, confidence \
+                     FROM structured_facts \
+                     WHERE memory_id = ?1 AND user_id = ?2",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(params![memory_id, user_id], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, f64>(4)?,
+                    ))
+                })
+                .map_err(rusqlite_to_eng_error)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(rows)
+        })
         .await?;
 
-    let mut new_facts: Vec<(i64, String, String, String, f64)> = Vec::new();
-    while let Some(row) = fact_rows.next().await? {
-        new_facts.push((
-            row.get(0)?,
-            row.get(1)?,
-            row.get(2)?,
-            row.get(3)?,
-            row.get(4)?,
-        ));
-    }
+    let mut contradictions = Vec::new();
 
     // For each new fact, check against existing facts with same subject+predicate
     // SECURITY: scoped to memory.user_id to prevent cross-tenant fact leakage.
     for (new_fact_id, subject, predicate, new_object, _confidence) in &new_facts {
-        let mut existing_rows = conn
-            .query(
-                "SELECT sf.id, sf.object, sf.memory_id, sf.confidence \
-                 FROM structured_facts sf \
-                 WHERE sf.user_id = ?1 \
-                   AND sf.subject = ?2 AND sf.predicate = ?3 \
-                   AND sf.memory_id != ?4 \
-                   AND sf.id != ?5 \
-                 ORDER BY sf.confidence DESC",
-                libsql::params![
-                    memory.user_id,
-                    subject.clone(),
-                    predicate.clone(),
-                    memory.id,
-                    *new_fact_id
-                ],
-            )
+        let subject_c = subject.clone();
+        let predicate_c = predicate.clone();
+        let nfid = *new_fact_id;
+
+        let existing: Vec<(i64, String, i64, f64)> = db
+            .read(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT sf.id, sf.object, sf.memory_id, sf.confidence \
+                         FROM structured_facts sf \
+                         WHERE sf.user_id = ?1 \
+                           AND sf.subject = ?2 AND sf.predicate = ?3 \
+                           AND sf.memory_id != ?4 \
+                           AND sf.id != ?5 \
+                         ORDER BY sf.confidence DESC",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                let rows = stmt
+                    .query_map(
+                        params![user_id, subject_c, predicate_c, memory_id, nfid],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, i64>(2)?,
+                                row.get::<_, f64>(3)?,
+                            ))
+                        },
+                    )
+                    .map_err(rusqlite_to_eng_error)?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(rusqlite_to_eng_error)?;
+                Ok(rows)
+            })
             .await?;
 
-        while let Some(row) = existing_rows.next().await? {
-            let _old_fact_id: i64 = row.get(0)?;
-            let old_object: String = row.get(1)?;
-            let old_memory_id: i64 = row.get(2)?;
-            let old_confidence: f64 = row.get(3)?;
-
+        for (_old_fact_id, old_object, old_memory_id, old_confidence) in existing {
             // Compare objects -- if they differ, it's a contradiction
             if !objects_match(new_object, &old_object) {
                 let conf = old_confidence as f32 * 0.8; // Scale by old fact confidence
 
                 contradictions.push(Contradiction {
-                    memory_a: memory.id.to_string(),
+                    memory_a: memory_id.to_string(),
                     memory_b: old_memory_id.to_string(),
                     confidence: conf.min(1.0),
                     description: format!(
@@ -92,8 +117,8 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
 
     if !contradictions.is_empty() {
         info!(
-            memory_id = memory.id,
-            user_id = memory.user_id,
+            memory_id = memory_id,
+            user_id = user_id,
             contradictions = contradictions.len(),
             "contradictions_detected"
         );
@@ -102,12 +127,18 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
         for c in &contradictions {
             let mem_b_id: i64 = c.memory_b.parse().unwrap_or(0);
             if mem_b_id > 0 {
-                let _ = conn
-                    .execute(
-                        "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) \
-                         VALUES (?1, ?2, ?3, 'contradicts')",
-                        libsql::params![memory.id, mem_b_id, c.confidence as f64],
-                    )
+                let conf_f64 = c.confidence as f64;
+                let _ = db
+                    .write(move |conn| {
+                        conn.execute(
+                            "INSERT OR IGNORE INTO memory_links \
+                             (source_id, target_id, similarity, type) \
+                             VALUES (?1, ?2, ?3, 'contradicts')",
+                            params![memory_id, mem_b_id, conf_f64],
+                        )
+                        .map_err(rusqlite_to_eng_error)?;
+                        Ok(())
+                    })
                     .await;
             }
         }
@@ -121,38 +152,46 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
 /// Compares all structured_facts with the same subject+predicate to find
 /// conflicting objects. Returns all detected contradictions.
 pub async fn scan_all_contradictions(db: &Database, user_id: i64) -> Result<Vec<Contradiction>> {
-    let conn = db.connection();
-    let mut contradictions = Vec::new();
-
-    // Find all facts where subject+predicate match but object differs
-    // Scoped by user_id to use idx_facts_user_subject_predicate index
-    let mut rows = conn
-        .query(
-            "SELECT sf1.memory_id, sf2.memory_id, \
-                    sf1.subject, sf1.predicate, sf1.object, sf2.object, \
-                    sf1.confidence, sf2.confidence \
-             FROM structured_facts sf1 \
-             JOIN structured_facts sf2 ON sf1.user_id = sf2.user_id \
-               AND sf1.subject = sf2.subject \
-               AND sf1.predicate = sf2.predicate \
-               AND sf1.id < sf2.id \
-               AND sf1.memory_id != sf2.memory_id \
-             WHERE sf1.user_id = ?1 \
-             LIMIT 500",
-            [user_id],
-        )
+    let rows: Vec<(i64, i64, String, String, String, String, f64, f64)> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT sf1.memory_id, sf2.memory_id, \
+                            sf1.subject, sf1.predicate, sf1.object, sf2.object, \
+                            sf1.confidence, sf2.confidence \
+                     FROM structured_facts sf1 \
+                     JOIN structured_facts sf2 ON sf1.user_id = sf2.user_id \
+                       AND sf1.subject = sf2.subject \
+                       AND sf1.predicate = sf2.predicate \
+                       AND sf1.id < sf2.id \
+                       AND sf1.memory_id != sf2.memory_id \
+                     WHERE sf1.user_id = ?1 \
+                     LIMIT 500",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(params![user_id], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, f64>(6)?,
+                        row.get::<_, f64>(7)?,
+                    ))
+                })
+                .map_err(rusqlite_to_eng_error)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(rows)
+        })
         .await?;
 
-    while let Some(row) = rows.next().await? {
-        let mem_a_id: i64 = row.get(0)?;
-        let mem_b_id: i64 = row.get(1)?;
-        let subject: String = row.get(2)?;
-        let predicate: String = row.get(3)?;
-        let object_a: String = row.get(4)?;
-        let object_b: String = row.get(5)?;
-        let conf_a: f64 = row.get(6)?;
-        let conf_b: f64 = row.get(7)?;
+    let mut contradictions = Vec::new();
 
+    for (mem_a_id, mem_b_id, subject, predicate, object_a, object_b, conf_a, conf_b) in rows {
         if !objects_match(&object_a, &object_b) {
             let conf = (conf_a.min(conf_b) * 0.8) as f32;
 

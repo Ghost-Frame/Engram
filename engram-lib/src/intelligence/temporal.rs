@@ -6,9 +6,14 @@
 // ============================================================================
 
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemporalPattern {
@@ -44,41 +49,47 @@ pub async fn set_fact_validity(
     memory_created_at: &str,
     user_id: i64,
 ) -> Result<()> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT date_approx, date_ref FROM structured_facts WHERE id = ?1 AND user_id = ?2",
-            libsql::params![fact_id, user_id],
-        )
+    let memory_created_at = memory_created_at.to_string();
+
+    let row = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT date_approx, date_ref FROM structured_facts WHERE id = ?1 AND user_id = ?2",
+                params![fact_id, user_id],
+                |row| {
+                    let date_approx: Option<String> = row.get(0)?;
+                    let date_ref: Option<String> = row.get(1)?;
+                    Ok((date_approx, date_ref))
+                },
+            )
+            .optional()
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
 
-    let row = match rows.next().await? {
+    let (date_approx, date_ref) = match row {
         Some(r) => r,
         None => return Ok(()),
     };
 
-    let date_approx: Option<String> = row.get(0)?;
-    let date_ref: Option<String> = row.get(1)?;
-
     let valid_at = if let Some(ref approx) = date_approx {
-        // Absolute date provided, use it directly
         approx.clone()
     } else if let Some(ref dref) = date_ref {
-        // Resolve relative dates against memory creation time
-        resolve_relative_date(dref, memory_created_at)
-            .unwrap_or_else(|| memory_created_at.to_string())
+        resolve_relative_date(dref, &memory_created_at)
+            .unwrap_or_else(|| memory_created_at.clone())
     } else {
-        memory_created_at.to_string()
+        memory_created_at.clone()
     };
 
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2 AND user_id = ?3",
-            libsql::params![valid_at.clone(), fact_id, user_id],
+            params![valid_at, fact_id, user_id],
         )
-        .await?;
-
-    Ok(())
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 // ============================================================================
@@ -259,39 +270,62 @@ pub async fn detect_fact_contradictions(
     quantity: Option<f64>,
     user_id: i64,
 ) -> Result<Vec<FactContradiction>> {
-    let mut contradictions = Vec::new();
+    let subject = subject.to_string();
+    let verb = verb.to_string();
+    let object = object.map(|s| s.to_string());
 
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, memory_id, object, quantity, unit
-         FROM structured_facts
-         WHERE subject = ?1 COLLATE NOCASE
-           AND verb = ?2 COLLATE NOCASE
-           AND user_id = ?3
-           AND id != ?4
-           AND invalid_at IS NULL
-         ORDER BY created_at DESC
-         LIMIT 20",
-            libsql::params![subject.to_string(), verb.to_string(), user_id, new_fact_id],
-        )
+    // Compute these before the closure consumes subject/verb
+    let verb_lower_owned = verb.to_lowercase();
+    let is_state_verb = STATE_VERBS.contains(&verb_lower_owned.trim());
+
+    struct CandidateRow {
+        old_id: i64,
+        old_memory_id: i64,
+        old_object: Option<String>,
+        old_quantity: Option<f64>,
+    }
+
+    let subject_c = subject.clone();
+    let verb_c = verb.clone();
+    let candidates = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, memory_id, object, quantity
+                     FROM structured_facts
+                     WHERE subject = ?1 COLLATE NOCASE
+                       AND verb = ?2 COLLATE NOCASE
+                       AND user_id = ?3
+                       AND id != ?4
+                       AND invalid_at IS NULL
+                     ORDER BY created_at DESC
+                     LIMIT 20",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            let rows = stmt
+                .query_map(params![subject_c, verb_c, user_id, new_fact_id], |row| {
+                    Ok(CandidateRow {
+                        old_id: row.get(0)?,
+                        old_memory_id: row.get(1)?,
+                        old_object: row.get(2)?,
+                        old_quantity: row.get(3)?,
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?;
+
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(rusqlite_to_eng_error)
+        })
         .await?;
 
-    let verb_lower = verb.to_lowercase();
-    let verb_lower = verb_lower.trim();
-    let is_state_verb = STATE_VERBS.contains(&verb_lower);
-
-    while let Some(row) = rows.next().await? {
-        let old_id: i64 = row.get(0)?;
-        let old_memory_id: i64 = row.get(1)?;
-        let old_object: Option<String> = row.get(2)?;
-        let old_quantity: Option<f64> = row.get(3)?;
-
+    let mut contradictions = Vec::new();
+    for c in candidates {
         let mut is_contradiction = false;
 
         // State-type verbs: "user is X" vs "user is Y"
         if is_state_verb {
-            if let (Some(new_obj), Some(ref old_obj)) = (object, &old_object) {
+            if let (Some(ref new_obj), Some(ref old_obj)) = (&object, &c.old_object) {
                 if new_obj.to_lowercase() != old_obj.to_lowercase() {
                     is_contradiction = true;
                 }
@@ -299,9 +333,10 @@ pub async fn detect_fact_contradictions(
         }
 
         // Quantity contradiction: same thing, different quantity
-        if let (Some(new_q), Some(old_q)) = (quantity, old_quantity) {
+        if let (Some(new_q), Some(old_q)) = (quantity, c.old_quantity) {
             if (new_q - old_q).abs() > f64::EPSILON
-                && object.map(|o| o.to_lowercase()) == old_object.as_ref().map(|o| o.to_lowercase())
+                && object.as_ref().map(|o| o.to_lowercase())
+                    == c.old_object.as_ref().map(|o| o.to_lowercase())
             {
                 is_contradiction = true;
             }
@@ -310,12 +345,12 @@ pub async fn detect_fact_contradictions(
         if is_contradiction {
             contradictions.push(FactContradiction {
                 new_fact_id,
-                old_fact_id: old_id,
-                old_memory_id,
-                subject: subject.to_string(),
-                verb: verb.to_string(),
-                new_object: object.map(|s| s.to_string()),
-                old_object,
+                old_fact_id: c.old_id,
+                old_memory_id: c.old_memory_id,
+                subject: subject.clone(),
+                verb: verb.clone(),
+                new_object: object.clone(),
+                old_object: c.old_object,
             });
         }
     }
@@ -333,16 +368,29 @@ pub async fn invalidate_contradicted_facts(
         return Ok(0);
     }
 
-    let mut invalidated = 0i32;
-    for c in contradictions {
-        let affected = db.conn.execute(
-            "UPDATE structured_facts SET invalid_at = datetime('now'), invalidated_by = ?1 WHERE id = ?2 AND user_id = ?3 AND invalid_at IS NULL",
-            libsql::params![c.new_fact_id, c.old_fact_id, user_id],
-        ).await?;
-        if affected > 0 {
-            invalidated += 1;
-        }
-    }
+    // Clone the data we need to move into the closure
+    let contradiction_ids: Vec<(i64, i64)> = contradictions
+        .iter()
+        .map(|c| (c.new_fact_id, c.old_fact_id))
+        .collect();
+
+    let invalidated = db
+        .write(move |conn| {
+            let mut count = 0i32;
+            for (new_fact_id, old_fact_id) in &contradiction_ids {
+                let affected = conn
+                    .execute(
+                        "UPDATE structured_facts SET invalid_at = datetime('now'), invalidated_by = ?1 WHERE id = ?2 AND user_id = ?3 AND invalid_at IS NULL",
+                        params![new_fact_id, old_fact_id, user_id],
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                if affected > 0 {
+                    count += 1;
+                }
+            }
+            Ok(count)
+        })
+        .await?;
 
     if invalidated > 0 {
         let subjects: Vec<String> = contradictions
@@ -365,41 +413,49 @@ pub async fn invalidate_contradicted_facts(
 /// 2. Detect and invalidate contradictions
 pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64) -> Result<()> {
     // Get the memory created_at for date resolution (tenant-scoped)
-    let mut mem_rows = db
-        .conn
-        .query(
-            "SELECT created_at FROM memories WHERE id = ?1 AND user_id = ?2",
-            libsql::params![memory_id, user_id],
-        )
+    let created_at = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT created_at FROM memories WHERE id = ?1 AND user_id = ?2",
+                params![memory_id, user_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(rusqlite_to_eng_error)
+        })
         .await?;
 
-    let created_at = match mem_rows.next().await? {
-        Some(row) => {
-            let s: String = row.get(0)?;
-            s
-        }
+    let created_at = match created_at {
+        Some(s) => s,
         None => return Ok(()),
     };
 
     // Get all facts just inserted for this memory (those without valid_at)
-    let mut fact_rows = db
-        .conn
-        .query(
-            "SELECT id, subject, verb, object, quantity
-         FROM structured_facts WHERE memory_id = ?1 AND user_id = ?2 AND valid_at IS NULL",
-            libsql::params![memory_id, user_id],
-        )
-        .await?;
+    let facts = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, subject, verb, object, quantity
+                     FROM structured_facts WHERE memory_id = ?1 AND user_id = ?2 AND valid_at IS NULL",
+                )
+                .map_err(rusqlite_to_eng_error)?;
 
-    let mut facts = Vec::new();
-    while let Some(row) = fact_rows.next().await? {
-        let id: i64 = row.get(0)?;
-        let subject: String = row.get(1)?;
-        let verb: String = row.get(2)?;
-        let object: Option<String> = row.get(3)?;
-        let quantity: Option<f64> = row.get(4)?;
-        facts.push((id, subject, verb, object, quantity));
-    }
+            let rows = stmt
+                .query_map(params![memory_id, user_id], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<f64>>(4)?,
+                    ))
+                })
+                .map_err(rusqlite_to_eng_error)?;
+
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
 
     for (fact_id, subject, verb, object, quantity) in &facts {
         // Set temporal validity (tenant-scoped)
@@ -439,40 +495,62 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
 /// SECURITY: user_id is required so writes stay tenant-scoped. Admin-level
 /// backfill should iterate users rather than passing a wildcard.
 pub async fn backfill_fact_validity(db: &Database, user_id: i64) -> Result<i32> {
-    let q = "SELECT sf.id, sf.date_approx, sf.date_ref, m.created_at as memory_created_at
-              FROM structured_facts sf
-              JOIN memories m ON m.id = sf.memory_id
-              WHERE sf.valid_at IS NULL AND sf.user_id = ?1 AND m.user_id = ?1";
-    let mut rows = db.conn.query(q, libsql::params![user_id]).await?;
+    let pending = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT sf.id, sf.date_approx, sf.date_ref, m.created_at as memory_created_at
+                     FROM structured_facts sf
+                     JOIN memories m ON m.id = sf.memory_id
+                     WHERE sf.valid_at IS NULL AND sf.user_id = ?1 AND m.user_id = ?1",
+                )
+                .map_err(rusqlite_to_eng_error)?;
 
-    let mut pending = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let id: i64 = row.get(0)?;
-        let date_approx: Option<String> = row.get(1)?;
-        let date_ref: Option<String> = row.get(2)?;
-        let memory_created_at: String = row.get(3)?;
-        pending.push((id, date_approx, date_ref, memory_created_at));
-    }
+            let rows = stmt
+                .query_map(params![user_id], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(rusqlite_to_eng_error)?;
 
-    let mut filled = 0i32;
-    for (id, date_approx, date_ref, memory_created_at) in &pending {
-        let valid_at = if let Some(approx) = date_approx {
-            approx.clone()
-        } else if let Some(dref) = date_ref {
-            resolve_relative_date(dref, memory_created_at)
-                .unwrap_or_else(|| memory_created_at.clone())
-        } else {
-            memory_created_at.clone()
-        };
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
 
-        db.conn
-            .execute(
-                "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2 AND user_id = ?3",
-                libsql::params![valid_at.clone(), *id, user_id],
-            )
-            .await?;
-        filled += 1;
-    }
+    let updates: Vec<(i64, String)> = pending
+        .iter()
+        .map(|(id, date_approx, date_ref, memory_created_at)| {
+            let valid_at = if let Some(approx) = date_approx {
+                approx.clone()
+            } else if let Some(dref) = date_ref {
+                resolve_relative_date(dref, memory_created_at)
+                    .unwrap_or_else(|| memory_created_at.clone())
+            } else {
+                memory_created_at.clone()
+            };
+            (*id, valid_at)
+        })
+        .collect();
+
+    let filled = db
+        .write(move |conn| {
+            let mut count = 0i32;
+            for (id, valid_at) in &updates {
+                conn.execute(
+                    "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2 AND user_id = ?3",
+                    params![valid_at, id, user_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                count += 1;
+            }
+            Ok(count)
+        })
+        .await?;
 
     if filled > 0 {
         info!(msg = "fact_validity_backfilled", count = filled, user_id);
@@ -503,57 +581,65 @@ pub async fn time_travel(
     timestamp: &str,
     limit: i64,
 ) -> Result<Vec<TimeTravelResult>> {
-    let results = if let Some(q) = query {
+    let timestamp = timestamp.to_string();
+
+    if let Some(q) = query {
         let pattern = format!("%{}%", q);
-        let mut rows = db
-            .conn
-            .query(
-                "SELECT id, content, category, importance, created_at \
-             FROM memories \
-             WHERE user_id = ?1 AND created_at <= ?2 AND is_forgotten = 0 \
-               AND content LIKE ?3 \
-             ORDER BY created_at DESC LIMIT ?4",
-                libsql::params![user_id, timestamp.to_string(), pattern, limit],
-            )
-            .await?;
+        db.read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, content, category, importance, created_at \
+                     FROM memories \
+                     WHERE user_id = ?1 AND created_at <= ?2 AND is_forgotten = 0 \
+                       AND content LIKE ?3 \
+                     ORDER BY created_at DESC LIMIT ?4",
+                )
+                .map_err(rusqlite_to_eng_error)?;
 
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().await? {
-            out.push(TimeTravelResult {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                category: row.get(2)?,
-                importance: row.get(3)?,
-                created_at: row.get(4)?,
-            });
-        }
-        out
+            let rows = stmt
+                .query_map(params![user_id, timestamp, pattern, limit], |row| {
+                    Ok(TimeTravelResult {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?;
+
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(rusqlite_to_eng_error)
+        })
+        .await
     } else {
-        let mut rows = db
-            .conn
-            .query(
-                "SELECT id, content, category, importance, created_at \
-             FROM memories \
-             WHERE user_id = ?1 AND created_at <= ?2 AND is_forgotten = 0 \
-             ORDER BY created_at DESC LIMIT ?3",
-                libsql::params![user_id, timestamp.to_string(), limit],
-            )
-            .await?;
+        db.read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, content, category, importance, created_at \
+                     FROM memories \
+                     WHERE user_id = ?1 AND created_at <= ?2 AND is_forgotten = 0 \
+                     ORDER BY created_at DESC LIMIT ?3",
+                )
+                .map_err(rusqlite_to_eng_error)?;
 
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().await? {
-            out.push(TimeTravelResult {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                category: row.get(2)?,
-                importance: row.get(3)?,
-                created_at: row.get(4)?,
-            });
-        }
-        out
-    };
+            let rows = stmt
+                .query_map(params![user_id, timestamp, limit], |row| {
+                    Ok(TimeTravelResult {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?;
 
-    Ok(results)
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(rusqlite_to_eng_error)
+        })
+        .await
+    }
 }
 
 // ============================================================================

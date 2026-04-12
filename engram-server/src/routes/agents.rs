@@ -46,7 +46,7 @@ async fn register_agent(
     }
 
     // Check for duplicate
-    let existing = agents::get_agent_by_name(&state.db.conn, &body.name, auth.user_id).await?;
+    let existing = agents::get_agent_by_name(&state.db, &body.name, auth.user_id).await?;
     if existing.is_some() {
         return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
             "Agent '{}' already registered",
@@ -55,7 +55,7 @@ async fn register_agent(
     }
 
     let result = agents::insert_agent(
-        &state.db.conn,
+        &state.db,
         auth.user_id,
         &body.name,
         body.category.as_deref(),
@@ -79,7 +79,7 @@ async fn list_agents(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let agents = agents::list_agents(&state.db.conn, auth.user_id).await?;
+    let agents = agents::list_agents(&state.db, auth.user_id).await?;
     Ok(Json(json!({ "agents": agents })))
 }
 
@@ -88,7 +88,7 @@ async fn get_agent(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let agent = agents::get_agent_by_id(&state.db.conn, id, auth.user_id)
+    let agent = agents::get_agent_by_id(&state.db, id, auth.user_id)
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Agent not found".into())))?;
 
@@ -126,7 +126,7 @@ async fn revoke_agent(
     Json(body): Json<RevokeBody>,
 ) -> Result<Json<Value>, AppError> {
     let reason = body.reason.as_deref().unwrap_or("revoked");
-    agents::revoke_agent(&state.db.conn, id, auth.user_id, reason).await?;
+    agents::revoke_agent(&state.db, id, auth.user_id, reason).await?;
     Ok(Json(json!({ "revoked": true, "agent_id": id })))
 }
 
@@ -135,7 +135,7 @@ async fn get_passport(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let agent = agents::get_agent_by_id(&state.db.conn, id, auth.user_id)
+    let agent = agents::get_agent_by_id(&state.db, id, auth.user_id)
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Agent not found".into())))?;
 
@@ -177,11 +177,11 @@ async fn link_key(
     Path(id): Path<i64>,
     Json(body): Json<LinkKeyBody>,
 ) -> Result<Json<Value>, AppError> {
-    let agent = agents::get_agent_by_id(&state.db.conn, id, auth.user_id)
+    let agent = agents::get_agent_by_id(&state.db, id, auth.user_id)
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Agent not found".into())))?;
 
-    agents::link_key_to_agent(&state.db.conn, agent.id, body.key_id, auth.user_id).await?;
+    agents::link_key_to_agent(&state.db, agent.id, body.key_id, auth.user_id).await?;
     Ok(Json(
         json!({ "linked": true, "agent_id": id, "key_id": body.key_id }),
     ))
@@ -199,12 +199,12 @@ async fn get_executions(
     Query(params): Query<ExecutionsQuery>,
 ) -> Result<Json<Value>, AppError> {
     // Verify agent belongs to user
-    let agent = agents::get_agent_by_id(&state.db.conn, id, auth.user_id)
+    let agent = agents::get_agent_by_id(&state.db, id, auth.user_id)
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Agent not found".into())))?;
 
     let limit = params.limit.unwrap_or(50).min(1000);
-    let executions = agents::get_agent_executions(&state.db.conn, agent.id, limit).await?;
+    let executions = agents::get_agent_executions(&state.db, agent.id, limit).await?;
     Ok(Json(json!({ "agent_id": id, "executions": executions })))
 }
 

@@ -8,6 +8,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use rusqlite::params;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -184,11 +185,13 @@ async fn import_kleos_export(
                 .and_then(|v| v.as_str())
                 .unwrap_or(&now)
                 .to_string();
-            match state.db.conn.execute(
-                "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                libsql::params![content, category, source, importance, user_id, sync_id, created_at, updated_at],
-            ).await {
+            match state.db.write(move |conn| {
+                conn.execute(
+                    "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![content, category, source, importance, user_id, sync_id, created_at, updated_at],
+                ).map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
+            }).await {
                 Ok(_) => imported += 1,
                 Err(e) => { tracing::warn!("import_kleos_memory_failed: {}", e); skipped += 1; }
             }
@@ -232,11 +235,13 @@ async fn import_array(
             .to_string();
         let importance = item.get("importance").and_then(|v| v.as_i64()).unwrap_or(5) as i32;
         let sync_id = Uuid::new_v4().to_string();
-        match state.db.conn.execute(
-            "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
-            libsql::params![content, category, source, importance, user_id, sync_id],
-        ).await {
+        match state.db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
+                params![content, category, source, importance, user_id, sync_id],
+            ).map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
+        }).await {
             Ok(_) => imported += 1,
             Err(_) => { skipped += 1; }
         }
@@ -285,11 +290,13 @@ async fn import_mem0_array(
             .and_then(|v| v.as_i64())
             .unwrap_or(5) as i32;
         let sync_id = Uuid::new_v4().to_string();
-        match state.db.conn.execute(
-            "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
-            libsql::params![content, category, source, importance, user_id, sync_id],
-        ).await {
+        match state.db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
+                params![content, category, source, importance, user_id, sync_id],
+            ).map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
+        }).await {
             Ok(_) => imported += 1,
             Err(_) => { skipped += 1; }
         }
@@ -327,14 +334,15 @@ async fn delete_state_handler(
     let prefix = format!("user:{}:%", auth.user_id);
     let affected = state
         .db
-        .conn
-        .execute(
-            "DELETE FROM app_state WHERE key LIKE ?1",
-            libsql::params![prefix],
-        )
+        .write(move |conn| {
+            conn.execute(
+                "DELETE FROM app_state WHERE key LIKE ?1",
+                params![prefix],
+            )
+            .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
+        })
         .await
-        .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?
-        as i64;
+        .map_err(|e| AppError(e))? as i64;
     Ok(Json(json!({ "deleted": affected })))
 }
 

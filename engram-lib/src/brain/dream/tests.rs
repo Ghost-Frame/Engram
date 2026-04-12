@@ -275,7 +275,7 @@ async fn test_dream_run_persisted() {
         .conn
         .query(
             "SELECT id, user_id, finished_at FROM brain_dream_runs WHERE id = ?1",
-            libsql::params![result.run_id],
+            rusqlite::params![result.run_id],
         )
         .await
         .unwrap();

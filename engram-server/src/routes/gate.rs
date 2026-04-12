@@ -1,4 +1,5 @@
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use rusqlite::params;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -113,33 +114,33 @@ async fn guard_handler(
     }
 
     // Search for high-importance static memories that might conflict
-    let mut rows = state
+    let user_id = auth.user_id;
+    let rules: Vec<Value> = state
         .db
-        .conn
-        .query(
-            "SELECT id, content, importance FROM memories
-             WHERE user_id = ?1 AND is_static = 1 AND importance >= 8 AND is_forgotten = 0
-             ORDER BY importance DESC LIMIT 20",
-            libsql::params![auth.user_id],
-        )
-        .await
-        .map_err(|e| AppError::from(kleos_lib::EngError::Database(e)))?;
-
-    let mut rules = Vec::new();
-    while let Some(row) = rows
-        .next()
-        .await
-        .map_err(|e| AppError::from(kleos_lib::EngError::Database(e)))?
-    {
-        let id: i64 = row.get(0).unwrap_or(0);
-        let content: String = row.get(1).unwrap_or_default();
-        let importance: i64 = row.get(2).unwrap_or(0);
-        rules.push(json!({
-            "id": id,
-            "content": content,
-            "importance": importance,
-        }));
-    }
+        .read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, content, importance FROM memories
+                 WHERE user_id = ?1 AND is_static = 1 AND importance >= 8 AND is_forgotten = 0
+                 ORDER BY importance DESC LIMIT 20",
+            )?;
+            let rows = stmt.query_map(params![user_id], |row| {
+                let id: i64 = row.get(0)?;
+                let content: String = row.get(1)?;
+                let importance: i64 = row.get(2)?;
+                Ok((id, content, importance))
+            })?;
+            let mut rules = Vec::new();
+            for row in rows {
+                let (id, content, importance) = row?;
+                rules.push(json!({
+                    "id": id,
+                    "content": content,
+                    "importance": importance,
+                }));
+            }
+            Ok(rules)
+        })
+        .await?;
 
     if rules.is_empty() {
         return Ok(Json(json!({

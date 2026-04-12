@@ -19,6 +19,10 @@ use crate::brain::hopfield::recall;
 use crate::db::Database;
 use crate::{EngError, Result};
 
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
 // ---- Constants ----
 
 pub const GHOST_STRENGTH: f32 = 0.3;
@@ -195,28 +199,32 @@ fn instincts_bin_path() -> std::path::PathBuf {
 }
 
 async fn is_seeded(db: &Database, user_id: i64) -> Result<bool> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT value FROM brain_meta WHERE key = ?1",
-            libsql::params![format!("instincts_seeded_{}", user_id)],
-        )
-        .await?;
-
-    Ok(rows.next().await?.is_some())
+    let key = format!("instincts_seeded_{}", user_id);
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare("SELECT value FROM brain_meta WHERE key = ?1")
+            .map_err(rusqlite_to_eng_error)?;
+        let exists = stmt
+            .exists(rusqlite::params![key])
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(exists)
+    })
+    .await
 }
 
 async fn mark_seeded(db: &Database, user_id: i64) -> Result<()> {
+    let key = format!("instincts_seeded_{}", user_id);
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "INSERT OR REPLACE INTO brain_meta (key, value) VALUES (?1, ?2)",
-            libsql::params![format!("instincts_seeded_{}", user_id), now],
+            rusqlite::params![key, now],
         )
-        .await?;
-
-    Ok(())
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 // ---- Tests ----

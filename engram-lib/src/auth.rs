@@ -4,6 +4,10 @@ use sha2::{Digest, Sha256};
 use crate::db::Database;
 use crate::Result;
 
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> crate::EngError {
+    crate::EngError::DatabaseMessage(err.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Scope
 // ---------------------------------------------------------------------------
@@ -182,41 +186,57 @@ pub async fn create_key(
     let (full_key, key_prefix, key_hash) = generate_key();
     let scopes_str = scopes_to_string(&scopes);
     let rate_limit_val = rate_limit.unwrap_or(1000).max(1);
+    let name_owned = name.to_string();
 
-    db.conn
-        .execute(
+    let key_prefix_for_read = key_prefix.clone();
+    let key_hash_for_read = key_hash.clone();
+
+    db.write(move |conn| {
+        conn.execute(
             "INSERT INTO api_keys (user_id, key_prefix, key_hash, name, scopes, rate_limit)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            libsql::params![
+            rusqlite::params![
                 user_id,
-                key_prefix.clone(),
-                key_hash.clone(),
-                name,
+                key_prefix,
+                key_hash,
+                name_owned,
                 scopes_str,
                 rate_limit_val
             ],
         )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await?;
+
+    let api_key = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
+                            agent_id, last_used_at, expires_at, created_at
+                     FROM api_keys
+                     WHERE key_prefix = ?1 AND key_hash = ?2
+                     LIMIT 1",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            let key = stmt
+                .query_row(
+                    rusqlite::params![key_prefix_for_read, key_hash_for_read],
+                    |row| row_to_api_key_rusqlite(row),
+                )
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => {
+                        crate::EngError::Internal("failed to fetch newly created key".into())
+                    }
+                    other => rusqlite_to_eng_error(other),
+                })?;
+
+            Ok(key)
+        })
         .await?;
 
-    // Fetch the inserted row to get generated fields (id, rate_limit, created_at, etc.)
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
-                    agent_id, last_used_at, expires_at, created_at
-             FROM api_keys
-             WHERE key_prefix = ?1 AND key_hash = ?2
-             LIMIT 1",
-            libsql::params![key_prefix, key_hash],
-        )
-        .await?;
-
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| crate::EngError::Internal("failed to fetch newly created key".into()))?;
-
-    let api_key = row_to_api_key(&row)?;
     Ok((api_key, full_key))
 }
 
@@ -224,28 +244,36 @@ pub async fn create_key(
 pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     let normalized_key =
         normalize_key(raw_key).ok_or_else(|| crate::EngError::Auth("invalid key format".into()))?;
-    let hex_portion = &normalized_key[7..];
-    let key_prefix = &hex_portion[..8];
+    let hex_portion = normalized_key[7..].to_string();
+    let key_prefix = hex_portion[..8].to_string();
     let key_hash = hash_key(&normalized_key);
 
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
-                    agent_id, last_used_at, expires_at, created_at
-             FROM api_keys
-             WHERE key_prefix = ?1 AND key_hash = ?2 AND is_active = 1
-             LIMIT 1",
-            libsql::params![key_prefix, key_hash],
-        )
+    let api_key = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
+                            agent_id, last_used_at, expires_at, created_at
+                     FROM api_keys
+                     WHERE key_prefix = ?1 AND key_hash = ?2 AND is_active = 1
+                     LIMIT 1",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            let key = stmt
+                .query_row(rusqlite::params![key_prefix, key_hash], |row| {
+                    row_to_api_key_rusqlite(row)
+                })
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => {
+                        crate::EngError::Auth("invalid or revoked key".into())
+                    }
+                    other => rusqlite_to_eng_error(other),
+                })?;
+
+            Ok(key)
+        })
         .await?;
-
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| crate::EngError::Auth("invalid or revoked key".into()))?;
-
-    let api_key = row_to_api_key(&row)?;
 
     // Check expiration. Parse expires_at as a real timestamp rather than a
     // lexical string compare -- the previous compare broke on timezone
@@ -265,11 +293,14 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
 
     // Update last_used_at -- fire and don't fail validation on error
     let _ = db
-        .conn
-        .execute(
-            "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?1",
-            libsql::params![key_id],
-        )
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?1",
+                rusqlite::params![key_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
         .await;
 
     Ok(AuthContext {
@@ -285,85 +316,72 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
 /// but constraining the UPDATE here means any future caller that forgets
 /// to check ownership still cannot revoke another tenant's keys.
 pub async fn revoke_key(db: &Database, user_id: i64, key_id: i64) -> Result<()> {
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "UPDATE api_keys SET is_active = 0 WHERE id = ?1 AND user_id = ?2",
-            libsql::params![key_id, user_id],
+            rusqlite::params![key_id, user_id],
         )
-        .await?;
-    Ok(())
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 /// Deactivate any API key by id regardless of owner (admin use only).
 pub async fn revoke_key_admin(db: &Database, key_id: i64) -> Result<()> {
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "UPDATE api_keys SET is_active = 0 WHERE id = ?1",
-            libsql::params![key_id],
+            rusqlite::params![key_id],
         )
-        .await?;
-    Ok(())
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 /// List active API keys for a user. Never exposes key_hash.
 pub async fn list_keys(db: &Database, user_id: i64) -> Result<Vec<ApiKey>> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
-                    agent_id, last_used_at, expires_at, created_at
-             FROM api_keys
-             WHERE user_id = ?1 AND is_active = 1
-             ORDER BY created_at DESC",
-            libsql::params![user_id],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
+                        agent_id, last_used_at, expires_at, created_at
+                 FROM api_keys
+                 WHERE user_id = ?1 AND is_active = 1
+                 ORDER BY created_at DESC",
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut keys = Vec::new();
-    while let Some(row) = rows.next().await? {
-        keys.push(row_to_api_key(&row)?);
-    }
-    Ok(keys)
+        let keys = stmt
+            .query_map(rusqlite::params![user_id], |row| {
+                row_to_api_key_rusqlite(row)
+            })
+            .map_err(rusqlite_to_eng_error)?
+            .map(|r| r.map_err(rusqlite_to_eng_error))
+            .collect::<Result<Vec<ApiKey>>>()?;
+
+        Ok(keys)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
 // Row mapping
 // ---------------------------------------------------------------------------
 
-fn row_to_api_key(row: &libsql::Row) -> Result<ApiKey> {
-    let id: i64 = row
-        .get(0)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let user_id: i64 = row
-        .get(1)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let key_prefix: String = row
-        .get(2)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let name: String = row
-        .get(3)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let scopes_str: String = row
-        .get(4)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let rate_limit: i32 = row
-        .get(5)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let is_active_int: i32 = row
-        .get(6)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let agent_id: Option<i64> = row
-        .get(7)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let last_used_at: Option<String> = row
-        .get(8)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let expires_at: Option<String> = row
-        .get(9)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
-    let created_at: String = row
-        .get(10)
-        .map_err(|e| crate::EngError::Internal(e.to_string()))?;
+fn row_to_api_key_rusqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> {
+    let id: i64 = row.get(0)?;
+    let user_id: i64 = row.get(1)?;
+    let key_prefix: String = row.get(2)?;
+    let name: String = row.get(3)?;
+    let scopes_str: String = row.get(4)?;
+    let rate_limit: i32 = row.get(5)?;
+    let is_active_int: i32 = row.get(6)?;
+    let agent_id: Option<i64> = row.get(7)?;
+    let last_used_at: Option<String> = row.get(8)?;
+    let expires_at: Option<String> = row.get(9)?;
+    let created_at: String = row.get(10)?;
 
     Ok(ApiKey {
         id,

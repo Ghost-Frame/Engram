@@ -22,7 +22,7 @@ pub async fn run(listen: &str, db_path: &str, master_password: &str) -> anyhow::
     let db = Database::connect(db_path).await?;
 
     // Run migrations
-    run_migrations(&db.conn).await?;
+    db.write(|conn| run_migrations(conn)).await?;
 
     // Derive master key from password (user_id 1 = admin)
     let master_key = derive_key(1, master_password.as_bytes(), None);

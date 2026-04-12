@@ -139,83 +139,91 @@ pub struct LoomStats {
 }
 
 // ---------------------------------------------------------------------------
+// Error helper
+// ---------------------------------------------------------------------------
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Row mapping helpers
 // ---------------------------------------------------------------------------
 
-fn row_to_workflow(row: &libsql::Row) -> Result<Workflow> {
-    let steps_str: String = row.get(3)?;
+fn row_to_workflow(row: &rusqlite::Row<'_>) -> Result<Workflow> {
+    let steps_str: String = row.get(3).map_err(rusqlite_to_eng_error)?;
     let steps: serde_json::Value = serde_json::from_str(&steps_str)?;
     Ok(Workflow {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        description: row.get(2)?,
+        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+        name: row.get(1).map_err(rusqlite_to_eng_error)?,
+        description: row.get(2).map_err(rusqlite_to_eng_error)?,
         steps,
-        user_id: row.get(4)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
+        user_id: row.get(4).map_err(rusqlite_to_eng_error)?,
+        created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
+        updated_at: row.get(6).map_err(rusqlite_to_eng_error)?,
     })
 }
 
-fn row_to_run(row: &libsql::Row) -> Result<Run> {
-    let input_str: String = row.get(3)?;
-    let output_str: String = row.get(4)?;
+fn row_to_run(row: &rusqlite::Row<'_>) -> Result<Run> {
+    let input_str: String = row.get(3).map_err(rusqlite_to_eng_error)?;
+    let output_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let input: serde_json::Value = serde_json::from_str(&input_str)?;
     let output: serde_json::Value = serde_json::from_str(&output_str)?;
     Ok(Run {
-        id: row.get(0)?,
-        workflow_id: row.get(1)?,
-        status: row.get(2)?,
+        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+        workflow_id: row.get(1).map_err(rusqlite_to_eng_error)?,
+        status: row.get(2).map_err(rusqlite_to_eng_error)?,
         input,
         output,
-        error: row.get(5)?,
-        user_id: row.get(6)?,
-        started_at: row.get(7)?,
-        completed_at: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        error: row.get(5).map_err(rusqlite_to_eng_error)?,
+        user_id: row.get(6).map_err(rusqlite_to_eng_error)?,
+        started_at: row.get(7).map_err(rusqlite_to_eng_error)?,
+        completed_at: row.get(8).map_err(rusqlite_to_eng_error)?,
+        created_at: row.get(9).map_err(rusqlite_to_eng_error)?,
+        updated_at: row.get(10).map_err(rusqlite_to_eng_error)?,
     })
 }
 
-fn row_to_step(row: &libsql::Row) -> Result<Step> {
-    let config_str: String = row.get(4)?;
-    let input_str: String = row.get(6)?;
-    let output_str: String = row.get(7)?;
-    let depends_on_str: String = row.get(9)?;
+fn row_to_step(row: &rusqlite::Row<'_>) -> Result<Step> {
+    let config_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
+    let input_str: String = row.get(6).map_err(rusqlite_to_eng_error)?;
+    let output_str: String = row.get(7).map_err(rusqlite_to_eng_error)?;
+    let depends_on_str: String = row.get(9).map_err(rusqlite_to_eng_error)?;
     let config: serde_json::Value = serde_json::from_str(&config_str)?;
     let input: serde_json::Value = serde_json::from_str(&input_str)?;
     let output: serde_json::Value = serde_json::from_str(&output_str)?;
     let depends_on: serde_json::Value = serde_json::from_str(&depends_on_str)?;
     Ok(Step {
-        id: row.get(0)?,
-        run_id: row.get(1)?,
-        name: row.get(2)?,
-        step_type: row.get(3)?,
+        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+        run_id: row.get(1).map_err(rusqlite_to_eng_error)?,
+        name: row.get(2).map_err(rusqlite_to_eng_error)?,
+        step_type: row.get(3).map_err(rusqlite_to_eng_error)?,
         config,
-        status: row.get(5)?,
+        status: row.get(5).map_err(rusqlite_to_eng_error)?,
         input,
         output,
-        error: row.get(8)?,
+        error: row.get(8).map_err(rusqlite_to_eng_error)?,
         depends_on,
-        retry_count: row.get(10)?,
-        max_retries: row.get(11)?,
-        timeout_ms: row.get(12)?,
-        started_at: row.get(13)?,
-        completed_at: row.get(14)?,
-        created_at: row.get(15)?,
+        retry_count: row.get(10).map_err(rusqlite_to_eng_error)?,
+        max_retries: row.get(11).map_err(rusqlite_to_eng_error)?,
+        timeout_ms: row.get(12).map_err(rusqlite_to_eng_error)?,
+        started_at: row.get(13).map_err(rusqlite_to_eng_error)?,
+        completed_at: row.get(14).map_err(rusqlite_to_eng_error)?,
+        created_at: row.get(15).map_err(rusqlite_to_eng_error)?,
     })
 }
 
-fn row_to_log_entry(row: &libsql::Row) -> Result<LogEntry> {
-    let data_str: String = row.get(5)?;
+fn row_to_log_entry(row: &rusqlite::Row<'_>) -> Result<LogEntry> {
+    let data_str: String = row.get(5).map_err(rusqlite_to_eng_error)?;
     let data: serde_json::Value = serde_json::from_str(&data_str)?;
     Ok(LogEntry {
-        id: row.get(0)?,
-        run_id: row.get(1)?,
-        step_id: row.get(2)?,
-        level: row.get(3)?,
-        message: row.get(4)?,
+        id: row.get(0).map_err(rusqlite_to_eng_error)?,
+        run_id: row.get(1).map_err(rusqlite_to_eng_error)?,
+        step_id: row.get(2).map_err(rusqlite_to_eng_error)?,
+        level: row.get(3).map_err(rusqlite_to_eng_error)?,
+        message: row.get(4).map_err(rusqlite_to_eng_error)?,
         data,
-        created_at: row.get(6)?,
+        created_at: row.get(6).map_err(rusqlite_to_eng_error)?,
     })
 }
 
@@ -300,14 +308,18 @@ pub async fn add_log(
 ) -> Result<()> {
     let data_str =
         serde_json::to_string(&data.unwrap_or(serde_json::Value::Object(serde_json::Map::new())))?;
-    db.conn
-        .execute(
+    let level = level.to_string();
+    let message = message.to_string();
+    db.write(move |conn| {
+        conn.execute(
             "INSERT INTO loom_run_logs (run_id, step_id, level, message, data)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            libsql::params![run_id, step_id, level, message, data_str],
+            rusqlite::params![run_id, step_id, level, message, data_str],
         )
-        .await?;
-    Ok(())
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
 }
 
 pub async fn get_logs(
@@ -320,55 +332,72 @@ pub async fn get_logs(
 ) -> Result<Vec<LogEntry>> {
     // Verify run ownership
     get_run(db, run_id, user_id).await?;
-    let mut rows = if let Some(sid) = step_id {
-        if let Some(lvl) = level {
-            db.conn
-                .query(
-                    "SELECT id, run_id, step_id, level, message, data, created_at
-                     FROM loom_run_logs
-                     WHERE run_id = ?1 AND step_id = ?2 AND level = ?3
-                     ORDER BY id ASC LIMIT ?4",
-                    libsql::params![run_id, sid, lvl, limit as i64],
-                )
-                .await?
-        } else {
-            db.conn
-                .query(
-                    "SELECT id, run_id, step_id, level, message, data, created_at
-                     FROM loom_run_logs
-                     WHERE run_id = ?1 AND step_id = ?2
-                     ORDER BY id ASC LIMIT ?3",
-                    libsql::params![run_id, sid, limit as i64],
-                )
-                .await?
-        }
-    } else if let Some(lvl) = level {
-        db.conn
-            .query(
-                "SELECT id, run_id, step_id, level, message, data, created_at
-                 FROM loom_run_logs
-                 WHERE run_id = ?1 AND level = ?2
-                 ORDER BY id ASC LIMIT ?3",
-                libsql::params![run_id, lvl, limit as i64],
-            )
-            .await?
-    } else {
-        db.conn
-            .query(
-                "SELECT id, run_id, step_id, level, message, data, created_at
-                 FROM loom_run_logs
-                 WHERE run_id = ?1
-                 ORDER BY id ASC LIMIT ?2",
-                libsql::params![run_id, limit as i64],
-            )
-            .await?
-    };
 
-    let mut entries = Vec::new();
-    while let Some(row) = rows.next().await? {
-        entries.push(row_to_log_entry(&row)?);
-    }
-    Ok(entries)
+    let level = level.map(|s| s.to_string());
+    db.read(move |conn| {
+        let limit_i64 = limit as i64;
+        let mut stmt;
+        let mut rows;
+
+        if let Some(sid) = step_id {
+            if let Some(ref lvl) = level {
+                stmt = conn
+                    .prepare(
+                        "SELECT id, run_id, step_id, level, message, data, created_at
+                         FROM loom_run_logs
+                         WHERE run_id = ?1 AND step_id = ?2 AND level = ?3
+                         ORDER BY id ASC LIMIT ?4",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                rows = stmt
+                    .query(rusqlite::params![run_id, sid, lvl, limit_i64])
+                    .map_err(rusqlite_to_eng_error)?;
+            } else {
+                stmt = conn
+                    .prepare(
+                        "SELECT id, run_id, step_id, level, message, data, created_at
+                         FROM loom_run_logs
+                         WHERE run_id = ?1 AND step_id = ?2
+                         ORDER BY id ASC LIMIT ?3",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                rows = stmt
+                    .query(rusqlite::params![run_id, sid, limit_i64])
+                    .map_err(rusqlite_to_eng_error)?;
+            }
+        } else if let Some(ref lvl) = level {
+            stmt = conn
+                .prepare(
+                    "SELECT id, run_id, step_id, level, message, data, created_at
+                     FROM loom_run_logs
+                     WHERE run_id = ?1 AND level = ?2
+                     ORDER BY id ASC LIMIT ?3",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            rows = stmt
+                .query(rusqlite::params![run_id, lvl, limit_i64])
+                .map_err(rusqlite_to_eng_error)?;
+        } else {
+            stmt = conn
+                .prepare(
+                    "SELECT id, run_id, step_id, level, message, data, created_at
+                     FROM loom_run_logs
+                     WHERE run_id = ?1
+                     ORDER BY id ASC LIMIT ?2",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            rows = stmt
+                .query(rusqlite::params![run_id, limit_i64])
+                .map_err(rusqlite_to_eng_error)?;
+        }
+
+        let mut entries = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            entries.push(row_to_log_entry(row)?);
+        }
+        Ok(entries)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -391,89 +420,105 @@ pub async fn create_workflow(db: &Database, req: CreateWorkflowRequest) -> Resul
         .user_id
         .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let steps_json = serde_json::to_string(&req.steps)?;
+    let name = req.name.clone();
+    let description = req.description.clone();
 
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "INSERT INTO loom_workflows (name, description, steps, user_id)
              VALUES (?1, ?2, ?3, ?4)",
-            libsql::params![req.name, req.description, steps_json, user_id],
+            rusqlite::params![name, description, steps_json, user_id],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
 
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, name, description, steps, user_id, created_at, updated_at
-             FROM loom_workflows
-             WHERE rowid = last_insert_rowid()",
-            (),
-        )
-        .await?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, description, steps, user_id, created_at, updated_at
+                 FROM loom_workflows
+                 WHERE rowid = last_insert_rowid()",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
 
-    if let Some(row) = rows.next().await? {
-        let wf = row_to_workflow(&row)?;
-        info!("created workflow '{}' id={}", wf.name, wf.id);
-        Ok(wf)
-    } else {
-        Err(EngError::Internal(
-            "failed to fetch created workflow".into(),
-        ))
-    }
+        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let wf = row_to_workflow(row)?;
+            info!("created workflow '{}' id={}", wf.name, wf.id);
+            Ok(wf)
+        } else {
+            Err(EngError::Internal(
+                "failed to fetch created workflow".into(),
+            ))
+        }
+    })
+    .await
 }
 
 pub async fn get_workflow(db: &Database, id: i64, user_id: i64) -> Result<Workflow> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, name, description, steps, user_id, created_at, updated_at
-             FROM loom_workflows
-             WHERE id = ?1 AND user_id = ?2",
-            libsql::params![id, user_id],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, description, steps, user_id, created_at, updated_at
+                 FROM loom_workflows
+                 WHERE id = ?1 AND user_id = ?2",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
 
-    if let Some(row) = rows.next().await? {
-        Ok(row_to_workflow(&row)?)
-    } else {
-        Err(EngError::NotFound(format!("workflow {}", id)))
-    }
+        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            Ok(row_to_workflow(row)?)
+        } else {
+            Err(EngError::NotFound(format!("workflow {}", id)))
+        }
+    })
+    .await
 }
 
 pub async fn get_workflow_by_name(db: &Database, name: &str, user_id: i64) -> Result<Workflow> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, name, description, steps, user_id, created_at, updated_at
-             FROM loom_workflows
-             WHERE name = ?1 AND user_id = ?2",
-            libsql::params![name, user_id],
-        )
-        .await?;
+    let name = name.to_string();
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, description, steps, user_id, created_at, updated_at
+                 FROM loom_workflows
+                 WHERE name = ?1 AND user_id = ?2",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![name, user_id])
+            .map_err(rusqlite_to_eng_error)?;
 
-    if let Some(row) = rows.next().await? {
-        Ok(row_to_workflow(&row)?)
-    } else {
-        Err(EngError::NotFound(format!("workflow '{}'", name)))
-    }
+        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            Ok(row_to_workflow(row)?)
+        } else {
+            Err(EngError::NotFound(format!("workflow '{}'", name)))
+        }
+    })
+    .await
 }
 
 pub async fn list_workflows(db: &Database, user_id: i64) -> Result<Vec<Workflow>> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, name, description, steps, user_id, created_at, updated_at
-             FROM loom_workflows
-             WHERE user_id = ?1
-             ORDER BY name ASC",
-            libsql::params![user_id],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, description, steps, user_id, created_at, updated_at
+                 FROM loom_workflows
+                 WHERE user_id = ?1
+                 ORDER BY name ASC",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut workflows = Vec::new();
-    while let Some(row) = rows.next().await? {
-        workflows.push(row_to_workflow(&row)?);
-    }
-    Ok(workflows)
+        let mut workflows = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            workflows.push(row_to_workflow(row)?);
+        }
+        Ok(workflows)
+    })
+    .await
 }
 
 pub async fn update_workflow(
@@ -527,65 +572,54 @@ pub async fn update_workflow(
         "UPDATE loom_workflows SET {set_clause} WHERE id = ?{id_param} AND user_id = ?{user_id_param}"
     );
 
-    // Execute with the right combination of params
-    match (&req.name, &req.description, &req.steps) {
-        (Some(n), Some(d), Some(s)) => {
-            let steps_json = serde_json::to_string(s)?;
-            db.conn
-                .execute(
-                    &sql,
-                    libsql::params![n.clone(), d.clone(), steps_json, id, user_id],
-                )
-                .await?;
+    // Serialize steps if present
+    let steps_json = req
+        .steps
+        .as_ref()
+        .map(|s| serde_json::to_string(s))
+        .transpose()?;
+
+    let name = req.name.clone();
+    let description = req.description.clone();
+
+    db.write(move |conn| {
+        // Build params as boxed ToSql values
+        let mut params_dyn: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(ref n) = name {
+            params_dyn.push(Box::new(n.clone()));
         }
-        (Some(n), Some(d), None) => {
-            db.conn
-                .execute(&sql, libsql::params![n.clone(), d.clone(), id, user_id])
-                .await?;
+        if let Some(ref d) = description {
+            params_dyn.push(Box::new(d.clone()));
         }
-        (Some(n), None, Some(s)) => {
-            let steps_json = serde_json::to_string(s)?;
-            db.conn
-                .execute(&sql, libsql::params![n.clone(), steps_json, id, user_id])
-                .await?;
+        if let Some(ref sj) = steps_json {
+            params_dyn.push(Box::new(sj.clone()));
         }
-        (None, Some(d), Some(s)) => {
-            let steps_json = serde_json::to_string(s)?;
-            db.conn
-                .execute(&sql, libsql::params![d.clone(), steps_json, id, user_id])
-                .await?;
-        }
-        (Some(n), None, None) => {
-            db.conn
-                .execute(&sql, libsql::params![n.clone(), id, user_id])
-                .await?;
-        }
-        (None, Some(d), None) => {
-            db.conn
-                .execute(&sql, libsql::params![d.clone(), id, user_id])
-                .await?;
-        }
-        (None, None, Some(s)) => {
-            let steps_json = serde_json::to_string(s)?;
-            db.conn
-                .execute(&sql, libsql::params![steps_json, id, user_id])
-                .await?;
-        }
-        (None, None, None) => unreachable!(),
-    }
+        params_dyn.push(Box::new(id));
+        params_dyn.push(Box::new(user_id));
+
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params_dyn.iter().map(|b| b.as_ref()).collect();
+
+        conn.execute(&sql, params_refs.as_slice())
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await?;
 
     get_workflow(db, id, user_id).await
 }
 
 pub async fn delete_workflow(db: &Database, id: i64, user_id: i64) -> Result<bool> {
-    let affected = db
-        .conn
-        .execute(
-            "DELETE FROM loom_workflows WHERE id = ?1 AND user_id = ?2",
-            libsql::params![id, user_id],
-        )
-        .await?;
-    Ok(affected > 0)
+    db.write(move |conn| {
+        let affected = conn
+            .execute(
+                "DELETE FROM loom_workflows WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(affected > 0)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -605,72 +639,81 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
     // SECURITY: previously any caller could trigger runs against another
     // tenant's workflow by supplying its id. Filter by user_id so cross-tenant
     // workflow execution returns NotFound.
-    let mut wf_rows = db
-        .conn
-        .query(
-            "SELECT id, name, description, steps, user_id, created_at, updated_at
-             FROM loom_workflows WHERE id = ?1 AND user_id = ?2",
-            libsql::params![req.workflow_id, user_id],
-        )
-        .await?;
-
-    let workflow = if let Some(row) = wf_rows.next().await? {
-        row_to_workflow(&row)?
-    } else {
-        return Err(EngError::NotFound(format!("workflow {}", req.workflow_id)));
-    };
+    let workflow_id = req.workflow_id;
+    let workflow = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, name, description, steps, user_id, created_at, updated_at
+                     FROM loom_workflows WHERE id = ?1 AND user_id = ?2",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(rusqlite::params![workflow_id, user_id])
+                .map_err(rusqlite_to_eng_error)?;
+            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                Ok(Some(row_to_workflow(row)?))
+            } else {
+                Ok(None)
+            }
+        })
+        .await?
+        .ok_or_else(|| EngError::NotFound(format!("workflow {}", req.workflow_id)))?;
 
     let step_defs: Vec<StepDef> = serde_json::from_value(workflow.steps.clone())?;
     if step_defs.is_empty() {
         return Err(EngError::InvalidInput("workflow has no steps".into()));
     }
 
-    // Insert run
-    db.conn
-        .execute(
-            "INSERT INTO loom_runs (workflow_id, status, input, output, user_id)
-             VALUES (?1, 'pending', ?2, '{}', ?3)",
-            libsql::params![req.workflow_id, input_str, user_id],
-        )
-        .await?;
+    // Insert run and fetch it back
+    let run = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO loom_runs (workflow_id, status, input, output, user_id)
+                 VALUES (?1, 'pending', ?2, '{}', ?3)",
+                rusqlite::params![workflow_id, input_str, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut run_rows = db
-        .conn
-        .query(
-            "SELECT id, workflow_id, status, input, output, error, user_id,
-                    started_at, completed_at, created_at, updated_at
-             FROM loom_runs WHERE rowid = last_insert_rowid()",
-            (),
-        )
-        .await?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, workflow_id, status, input, output, error, user_id,
+                            started_at, completed_at, created_at, updated_at
+                     FROM loom_runs WHERE rowid = last_insert_rowid()",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
 
-    let run = if let Some(row) = run_rows.next().await? {
-        row_to_run(&row)?
-    } else {
-        return Err(EngError::Internal("failed to fetch created run".into()));
-    };
+            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                Ok(row_to_run(row)?)
+            } else {
+                Err(EngError::Internal("failed to fetch created run".into()))
+            }
+        })
+        .await?;
 
     // Insert steps from workflow definition
-    for step_def in &step_defs {
-        let config_str = serde_json::to_string(
-            &step_def
-                .config
-                .clone()
-                .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
-        )?;
-        let depends_on_str =
-            serde_json::to_string(&step_def.depends_on.clone().unwrap_or_default())?;
-        let max_retries = step_def.max_retries.unwrap_or(3);
-        let timeout_ms = step_def.timeout_ms.unwrap_or(30000);
+    let run_id = run.id;
+    db.write(move |conn| {
+        for step_def in &step_defs {
+            let config_str = serde_json::to_string(
+                &step_def
+                    .config
+                    .clone()
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
+            )?;
+            let depends_on_str =
+                serde_json::to_string(&step_def.depends_on.clone().unwrap_or_default())?;
+            let max_retries = step_def.max_retries.unwrap_or(3);
+            let timeout_ms = step_def.timeout_ms.unwrap_or(30000);
 
-        db.conn
-            .execute(
+            conn.execute(
                 "INSERT INTO loom_steps
                     (run_id, name, type, config, status, input, output,
                      depends_on, retry_count, max_retries, timeout_ms)
                  VALUES (?1, ?2, ?3, ?4, 'pending', '{}', '{}', ?5, 0, ?6, ?7)",
-                libsql::params![
-                    run.id,
+                rusqlite::params![
+                    run_id,
                     step_def.name.clone(),
                     step_def.step_type.clone(),
                     config_str,
@@ -679,8 +722,11 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
                     timeout_ms
                 ],
             )
-            .await?;
-    }
+            .map_err(rusqlite_to_eng_error)?;
+        }
+        Ok(())
+    })
+    .await?;
 
     add_log(
         db,
@@ -697,22 +743,26 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
 }
 
 pub async fn get_run(db: &Database, id: i64, user_id: i64) -> Result<Run> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, workflow_id, status, input, output, error, user_id,
-                    started_at, completed_at, created_at, updated_at
-             FROM loom_runs
-             WHERE id = ?1 AND user_id = ?2",
-            libsql::params![id, user_id],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, workflow_id, status, input, output, error, user_id,
+                        started_at, completed_at, created_at, updated_at
+                 FROM loom_runs
+                 WHERE id = ?1 AND user_id = ?2",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
 
-    if let Some(row) = rows.next().await? {
-        Ok(row_to_run(&row)?)
-    } else {
-        Err(EngError::NotFound(format!("run {}", id)))
-    }
+        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            Ok(row_to_run(row)?)
+        } else {
+            Err(EngError::NotFound(format!("run {}", id)))
+        }
+    })
+    .await
 }
 
 pub async fn list_runs(
@@ -722,63 +772,78 @@ pub async fn list_runs(
     status: Option<&str>,
     limit: usize,
 ) -> Result<Vec<Run>> {
-    let mut runs = Vec::new();
+    let status = status.map(|s| s.to_string());
+    db.read(move |conn| {
+        let limit_i64 = limit as i64;
+        let mut stmt;
+        let mut rows;
 
-    let mut rows = match (workflow_id, status) {
-        (Some(wid), Some(st)) => {
-            db.conn
-                .query(
-                    "SELECT id, workflow_id, status, input, output, error, user_id,
-                        started_at, completed_at, created_at, updated_at
-                 FROM loom_runs
-                 WHERE user_id = ?1 AND workflow_id = ?2 AND status = ?3
-                 ORDER BY id DESC LIMIT ?4",
-                    libsql::params![user_id, wid, st, limit as i64],
-                )
-                .await?
+        match (workflow_id, &status) {
+            (Some(wid), Some(st)) => {
+                stmt = conn
+                    .prepare(
+                        "SELECT id, workflow_id, status, input, output, error, user_id,
+                            started_at, completed_at, created_at, updated_at
+                         FROM loom_runs
+                         WHERE user_id = ?1 AND workflow_id = ?2 AND status = ?3
+                         ORDER BY id DESC LIMIT ?4",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                rows = stmt
+                    .query(rusqlite::params![user_id, wid, st, limit_i64])
+                    .map_err(rusqlite_to_eng_error)?;
+            }
+            (Some(wid), None) => {
+                stmt = conn
+                    .prepare(
+                        "SELECT id, workflow_id, status, input, output, error, user_id,
+                            started_at, completed_at, created_at, updated_at
+                         FROM loom_runs
+                         WHERE user_id = ?1 AND workflow_id = ?2
+                         ORDER BY id DESC LIMIT ?3",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                rows = stmt
+                    .query(rusqlite::params![user_id, wid, limit_i64])
+                    .map_err(rusqlite_to_eng_error)?;
+            }
+            (None, Some(st)) => {
+                stmt = conn
+                    .prepare(
+                        "SELECT id, workflow_id, status, input, output, error, user_id,
+                            started_at, completed_at, created_at, updated_at
+                         FROM loom_runs
+                         WHERE user_id = ?1 AND status = ?2
+                         ORDER BY id DESC LIMIT ?3",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                rows = stmt
+                    .query(rusqlite::params![user_id, st, limit_i64])
+                    .map_err(rusqlite_to_eng_error)?;
+            }
+            (None, None) => {
+                stmt = conn
+                    .prepare(
+                        "SELECT id, workflow_id, status, input, output, error, user_id,
+                            started_at, completed_at, created_at, updated_at
+                         FROM loom_runs
+                         WHERE user_id = ?1
+                         ORDER BY id DESC LIMIT ?2",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                rows = stmt
+                    .query(rusqlite::params![user_id, limit_i64])
+                    .map_err(rusqlite_to_eng_error)?;
+            }
         }
-        (Some(wid), None) => {
-            db.conn
-                .query(
-                    "SELECT id, workflow_id, status, input, output, error, user_id,
-                        started_at, completed_at, created_at, updated_at
-                 FROM loom_runs
-                 WHERE user_id = ?1 AND workflow_id = ?2
-                 ORDER BY id DESC LIMIT ?3",
-                    libsql::params![user_id, wid, limit as i64],
-                )
-                .await?
-        }
-        (None, Some(st)) => {
-            db.conn
-                .query(
-                    "SELECT id, workflow_id, status, input, output, error, user_id,
-                        started_at, completed_at, created_at, updated_at
-                 FROM loom_runs
-                 WHERE user_id = ?1 AND status = ?2
-                 ORDER BY id DESC LIMIT ?3",
-                    libsql::params![user_id, st, limit as i64],
-                )
-                .await?
-        }
-        (None, None) => {
-            db.conn
-                .query(
-                    "SELECT id, workflow_id, status, input, output, error, user_id,
-                        started_at, completed_at, created_at, updated_at
-                 FROM loom_runs
-                 WHERE user_id = ?1
-                 ORDER BY id DESC LIMIT ?2",
-                    libsql::params![user_id, limit as i64],
-                )
-                .await?
-        }
-    };
 
-    while let Some(row) = rows.next().await? {
-        runs.push(row_to_run(&row)?);
-    }
-    Ok(runs)
+        let mut runs = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            runs.push(row_to_run(row)?);
+        }
+        Ok(runs)
+    })
+    .await
 }
 
 pub async fn cancel_run(db: &Database, id: i64, user_id: i64) -> Result<bool> {
@@ -789,25 +854,27 @@ pub async fn cancel_run(db: &Database, id: i64, user_id: i64) -> Result<bool> {
         return Ok(false);
     }
 
-    // Mark run cancelled
-    db.conn
-        .execute(
+    // Mark run cancelled and skip pending/running steps
+    db.write(move |conn| {
+        conn.execute(
             "UPDATE loom_runs
              SET status = 'cancelled', updated_at = datetime('now')
              WHERE id = ?1",
-            libsql::params![id],
+            rusqlite::params![id],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
 
-    // Skip all pending and running steps
-    db.conn
-        .execute(
+        conn.execute(
             "UPDATE loom_steps
              SET status = 'skipped'
              WHERE run_id = ?1 AND status IN ('pending', 'running')",
-            libsql::params![id],
+            rusqlite::params![id],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
+
+        Ok(())
+    })
+    .await?;
 
     add_log(db, id, None, "info", "run cancelled", None).await?;
     info!("cancelled run {}", id);
@@ -821,44 +888,52 @@ pub async fn cancel_run(db: &Database, id: i64, user_id: i64) -> Result<bool> {
 pub async fn get_steps(db: &Database, run_id: i64, user_id: i64) -> Result<Vec<Step>> {
     // Verify run ownership
     get_run(db, run_id, user_id).await?;
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, run_id, name, type, config, status, input, output,
-                    error, depends_on, retry_count, max_retries, timeout_ms,
-                    started_at, completed_at, created_at
-             FROM loom_steps
-             WHERE run_id = ?1
-             ORDER BY id ASC",
-            libsql::params![run_id],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, run_id, name, type, config, status, input, output,
+                        error, depends_on, retry_count, max_retries, timeout_ms,
+                        started_at, completed_at, created_at
+                 FROM loom_steps
+                 WHERE run_id = ?1
+                 ORDER BY id ASC",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![run_id])
+            .map_err(rusqlite_to_eng_error)?;
 
-    let mut steps = Vec::new();
-    while let Some(row) = rows.next().await? {
-        steps.push(row_to_step(&row)?);
-    }
-    Ok(steps)
+        let mut steps = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            steps.push(row_to_step(row)?);
+        }
+        Ok(steps)
+    })
+    .await
 }
 
 pub async fn get_step(db: &Database, id: i64) -> Result<Step> {
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, run_id, name, type, config, status, input, output,
-                    error, depends_on, retry_count, max_retries, timeout_ms,
-                    started_at, completed_at, created_at
-             FROM loom_steps
-             WHERE id = ?1",
-            libsql::params![id],
-        )
-        .await?;
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, run_id, name, type, config, status, input, output,
+                        error, depends_on, retry_count, max_retries, timeout_ms,
+                        started_at, completed_at, created_at
+                 FROM loom_steps
+                 WHERE id = ?1",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![id])
+            .map_err(rusqlite_to_eng_error)?;
 
-    if let Some(row) = rows.next().await? {
-        Ok(row_to_step(&row)?)
-    } else {
-        Err(EngError::NotFound(format!("step {}", id)))
-    }
+        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            Ok(row_to_step(row)?)
+        } else {
+            Err(EngError::NotFound(format!("step {}", id)))
+        }
+    })
+    .await
 }
 
 pub async fn complete_step(
@@ -880,15 +955,18 @@ pub async fn complete_step(
 
     let output_str = serde_json::to_string(&output)?;
 
-    db.conn
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "UPDATE loom_steps
              SET status = 'completed', output = ?1,
                  completed_at = datetime('now')
              WHERE id = ?2",
-            libsql::params![output_str, step_id],
+            rusqlite::params![output_str, step_id],
         )
-        .await?;
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await?;
 
     add_log(
         db,
@@ -910,17 +988,23 @@ pub async fn fail_step(db: &Database, step_id: i64, error: &str, user_id: i64) -
     // Verify run ownership
     get_run(db, step.run_id, user_id).await?;
 
+    let error = error.to_string();
+
     if step.retry_count < step.max_retries {
         // Retry -- reset to pending with incremented count
-        db.conn
-            .execute(
+        let err_clone = error.clone();
+        db.write(move |conn| {
+            conn.execute(
                 "UPDATE loom_steps
                  SET status = 'pending', retry_count = retry_count + 1,
                      error = ?1, started_at = NULL
                  WHERE id = ?2",
-                libsql::params![error, step_id],
+                rusqlite::params![err_clone, step_id],
             )
-            .await?;
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
+        .await?;
 
         add_log(
             db,
@@ -941,26 +1025,32 @@ pub async fn fail_step(db: &Database, step_id: i64, error: &str, user_id: i64) -
         advance_run(db, step.run_id).await?;
     } else {
         // Max retries exhausted -- fail step and run
-        db.conn
-            .execute(
+        let err_step = error.clone();
+        let err_run = error.clone();
+        let run_id = step.run_id;
+        db.write(move |conn| {
+            conn.execute(
                 "UPDATE loom_steps
                  SET status = 'failed', error = ?1,
                      completed_at = datetime('now')
                  WHERE id = ?2",
-                libsql::params![error, step_id],
+                rusqlite::params![err_step, step_id],
             )
-            .await?;
+            .map_err(rusqlite_to_eng_error)?;
 
-        db.conn
-            .execute(
+            conn.execute(
                 "UPDATE loom_runs
                  SET status = 'failed', error = ?1,
                      completed_at = datetime('now'),
                      updated_at = datetime('now')
                  WHERE id = ?2",
-                libsql::params![error, step.run_id],
+                rusqlite::params![err_run, run_id],
             )
-            .await?;
+            .map_err(rusqlite_to_eng_error)?;
+
+            Ok(())
+        })
+        .await?;
 
         add_log(
             db,
@@ -987,21 +1077,27 @@ pub async fn fail_step(db: &Database, step_id: i64, error: &str, user_id: i64) -
 
 pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
     // Fetch run without user_id check (internal function)
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, workflow_id, status, input, output, error, user_id,
-                    started_at, completed_at, created_at, updated_at
-             FROM loom_runs WHERE id = ?1",
-            libsql::params![run_id],
-        )
-        .await?;
+    let run = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, workflow_id, status, input, output, error, user_id,
+                            started_at, completed_at, created_at, updated_at
+                     FROM loom_runs WHERE id = ?1",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(rusqlite::params![run_id])
+                .map_err(rusqlite_to_eng_error)?;
 
-    let run = if let Some(row) = rows.next().await? {
-        row_to_run(&row)?
-    } else {
-        return Err(EngError::NotFound(format!("run {}", run_id)));
-    };
+            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                Ok(Some(row_to_run(row)?))
+            } else {
+                Ok(None)
+            }
+        })
+        .await?
+        .ok_or_else(|| EngError::NotFound(format!("run {}", run_id)))?;
 
     // Check not terminal
     if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
@@ -1010,15 +1106,18 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
 
     // If still pending, mark as running
     if run.status == "pending" {
-        db.conn
-            .execute(
+        db.write(move |conn| {
+            conn.execute(
                 "UPDATE loom_runs
                  SET status = 'running', started_at = datetime('now'),
                      updated_at = datetime('now')
                  WHERE id = ?1",
-                libsql::params![run_id],
+                rusqlite::params![run_id],
             )
-            .await?;
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
+        .await?;
     }
 
     let steps = get_steps(db, run_id, run.user_id).await?;
@@ -1042,16 +1141,19 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
 
         let output_str = serde_json::to_string(&last_output)?;
 
-        db.conn
-            .execute(
+        db.write(move |conn| {
+            conn.execute(
                 "UPDATE loom_runs
                  SET status = 'completed', output = ?1,
                      completed_at = datetime('now'),
                      updated_at = datetime('now')
                  WHERE id = ?2",
-                libsql::params![output_str, run_id],
+                rusqlite::params![output_str, run_id],
             )
-            .await?;
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
+        .await?;
 
         add_log(db, run_id, None, "info", "run completed", None).await?;
         info!("run {} completed", run_id);
@@ -1121,16 +1223,20 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
     // Process ready steps
     for ready in ready_steps {
         let input_str = serde_json::to_string(&ready.merged_input)?;
+        let ready_id = ready.id;
 
-        db.conn
-            .execute(
+        db.write(move |conn| {
+            conn.execute(
                 "UPDATE loom_steps
                  SET status = 'running', input = ?1,
                      started_at = datetime('now')
                  WHERE id = ?2",
-                libsql::params![input_str, ready.id],
+                rusqlite::params![input_str, ready_id],
             )
-            .await?;
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
+        .await?;
 
         add_log(
             db,
@@ -1197,6 +1303,7 @@ pub async fn execute_transform_step(
                 let source_path = source_path_val.as_str().ok_or_else(|| {
                     format!("mapping value for '{}' must be a string", target_path)
                 })?;
+
                 let value = resolve_dot_path(input, source_path);
                 set_dot_path(&mut output, target_path, value);
             }
@@ -1247,50 +1354,56 @@ pub async fn execute_transform_step(
 
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats> {
     let (workflows, runs, active_runs, steps) = if let Some(uid) = user_id {
-        let mut r = db
-            .conn
-            .query(
-                "SELECT
-                    (SELECT COUNT(*) FROM loom_workflows WHERE user_id = ?1),
-                    (SELECT COUNT(*) FROM loom_runs WHERE user_id = ?1),
-                    (SELECT COUNT(*) FROM loom_runs WHERE user_id = ?1 AND status IN ('pending','running')),
-                    (SELECT COUNT(*) FROM loom_steps
-                     WHERE run_id IN (SELECT id FROM loom_runs WHERE user_id = ?1))",
-                libsql::params![uid],
-            )
-            .await?;
+        db.read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        (SELECT COUNT(*) FROM loom_workflows WHERE user_id = ?1),
+                        (SELECT COUNT(*) FROM loom_runs WHERE user_id = ?1),
+                        (SELECT COUNT(*) FROM loom_runs WHERE user_id = ?1 AND status IN ('pending','running')),
+                        (SELECT COUNT(*) FROM loom_steps
+                         WHERE run_id IN (SELECT id FROM loom_runs WHERE user_id = ?1))",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(rusqlite::params![uid])
+                .map_err(rusqlite_to_eng_error)?;
 
-        if let Some(row) = r.next().await? {
-            let w: i64 = row.get(0)?;
-            let ru: i64 = row.get(1)?;
-            let ar: i64 = row.get(2)?;
-            let s: i64 = row.get(3)?;
-            (w, ru, ar, s)
-        } else {
-            (0, 0, 0, 0)
-        }
+            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                let w: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+                let ru: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
+                let ar: i64 = row.get(2).map_err(rusqlite_to_eng_error)?;
+                let s: i64 = row.get(3).map_err(rusqlite_to_eng_error)?;
+                Ok((w, ru, ar, s))
+            } else {
+                Ok((0i64, 0i64, 0i64, 0i64))
+            }
+        })
+        .await?
     } else {
-        let mut r = db
-            .conn
-            .query(
-                "SELECT
-                    (SELECT COUNT(*) FROM loom_workflows),
-                    (SELECT COUNT(*) FROM loom_runs),
-                    (SELECT COUNT(*) FROM loom_runs WHERE status IN ('pending','running')),
-                    (SELECT COUNT(*) FROM loom_steps)",
-                (),
-            )
-            .await?;
+        db.read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        (SELECT COUNT(*) FROM loom_workflows),
+                        (SELECT COUNT(*) FROM loom_runs),
+                        (SELECT COUNT(*) FROM loom_runs WHERE status IN ('pending','running')),
+                        (SELECT COUNT(*) FROM loom_steps)",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
 
-        if let Some(row) = r.next().await? {
-            let w: i64 = row.get(0)?;
-            let ru: i64 = row.get(1)?;
-            let ar: i64 = row.get(2)?;
-            let s: i64 = row.get(3)?;
-            (w, ru, ar, s)
-        } else {
-            (0, 0, 0, 0)
-        }
+            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                let w: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+                let ru: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
+                let ar: i64 = row.get(2).map_err(rusqlite_to_eng_error)?;
+                let s: i64 = row.get(3).map_err(rusqlite_to_eng_error)?;
+                Ok((w, ru, ar, s))
+            } else {
+                Ok((0i64, 0i64, 0i64, 0i64))
+            }
+        })
+        .await?
     };
 
     Ok(LoomStats {

@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::{EngError, Result};
-use libsql::params;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,19 +32,17 @@ pub async fn create_chain(
     description: Option<&str>,
     user_id: i64,
 ) -> Result<CausalChain> {
-    let conn = db.connection();
-    conn.execute(
-        "INSERT INTO causal_chains (root_memory_id, description, user_id) VALUES (?1, ?2, ?3)",
-        params![root_memory_id, description, user_id],
-    )
-    .await?;
-
-    let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = if let Some(row) = rows.next().await? {
-        row.get(0)?
-    } else {
-        0
-    };
+    let description_owned = description.map(|s| s.to_string());
+    let id = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO causal_chains (root_memory_id, description, user_id) VALUES (?1, ?2, ?3)",
+                params![root_memory_id, description_owned, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await?;
 
     Ok(CausalChain {
         id,
@@ -67,16 +65,22 @@ pub async fn add_link(
     order_index: i32,
     user_id: i64,
 ) -> Result<CausalLink> {
-    let conn = db.connection();
-
     // Verify chain belongs to caller
-    let mut chain_rows = conn
-        .query(
-            "SELECT id FROM causal_chains WHERE id = ?1 AND user_id = ?2",
-            params![chain_id, user_id],
-        )
+    let chain_exists = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT id FROM causal_chains WHERE id = ?1 AND user_id = ?2")
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let found = stmt
+                .query_map(params![chain_id, user_id], |_row| Ok(()))
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .next()
+                .is_some();
+            Ok(found)
+        })
         .await?;
-    if chain_rows.next().await?.is_none() {
+
+    if !chain_exists {
         return Err(EngError::NotFound(format!(
             "causal chain {} not found",
             chain_id
@@ -84,35 +88,39 @@ pub async fn add_link(
     }
 
     // Verify both memories belong to caller
-    let mut mem_rows = conn
-        .query(
-            "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0",
-            params![cause_memory_id, effect_memory_id, user_id],
-        )
+    let count: i64 = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0",
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let c: i64 = stmt
+                .query_row(params![cause_memory_id, effect_memory_id, user_id], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(c)
+        })
         .await?;
-    let count: i64 = if let Some(r) = mem_rows.next().await? {
-        r.get(0)?
-    } else {
-        0
-    };
+
     if count != 2 {
         return Err(EngError::NotFound(
             "one or more memories not found or not owned".into(),
         ));
     }
 
-    conn.execute(
-        "INSERT INTO causal_links (chain_id, cause_memory_id, effect_memory_id, strength, order_index) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![chain_id, cause_memory_id, effect_memory_id, strength, order_index],
-    ).await?;
-
-    let mut rows = conn.query("SELECT last_insert_rowid()", ()).await?;
-    let id: i64 = if let Some(row) = rows.next().await? {
-        row.get(0)?
-    } else {
-        0
-    };
+    let id = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO causal_links (chain_id, cause_memory_id, effect_memory_id, strength, order_index) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![chain_id, cause_memory_id, effect_memory_id, strength, order_index],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await?;
 
     Ok(CausalLink {
         id,
@@ -127,68 +135,81 @@ pub async fn add_link(
 
 /// Get a causal chain with all its links.
 pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<CausalChain> {
-    let conn = db.connection();
-
-    // Verify chain belongs to caller
-    let mut rows = conn
-        .query(
-            "SELECT id, root_memory_id, description, confidence, user_id, created_at \
-             FROM causal_chains WHERE id = ?1 AND user_id = ?2",
-            params![chain_id, user_id],
-        )
+    let mut chain = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, root_memory_id, description, confidence, user_id, created_at \
+                     FROM causal_chains WHERE id = ?1 AND user_id = ?2",
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt
+                .query_map(params![chain_id, user_id], |row| {
+                    Ok(CausalChain {
+                        id: row.get(0)?,
+                        root_memory_id: row.get(1)?,
+                        description: row.get(2)?,
+                        confidence: row.get(3)?,
+                        user_id: row.get(4)?,
+                        created_at: row.get(5)?,
+                        links: Vec::new(),
+                    })
+                })
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            rows.next()
+                .transpose()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .ok_or_else(|| EngError::NotFound(format!("causal chain {} not found", chain_id)))
+        })
         .await?;
 
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| EngError::NotFound(format!("causal chain {} not found", chain_id)))?;
-
-    let mut chain = CausalChain {
-        id: row.get(0)?,
-        root_memory_id: row.get(1)?,
-        description: row.get(2)?,
-        confidence: row.get(3)?,
-        user_id: row.get(4)?,
-        created_at: row.get(5)?,
-        links: Vec::new(),
-    };
-
     // Fetch links
-    let mut link_rows = conn.query(
-        "SELECT id, chain_id, cause_memory_id, effect_memory_id, strength, order_index, created_at \
-         FROM causal_links WHERE chain_id = ?1 ORDER BY order_index",
-        params![chain_id],
-    ).await?;
+    let links = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, chain_id, cause_memory_id, effect_memory_id, strength, order_index, created_at \
+                     FROM causal_links WHERE chain_id = ?1 ORDER BY order_index",
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![chain_id], |row| {
+                    Ok(CausalLink {
+                        id: row.get(0)?,
+                        chain_id: row.get(1)?,
+                        cause_memory_id: row.get(2)?,
+                        effect_memory_id: row.get(3)?,
+                        strength: row.get(4)?,
+                        order_index: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                })
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?;
 
-    while let Some(lr) = link_rows.next().await? {
-        chain.links.push(CausalLink {
-            id: lr.get(0)?,
-            chain_id: lr.get(1)?,
-            cause_memory_id: lr.get(2)?,
-            effect_memory_id: lr.get(3)?,
-            strength: lr.get(4)?,
-            order_index: lr.get(5)?,
-            created_at: lr.get(6)?,
-        });
-    }
-
+    chain.links = links;
     Ok(chain)
 }
 
 /// List causal chains for a user.
 pub async fn list_chains(db: &Database, user_id: i64, limit: usize) -> Result<Vec<CausalChain>> {
-    let conn = db.connection();
-    let mut rows = conn
-        .query(
-            "SELECT id FROM causal_chains WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
-            params![user_id, limit as i64],
-        )
+    let ids = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id FROM causal_chains WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![user_id, limit as i64], |row| row.get::<_, i64>(0))
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
         .await?;
-
-    let mut ids = Vec::new();
-    while let Some(row) = rows.next().await? {
-        ids.push(row.get::<i64>(0)?);
-    }
 
     let mut chains = Vec::new();
     for id in ids {
