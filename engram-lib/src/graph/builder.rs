@@ -82,6 +82,9 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
     }
 
     // -- Phase 2: Batch fetch links as edges --------------------------------------
+    // SECURITY (MT-F2): link fetch JOINs on `memories` at both ends with
+    // `user_id = ?1` so we never surface an edge whose endpoint belongs to
+    // another tenant, even if the id-list coincidentally matched one.
     let placeholders: String = std::iter::repeat_n("?", memory_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
@@ -89,16 +92,18 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
     let query = format!(
         "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
          FROM memory_links ml \
+         JOIN memories ms ON ms.id = ml.source_id AND ms.user_id = ?1 \
+         JOIN memories mt ON mt.id = ml.target_id AND mt.user_id = ?1 \
          WHERE ml.source_id IN ({placeholders}) OR ml.target_id IN ({placeholders})"
     );
 
-    let all_ids: Vec<libsql::Value> = memory_ids
-        .iter()
-        .chain(memory_ids.iter())
-        .map(|&id| libsql::Value::Integer(id))
-        .collect();
+    let mut params: Vec<libsql::Value> = Vec::with_capacity(1 + memory_ids.len() * 2);
+    params.push(libsql::Value::Integer(user_id));
+    for &id in memory_ids.iter().chain(memory_ids.iter()) {
+        params.push(libsql::Value::Integer(id));
+    }
 
-    let mut edge_rows = conn.query(&query, all_ids).await?;
+    let mut edge_rows = conn.query(&query, params).await?;
 
     let valid_set: HashSet<i64> = memory_ids.iter().copied().collect();
     let mut edges = Vec::new();

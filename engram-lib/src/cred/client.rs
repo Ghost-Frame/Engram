@@ -69,7 +69,7 @@ pub struct CreddClient {
 impl CreddClient {
     pub fn from_config(config: &Config) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: build_http_client(),
             base_url: config.eidolon.credd.url.clone(),
             agent_key: None,
             agent_key_env: config.eidolon.credd.agent_key_env.clone(),
@@ -87,7 +87,7 @@ impl CreddClient {
         cache_ttl_secs: u64,
     ) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: build_http_client(),
             base_url: base_url.into(),
             agent_key: Some(agent_key.into()),
             agent_key_env: "CREDD_AGENT_KEY".to_string(),
@@ -102,6 +102,13 @@ impl CreddClient {
 
     pub fn allow_raw(&self) -> bool {
         self.allow_raw
+    }
+
+    /// Base URL the client is pointed at. Used by scrub-cache keys so
+    /// two CreddClient instances talking to different upstreams never
+    /// share a cache entry.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     /// SECURITY (SEC-MED-1): cache entries are scoped per tenant. Callers
@@ -421,6 +428,22 @@ impl CreddClient {
             },
         );
     }
+}
+
+/// Build the reqwest client used for every credd call.
+///
+/// SECURITY / ROBUSTNESS: every HTTP call to credd must time out. Without
+/// an explicit timeout a hung credd (or a misconfigured URL pointing at a
+/// port where nothing is listening but the kernel still holds the SYN)
+/// can pin request handlers forever and exhaust tokio's task pool. The
+/// scrub path in `sessions::scrub` catches errors and falls back to
+/// unredacted text, so a timeout is a safe default.
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// Cache key shape: `{user_id}:{service}/{key}`. The `user_id` prefix is
