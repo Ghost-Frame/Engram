@@ -10,6 +10,9 @@ test-utils = []
 # Enable per-tenant sharding (rusqlite-based). Mutually exclusive with libsql tests.
 tenant-sharding = []
 credd-raw = []
+# Vendor SQLCipher for at-rest encryption. Mutually exclusive with libsql
+# in the same binary (symbol collision), so kleos-migrate must NOT enable this.
+sqlcipher = ["rusqlite/bundled-sqlcipher"]
 
 [dependencies]
 rusqlite = { workspace = true }
@@ -42,6 +45,7 @@ futures = { workspace = true }
 lancedb = { workspace = true }
 protoc-bin-vendored-linux-x86_64 = { workspace = true }
 flate2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

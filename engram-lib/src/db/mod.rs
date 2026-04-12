@@ -20,23 +20,39 @@ pub struct Database {
 }
 
 impl Database {
-    /// Connect to a rusqlite database file, configure pragmas, enable WAL, create schema.
+    /// Connect to a rusqlite database file without encryption.
+    ///
+    /// For encrypted databases, use `connect_encrypted` instead.
     pub async fn connect(db_path: &str) -> Result<Self> {
         let mut config = Config::from_env();
         config.db_path = db_path.to_string();
-        Self::connect_with_config(&config).await
+        Self::connect_with_config(&config, None).await
     }
 
-    pub async fn connect_with_config(config: &Config) -> Result<Self> {
-        Self::connect_with_pool_config(config, DbPoolConfig::default()).await
+    /// Connect to an encrypted rusqlite database file.
+    ///
+    /// The 32-byte key is applied via `PRAGMA key` as the first statement on
+    /// every connection. Pass `None` for an unencrypted database.
+    pub async fn connect_encrypted(db_path: &str, key: Option<[u8; 32]>) -> Result<Self> {
+        let mut config = Config::from_env();
+        config.db_path = db_path.to_string();
+        Self::connect_with_config(&config, key).await
+    }
+
+    pub async fn connect_with_config(
+        config: &Config,
+        encryption_key: Option<[u8; 32]>,
+    ) -> Result<Self> {
+        Self::connect_with_pool_config(config, DbPoolConfig::default(), encryption_key).await
     }
 
     pub async fn connect_with_pool_config(
         config: &Config,
         pool_config: DbPoolConfig,
+        encryption_key: Option<[u8; 32]>,
     ) -> Result<Self> {
         let db_path = &config.db_path;
-        let pools = DatabasePools::new(db_path, pool_config).await?;
+        let pools = DatabasePools::new(db_path, pool_config, encryption_key).await?;
 
         // Run migrations using the writer pool
         let writer = pools.writer().get().await.map_err(|e| {
@@ -50,7 +66,12 @@ impl Database {
                 EngError::DatabaseMessage(format!("writer pool migration failed: {e}"))
             })??;
 
-        info!("database connected: {}", db_path);
+        let encrypted_label = if encryption_key.is_some() {
+            " (encrypted)"
+        } else {
+            ""
+        };
+        info!("database connected: {}{}", db_path, encrypted_label);
 
         let vector_index = open_vector_index(config).await;
 
@@ -62,8 +83,13 @@ impl Database {
     }
 
     /// Connect to an in-memory database for testing.
+    ///
+    /// Uses a shared-cache URI with a unique name so all pool connections
+    /// (readers + writer) share the same in-memory database instance.
     pub async fn connect_memory() -> Result<Self> {
-        let pools = DatabasePools::new(":memory:", DbPoolConfig::default()).await?;
+        let id = uuid::Uuid::new_v4();
+        let uri = format!("file:kleos_test_{id}?mode=memory&cache=shared");
+        let pools = DatabasePools::new(&uri, DbPoolConfig::default(), None).await?;
 
         let writer = pools.writer().get().await.map_err(|e| {
             EngError::DatabaseMessage(format!("failed to acquire writer pool connection: {e}"))

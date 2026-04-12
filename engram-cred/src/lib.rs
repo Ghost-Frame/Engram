@@ -17,7 +17,7 @@ pub mod types;
 pub mod yubikey;
 
 pub use agent_keys::{AgentKey, AgentKeyPermissions};
-pub use crypto::{decrypt_secret, derive_key, encrypt_secret};
+pub use crypto::{decrypt_secret, derive_key, derive_key_legacy, encrypt_secret};
 pub use storage::{
     delete_secret, get_secret, list_secrets, store_secret, update_secret, SecretRow,
 };

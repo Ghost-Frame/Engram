@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib" }
+kleos-lib = { path = "../kleos-lib", features = ["sqlcipher"] }
+kleos-cred = { path = "../kleos-cred" }
 axum = { workspace = true, features = ["ws"] }
 hmac = { workspace = true }
 sha2 = { workspace = true }
@@ -22,7 +23,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
-hex = "0.4"
+hex = { workspace = true }
 rand = { workspace = true }
 futures = { workspace = true }
 rusqlite = { workspace = true }

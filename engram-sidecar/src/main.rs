@@ -62,7 +62,7 @@ async fn main() {
 
     let cli = Cli::parse();
     let config = Config::from_env();
-    let db = Database::connect_with_config(&config)
+    let db = Database::connect_with_config(&config, None)
         .await
         .expect("failed to connect to database");
 

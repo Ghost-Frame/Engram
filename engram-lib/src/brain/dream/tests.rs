@@ -271,19 +271,22 @@ async fn test_dream_run_persisted() {
         .unwrap();
 
     // Verify the run was written to the DB
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT id, user_id, finished_at FROM brain_dream_runs WHERE id = ?1",
-            rusqlite::params![result.run_id],
-        )
+    let (db_id, db_user, finished_at) = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT id, user_id, finished_at FROM brain_dream_runs WHERE id = ?1",
+                rusqlite::params![result.run_id],
+                |row| {
+                    let id: i64 = row.get(0)?;
+                    let user: i64 = row.get(1)?;
+                    let finished: Option<String> = row.get(2)?;
+                    Ok((id, user, finished))
+                },
+            )
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))
+        })
         .await
-        .unwrap();
-
-    let row = rows.next().await.unwrap().expect("run row should exist");
-    let db_id: i64 = row.get(0).unwrap();
-    let db_user: i64 = row.get(1).unwrap();
-    let finished_at: Option<String> = row.get(2).unwrap();
+        .expect("run row should exist");
 
     assert_eq!(db_id, result.run_id);
     assert_eq!(db_user, user_id);

@@ -17,7 +17,7 @@ pub struct App {
 impl App {
     pub async fn from_env() -> Result<Self> {
         let config = Config::from_env();
-        let db = Database::connect_with_config(&config).await?;
+        let db = Database::connect_with_config(&config, None).await?;
         Ok(Self {
             db: Arc::new(db),
             config: Arc::new(config),

@@ -5,6 +5,7 @@
 
 use clap::Parser;
 use kleos_credd::server;
+use kleos_lib::config::{Config, EncryptionMode};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -46,8 +47,28 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Resolve at-rest encryption key (reads KLEOS_ENCRYPTION_MODE env).
+    let enc_config = Config::from_env();
+    let encryption_key = match enc_config.encryption.mode {
+        EncryptionMode::None => None,
+        EncryptionMode::Yubikey => {
+            info!("encryption mode: yubikey -- touch slot 2 to unlock database...");
+            let challenge = kleos_cred::yubikey::get_or_create_challenge()
+                .map_err(|e| anyhow::anyhow!("YubiKey challenge: {e}"))?;
+            let response = kleos_cred::yubikey::challenge_response(&challenge)
+                .map_err(|e| anyhow::anyhow!("YubiKey response: {e}"))?;
+            Some(kleos_cred::crypto::derive_key(0, b"", Some(&response)))
+        }
+        _ => {
+            let mode_name = format!("{:?}", enc_config.encryption.mode).to_ascii_lowercase();
+            info!("encryption mode: {}", mode_name);
+            kleos_lib::encryption::resolve_key(&enc_config)
+                .map_err(|e| anyhow::anyhow!("encryption key: {e}"))?
+        }
+    };
+
     info!("Starting credd on {}", args.listen);
-    server::run(&args.listen, &args.db_path, &master_password).await?;
+    server::run(&args.listen, &args.db_path, &master_password, encryption_key).await?;
 
     Ok(())
 }

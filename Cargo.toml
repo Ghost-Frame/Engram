@@ -41,5 +41,7 @@ futures = "0.3"
 lancedb = { version = "0.4", default-features = false }
 protoc-bin-vendored-linux-x86_64 = "3"
 flate2 = "1"
+hex = "0.4"
 # Note: Can't use bundled sqlite with libsql in same binary - they conflict.
-# Once Phase 4 lands (libsql removed from kleos-lib), switch to bundled.
+# kleos-lib gates bundled-sqlcipher behind the "sqlcipher" feature so
+# kleos-migrate (which still uses libsql) compiles without collision.

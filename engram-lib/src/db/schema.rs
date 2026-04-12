@@ -1,7 +1,4 @@
-use crate::db::schema_sql::{
-    AUXILIARY_SCHEMA_STATEMENTS, CORE_SCHEMA_SQL, LIBSQL_VECTOR_INDEX_STATEMENTS,
-    KLEOS_SERVICES_SQL,
-};
+use crate::db::schema_sql::{AUXILIARY_SCHEMA_STATEMENTS, CORE_SCHEMA_SQL, KLEOS_SERVICES_SQL};
 use crate::EngError;
 use crate::Result;
 
@@ -17,10 +14,9 @@ pub fn create_tables(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(KLEOS_SERVICES_SQL)
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    for statement in LIBSQL_VECTOR_INDEX_STATEMENTS {
-        conn.execute(statement, [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-    }
+    // NOTE: LIBSQL_VECTOR_INDEX_STATEMENTS intentionally skipped.
+    // libsql_vector_idx() is a libsql-only function that does not exist in
+    // rusqlite/SQLCipher. Vector indexing now goes through LanceDB.
 
     Ok(())
 }

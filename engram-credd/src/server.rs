@@ -17,9 +17,14 @@ use crate::handlers::{agents, resolve, secrets};
 use crate::state::AppState;
 
 /// Run the credd HTTP server.
-pub async fn run(listen: &str, db_path: &str, master_password: &str) -> anyhow::Result<()> {
-    // Connect to database
-    let db = Database::connect(db_path).await?;
+pub async fn run(
+    listen: &str,
+    db_path: &str,
+    master_password: &str,
+    encryption_key: Option<[u8; 32]>,
+) -> anyhow::Result<()> {
+    // Connect to database (with optional at-rest encryption)
+    let db = Database::connect_encrypted(db_path, encryption_key).await?;
 
     // Run migrations
     db.write(|conn| run_migrations(conn)).await?;

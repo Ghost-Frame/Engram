@@ -14,6 +14,7 @@ pub mod conversations;
 pub mod cred;
 pub mod db;
 pub mod embeddings;
+pub mod encryption;
 pub mod episodes;
 pub mod errors_log;
 pub mod facts;
@@ -78,6 +79,9 @@ pub enum EngError {
 
     #[error("not implemented: {0}")]
     NotImplemented(String),
+
+    #[error("encryption error: {0}")]
+    Encryption(String),
 }
 
 pub type Result<T> = std::result::Result<T, EngError>;

@@ -13,7 +13,7 @@ name = "kleos-credd"
 path = "src/main.rs"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib" }
+kleos-lib = { path = "../kleos-lib", features = ["sqlcipher"] }
 kleos-cred = { path = "../kleos-cred" }
 
 # Web framework

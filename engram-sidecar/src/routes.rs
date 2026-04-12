@@ -5,6 +5,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use kleos_lib::llm::local::{CallOptions, Priority};
 use kleos_lib::memory::{
     self,
     search::hybrid_search,
@@ -20,11 +21,19 @@ use crate::SidecarState;
 
 const FLUSH_THRESHOLD: usize = 5;
 
+/// Byte threshold below which /compress passes content through without LLM.
+const COMPRESS_PASSTHROUGH_BYTES: usize = 2000;
+
+/// Maximum bytes of tool_output we will send to the LLM for compression.
+/// Anything beyond this is truncated before prompting.
+const COMPRESS_MAX_INPUT_BYTES: usize = 50_000;
+
 pub fn router(state: SidecarState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/observe", post(observe))
         .route("/recall", post(recall))
+        .route("/compress", post(compress))
         .route("/end", post(end_session))
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state)
@@ -32,19 +41,29 @@ pub fn router(state: SidecarState) -> Router {
 
 async fn health(State(state): State<SidecarState>) -> Json<Value> {
     let session = state.session.read().await;
+    let llm_available = state.llm.as_ref().map(|l| l.is_available()).unwrap_or(false);
+    let has_embedder = state.embedder.is_some();
     Json(json!({
         "status": "ok",
         "session_id": session.id,
         "observation_count": session.observation_count,
         "stored_count": session.stored_count,
         "ended": session.ended,
+        "llm_available": llm_available,
+        "embedder_available": has_embedder,
     }))
 }
 
 #[derive(Debug, Deserialize)]
 struct ObserveBody {
-    pub tool_name: String,
-    pub content: String,
+    /// Current format field name
+    pub tool_name: Option<String>,
+    /// Legacy mnemonic format field name (alias for tool_name)
+    pub tool: Option<String>,
+    /// Current format field name
+    pub content: Option<String>,
+    /// Legacy mnemonic format field name (alias for content)
+    pub summary: Option<String>,
     #[serde(default = "default_importance")]
     pub importance: i32,
     #[serde(default = "default_category")]
@@ -63,9 +82,19 @@ async fn observe(
     State(state): State<SidecarState>,
     Json(body): Json<ObserveBody>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    // Accept both formats: {tool_name, content} (current) or {tool, summary} (legacy)
+    let tool_name = body
+        .tool_name
+        .or(body.tool)
+        .unwrap_or_else(|| "unknown".to_string());
+    let content = body
+        .content
+        .or(body.summary)
+        .unwrap_or_default();
+
     let obs = Observation {
-        tool_name: body.tool_name,
-        content: body.content,
+        tool_name,
+        content,
         importance: body.importance,
         category: body.category,
         timestamp: chrono::Utc::now(),
@@ -165,6 +194,135 @@ async fn recall(
         "session_id": session_id,
     })))
 }
+
+// ---------------------------------------------------------------------------
+// POST /compress -- LLM-based file content summarization
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct CompressBody {
+    pub tool_name: String,
+    pub tool_input: Option<Value>,
+    pub tool_output: String,
+}
+
+const COMPRESS_SYSTEM_PROMPT: &str = "\
+You are a code summarizer for an AI coding agent's memory system. \
+Given the contents of a file that was read by a tool, produce a concise summary that captures: \
+1) What the file is (type, purpose) \
+2) Key structures, functions, or classes defined \
+3) Important configuration values or constants \
+4) Any notable patterns or dependencies \
+\
+Be extremely concise. Output ONLY the summary, no preamble. \
+Target 200-400 words. Preserve exact names of functions, types, and variables.";
+
+async fn compress(
+    State(state): State<SidecarState>,
+    Json(body): Json<CompressBody>,
+) -> Json<Value> {
+    let output = &body.tool_output;
+    let file_path = body
+        .tool_input
+        .as_ref()
+        .and_then(|v| v.get("filePath").or_else(|| v.get("file_path")))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    // Short content: pass through without LLM
+    if output.len() <= COMPRESS_PASSTHROUGH_BYTES {
+        tracing::debug!(
+            file = %file_path,
+            bytes = output.len(),
+            "compress: passthrough (below threshold)"
+        );
+        return Json(json!({
+            "compressed_output": null,
+            "passthrough": true,
+            "reason": "below_threshold",
+        }));
+    }
+
+    // No LLM available: fail open
+    let Some(ref llm) = state.llm else {
+        tracing::debug!(
+            file = %file_path,
+            "compress: no LLM available, fail-open"
+        );
+        return Json(json!({
+            "compressed_output": null,
+            "passthrough": true,
+            "reason": "no_llm",
+        }));
+    };
+
+    // Truncate input if enormous
+    let input_for_llm = if output.len() > COMPRESS_MAX_INPUT_BYTES {
+        &output[..COMPRESS_MAX_INPUT_BYTES]
+    } else {
+        output.as_str()
+    };
+
+    let user_prompt = format!(
+        "File: {}\nTool: {}\n\n---\n{}",
+        file_path, body.tool_name, input_for_llm
+    );
+
+    let opts = CallOptions {
+        max_tokens: Some(800),
+        temperature: Some(0.1),
+        priority: Priority::Hot,
+        timeout_ms: Some(10_000),
+        ..Default::default()
+    };
+
+    match llm.call(COMPRESS_SYSTEM_PROMPT, &user_prompt, Some(opts)).await {
+        Ok(summary) => {
+            tracing::info!(
+                file = %file_path,
+                input_bytes = output.len(),
+                output_bytes = summary.len(),
+                "compress: summarized"
+            );
+
+            // Also record as an observation for session tracking
+            let obs = Observation {
+                tool_name: body.tool_name.clone(),
+                content: format!("[compressed {}] {}", file_path, &summary[..summary.len().min(200)]),
+                importance: 2,
+                category: "discovery".to_string(),
+                timestamp: chrono::Utc::now(),
+            };
+            {
+                let mut session = state.session.write().await;
+                session.add_observation(obs);
+            }
+
+            Json(json!({
+                "compressed_output": summary,
+                "passthrough": false,
+                "input_bytes": output.len(),
+                "output_bytes": summary.len(),
+            }))
+        }
+        Err(e) => {
+            tracing::warn!(
+                file = %file_path,
+                error = %e,
+                "compress: LLM failed, fail-open"
+            );
+            Json(json!({
+                "compressed_output": null,
+                "passthrough": true,
+                "reason": format!("llm_error: {}", e),
+            }))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// POST /end -- finalize session
+// ---------------------------------------------------------------------------
 
 async fn end_session(
     State(state): State<SidecarState>,

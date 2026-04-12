@@ -34,9 +34,13 @@ pub struct DatabasePools {
 }
 
 impl DatabasePools {
-    pub async fn new(db_path: &str, config: DbPoolConfig) -> Result<Self> {
-        let reader = build_pool(db_path, config.max_readers, config)?;
-        let writer = build_pool(db_path, config.writer_count.max(1), config)?;
+    pub async fn new(
+        db_path: &str,
+        config: DbPoolConfig,
+        encryption_key: Option<[u8; 32]>,
+    ) -> Result<Self> {
+        let reader = build_pool(db_path, config.max_readers, config, encryption_key)?;
+        let writer = build_pool(db_path, config.writer_count.max(1), config, encryption_key)?;
 
         let pools = Self {
             reader,
@@ -145,7 +149,12 @@ impl DatabasePools {
     }
 }
 
-fn build_pool(db_path: &str, max_size: usize, config: DbPoolConfig) -> Result<Pool> {
+fn build_pool(
+    db_path: &str,
+    max_size: usize,
+    config: DbPoolConfig,
+    encryption_key: Option<[u8; 32]>,
+) -> Result<Pool> {
     let mut manager = PoolManagerConfig::new(db_path);
     manager.pool = Some(PoolConfig::new(max_size));
     let db_path_owned = db_path.to_string();
@@ -160,7 +169,7 @@ fn build_pool(db_path: &str, max_size: usize, config: DbPoolConfig) -> Result<Po
         .post_create(Hook::async_fn(move |conn, _| {
             let db_path = db_path_owned.clone();
             Box::pin(async move {
-                conn.interact(move |conn| apply_pragmas(conn, &db_path, config))
+                conn.interact(move |conn| apply_pragmas(conn, &db_path, config, encryption_key))
                     .await
                     .map_err(|e| {
                         HookError::message(format!("failed to initialize sqlite connection: {e}"))
@@ -178,7 +187,36 @@ fn apply_pragmas(
     conn: &mut deadpool_sqlite::rusqlite::Connection,
     db_path: &str,
     config: DbPoolConfig,
+    encryption_key: Option<[u8; 32]>,
 ) -> deadpool_sqlite::rusqlite::Result<()> {
+    // SQLCipher PRAGMA key MUST be the very first statement on a connection.
+    // Any other statement on an encrypted DB without the key will fail with
+    // "file is not a database".
+    if let Some(ref key) = encryption_key {
+        let key_hex = crate::encryption::format_pragma_key(key);
+        conn.pragma_update(None, "key", &key_hex)?;
+
+        // Verify the key is correct by reading schema_version. If the key
+        // is wrong, SQLCipher returns "file is encrypted or is not a database"
+        // on the first real read.
+        conn.pragma_query_value(None, "schema_version", |_| Ok(()))
+            .map_err(|e| {
+                if e.to_string().contains("not a database") {
+                    deadpool_sqlite::rusqlite::Error::SqliteFailure(
+                        deadpool_sqlite::rusqlite::ffi::Error::new(
+                            deadpool_sqlite::rusqlite::ffi::SQLITE_NOTADB,
+                        ),
+                        Some(
+                            "wrong encryption key or unencrypted database opened with encryption enabled"
+                                .to_string(),
+                        ),
+                    )
+                } else {
+                    e
+                }
+            })?;
+    }
+
     let is_memory = is_in_memory_db(db_path);
 
     if !is_memory {
@@ -217,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn pool_applies_expected_pragmas() -> Result<()> {
         let db_path = temp_db_path("kleos-pool-pragmas");
-        let pools = DatabasePools::new(&db_path, DbPoolConfig::default()).await?;
+        let pools = DatabasePools::new(&db_path, DbPoolConfig::default(), None).await?;
         let conn = pools
             .reader()
             .get()
@@ -253,7 +291,7 @@ mod tests {
             ..Config::default()
         };
 
-        let db = Database::connect_with_pool_config(&config, DbPoolConfig::default()).await?;
+        let db = Database::connect_with_pool_config(&config, DbPoolConfig::default(), None).await?;
 
         db.write(|conn| {
             conn.execute(

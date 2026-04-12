@@ -2043,6 +2043,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "directories"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16f5094c54661b38d03bd7e50df373292118db60b585c08a411c6d840017fe7d"
+dependencies = [
+ "dirs-sys 0.5.0",
+]
+
+[[package]]
 name = "dirs"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2158,19 +2167,24 @@ name = "kleos-cred"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "anyhow",
  "argon2",
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "clap",
+ "directories",
  "kleos-lib",
  "hex",
  "hmac",
  "rand 0.8.5",
+ "rpassword",
  "rusqlite",
  "serde",
  "serde_json",
  "sha1",
  "sha2",
+ "shellexpand",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2214,6 +2228,7 @@ dependencies = [
  "dirs 6.0.0",
  "flate2",
  "futures",
+ "hex",
  "hmac",
  "lancedb",
  "ndarray 0.16.1",
@@ -2284,6 +2299,7 @@ dependencies = [
  "axum 0.8.8",
  "chrono",
  "clap",
+ "kleos-cred",
  "kleos-lib",
  "futures",
  "hex",
@@ -3999,6 +4015,7 @@ version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c10584274047cb335c23d3e61bcef8e323adae7c5c8c760540f73610177fc3f"
 dependencies = [
+ "cc",
  "pkg-config",
  "vcpkg",
 ]

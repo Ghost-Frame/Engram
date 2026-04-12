@@ -1,5 +1,30 @@
 use serde::{Deserialize, Serialize};
 
+/// How the at-rest encryption key is sourced.
+///
+/// Default is `None` (no encryption). When set, every SQLite connection
+/// issues `PRAGMA key` as its first statement so the database file is
+/// encrypted via SQLCipher.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum EncryptionMode {
+    /// No encryption -- database opens without PRAGMA key.
+    #[default]
+    None,
+    /// Read a raw 32-byte key from `~/.config/kleos/dbkey`.
+    Keyfile,
+    /// Hex-decode the `KLEOS_DB_KEY` env var (64 hex chars = 32 bytes).
+    Env,
+    /// YubiKey HMAC-SHA1 challenge-response on slot 2, derived via Argon2id.
+    Yubikey,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct EncryptionConfig {
+    #[serde(default)]
+    pub mode: EncryptionMode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateConfig {
     pub blocked_patterns: Vec<String>,
@@ -245,6 +270,8 @@ pub struct Config {
     pub pagerank_max_concurrent: usize,
     pub pagerank_enabled: bool,
     #[serde(default)]
+    pub encryption: EncryptionConfig,
+    #[serde(default)]
     pub eidolon: EidolonConfig,
 }
 
@@ -277,6 +304,7 @@ impl Default for Config {
             pagerank_dirty_threshold: 100,
             pagerank_max_concurrent: 2,
             pagerank_enabled: true,
+            encryption: EncryptionConfig::default(),
             eidolon: EidolonConfig::default(),
         }
     }
@@ -446,6 +474,18 @@ impl Config {
         }
         if let Ok(v) = std::env::var("KLEOS_PAGERANK_ENABLED") {
             config.pagerank_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = std::env::var("KLEOS_ENCRYPTION_MODE") {
+            config.encryption.mode = match v.to_ascii_lowercase().as_str() {
+                "none" => EncryptionMode::None,
+                "keyfile" => EncryptionMode::Keyfile,
+                "env" => EncryptionMode::Env,
+                "yubikey" => EncryptionMode::Yubikey,
+                other => {
+                    tracing::warn!("unknown KLEOS_ENCRYPTION_MODE={}, using none", other);
+                    EncryptionMode::None
+                }
+            };
         }
         config.eidolon = EidolonConfig::from_env();
         config

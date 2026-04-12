@@ -176,6 +176,24 @@ impl SecretData {
             Self::Environment { variables } => variables.get(field).cloned(),
         }
     }
+
+    /// Get the type name as a display string.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::Login { .. } => "Login",
+            Self::ApiKey { .. } => "ApiKey",
+            Self::OAuthApp { .. } => "OAuthApp",
+            Self::SshKey { .. } => "SshKey",
+            Self::Note { .. } => "Note",
+            Self::Environment { .. } => "Environment",
+        }
+    }
+
+    /// Get the bare/primary value for simple output.
+    /// Alias for primary_value() for CLI compatibility.
+    pub fn bare_value(&self) -> Option<String> {
+        Some(self.primary_value())
+    }
 }
 
 #[cfg(test)]

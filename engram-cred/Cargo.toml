@@ -4,7 +4,17 @@ version = "0.1.0"
 edition = "2021"
 description = "Credential management for Kleos with YubiKey support"
 
+[[bin]]
+name = "cred"
+path = "src/bin/cred.rs"
+
 [dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"
+anyhow = "1"
+shellexpand = "3"
+directories = "6"
 kleos-lib = { path = "../kleos-lib" }
 
 # Crypto

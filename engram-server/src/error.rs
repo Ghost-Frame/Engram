@@ -52,6 +52,13 @@ impl IntoResponse for AppError {
                     "Internal server error".to_string(),
                 )
             }
+            EngError::Encryption(msg) => {
+                tracing::error!("Encryption error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Encryption error".to_string(),
+                )
+            }
         };
         (status, Json(json!({ "error": message }))).into_response()
     }

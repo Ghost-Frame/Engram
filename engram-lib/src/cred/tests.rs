@@ -60,26 +60,33 @@ async fn resolve_text_substitutes_placeholders_and_logs_audit() {
 
     assert_eq!(resolved, "a=alpha-secret b=omega-secret");
 
-    let mut rows = db
-        .conn
-        .query(
-            "SELECT service, action, payload FROM broca_actions WHERE service = 'cred' ORDER BY id ASC",
-            (),
-        )
+    let payloads = db
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT service, action, payload FROM broca_actions WHERE service = 'cred' ORDER BY id ASC")
+                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let service: String = row.get(0)?;
+                    let action: String = row.get(1)?;
+                    let payload: String = row.get(2)?;
+                    Ok((service, action, payload))
+                })
+                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            let mut payloads = Vec::new();
+            for row in rows {
+                let (service, action, payload) =
+                    row.map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                assert_eq!(service, "cred");
+                assert_eq!(action, "resolve");
+                assert!(!payload.contains("alpha-secret"));
+                assert!(!payload.contains("omega-secret"));
+                payloads.push(payload);
+            }
+            Ok(payloads)
+        })
         .await
         .expect("query audit rows");
-
-    let mut payloads = Vec::new();
-    while let Some(row) = rows.next().await.expect("next row") {
-        let service: String = row.get(0).expect("service");
-        let action: String = row.get(1).expect("action");
-        let payload: String = row.get(2).expect("payload");
-        assert_eq!(service, "cred");
-        assert_eq!(action, "resolve");
-        assert!(!payload.contains("alpha-secret"));
-        assert!(!payload.contains("omega-secret"));
-        payloads.push(payload);
-    }
 
     assert_eq!(payloads.len(), 2);
     assert!(payloads[0].contains("\"svc\":\"foo\""));

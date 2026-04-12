@@ -32,6 +32,36 @@ const ARGON2_PARALLELISM: u32 = 1;
 /// invalidates every ciphertext in the cred database.
 const KDF_DOMAIN: &[u8] = b"kleos-cred-kdf-v1";
 
+/// Legacy salt for private cred compatibility (single-user mode).
+const LEGACY_SALT: &[u8] = b"cred-yubikey-v1\0";
+
+/// Legacy argon2 params matching private cred: m=19MiB, t=2, p=1.
+const LEGACY_ARGON2_MEMORY_KIB: u32 = 19 * 1024;
+const LEGACY_ARGON2_ITERATIONS: u32 = 2;
+
+/// Derive an encryption key compatible with private cred (single-user YubiKey-only mode).
+///
+/// This uses the exact same KDF parameters as private cred for backwards compatibility:
+/// - Salt: fixed "cred-yubikey-v1\0"
+/// - Input: just the YubiKey HMAC response
+/// - Params: m=19MiB, t=2, p=1, output=32 bytes
+pub fn derive_key_legacy(yubikey_response: &[u8]) -> [u8; KEY_SIZE] {
+    let params = Params::new(
+        LEGACY_ARGON2_MEMORY_KIB,
+        LEGACY_ARGON2_ITERATIONS,
+        ARGON2_PARALLELISM,
+        Some(KEY_SIZE),
+    )
+    .expect("argon2 params within library bounds");
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+
+    let mut key = [0u8; KEY_SIZE];
+    argon2
+        .hash_password_into(yubikey_response, LEGACY_SALT, &mut key)
+        .expect("argon2id derivation never fails with validated params");
+    key
+}
+
 /// Derive an encryption key from a password and optional YubiKey response.
 ///
 /// Inputs are bound with Argon2id using a deterministic 16-byte salt derived
@@ -221,5 +251,22 @@ mod tests {
         let hash2 = hash_key(key);
         assert_eq!(hash1, hash2);
         assert_eq!(hash1.len(), 64); // SHA-256 hex = 64 chars
+    }
+
+    #[test]
+    fn derive_key_legacy_deterministic() {
+        let response = b"yubikey-hmac-response-20-bytes!";
+        let key1 = derive_key_legacy(response);
+        let key2 = derive_key_legacy(response);
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn derive_key_legacy_differs_from_new() {
+        // Legacy and new KDF must produce different keys (different params/salt)
+        let response = b"yubikey-hmac-response";
+        let legacy = derive_key_legacy(response);
+        let new = derive_key(0, b"", Some(response));
+        assert_ne!(legacy, new);
     }
 }

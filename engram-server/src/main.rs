@@ -1,4 +1,4 @@
-use kleos_lib::config::Config;
+use kleos_lib::config::{Config, EncryptionMode};
 use kleos_lib::cred::CreddClient;
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::onnx::OnnxProvider;
@@ -24,7 +24,36 @@ async fn main() {
         .init();
 
     let config = Config::from_env();
-    let db = Database::connect_with_config(&config)
+
+    // Resolve at-rest encryption key based on configured mode.
+    let encryption_key = match config.encryption.mode {
+        EncryptionMode::None => None,
+        EncryptionMode::Yubikey => {
+            tracing::info!("encryption mode: yubikey -- touch slot 2 to unlock database...");
+            let challenge = kleos_cred::yubikey::get_or_create_challenge()
+                .unwrap_or_else(|e| {
+                    eprintln!("failed to load YubiKey challenge: {e}");
+                    std::process::exit(1);
+                });
+            let response = kleos_cred::yubikey::challenge_response(&challenge)
+                .unwrap_or_else(|e| {
+                    eprintln!("YubiKey challenge-response failed: {e}");
+                    std::process::exit(1);
+                });
+            Some(kleos_cred::crypto::derive_key(0, b"", Some(&response)))
+        }
+        _ => {
+            let mode_name = format!("{:?}", config.encryption.mode).to_ascii_lowercase();
+            tracing::info!("encryption mode: {}", mode_name);
+            kleos_lib::encryption::resolve_key(&config)
+                .unwrap_or_else(|e| {
+                    eprintln!("encryption key resolution failed: {e}");
+                    std::process::exit(1);
+                })
+        }
+    };
+
+    let db = Database::connect_with_config(&config, encryption_key)
         .await
         .expect("failed to connect to database");
 

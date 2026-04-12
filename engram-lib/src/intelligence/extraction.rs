@@ -360,7 +360,11 @@ fn extract_date_ref(content: &str) -> Option<String> {
 
 fn infer_domain(object: &str) -> String {
     let lower = object.to_lowercase();
-    if lower.contains("food") || lower.contains("eat") || lower.contains("cook") || lower.contains("drink") {
+    if lower.contains("food") || lower.contains("eat") || lower.contains("cook") || lower.contains("drink")
+        || lower.contains("pizza") || lower.contains("coffee") || lower.contains("breakfast")
+        || lower.contains("lunch") || lower.contains("dinner") || lower.contains("snack")
+        || lower.contains("restaurant") || lower.contains("recipe") || lower.contains("grocer")
+    {
         "food".to_string()
     } else if lower.contains("movie") || lower.contains("show") || lower.contains("series") || lower.contains("watch") {
         "entertainment".to_string()
