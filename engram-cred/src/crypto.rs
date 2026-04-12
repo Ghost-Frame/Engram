@@ -4,6 +4,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
+use argon2::{Algorithm, Argon2, Params, Version};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
@@ -15,31 +16,62 @@ pub const NONCE_SIZE: usize = 12;
 /// Key size for AES-256-GCM (256 bits = 32 bytes).
 pub const KEY_SIZE: usize = 32;
 
+/// Argon2id memory parameter in KiB. 64 MiB resists GPU brute force while
+/// staying under the smallest container footprint we ship.
+const ARGON2_MEMORY_KIB: u32 = 65536;
+
+/// Argon2id iteration count. 3 passes is the OWASP 2023 recommendation for
+/// the 64 MiB memory class.
+const ARGON2_ITERATIONS: u32 = 3;
+
+/// Argon2id parallelism. Single lane keeps WASM and small-container targets
+/// viable; the memory cost already dominates.
+const ARGON2_PARALLELISM: u32 = 1;
+
+/// Domain separation string mixed into the deterministic salt. Changing this
+/// invalidates every ciphertext in the cred database.
+const KDF_DOMAIN: &[u8] = b"engram-cred-kdf-v1";
+
 /// Derive an encryption key from a password and optional YubiKey response.
 ///
-/// Uses SHA-256 to combine:
-/// - user_id (8 bytes, little-endian)
-/// - password bytes
-/// - yubikey_response (if present)
+/// Inputs are bound with Argon2id using a deterministic 16-byte salt derived
+/// from `user_id` and a fixed domain separation tag. The salt is deterministic
+/// because this function must return the same key for the same inputs on every
+/// call; per-user isolation comes from `user_id` being mixed into both the salt
+/// and the password material.
 ///
-/// Returns a 32-byte key suitable for AES-256.
+/// Parameters: m = 64 MiB, t = 3, p = 1, output = 32 bytes (OWASP 2023).
 pub fn derive_key(user_id: i64, password: &[u8], yubikey_response: Option<&[u8]>) -> [u8; KEY_SIZE] {
-    let mut hasher = Sha256::new();
+    // Deterministic 16-byte salt: SHA-256(domain || user_id) truncated.
+    let mut salt_hasher = Sha256::new();
+    salt_hasher.update(KDF_DOMAIN);
+    salt_hasher.update(user_id.to_le_bytes());
+    let salt_digest = salt_hasher.finalize();
+    let salt = &salt_digest[..16];
 
-    // Include user_id to scope keys per-user
-    hasher.update(user_id.to_le_bytes());
-
-    // Include password
-    hasher.update(password);
-
-    // Include YubiKey response if available
+    // Password material: user_id || password || yubikey_response.
+    let mut material = Vec::with_capacity(
+        8 + password.len() + yubikey_response.map(|r| r.len()).unwrap_or(0),
+    );
+    material.extend_from_slice(&user_id.to_le_bytes());
+    material.extend_from_slice(password);
     if let Some(response) = yubikey_response {
-        hasher.update(response);
+        material.extend_from_slice(response);
     }
 
-    let result = hasher.finalize();
+    let params = Params::new(
+        ARGON2_MEMORY_KIB,
+        ARGON2_ITERATIONS,
+        ARGON2_PARALLELISM,
+        Some(KEY_SIZE),
+    )
+    .expect("argon2 params within library bounds");
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+
     let mut key = [0u8; KEY_SIZE];
-    key.copy_from_slice(&result[..KEY_SIZE]);
+    argon2
+        .hash_password_into(&material, salt, &mut key)
+        .expect("argon2id derivation never fails with validated params");
     key
 }
 
