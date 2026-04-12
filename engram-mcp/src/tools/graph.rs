@@ -24,9 +24,15 @@ pub fn register(out: &mut Vec<ToolDef>) {
 
 pub async fn get_neighbors(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let node_id = args.get("node_id").and_then(Value::as_str)
+    let node_id = args
+        .get("node_id")
+        .and_then(Value::as_str)
         .map(str::to_string)
-        .or_else(|| args.get("memory_id").and_then(Value::as_i64).map(|id| format!("m{id}")))
+        .or_else(|| {
+            args.get("memory_id")
+                .and_then(Value::as_i64)
+                .map(|id| format!("m{id}"))
+        })
         .ok_or_else(|| invalid_input("node_id or memory_id required"))?;
     let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(2) as u32;
     let (nodes, edges) = search::neighborhood(&app.db, &node_id, depth, auth.user_id).await?;
@@ -35,7 +41,11 @@ pub async fn get_neighbors(app: &App, args: Value) -> Result<Value> {
 
 pub async fn pagerank_top(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    if args.get("refresh").and_then(Value::as_bool).unwrap_or(false) {
+    if args
+        .get("refresh")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         let _ = pagerank::update_pagerank_scores(&app.db, auth.user_id).await?;
     }
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
@@ -50,8 +60,11 @@ pub async fn louvain_communities(app: &App, args: Value) -> Result<Value> {
         let result = communities::detect_communities(
             &app.db,
             auth.user_id,
-            args.get("max_iterations").and_then(Value::as_u64).unwrap_or(20) as u32,
-        ).await?;
+            args.get("max_iterations")
+                .and_then(Value::as_u64)
+                .unwrap_or(20) as u32,
+        )
+        .await?;
         return Ok(json!({
             "result": result,
             "stats": communities::get_community_stats(&app.db, auth.user_id).await?
@@ -67,10 +80,19 @@ pub async fn louvain_communities(app: &App, args: Value) -> Result<Value> {
 
 pub async fn cooccurrence(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    if args.get("rebuild").and_then(Value::as_bool).unwrap_or(false) {
-        return Ok(json!({"pairs": cooccurrence::rebuild_cooccurrences(&app.db, auth.user_id).await?}));
+    if args
+        .get("rebuild")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(
+            json!({"pairs": cooccurrence::rebuild_cooccurrences(&app.db, auth.user_id).await?}),
+        );
     }
-    let entity_id = args.get("entity_id").and_then(Value::as_i64).ok_or_else(|| invalid_input("entity_id required when rebuild=false"))?;
+    let entity_id = args
+        .get("entity_id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("entity_id required when rebuild=false"))?;
     Ok(json!({
         "entities": cooccurrence::get_cooccurring_entities(&app.db, entity_id, auth.user_id, args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize).await?
     }))

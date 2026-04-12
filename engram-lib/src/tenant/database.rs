@@ -49,9 +49,9 @@ impl TenantDatabase {
         Self::configure_pragmas(&conn)?;
 
         // Create schema if needed
-        if schema::needs_migration(&conn).map_err(|e| {
-            EngError::Internal(format!("failed to check schema version: {}", e))
-        })? {
+        if schema::needs_migration(&conn)
+            .map_err(|e| EngError::Internal(format!("failed to check schema version: {}", e)))?
+        {
             schema::create_tables(&conn).map_err(|e| {
                 EngError::Internal(format!("failed to create tenant schema: {}", e))
             })?;
@@ -109,9 +109,10 @@ impl TenantDatabase {
 
     /// Execute a query with no return value.
     pub fn execute(&self, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Result<usize, EngError> {
-        let conn = self.conn.lock().map_err(|_| {
-            EngError::Internal("failed to acquire database lock".to_string())
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| EngError::Internal("failed to acquire database lock".to_string()))?;
         conn.execute(sql, params)
             .map_err(|e| EngError::Internal(format!("query failed: {}", e)))
     }
@@ -126,9 +127,10 @@ impl TenantDatabase {
     where
         F: FnMut(&rusqlite::Row<'_>) -> Result<T, rusqlite::Error>,
     {
-        let conn = self.conn.lock().map_err(|_| {
-            EngError::Internal("failed to acquire database lock".to_string())
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| EngError::Internal("failed to acquire database lock".to_string()))?;
         let mut stmt = conn
             .prepare(sql)
             .map_err(|e| EngError::Internal(format!("failed to prepare query: {}", e)))?;
@@ -150,9 +152,10 @@ impl TenantDatabase {
     where
         F: FnOnce(&rusqlite::Row<'_>) -> Result<T, rusqlite::Error>,
     {
-        let conn = self.conn.lock().map_err(|_| {
-            EngError::Internal("failed to acquire database lock".to_string())
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| EngError::Internal("failed to acquire database lock".to_string()))?;
         let mut stmt = conn
             .prepare(sql)
             .map_err(|e| EngError::Internal(format!("failed to prepare query: {}", e)))?;
@@ -174,9 +177,10 @@ impl TenantDatabase {
     where
         F: FnOnce(&Connection) -> Result<T, EngError>,
     {
-        let mut conn = self.conn.lock().map_err(|_| {
-            EngError::Internal("failed to acquire database lock".to_string())
-        })?;
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| EngError::Internal("failed to acquire database lock".to_string()))?;
         let tx = conn
             .transaction()
             .map_err(|e| EngError::Internal(format!("failed to start transaction: {}", e)))?;
@@ -192,9 +196,10 @@ impl TenantDatabase {
     /// Checkpoint the WAL and close cleanly.
     /// Call this before eviction to ensure data is flushed.
     pub fn checkpoint(&self) -> Result<(), EngError> {
-        let conn = self.conn.lock().map_err(|_| {
-            EngError::Internal("failed to acquire database lock".to_string())
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| EngError::Internal("failed to acquire database lock".to_string()))?;
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", [])
             .map_err(|e| EngError::Internal(format!("checkpoint failed: {}", e)))?;
         Ok(())

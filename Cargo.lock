@@ -2263,6 +2263,7 @@ dependencies = [
  "chrono",
  "clap",
  "kleos-lib",
+ "futures",
  "hex",
  "hmac",
  "libsql",

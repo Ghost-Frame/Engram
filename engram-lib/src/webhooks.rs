@@ -135,8 +135,8 @@ pub fn validate_webhook_url(raw: &str) -> Result<()> {
 /// Compute `sha256=<hex>` HMAC signature for outbound delivery. Returns the
 /// header-ready string so callers don't re-implement the prefix.
 fn sign_body(secret: &str, body: &[u8]) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC-SHA256 accepts any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC-SHA256 accepts any key length");
     mac.update(body);
     let digest = mac.finalize().into_bytes();
     let mut hex = String::with_capacity(7 + digest.len() * 2);

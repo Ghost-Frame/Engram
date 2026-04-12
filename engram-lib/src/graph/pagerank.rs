@@ -46,15 +46,19 @@ pub async fn compute_pagerank(
         memory_ids.push(row.get(0)?);
     }
 
+    // GROUP BY deduplicates multiple memory_links rows for the same
+    // (source_id, target_id) pair. Duplicates would inflate out_w and
+    // in_links, distorting PageRank scores (RB-L8).
     let mut edge_rows = conn
         .query(
-            "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
+            "SELECT ml.source_id, ml.target_id, MAX(ml.similarity), MAX(ml.type) \
          FROM memory_links ml \
          JOIN memories ms ON ms.id = ml.source_id \
          JOIN memories mt ON mt.id = ml.target_id \
          WHERE ms.user_id = ?1 AND mt.user_id = ?1 \
            AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
-           AND ms.is_archived = 0 AND mt.is_archived = 0",
+           AND ms.is_archived = 0 AND mt.is_archived = 0 \
+         GROUP BY ml.source_id, ml.target_id",
             libsql::params![user_id],
         )
         .await?;
@@ -177,11 +181,7 @@ pub async fn compute_pagerank_for_user(db: &Database, user_id: i64) -> Result<Ve
     if result.scores.is_empty() {
         return Ok(Vec::new());
     }
-    let max_rank = result
-        .scores
-        .values()
-        .copied()
-        .fold(0.0_f64, f64::max);
+    let max_rank = result.scores.values().copied().fold(0.0_f64, f64::max);
     if max_rank == 0.0 {
         return Ok(result.scores.into_keys().map(|id| (id, 0.0)).collect());
     }
@@ -730,7 +730,10 @@ pub async fn ensure_pagerank_for_user(db: &Database, user_id: i64) -> Result<()>
 pub async fn rebuild_all_users(db: &Database) -> Result<usize> {
     let mut rows = db
         .connection()
-        .query("SELECT DISTINCT user_id FROM memories WHERE is_forgotten = 0", ())
+        .query(
+            "SELECT DISTINCT user_id FROM memories WHERE is_forgotten = 0",
+            (),
+        )
         .await?;
     let mut user_ids: Vec<i64> = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -840,10 +843,7 @@ mod tests {
             .await
             .expect("read pagerank row")
             .expect("pagerank row exists");
-        (
-            row.get(0).expect("score"),
-            row.get(1).expect("computed_at"),
-        )
+        (row.get(0).expect("score"), row.get(1).expect("computed_at"))
     }
 
     #[test]
@@ -943,15 +943,21 @@ mod tests {
         let db = Database::connect_memory().await.expect("in-memory db");
         let user_id = 1;
 
-        let center = memory::store(&db, store_request("alpha common hub signal center", user_id))
-            .await
-            .expect("store center memory");
+        let center = memory::store(
+            &db,
+            store_request("alpha common hub signal center", user_id),
+        )
+        .await
+        .expect("store center memory");
         let left = memory::store(&db, store_request("alpha common leaf signal left", user_id))
             .await
             .expect("store left memory");
-        let right = memory::store(&db, store_request("alpha common leaf signal right", user_id))
-            .await
-            .expect("store right memory");
+        let right = memory::store(
+            &db,
+            store_request("alpha common leaf signal right", user_id),
+        )
+        .await
+        .expect("store right memory");
 
         memory::insert_link(&db, left.id, center.id, 1.0, "causes", user_id)
             .await

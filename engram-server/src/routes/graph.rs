@@ -664,10 +664,7 @@ async fn neighborhood_handler(
     // caller-supplied depth so a single request cannot amplify into a full
     // graph traversal.
     const MAX_NEIGHBORHOOD_DEPTH: u32 = 5;
-    let depth = params
-        .depth
-        .unwrap_or(2)
-        .clamp(1, MAX_NEIGHBORHOOD_DEPTH);
+    let depth = params.depth.unwrap_or(2).clamp(1, MAX_NEIGHBORHOOD_DEPTH);
     let (nodes, edges) = neighborhood(&state.db, &id, depth, auth.user_id).await?;
     Ok(Json(json!({ "nodes": nodes, "edges": edges })))
 }

@@ -189,8 +189,6 @@ mod tests {
     fn hashed_ids_are_valid_filenames() {
         let id = tenant_id_from_user("user@example.com/../../../etc/passwd");
         // Should only contain alphanumeric and underscore
-        assert!(id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
     }
 }

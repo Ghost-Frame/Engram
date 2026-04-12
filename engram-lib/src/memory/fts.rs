@@ -66,16 +66,25 @@ pub async fn fts_search(
     if uses_pool_backend(db) {
         return match db
             .read(move |conn| {
-                let mut stmt = conn.prepare(sql).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let mut stmt = conn
+                    .prepare(sql)
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
                 let mut rows = stmt
                     .query(rusqlite::params![sanitized, user_id, limit as i64])
                     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
                 let mut hits = Vec::new();
                 let mut pos: usize = 0;
-                while let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
-                    let memory_id: i64 = row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                    let bm25_score: f64 = row.get(1).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                while let Some(row) = rows
+                    .next()
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                {
+                    let memory_id: i64 = row
+                        .get(0)
+                        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    let bm25_score: f64 = row
+                        .get(1)
+                        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
                     hits.push(FtsHit {
                         memory_id,
                         rank: pos,
@@ -97,7 +106,10 @@ pub async fn fts_search(
     }
 
     let conn = db.connection();
-    let mut rows = match conn.query(sql, libsql::params![sanitized, user_id, limit as i64]).await {
+    let mut rows = match conn
+        .query(sql, libsql::params![sanitized, user_id, limit as i64])
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             warn!("fts search failed: {}", e);

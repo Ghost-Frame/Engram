@@ -13,7 +13,6 @@
 /// Each stage returns a `StageReport` summarising what it did.
 /// The driver `run_dream_cycle` runs all 6 stages and persists a run record
 /// to the `brain_dream_runs` table.
-
 pub mod decorrelate;
 pub mod discover;
 pub mod merge;
@@ -159,10 +158,7 @@ async fn insert_dream_run(db: &Database, user_id: i64) -> Result<i64> {
         )
         .await?;
 
-    let mut rows = db
-        .conn
-        .query("SELECT last_insert_rowid()", ())
-        .await?;
+    let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
 
     match rows.next().await? {
         Some(row) => {

@@ -83,11 +83,7 @@ pub async fn store_edge(
 }
 
 /// Get all edges originating from a given pattern.
-pub async fn get_edges_from(
-    db: &Database,
-    source_id: i64,
-    user_id: i64,
-) -> Result<Vec<BrainEdge>> {
+pub async fn get_edges_from(db: &Database, source_id: i64, user_id: i64) -> Result<Vec<BrainEdge>> {
     let mut rows = db
         .conn
         .query(
@@ -105,11 +101,7 @@ pub async fn get_edges_from(
 }
 
 /// Get all edges connected to a pattern (either direction).
-pub async fn get_edges_for(
-    db: &Database,
-    pattern_id: i64,
-    user_id: i64,
-) -> Result<Vec<BrainEdge>> {
+pub async fn get_edges_for(db: &Database, pattern_id: i64, user_id: i64) -> Result<Vec<BrainEdge>> {
     let mut rows = db
         .conn
         .query(

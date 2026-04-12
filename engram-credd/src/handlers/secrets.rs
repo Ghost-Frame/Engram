@@ -116,11 +116,9 @@ pub async fn get_handler(
             false,
         )
         .await?;
-        return Err(CredError::PermissionDenied(format!(
-            "no access to category: {}",
-            category
-        ))
-        .into());
+        return Err(
+            CredError::PermissionDenied(format!("no access to category: {}", category)).into(),
+        );
     }
 
     let (row, data) = get_secret(

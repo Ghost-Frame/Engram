@@ -22,29 +22,44 @@ pub fn register(out: &mut Vec<ToolDef>) {
 
 pub async fn assemble_context(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let opts: ContextOptions = serde_json::from_value(args.clone()).map_err(|e| invalid_input(e.to_string()))?;
-    Ok(json!(assemble_context_lib(&app.db, opts, auth.user_id, None, None).await?))
+    let opts: ContextOptions =
+        serde_json::from_value(args.clone()).map_err(|e| invalid_input(e.to_string()))?;
+    Ok(json!(
+        assemble_context_lib(&app.db, opts, auth.user_id, None, None).await?
+    ))
 }
 
 pub async fn get_header(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    Ok(json!(prompts::generate_header(
-        &app.db,
-        args.get("actor_model").and_then(Value::as_str).unwrap_or("unknown"),
-        args.get("actor_role").and_then(Value::as_str).unwrap_or("assistant"),
-        args.get("context").and_then(Value::as_str).unwrap_or(""),
-        args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize,
-        auth.user_id,
-    ).await?))
+    Ok(json!(
+        prompts::generate_header(
+            &app.db,
+            args.get("actor_model")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            args.get("actor_role")
+                .and_then(Value::as_str)
+                .unwrap_or("assistant"),
+            args.get("context").and_then(Value::as_str).unwrap_or(""),
+            args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize,
+            auth.user_id,
+        )
+        .await?
+    ))
 }
 
 pub async fn generate_prompt(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    Ok(json!(prompts::generate_prompt(
-        &app.db,
-        args.get("format").and_then(Value::as_str).unwrap_or("raw"),
-        args.get("token_budget").and_then(Value::as_u64).unwrap_or(4000) as usize,
-        args.get("context").and_then(Value::as_str).unwrap_or(""),
-        auth.user_id,
-    ).await?))
+    Ok(json!(
+        prompts::generate_prompt(
+            &app.db,
+            args.get("format").and_then(Value::as_str).unwrap_or("raw"),
+            args.get("token_budget")
+                .and_then(Value::as_u64)
+                .unwrap_or(4000) as usize,
+            args.get("context").and_then(Value::as_str).unwrap_or(""),
+            auth.user_id,
+        )
+        .await?
+    ))
 }

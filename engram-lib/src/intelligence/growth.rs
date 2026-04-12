@@ -3,9 +3,9 @@
 //! Observes recent activity, generates observations about patterns, and
 //! stores them as growth memories.
 
-use crate::db::Database;
 use crate::config::Config;
 use crate::cred::{has_secret_patterns, CreddClient};
+use crate::db::Database;
 use crate::intelligence::llm::{call_llm, is_llm_available, LlmOptions};
 use crate::intelligence::types::{GrowthReflectRequest, GrowthReflectResult};
 use crate::Result;

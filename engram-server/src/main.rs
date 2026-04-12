@@ -113,10 +113,7 @@ async fn main() {
 
     // Start background PageRank refresh job if enabled.
     let _pagerank_token = if state.config.pagerank_enabled {
-        let token = start_pagerank_refresh_job(
-            Arc::clone(&state.db),
-            Arc::clone(&state.config),
-        );
+        let token = start_pagerank_refresh_job(Arc::clone(&state.db), Arc::clone(&state.config));
         tracing::info!("background pagerank refresh job started");
         Some(token)
     } else {

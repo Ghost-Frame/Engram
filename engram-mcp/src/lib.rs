@@ -123,6 +123,7 @@ pub fn invalid_input(message: impl Into<String>) -> EngError {
 }
 
 pub fn require_object(value: &Value) -> Result<&serde_json::Map<String, Value>> {
-    value.as_object()
+    value
+        .as_object()
         .ok_or_else(|| invalid_input("arguments must be a JSON object"))
 }

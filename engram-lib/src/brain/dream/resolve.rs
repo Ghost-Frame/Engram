@@ -79,15 +79,8 @@ pub async fn resolve(
         let _ = pattern::update_strength(db, loser, user_id, new_loser_strength).await;
 
         // Strengthen the contradiction edge itself -- it becomes more certain
-        let _ = edges::strengthen_edge(
-            db,
-            winner,
-            loser,
-            EdgeType::Contradiction,
-            0.02,
-            user_id,
-        )
-        .await;
+        let _ =
+            edges::strengthen_edge(db, winner, loser, EdgeType::Contradiction, 0.02, user_id).await;
 
         items_changed += 1;
     }

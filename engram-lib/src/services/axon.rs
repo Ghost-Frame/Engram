@@ -168,9 +168,7 @@ pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Ev
 }
 
 pub async fn get_event(db: &Database, id: i64, user_id: i64) -> Result<Event> {
-    let sql = format!(
-        "SELECT {EVENT_COLUMNS} FROM axon_events WHERE id = ?1 AND user_id = ?2"
-    );
+    let sql = format!("SELECT {EVENT_COLUMNS} FROM axon_events WHERE id = ?1 AND user_id = ?2");
 
     #[cfg(feature = "db_pool")]
     if uses_pool_backend(db) {
@@ -325,7 +323,8 @@ pub async fn ensure_channel(
     }
 
     let conn = &db.conn;
-    conn.execute(sql, libsql::params![name, description]).await?;
+    conn.execute(sql, libsql::params![name, description])
+        .await?;
     Ok(())
 }
 
@@ -432,8 +431,7 @@ pub async fn delete_subscription(
     channel: &str,
     user_id: i64,
 ) -> Result<bool> {
-    let sql =
-        "DELETE FROM axon_subscriptions WHERE agent = ?1 AND channel = ?2 AND user_id = ?3";
+    let sql = "DELETE FROM axon_subscriptions WHERE agent = ?1 AND channel = ?2 AND user_id = ?3";
     let a = agent.to_string();
     let c = channel.to_string();
 
@@ -506,12 +504,7 @@ pub async fn list_subscriptions_for_agent(
     Ok(results)
 }
 
-pub async fn get_cursor(
-    db: &Database,
-    agent: &str,
-    channel: &str,
-    user_id: i64,
-) -> Result<Cursor> {
+pub async fn get_cursor(db: &Database, agent: &str, channel: &str, user_id: i64) -> Result<Cursor> {
     let sql = "SELECT agent, channel, last_event_id, updated_at, user_id
                FROM axon_cursors
                WHERE agent = ?1 AND channel = ?2 AND user_id = ?3";
