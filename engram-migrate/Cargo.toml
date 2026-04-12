@@ -15,7 +15,7 @@ rusqlite = { workspace = true }
 lancedb = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-arrow = "51"
+arrow = "56"
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }

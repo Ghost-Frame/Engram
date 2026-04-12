@@ -177,19 +177,20 @@ async fn build_dataset(db: &Database, args: &Args) -> engram_lib::Result<(usize,
 }
 
 async fn clear_pagerank_cache(db: &Database, user_id: i64) -> engram_lib::Result<()> {
-    db.connection()
-        .execute(
+    db.write(move |conn| {
+        conn.execute(
             "DELETE FROM memory_pagerank WHERE user_id = ?1",
-            libsql::params![user_id],
+            rusqlite::params![user_id],
         )
-        .await?;
-    db.connection()
-        .execute(
+        .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute(
             "DELETE FROM pagerank_dirty WHERE user_id = ?1",
-            libsql::params![user_id],
+            rusqlite::params![user_id],
         )
-        .await?;
-    Ok(())
+        .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await
 }
 
 async fn warm_pagerank_cache(db: &Database, user_id: i64) -> engram_lib::Result<usize> {

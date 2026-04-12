@@ -9,7 +9,7 @@ tokio-rusqlite = "0.5"
 deadpool-sqlite = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-chrono = { version = "=0.4.38", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -35,13 +35,13 @@ zip = "2"
 pdf-extract = "0.7"
 rand = "0.8"
 async-trait = "0.1"
-arrow-array = "51"
-arrow-schema = "51"
+arrow-array = "56"
+arrow-schema = "56"
 futures = "0.3"
-lancedb = { version = "0.4", default-features = false }
+lancedb = { version = "0.23", default-features = false }
 protoc-bin-vendored-linux-x86_64 = "3"
 flate2 = "1"
-hex = "0.4"
+hex = "0.4.3"
 secrecy = { version = "0.8", features = ["serde"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 # Note: Can't use bundled sqlite with libsql in same binary - they conflict.

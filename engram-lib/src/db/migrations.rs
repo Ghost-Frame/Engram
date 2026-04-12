@@ -21,6 +21,7 @@ const MIGRATION_PCA_MODELS: i64 = 15;
 const MIGRATION_BRAIN_DREAM_RUNS: i64 = 16;
 const MIGRATION_CRED_TABLES: i64 = 17;
 const MIGRATION_API_KEY_HASH_UNIQUE: i64 = 18;
+const MIGRATION_API_KEY_HASH_VERSION: i64 = 19;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
@@ -153,6 +154,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 18: api_key_hash_unique");
         run_migration_api_key_hash_unique(conn)?;
         record_migration(conn, MIGRATION_API_KEY_HASH_UNIQUE, "api_key_hash_unique")?;
+    }
+
+    if current_version < MIGRATION_API_KEY_HASH_VERSION {
+        info!("Running migration 19: api_key_hash_version");
+        run_migration_api_key_hash_version(conn)?;
+        record_migration(conn, MIGRATION_API_KEY_HASH_VERSION, "api_key_hash_version")?;
     }
 
     Ok(())
@@ -571,6 +578,18 @@ fn run_migration_api_key_hash_unique(conn: &rusqlite::Connection) -> Result<()> 
 
     conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+/// Migration 19: add hash_version column to api_keys for peppered hashing.
+///
+/// - v1 (default): legacy SHA-256(raw_key)
+/// - v2: SHA-256(pepper || raw_key) when ENGRAM_API_KEY_PEPPER is set
+fn run_migration_api_key_hash_version(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE api_keys ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1;",
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
