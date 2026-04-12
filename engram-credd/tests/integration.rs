@@ -8,9 +8,9 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use engram_cred::crypto::derive_key;
+use engram_credd::{build_router, state::AppState};
 use engram_lib::db::migrations::run_migrations;
 use engram_lib::db::Database;
-use engram_credd::{build_router, state::AppState};
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -28,7 +28,7 @@ impl TestApp {
 
         let master_password = "test-master-password";
         let master_key = derive_key(1, master_password.as_bytes(), None);
-        let master_token = hex::encode(&master_key);
+        let master_token = hex::encode(master_key);
 
         let state = AppState::new(db, master_key);
         let router = build_router(state);
@@ -48,17 +48,17 @@ impl TestApp {
     }
 
     async fn post(&self, path: &str, body: Value) -> (StatusCode, Value) {
-        self.request_auth("POST", path, Some(body), &self.master_token).await
+        self.request_auth("POST", path, Some(body), &self.master_token)
+            .await
     }
 
     async fn delete(&self, path: &str) -> (StatusCode, Value) {
-        self.request_auth("DELETE", path, None, &self.master_token).await
+        self.request_auth("DELETE", path, None, &self.master_token)
+            .await
     }
 
     async fn request(&self, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
-        let mut builder = Request::builder()
-            .method(method)
-            .uri(path);
+        let mut builder = Request::builder().method(method).uri(path);
 
         let body = if let Some(json) = body {
             builder = builder.header("content-type", "application/json");
@@ -79,7 +79,13 @@ impl TestApp {
         (status, json)
     }
 
-    async fn request_auth(&self, method: &str, path: &str, body: Option<Value>, token: &str) -> (StatusCode, Value) {
+    async fn request_auth(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        token: &str,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder()
             .method(method)
             .uri(path)
@@ -151,17 +157,24 @@ async fn store_and_get_api_key() {
     let app = TestApp::new().await;
 
     // Store secret
-    let (status, body) = app.post("/secret/openai/api-key", json!({
-        "data": {
-            "type": "api_key",
-            "key": "sk-test-12345"
-        }
-    })).await;
+    let (status, body) = app
+        .post(
+            "/secret/openai/api-key",
+            json!({
+                "data": {
+                    "type": "api_key",
+                    "key": "sk-test-12345"
+                }
+            }),
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.get("id").is_some());
 
     // Get secret
-    let (status, body) = app.get_auth("/secret/openai/api-key", &app.master_token).await;
+    let (status, body) = app
+        .get_auth("/secret/openai/api-key", &app.master_token)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["service"], "openai");
     assert_eq!(body["key"], "api-key");
@@ -172,16 +185,23 @@ async fn store_and_get_api_key() {
 async fn store_and_get_login() {
     let app = TestApp::new().await;
 
-    let (status, _) = app.post("/secret/github/account", json!({
-        "data": {
-            "type": "login",
-            "username": "user@example.com",
-            "password": "secret123"
-        }
-    })).await;
+    let (status, _) = app
+        .post(
+            "/secret/github/account",
+            json!({
+                "data": {
+                    "type": "login",
+                    "username": "user@example.com",
+                    "password": "secret123"
+                }
+            }),
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (status, body) = app.get_auth("/secret/github/account", &app.master_token).await;
+    let (status, body) = app
+        .get_auth("/secret/github/account", &app.master_token)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["value"]["username"], "user@example.com");
     assert_eq!(body["value"]["password"], "secret123");
@@ -192,12 +212,20 @@ async fn list_secrets() {
     let app = TestApp::new().await;
 
     // Store two secrets
-    app.post("/secret/aws/access-key", json!({
-        "data": { "type": "api_key", "key": "AKIA123" }
-    })).await;
-    app.post("/secret/aws/secret-key", json!({
-        "data": { "type": "api_key", "key": "secret456" }
-    })).await;
+    app.post(
+        "/secret/aws/access-key",
+        json!({
+            "data": { "type": "api_key", "key": "AKIA123" }
+        }),
+    )
+    .await;
+    app.post(
+        "/secret/aws/secret-key",
+        json!({
+            "data": { "type": "api_key", "key": "secret456" }
+        }),
+    )
+    .await;
 
     // List all
     let (status, body) = app.get_auth("/secrets", &app.master_token).await;
@@ -211,9 +239,13 @@ async fn delete_secret() {
     let app = TestApp::new().await;
 
     // Store
-    app.post("/secret/temp/key", json!({
-        "data": { "type": "api_key", "key": "temp123" }
-    })).await;
+    app.post(
+        "/secret/temp/key",
+        json!({
+            "data": { "type": "api_key", "key": "temp123" }
+        }),
+    )
+    .await;
 
     // Delete
     let (status, body) = app.delete("/secret/temp/key").await;
@@ -234,11 +266,16 @@ async fn create_and_list_agent_keys() {
     let app = TestApp::new().await;
 
     // Create agent key
-    let (status, body) = app.post("/agents", json!({
-        "name": "test-agent",
-        "categories": ["openai", "aws"],
-        "allow_raw": false
-    })).await;
+    let (status, body) = app
+        .post(
+            "/agents",
+            json!({
+                "name": "test-agent",
+                "categories": ["openai", "aws"],
+                "allow_raw": false
+            }),
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.get("key").is_some());
     let agent_key = body["key"].as_str().unwrap();
@@ -251,9 +288,13 @@ async fn create_and_list_agent_keys() {
     assert_eq!(keys[0]["name"], "test-agent");
 
     // Agent key can access secrets in allowed categories
-    app.post("/secret/openai/key", json!({
-        "data": { "type": "api_key", "key": "sk-agent-test" }
-    })).await;
+    app.post(
+        "/secret/openai/key",
+        json!({
+            "data": { "type": "api_key", "key": "sk-agent-test" }
+        }),
+    )
+    .await;
 
     let (status, body) = app.get_auth("/secret/openai/key", agent_key).await;
     assert_eq!(status, StatusCode::OK);
@@ -265,18 +306,27 @@ async fn agent_key_category_restriction() {
     let app = TestApp::new().await;
 
     // Create agent with limited access
-    let (status, body) = app.post("/agents", json!({
-        "name": "limited-agent",
-        "categories": ["public"],
-        "allow_raw": false
-    })).await;
+    let (status, body) = app
+        .post(
+            "/agents",
+            json!({
+                "name": "limited-agent",
+                "categories": ["public"],
+                "allow_raw": false
+            }),
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     let agent_key = body["key"].as_str().unwrap();
 
     // Store secret in restricted category
-    app.post("/secret/private/secret", json!({
-        "data": { "type": "api_key", "key": "private-key" }
-    })).await;
+    app.post(
+        "/secret/private/secret",
+        json!({
+            "data": { "type": "api_key", "key": "private-key" }
+        }),
+    )
+    .await;
 
     // Agent cannot access restricted category
     let (status, _) = app.get_auth("/secret/private/secret", agent_key).await;
@@ -288,11 +338,16 @@ async fn revoke_agent_key() {
     let app = TestApp::new().await;
 
     // Create and revoke
-    let (status, body) = app.post("/agents", json!({
-        "name": "revokable",
-        "categories": ["test"],
-        "allow_raw": false
-    })).await;
+    let (status, body) = app
+        .post(
+            "/agents",
+            json!({
+                "name": "revokable",
+                "categories": ["test"],
+                "allow_raw": false
+            }),
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     let agent_key = body["key"].as_str().unwrap().to_string();
 
@@ -300,9 +355,13 @@ async fn revoke_agent_key() {
     assert_eq!(status, StatusCode::OK);
 
     // Store a secret
-    app.post("/secret/test/key", json!({
-        "data": { "type": "api_key", "key": "test123" }
-    })).await;
+    app.post(
+        "/secret/test/key",
+        json!({
+            "data": { "type": "api_key", "key": "test123" }
+        }),
+    )
+    .await;
 
     // Revoked key cannot access
     let (status, _) = app.get_auth("/secret/test/key", &agent_key).await;
@@ -318,14 +377,23 @@ async fn resolve_text_substitution() {
     let app = TestApp::new().await;
 
     // Store secret
-    app.post("/secret/openai/api-key", json!({
-        "data": { "type": "api_key", "key": "sk-real-key" }
-    })).await;
+    app.post(
+        "/secret/openai/api-key",
+        json!({
+            "data": { "type": "api_key", "key": "sk-real-key" }
+        }),
+    )
+    .await;
 
     // Resolve placeholder
-    let (status, body) = app.post("/resolve/text", json!({
-        "text": "Authorization: Bearer {{secret:openai/api-key}}"
-    })).await;
+    let (status, body) = app
+        .post(
+            "/resolve/text",
+            json!({
+                "text": "Authorization: Bearer {{secret:openai/api-key}}"
+            }),
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["text"], "Authorization: Bearer sk-real-key");
 }
@@ -335,15 +403,24 @@ async fn resolve_raw_access() {
     let app = TestApp::new().await;
 
     // Store secret
-    app.post("/secret/db/password", json!({
-        "data": { "type": "login", "username": "admin", "password": "secret123" }
-    })).await;
+    app.post(
+        "/secret/db/password",
+        json!({
+            "data": { "type": "login", "username": "admin", "password": "secret123" }
+        }),
+    )
+    .await;
 
     // Raw resolve
-    let (status, body) = app.post("/resolve/raw", json!({
-        "category": "db",
-        "name": "password"
-    })).await;
+    let (status, body) = app
+        .post(
+            "/resolve/raw",
+            json!({
+                "category": "db",
+                "name": "password"
+            }),
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["value"]["password"], "secret123");
 }

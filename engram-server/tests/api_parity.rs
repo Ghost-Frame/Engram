@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Json;
 use axum::routing::get;
+use axum::Json;
 use axum::Router;
 use engram_lib::config::Config;
 use engram_lib::db::Database;
@@ -83,8 +83,7 @@ impl TestApp {
                     .uri("/bootstrap")
                     .header("Content-Type", "application/json")
                     .body(Body::from(
-                        serde_json::json!({ "secret": "test-bootstrap-secret" })
-                            .to_string(),
+                        serde_json::json!({ "secret": "test-bootstrap-secret" }).to_string(),
                     ))
                     .unwrap(),
             )
@@ -97,7 +96,11 @@ impl TestApp {
             .expect("bootstrap did not return api_key")
             .to_string();
 
-        TestApp { router, api_key, db }
+        TestApp {
+            router,
+            api_key,
+            db,
+        }
     }
 
     fn bearer(&self) -> String {
@@ -1062,7 +1065,10 @@ async fn gate_check_blocks_on_resolved_secret_pattern() {
 
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(body["allowed"], false);
-    assert!(body["reason"].as_str().unwrap_or_default().contains("blocked pattern"));
+    assert!(body["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("blocked pattern"));
 }
 
 #[tokio::test]

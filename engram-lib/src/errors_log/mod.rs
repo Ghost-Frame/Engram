@@ -31,11 +31,7 @@ pub struct ListErrorsRequest {
 }
 
 /// Log an error event to the database. Returns the new row id.
-pub async fn log_error(
-    db: &Database,
-    req: LogErrorRequest,
-    user_id: Option<&str>,
-) -> Result<i64> {
+pub async fn log_error(db: &Database, req: LogErrorRequest, user_id: Option<&str>) -> Result<i64> {
     let mut rows = db
         .conn
         .query(

@@ -1,15 +1,15 @@
-#[cfg(feature = "db_pool")]
-pub mod pool;
 pub mod backup;
 pub mod migrations;
+#[cfg(feature = "db_pool")]
+pub mod pool;
 pub mod schema;
 mod schema_sql;
 
 use crate::config::Config;
 use crate::vector::{LanceIndex, VectorIndex};
-use crate::Result;
 #[cfg(feature = "db_pool")]
 use crate::EngError;
+use crate::Result;
 use libsql::{Builder, Connection, Database as LibsqlDatabase};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -149,9 +149,9 @@ impl Database {
             EngError::DatabaseMessage(format!("failed to acquire reader pool connection: {e}"))
         })?;
 
-        conn.interact(move |conn| f(conn))
-            .await
-            .map_err(|e| EngError::DatabaseMessage(format!("reader pool interaction failed: {e}")))?
+        conn.interact(move |conn| f(conn)).await.map_err(|e| {
+            EngError::DatabaseMessage(format!("reader pool interaction failed: {e}"))
+        })?
     }
 
     #[cfg(feature = "db_pool")]
@@ -167,9 +167,9 @@ impl Database {
             EngError::DatabaseMessage(format!("failed to acquire writer pool connection: {e}"))
         })?;
 
-        conn.interact(move |conn| f(conn))
-            .await
-            .map_err(|e| EngError::DatabaseMessage(format!("writer pool interaction failed: {e}")))?
+        conn.interact(move |conn| f(conn)).await.map_err(|e| {
+            EngError::DatabaseMessage(format!("writer pool interaction failed: {e}"))
+        })?
     }
 
     #[cfg(feature = "db_pool")]

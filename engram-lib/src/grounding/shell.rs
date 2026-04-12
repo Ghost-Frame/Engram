@@ -112,8 +112,8 @@ fn confine_path(path: &str) -> Result<PathBuf, String> {
     } else {
         base.join(p)
     };
-    let canonical = std::fs::canonicalize(&joined)
-        .map_err(|e| format!("path cannot be resolved: {}", e))?;
+    let canonical =
+        std::fs::canonicalize(&joined).map_err(|e| format!("path cannot be resolved: {}", e))?;
     if !canonical.starts_with(&base) {
         return Err(format!(
             "path {} escapes base directory {}",

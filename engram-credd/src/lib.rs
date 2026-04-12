@@ -5,7 +5,11 @@ pub mod handlers;
 pub mod server;
 pub mod state;
 
-use axum::{middleware, routing::{delete, get, post}, Router};
+use axum::{
+    middleware,
+    routing::{delete, get, post},
+    Router,
+};
 use tower_http::trace::TraceLayer;
 
 use auth::auth_middleware;
@@ -36,7 +40,10 @@ pub fn build_router(state: AppState) -> Router {
         // Health check (no auth)
         .route("/health", get(health_handler))
         // Apply middleware
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

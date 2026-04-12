@@ -292,29 +292,49 @@ impl Config {
             config.host = v;
         }
         if let Ok(v) = std::env::var("ENGRAM_PORT") {
-            if let Ok(p) = v.parse() {
-                config.port = p;
+            match v.parse() {
+                Ok(p) => config.port = p,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_PORT={}, using default {}",
+                    v,
+                    config.port
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_API_KEY") {
             config.api_key = Some(v);
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_DIM") {
-            if let Ok(d) = v.parse() {
-                config.embedding_dim = d;
+            match v.parse() {
+                Ok(d) => config.embedding_dim = d,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_EMBEDDING_DIM={}, using default {}",
+                    v,
+                    config.embedding_dim
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_DEFAULT_RETENTION") {
-            if let Ok(r) = v.parse() {
-                config.default_retention = r;
+            match v.parse() {
+                Ok(r) => config.default_retention = r,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_DEFAULT_RETENTION={}, using default {}",
+                    v,
+                    config.default_retention
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_MODEL") {
             config.embedding_model = v;
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_MAX_SEQ") {
-            if let Ok(n) = v.parse() {
-                config.embedding_max_seq = n;
+            match v.parse() {
+                Ok(n) => config.embedding_max_seq = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_EMBEDDING_MAX_SEQ={}, using default {}",
+                    v,
+                    config.embedding_max_seq
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_MODEL_DIR") {
@@ -327,26 +347,46 @@ impl Config {
             config.embedding_offline_only = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_CHUNK_MAX_CHARS") {
-            if let Ok(n) = v.parse() {
-                config.embedding_chunk_max_chars = n;
+            match v.parse() {
+                Ok(n) => config.embedding_chunk_max_chars = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_EMBEDDING_CHUNK_MAX_CHARS={}, using default {}",
+                    v,
+                    config.embedding_chunk_max_chars
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_CHUNK_OVERLAP") {
-            if let Ok(n) = v.parse() {
-                config.embedding_chunk_overlap = n;
+            match v.parse() {
+                Ok(n) => config.embedding_chunk_overlap = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_EMBEDDING_CHUNK_OVERLAP={}, using default {}",
+                    v,
+                    config.embedding_chunk_overlap
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_CHUNK_MAX_CHUNKS") {
-            if let Ok(n) = v.parse() {
-                config.embedding_chunk_max_chunks = n;
+            match v.parse() {
+                Ok(n) => config.embedding_chunk_max_chunks = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_EMBEDDING_CHUNK_MAX_CHUNKS={}, using default {}",
+                    v,
+                    config.embedding_chunk_max_chunks
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_CROSS_ENCODER") {
             config.reranker_enabled = v != "0";
         }
         if let Ok(v) = std::env::var("ENGRAM_RERANKER_TOP_K") {
-            if let Ok(n) = v.parse() {
-                config.reranker_top_k = n;
+            match v.parse() {
+                Ok(n) => config.reranker_top_k = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_RERANKER_TOP_K={}, using default {}",
+                    v,
+                    config.reranker_top_k
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_DATA_DIR") {
@@ -356,8 +396,13 @@ impl Config {
             config.lance_index_path = Some(v);
         }
         if let Ok(v) = std::env::var("ENGRAM_VECTOR_DIMENSIONS") {
-            if let Ok(n) = v.parse() {
-                config.vector_dimensions = n;
+            match v.parse() {
+                Ok(n) => config.vector_dimensions = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_VECTOR_DIMENSIONS={}, using default {}",
+                    v,
+                    config.vector_dimensions
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_USE_LANCE_INDEX") {
@@ -370,18 +415,33 @@ impl Config {
             config.gui_build_dir = Some(v);
         }
         if let Ok(v) = std::env::var("ENGRAM_PAGERANK_REFRESH_INTERVAL") {
-            if let Ok(n) = v.parse() {
-                config.pagerank_refresh_interval_secs = n;
+            match v.parse() {
+                Ok(n) => config.pagerank_refresh_interval_secs = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_PAGERANK_REFRESH_INTERVAL={}, using default {}",
+                    v,
+                    config.pagerank_refresh_interval_secs
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_PAGERANK_DIRTY_THRESHOLD") {
-            if let Ok(n) = v.parse() {
-                config.pagerank_dirty_threshold = n;
+            match v.parse() {
+                Ok(n) => config.pagerank_dirty_threshold = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_PAGERANK_DIRTY_THRESHOLD={}, using default {}",
+                    v,
+                    config.pagerank_dirty_threshold
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_PAGERANK_MAX_CONCURRENT") {
-            if let Ok(n) = v.parse() {
-                config.pagerank_max_concurrent = n;
+            match v.parse() {
+                Ok(n) => config.pagerank_max_concurrent = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_PAGERANK_MAX_CONCURRENT={}, using default {}",
+                    v,
+                    config.pagerank_max_concurrent
+                ),
             }
         }
         if let Ok(v) = std::env::var("ENGRAM_PAGERANK_ENABLED") {

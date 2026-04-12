@@ -164,9 +164,8 @@ async fn proxy_forwards_secret_in_auth_header() {
 
 #[test]
 fn pattern_parser_handles_raw_and_nested_keys() {
-    let patterns = find_secret_patterns(
-        "{{secret:svc/key}} {{secret-raw:security/blocklist/0}} trailing",
-    );
+    let patterns =
+        find_secret_patterns("{{secret:svc/key}} {{secret-raw:security/blocklist/0}} trailing");
 
     assert_eq!(patterns.len(), 2);
     assert_eq!(patterns[0].service, "svc");
@@ -175,7 +174,9 @@ fn pattern_parser_handles_raw_and_nested_keys() {
     assert_eq!(patterns[1].key, "blocklist/0");
 }
 
-async fn spawn_mock_credd(documents: HashMap<(String, String), Value>) -> (String, tokio::task::JoinHandle<()>) {
+async fn spawn_mock_credd(
+    documents: HashMap<(String, String), Value>,
+) -> (String, tokio::task::JoinHandle<()>) {
     let state = MockCreddState {
         expected_auth: "Bearer test-agent-key".to_string(),
         documents: Arc::new(documents),

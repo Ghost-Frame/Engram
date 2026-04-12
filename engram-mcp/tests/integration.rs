@@ -16,35 +16,58 @@ async fn test_app_and_token() -> (App, String) {
             engram_lib::auth::Scope::Write,
             engram_lib::auth::Scope::Admin,
         ],
-    ).await.unwrap();
+        None,
+    )
+    .await
+    .unwrap();
     (app, token)
 }
 
-async fn call(app: &App, token: &str, name: &str, arguments: serde_json::Value) -> serde_json::Value {
+async fn call(
+    app: &App,
+    token: &str,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
     let mut args = arguments.as_object().cloned().unwrap_or_default();
     args.insert("bearer_token".into(), json!(token));
-    handle_jsonrpc(app, json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": name,
-            "arguments": args,
-        }
-    })).await.unwrap()
+    handle_jsonrpc(
+        app,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": name,
+                "arguments": args,
+            }
+        }),
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
 async fn initialize_and_list_tools() {
     let (app, _) = test_app_and_token().await;
-    let init = handle_jsonrpc(&app, json!({
-        "jsonrpc":"2.0","id":1,"method":"initialize","params":{}
-    })).await.unwrap();
+    let init = handle_jsonrpc(
+        &app,
+        json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize","params":{}
+        }),
+    )
+    .await
+    .unwrap();
     assert_eq!(init["result"]["serverInfo"]["name"], "engram-mcp");
 
-    let list = handle_jsonrpc(&app, json!({
-        "jsonrpc":"2.0","id":2,"method":"tools/list","params":{}
-    })).await.unwrap();
+    let list = handle_jsonrpc(
+        &app,
+        json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/list","params":{}
+        }),
+    )
+    .await
+    .unwrap();
     let tools = list["result"]["tools"].as_array().unwrap();
     assert!(tools.len() >= 30);
 }
@@ -53,30 +76,54 @@ async fn initialize_and_list_tools() {
 async fn memory_round_trip_and_service_tools() {
     let (app, token) = test_app_and_token().await;
 
-    let stored = call(&app, &token, "memory.store", json!({
-        "content": "The MCP integration stores searchable test memories.",
-        "category": "reference"
-    })).await;
+    let stored = call(
+        &app,
+        &token,
+        "memory.store",
+        json!({
+            "content": "The MCP integration stores searchable test memories.",
+            "category": "reference"
+        }),
+    )
+    .await;
     assert_eq!(stored["result"]["isError"], false);
 
-    let search = call(&app, &token, "memory.search", json!({
-        "query": "searchable test memories",
-        "limit": 5
-    })).await;
+    let search = call(
+        &app,
+        &token,
+        "memory.search",
+        json!({
+            "query": "searchable test memories",
+            "limit": 5
+        }),
+    )
+    .await;
     assert_eq!(search["result"]["isError"], false);
 
-    let task = call(&app, &token, "services.chiasm_create_task", json!({
-        "agent": "tester",
-        "project": "engram-mcp",
-        "title": "verify tool coverage"
-    })).await;
+    let task = call(
+        &app,
+        &token,
+        "services.chiasm_create_task",
+        json!({
+            "agent": "tester",
+            "project": "engram-mcp",
+            "title": "verify tool coverage"
+        }),
+    )
+    .await;
     assert_eq!(task["result"]["isError"], false);
 
-    let event = call(&app, &token, "services.axon_publish", json!({
-        "channel": "tasks",
-        "action": "task.started",
-        "payload": {"id": 1}
-    })).await;
+    let event = call(
+        &app,
+        &token,
+        "services.axon_publish",
+        json!({
+            "channel": "tasks",
+            "action": "task.started",
+            "payload": {"id": 1}
+        }),
+    )
+    .await;
     assert_eq!(event["result"]["isError"], false);
 }
 

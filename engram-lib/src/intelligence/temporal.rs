@@ -352,6 +352,7 @@ pub async fn invalidate_contradicted_facts(
         info!(
             msg = "facts_invalidated_by_contradiction",
             count = invalidated,
+            user_id,
             ?subjects
         );
     }
@@ -403,7 +404,7 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
     for (fact_id, subject, verb, object, quantity) in &facts {
         // Set temporal validity (tenant-scoped)
         if let Err(e) = set_fact_validity(db, *fact_id, &created_at, user_id).await {
-            warn!(msg = "set_fact_validity_failed", fact_id, error = %e);
+            warn!(msg = "set_fact_validity_failed", fact_id, user_id, error = %e);
         }
 
         // Check for contradictions
@@ -421,11 +422,11 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
         {
             Ok(contradictions) if !contradictions.is_empty() => {
                 if let Err(e) = invalidate_contradicted_facts(db, &contradictions, user_id).await {
-                    warn!(msg = "fact_invalidation_failed", error = %e);
+                    warn!(msg = "fact_invalidation_failed", user_id, error = %e);
                 }
             }
             Err(e) => {
-                warn!(msg = "fact_contradiction_check_failed", error = %e);
+                warn!(msg = "fact_contradiction_check_failed", user_id, error = %e);
             }
             _ => {}
         }

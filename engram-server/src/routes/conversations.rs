@@ -73,8 +73,7 @@ async fn get_one(
     let conv = conversations::get_conversation_for_user(&state.db, id, auth.user_id).await?;
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
-    let messages =
-        conversations::list_messages(&state.db, id, auth.user_id, limit, offset).await?;
+    let messages = conversations::list_messages(&state.db, id, auth.user_id, limit, offset).await?;
     Ok(Json(json!({
         "id": conv.id, "agent": conv.agent, "session_id": conv.session_id,
         "title": conv.title, "metadata": conv.metadata,
@@ -156,8 +155,7 @@ async fn list_msgs(
     conversations::get_conversation_for_user(&state.db, id, auth.user_id).await?;
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
-    let messages =
-        conversations::list_messages(&state.db, id, auth.user_id, limit, offset).await?;
+    let messages = conversations::list_messages(&state.db, id, auth.user_id, limit, offset).await?;
     Ok(Json(json!({ "messages": messages })))
 }
 
@@ -167,9 +165,8 @@ async fn bulk_insert(
     Auth(auth): Auth,
     Json(body): Json<BulkInsertRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let conv =
-        conversations::bulk_insert_conversation(&state.db, &state.credd, body, auth.user_id)
-            .await?;
+    let conv = conversations::bulk_insert_conversation(&state.db, &state.credd, body, auth.user_id)
+        .await?;
     Ok((StatusCode::CREATED, Json(json!(conv))))
 }
 

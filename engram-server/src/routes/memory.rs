@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
     routing::{get, post, put},
     Json, Router,
@@ -11,6 +11,8 @@ use engram_lib::memory::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::time::Duration;
+use tower_http::timeout::TimeoutLayer;
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
@@ -36,6 +38,13 @@ pub fn router() -> Router<AppState> {
         .route("/memory/{id}/forget", post(forget_memory))
         .route("/memory/{id}/archive", post(archive_memory))
         .route("/memory/{id}/unarchive", post(unarchive_memory))
+        // S7-26: search/recall is DB + embedding lookup; 10s is generous.
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(10),
+        ))
+        // S7-27: memory payloads are small JSON; 256 KB covers any realistic content.
+        .layer(DefaultBodyLimit::max(256 * 1024))
 }
 
 fn parse_tags(tags: &Option<String>) -> Vec<String> {

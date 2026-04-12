@@ -108,10 +108,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_vacuum_into_creates_backup_file() {
-        let src_path = std::env::temp_dir()
-            .join(format!("engram-src-{}.db", uuid::Uuid::new_v4()));
-        let dst_path = std::env::temp_dir()
-            .join(format!("engram-dst-{}.db", uuid::Uuid::new_v4()));
+        let src_path = std::env::temp_dir().join(format!("engram-src-{}.db", uuid::Uuid::new_v4()));
+        let dst_path = std::env::temp_dir().join(format!("engram-dst-{}.db", uuid::Uuid::new_v4()));
 
         let db = crate::db::Database::connect(src_path.to_str().unwrap())
             .await
@@ -129,8 +127,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_integrity_check_passes_for_minimal_db() {
-        let path = std::env::temp_dir()
-            .join(format!("engram-minimal-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("engram-minimal-{}.db", uuid::Uuid::new_v4()));
         let path_str = path.to_str().unwrap().to_string();
 
         {
@@ -165,7 +162,11 @@ mod tests {
             .await
             .expect("in-memory db");
         let result = wal_checkpoint(&db, CheckpointMode::Passive).await;
-        assert!(result.is_ok(), "wal_checkpoint should not error: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "wal_checkpoint should not error: {:?}",
+            result
+        );
     }
 
     #[tokio::test]

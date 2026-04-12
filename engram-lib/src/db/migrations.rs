@@ -1,6 +1,6 @@
-use crate::Result;
 #[cfg(feature = "db_pool")]
 use crate::EngError;
+use crate::Result;
 use libsql::Connection;
 use tracing::info;
 
@@ -22,6 +22,7 @@ const MIGRATION_BRAIN_META: i64 = 14;
 const MIGRATION_PCA_MODELS: i64 = 15;
 const MIGRATION_BRAIN_DREAM_RUNS: i64 = 16;
 const MIGRATION_CRED_TABLES: i64 = 17;
+const MIGRATION_API_KEY_HASH_UNIQUE: i64 = 18;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub async fn run_migrations(conn: &Connection) -> Result<()> {
@@ -190,8 +191,13 @@ pub async fn run_migrations(conn: &Connection) -> Result<()> {
         record_migration(conn, MIGRATION_CRED_TABLES, "cred_tables").await?;
     }
 
-    // Future migrations go here:
-    // if current_version < MIGRATION_XXX { ... }
+    // Migration 18: add UNIQUE index on api_keys(key_hash) to prevent duplicate
+    // hashes that could allow hash-collision auth bypass (RB-L7).
+    if current_version < MIGRATION_API_KEY_HASH_UNIQUE {
+        info!("Running migration 18: api_key_hash_unique");
+        run_migration_api_key_hash_unique(conn).await?;
+        record_migration(conn, MIGRATION_API_KEY_HASH_UNIQUE, "api_key_hash_unique").await?;
+    }
 
     Ok(())
 }
@@ -323,6 +329,12 @@ pub fn run_migrations_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
         record_migration_rusqlite(conn, MIGRATION_CRED_TABLES, "cred_tables")?;
     }
 
+    if current_version < MIGRATION_API_KEY_HASH_UNIQUE {
+        info!("Running migration 18: api_key_hash_unique");
+        run_migration_api_key_hash_unique_rusqlite(conn)?;
+        record_migration_rusqlite(conn, MIGRATION_API_KEY_HASH_UNIQUE, "api_key_hash_unique")?;
+    }
+
     Ok(())
 }
 
@@ -372,7 +384,6 @@ async fn run_migration_add_missing_indexes(conn: &Connection) -> Result<()> {
     .await?;
     Ok(())
 }
-
 
 /// Migration 4: Ensure session_quality and behavioral_drift_events carry user_id
 /// so every read/write enforces tenant ownership. New columns default to the
@@ -1003,6 +1014,35 @@ fn run_migration_cred_tables_rusqlite(conn: &rusqlite::Connection) -> Result<()>
     Ok(())
 }
 
+/// Migration 18 (rusqlite): add UNIQUE index on api_keys(key_hash).
+/// Checks for pre-existing duplicates first; skips index creation if any are
+/// found rather than failing the migration (RB-L7).
+#[cfg(feature = "db_pool")]
+fn run_migration_api_key_hash_unique_rusqlite(conn: &rusqlite::Connection) -> Result<()> {
+    // Check for existing duplicate key_hash values.
+    let dup_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM (SELECT key_hash FROM api_keys GROUP BY key_hash HAVING COUNT(*) > 1)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if dup_count > 0 {
+        tracing::warn!(
+            duplicates = dup_count,
+            "api_keys has duplicate key_hash rows; skipping UNIQUE index creation (RB-L7)"
+        );
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
 /// Add a new column to a table if it doesn't exist
 /// SQLite doesn't have IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check first
 async fn add_column_if_not_exists(
@@ -1163,6 +1203,37 @@ async fn run_migration_cred_tables(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration 18: add UNIQUE index on api_keys(key_hash).
+/// Checks for pre-existing duplicates first; skips index creation if any are
+/// found rather than failing the migration (RB-L7).
+async fn run_migration_api_key_hash_unique(conn: &Connection) -> Result<()> {
+    // Check for existing duplicate key_hash values.
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) FROM (SELECT key_hash FROM api_keys GROUP BY key_hash HAVING COUNT(*) > 1)",
+            (),
+        )
+        .await?;
+    let dup_count: i64 = match rows.next().await? {
+        Some(row) => row.get(0).unwrap_or(0),
+        None => 0,
+    };
+
+    if dup_count > 0 {
+        tracing::warn!(
+            duplicates = dup_count,
+            "api_keys has duplicate key_hash rows; skipping UNIQUE index creation (RB-L7)"
+        );
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);",
+    )
+    .await?;
+    Ok(())
+}
+
 /// Ensure schema/migrations are applied before any TypeScript import flow.
 /// Source import is intentionally a no-op for now; schema setup is guaranteed.
 pub async fn migrate_from_typescript(conn: &Connection, _source_path: &str) -> Result<()> {
@@ -1313,8 +1384,10 @@ mod tests {
     #[cfg(feature = "db_pool")]
     #[tokio::test]
     async fn test_rusqlite_migrations_idempotent() -> Result<()> {
-        let db_path =
-            std::env::temp_dir().join(format!("engram-rusqlite-migrations-{}.db", uuid::Uuid::new_v4()));
+        let db_path = std::env::temp_dir().join(format!(
+            "engram-rusqlite-migrations-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
 

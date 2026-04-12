@@ -309,7 +309,7 @@ pub async fn provision_tenant(
         .map_err(|e| crate::EngError::Internal(e.to_string()))?;
 
     let scopes = scopes_for_role(role);
-    let (_key, raw) = crate::auth::create_key(db, user_id, "default", scopes).await?;
+    let (_key, raw) = crate::auth::create_key(db, user_id, "default", scopes, None).await?;
     Ok(ProvisionResult {
         user_id,
         username,
@@ -725,8 +725,7 @@ pub async fn record_crash(db: &Database) -> Result<()> {
 
     // Load existing timestamps.
     let existing = match get_state(db, CRASH_WINDOW_KEY).await? {
-        Some(row) => serde_json::from_str::<Vec<String>>(&row.value)
-            .unwrap_or_default(),
+        Some(row) => serde_json::from_str::<Vec<String>>(&row.value).unwrap_or_default(),
         None => Vec::new(),
     };
 
@@ -752,8 +751,7 @@ pub async fn should_enter_safe_mode(db: &Database) -> Result<bool> {
     let cutoff = Utc::now() - chrono::Duration::seconds(CRASH_WINDOW_SECONDS);
 
     let existing = match get_state(db, CRASH_WINDOW_KEY).await? {
-        Some(row) => serde_json::from_str::<Vec<String>>(&row.value)
-            .unwrap_or_default(),
+        Some(row) => serde_json::from_str::<Vec<String>>(&row.value).unwrap_or_default(),
         None => return Ok(false),
     };
 

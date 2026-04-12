@@ -46,9 +46,8 @@ impl TenantRegistry {
         let data_root = data_dir.into();
 
         // Create directory structure
-        std::fs::create_dir_all(&data_root).map_err(|e| {
-            EngError::Internal(format!("failed to create data directory: {}", e))
-        })?;
+        std::fs::create_dir_all(&data_root)
+            .map_err(|e| EngError::Internal(format!("failed to create data directory: {}", e)))?;
 
         let registry_db = Arc::new(RegistryDb::open(&data_root)?);
         let loader = Arc::new(TenantLoader::new(
@@ -128,7 +127,8 @@ impl TenantRegistry {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let data_path = self.data_root
+        let data_path = self
+            .data_root
             .join("tenants")
             .join(&tenant_id)
             .to_string_lossy()
@@ -136,12 +136,10 @@ impl TenantRegistry {
 
         // Create tenant directory structure
         let tenant_dir = self.data_root.join("tenants").join(&tenant_id);
-        std::fs::create_dir_all(tenant_dir.join("hnsw")).map_err(|e| {
-            EngError::Internal(format!("failed to create tenant directory: {}", e))
-        })?;
-        std::fs::create_dir_all(tenant_dir.join("blobs")).map_err(|e| {
-            EngError::Internal(format!("failed to create blobs directory: {}", e))
-        })?;
+        std::fs::create_dir_all(tenant_dir.join("hnsw"))
+            .map_err(|e| EngError::Internal(format!("failed to create tenant directory: {}", e)))?;
+        std::fs::create_dir_all(tenant_dir.join("blobs"))
+            .map_err(|e| EngError::Internal(format!("failed to create blobs directory: {}", e)))?;
 
         let row = TenantRow {
             tenant_id: tenant_id.clone(),
@@ -165,11 +163,14 @@ impl TenantRegistry {
     ///
     /// This is irreversible! Use with caution.
     pub async fn delete(&self, user_id: &str) -> Result<()> {
-        let row = self.registry_db.get_by_user_id(user_id)?
+        let row = self
+            .registry_db
+            .get_by_user_id(user_id)?
             .ok_or_else(|| EngError::NotFound(format!("tenant not found for user: {}", user_id)))?;
 
         // Mark as deleting
-        self.registry_db.update_status(&row.tenant_id, TenantStatus::Deleting)?;
+        self.registry_db
+            .update_status(&row.tenant_id, TenantStatus::Deleting)?;
 
         // Evict from cache
         self.loader.evict(&row.tenant_id).await?;
@@ -191,24 +192,32 @@ impl TenantRegistry {
 
     /// Suspend a tenant.
     pub fn suspend(&self, user_id: &str) -> Result<()> {
-        let row = self.registry_db.get_by_user_id(user_id)?
+        let row = self
+            .registry_db
+            .get_by_user_id(user_id)?
             .ok_or_else(|| EngError::NotFound(format!("tenant not found for user: {}", user_id)))?;
 
-        self.registry_db.update_status(&row.tenant_id, TenantStatus::Suspended)?;
+        self.registry_db
+            .update_status(&row.tenant_id, TenantStatus::Suspended)?;
         info!("suspended tenant: {}", row.tenant_id);
         Ok(())
     }
 
     /// Resume a suspended tenant.
     pub fn resume(&self, user_id: &str) -> Result<()> {
-        let row = self.registry_db.get_by_user_id(user_id)?
+        let row = self
+            .registry_db
+            .get_by_user_id(user_id)?
             .ok_or_else(|| EngError::NotFound(format!("tenant not found for user: {}", user_id)))?;
 
         if row.status != TenantStatus::Suspended {
-            return Err(EngError::InvalidInput("tenant is not suspended".to_string()));
+            return Err(EngError::InvalidInput(
+                "tenant is not suspended".to_string(),
+            ));
         }
 
-        self.registry_db.update_status(&row.tenant_id, TenantStatus::Active)?;
+        self.registry_db
+            .update_status(&row.tenant_id, TenantStatus::Active)?;
         info!("resumed tenant: {}", row.tenant_id);
         Ok(())
     }

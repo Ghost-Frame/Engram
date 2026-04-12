@@ -162,10 +162,8 @@ pub async fn decay_tick(
 
     // Load importance values from DB for decay calculation
     let db_patterns = pattern::list_patterns(db, user_id).await?;
-    let importance_map: std::collections::HashMap<i64, i32> = db_patterns
-        .iter()
-        .map(|p| (p.id, p.importance))
-        .collect();
+    let importance_map: std::collections::HashMap<i64, i32> =
+        db_patterns.iter().map(|p| (p.id, p.importance)).collect();
 
     // Decay each pattern in the network
     for &id in network.pattern_ids().to_vec().iter() {

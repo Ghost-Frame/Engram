@@ -56,13 +56,30 @@ pub fn register(out: &mut Vec<ToolDef>) {
 pub async fn store(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let req = StoreRequest {
-        content: args.get("content").and_then(Value::as_str).ok_or_else(|| invalid_input("content required"))?.to_string(),
-        category: args.get("category").and_then(Value::as_str).unwrap_or("general").to_string(),
-        source: args.get("source").and_then(Value::as_str).unwrap_or("mcp").to_string(),
+        content: args
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid_input("content required"))?
+            .to_string(),
+        category: args
+            .get("category")
+            .and_then(Value::as_str)
+            .unwrap_or("general")
+            .to_string(),
+        source: args
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or("mcp")
+            .to_string(),
         importance: args.get("importance").and_then(Value::as_i64).unwrap_or(5) as i32,
-        tags: args.get("tags").and_then(|v| serde_json::from_value(v.clone()).ok()),
+        tags: args
+            .get("tags")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
         embedding: None,
-        session_id: args.get("session_id").and_then(Value::as_str).map(str::to_string),
+        session_id: args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         is_static: args.get("is_static").and_then(Value::as_bool),
         user_id: Some(auth.user_id),
         space_id: args.get("space_id").and_then(Value::as_i64),
@@ -76,29 +93,64 @@ pub async fn store(app: &App, args: Value) -> Result<Value> {
 pub async fn search(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let req = SearchRequest {
-        query: args.get("query").and_then(Value::as_str).ok_or_else(|| invalid_input("query required"))?.to_string(),
+        query: args
+            .get("query")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid_input("query required"))?
+            .to_string(),
         embedding: None,
-        limit: args.get("limit").and_then(Value::as_u64).map(|v| v as usize),
-        category: args.get("category").and_then(Value::as_str).map(str::to_string),
-        source: args.get("source").and_then(Value::as_str).map(str::to_string),
-        tags: args.get("tags").and_then(|v| serde_json::from_value(v.clone()).ok()),
-        threshold: args.get("threshold").and_then(Value::as_f64).map(|v| v as f32),
+        limit: args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize),
+        category: args
+            .get("category")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        source: args
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        tags: args
+            .get("tags")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
+        threshold: args
+            .get("threshold")
+            .and_then(Value::as_f64)
+            .map(|v| v as f32),
         user_id: Some(auth.user_id),
         space_id: args.get("space_id").and_then(Value::as_i64),
         include_forgotten: args.get("include_forgotten").and_then(Value::as_bool),
         mode: args.get("mode").and_then(Value::as_str).map(str::to_string),
-        question_type: args.get("question_type").and_then(|v| serde_json::from_value(v.clone()).ok()),
-        expand_relationships: args.get("expand_relationships").and_then(Value::as_bool).unwrap_or(false),
-        include_links: args.get("include_links").and_then(Value::as_bool).unwrap_or(false),
-        latest_only: args.get("latest_only").and_then(Value::as_bool).unwrap_or(true),
-        source_filter: args.get("source_filter").and_then(Value::as_str).map(str::to_string),
+        question_type: args
+            .get("question_type")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
+        expand_relationships: args
+            .get("expand_relationships")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        include_links: args
+            .get("include_links")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        latest_only: args
+            .get("latest_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        source_filter: args
+            .get("source_filter")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     };
     Ok(json!({"results": hybrid_search(&app.db, req).await?}))
 }
 
 pub async fn get(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let id = args.get("id").and_then(Value::as_i64).ok_or_else(|| invalid_input("id required"))?;
+    let id = args
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("id required"))?;
     Ok(json!(memory::get(&app.db, id, auth.user_id).await?))
 }
 
@@ -107,26 +159,55 @@ pub async fn list(app: &App, args: Value) -> Result<Value> {
     let opts = ListOptions {
         limit: args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize,
         offset: args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize,
-        category: args.get("category").and_then(Value::as_str).map(str::to_string),
-        source: args.get("source").and_then(Value::as_str).map(str::to_string),
+        category: args
+            .get("category")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        source: args
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         user_id: Some(auth.user_id),
         space_id: args.get("space_id").and_then(Value::as_i64),
-        include_forgotten: args.get("include_forgotten").and_then(Value::as_bool).unwrap_or(false),
-        include_archived: args.get("include_archived").and_then(Value::as_bool).unwrap_or(false),
+        include_forgotten: args
+            .get("include_forgotten")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        include_archived: args
+            .get("include_archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     };
     Ok(json!({"memories": memory::list(&app.db, opts).await?}))
 }
 
 pub async fn update(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let id = args.get("id").and_then(Value::as_i64).ok_or_else(|| invalid_input("id required"))?;
+    let id = args
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("id required"))?;
     let req = UpdateRequest {
-        content: args.get("content").and_then(Value::as_str).map(str::to_string),
-        category: args.get("category").and_then(Value::as_str).map(str::to_string),
-        importance: args.get("importance").and_then(Value::as_i64).map(|v| v as i32),
-        tags: args.get("tags").and_then(|v| serde_json::from_value(v.clone()).ok()),
+        content: args
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        category: args
+            .get("category")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        importance: args
+            .get("importance")
+            .and_then(Value::as_i64)
+            .map(|v| v as i32),
+        tags: args
+            .get("tags")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
         is_static: args.get("is_static").and_then(Value::as_bool),
-        status: args.get("status").and_then(Value::as_str).map(str::to_string),
+        status: args
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         embedding: None,
     };
     Ok(json!(memory::update(&app.db, id, req, auth.user_id).await?))
@@ -134,61 +215,108 @@ pub async fn update(app: &App, args: Value) -> Result<Value> {
 
 pub async fn delete(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let id = args.get("id").and_then(Value::as_i64).ok_or_else(|| invalid_input("id required"))?;
+    let id = args
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("id required"))?;
     memory::delete(&app.db, id, auth.user_id).await?;
     Ok(json!({"deleted": true, "id": id}))
 }
 
 pub async fn mark_forgotten(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let id = args.get("id").and_then(Value::as_i64).ok_or_else(|| invalid_input("id required"))?;
+    let id = args
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("id required"))?;
     memory::mark_forgotten(&app.db, id, auth.user_id).await?;
     Ok(json!({"forgotten": true, "id": id}))
 }
 
 pub async fn mark_archived(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let id = args.get("id").and_then(Value::as_i64).ok_or_else(|| invalid_input("id required"))?;
+    let id = args
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("id required"))?;
     memory::mark_archived(&app.db, id, auth.user_id).await?;
     Ok(json!({"archived": true, "id": id}))
 }
 
 pub async fn mark_unarchived(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let id = args.get("id").and_then(Value::as_i64).ok_or_else(|| invalid_input("id required"))?;
+    let id = args
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("id required"))?;
     memory::mark_unarchived(&app.db, id, auth.user_id).await?;
     Ok(json!({"unarchived": true, "id": id}))
 }
 
 pub async fn update_forget_reason(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let id = args.get("id").and_then(Value::as_i64).ok_or_else(|| invalid_input("id required"))?;
-    let reason = args.get("reason").and_then(Value::as_str).ok_or_else(|| invalid_input("reason required"))?;
+    let id = args
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("id required"))?;
+    let reason = args
+        .get("reason")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_input("reason required"))?;
     memory::update_forget_reason(&app.db, id, reason, auth.user_id).await?;
     Ok(json!({"updated": true, "id": id, "reason": reason}))
 }
 
 pub async fn adjust_importance(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let id = args.get("id").and_then(Value::as_i64).ok_or_else(|| invalid_input("id required"))?;
-    let delta = args.get("delta").and_then(Value::as_i64).ok_or_else(|| invalid_input("delta required"))? as i32;
+    let id = args
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("id required"))?;
+    let delta = args
+        .get("delta")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("delta required"))? as i32;
     memory::adjust_importance(&app.db, id, auth.user_id, delta).await?;
     Ok(json!({"updated": true, "id": id, "delta": delta}))
 }
 
 pub async fn insert_link(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let source_id = args.get("source_id").and_then(Value::as_i64).ok_or_else(|| invalid_input("source_id required"))?;
-    let target_id = args.get("target_id").and_then(Value::as_i64).ok_or_else(|| invalid_input("target_id required"))?;
-    let similarity = args.get("similarity").and_then(Value::as_f64).unwrap_or(1.0);
-    let link_type = args.get("link_type").and_then(Value::as_str).unwrap_or("similarity");
-    memory::insert_link(&app.db, source_id, target_id, similarity, link_type, auth.user_id).await?;
+    let source_id = args
+        .get("source_id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("source_id required"))?;
+    let target_id = args
+        .get("target_id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("target_id required"))?;
+    let similarity = args
+        .get("similarity")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0);
+    let link_type = args
+        .get("link_type")
+        .and_then(Value::as_str)
+        .unwrap_or("similarity");
+    memory::insert_link(
+        &app.db,
+        source_id,
+        target_id,
+        similarity,
+        link_type,
+        auth.user_id,
+    )
+    .await?;
     Ok(json!({"inserted": true, "source_id": source_id, "target_id": target_id, "type": link_type}))
 }
 
 pub async fn get_by_content_hash(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let content_hash = args.get("content_hash").and_then(Value::as_str).ok_or_else(|| invalid_input("content_hash required"))?;
+    let content_hash = args
+        .get("content_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_input("content_hash required"))?;
     let mut rows = app.db.conn.query(
         "SELECT id FROM memories WHERE content_hash = ?1 AND user_id = ?2 AND is_forgotten = 0 ORDER BY id DESC",
         libsql::params![content_hash, auth.user_id],

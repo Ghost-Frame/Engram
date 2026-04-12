@@ -44,15 +44,22 @@ pub async fn vector_search(
     if uses_pool_backend(db) {
         return match db
             .read(move |conn| {
-                let mut stmt = conn.prepare(sql).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let mut stmt = conn
+                    .prepare(sql)
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
                 let mut rows = stmt
                     .query(rusqlite::params![embedding_json, limit as i64, user_id])
                     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
                 let mut hits = Vec::new();
                 let mut rank: usize = 0;
-                while let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
-                    let memory_id: i64 = row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                while let Some(row) = rows
+                    .next()
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                {
+                    let memory_id: i64 = row
+                        .get(0)
+                        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
                     hits.push(VectorHit { memory_id, rank });
                     rank += 1;
                 }

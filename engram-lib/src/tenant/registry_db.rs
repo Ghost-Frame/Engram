@@ -41,9 +41,8 @@ impl RegistryDb {
     /// Open or create the registry database.
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self, EngError> {
         let system_dir = data_dir.as_ref().join("system");
-        std::fs::create_dir_all(&system_dir).map_err(|e| {
-            EngError::Internal(format!("failed to create system directory: {}", e))
-        })?;
+        std::fs::create_dir_all(&system_dir)
+            .map_err(|e| EngError::Internal(format!("failed to create system directory: {}", e)))?;
 
         let path = system_dir.join("registry.db");
         let conn = Connection::open_with_flags(
@@ -216,11 +215,8 @@ impl RegistryDb {
     /// Delete a tenant.
     pub fn delete(&self, tenant_id: &str) -> Result<(), EngError> {
         let conn = self.lock()?;
-        conn.execute(
-            "DELETE FROM tenants WHERE tenant_id = ?1",
-            [tenant_id],
-        )
-        .map_err(|e| EngError::Internal(format!("failed to delete tenant: {}", e)))?;
+        conn.execute("DELETE FROM tenants WHERE tenant_id = ?1", [tenant_id])
+            .map_err(|e| EngError::Internal(format!("failed to delete tenant: {}", e)))?;
         Ok(())
     }
 
@@ -421,7 +417,8 @@ mod tests {
         };
 
         db.insert(&row).unwrap();
-        db.update_status("tenant_1", TenantStatus::Suspended).unwrap();
+        db.update_status("tenant_1", TenantStatus::Suspended)
+            .unwrap();
 
         let fetched = db.get_by_tenant_id("tenant_1").unwrap().unwrap();
         assert_eq!(fetched.status, TenantStatus::Suspended);

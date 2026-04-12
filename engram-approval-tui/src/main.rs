@@ -18,7 +18,12 @@ use std::time::Duration;
 #[command(about = "Terminal UI for human approval workflow")]
 struct Args {
     /// Engram server URL
-    #[arg(short, long, env = "ENGRAM_URL", default_value = "http://localhost:4200")]
+    #[arg(
+        short,
+        long,
+        env = "ENGRAM_URL",
+        default_value = "http://localhost:4200"
+    )]
     url: String,
 
     /// API key for authentication
@@ -237,9 +242,14 @@ fn ui(frame: &mut Frame, app: &App) {
 
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     if app.approvals.is_empty() {
-        let empty = Paragraph::new("\n\n  No pending approvals.\n\n  Waiting for approval requests...")
-            .style(Style::default().fg(Color::Gray))
-            .block(Block::default().borders(Borders::ALL).title(" Pending Approvals "));
+        let empty =
+            Paragraph::new("\n\n  No pending approvals.\n\n  Waiting for approval requests...")
+                .style(Style::default().fg(Color::Gray))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Pending Approvals "),
+                );
         frame.render_widget(empty, area);
         return;
     }
@@ -281,7 +291,11 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Pending Approvals "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Pending Approvals "),
+        )
         .highlight_style(Style::default());
 
     frame.render_stateful_widget(list, area, &mut app.list_state.clone());
@@ -301,7 +315,11 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
     // Timer gauge
     let ratio = (approval.seconds_remaining as f64 / 120.0).clamp(0.0, 1.0);
     let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title(" Time Remaining "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Time Remaining "),
+        )
         .gauge_style(if approval.seconds_remaining < 30 {
             Style::default().fg(Color::Red)
         } else if approval.seconds_remaining < 60 {

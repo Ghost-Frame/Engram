@@ -2,9 +2,9 @@ use crate::db::schema_sql::{
     AUXILIARY_SCHEMA_STATEMENTS, CORE_SCHEMA_SQL, LIBSQL_VECTOR_INDEX_STATEMENTS,
     SYNTHEOS_SERVICES_SQL,
 };
-use crate::Result;
 #[cfg(feature = "db_pool")]
 use crate::EngError;
+use crate::Result;
 use libsql::Connection as LibsqlConnection;
 
 pub async fn create_tables(conn: &LibsqlConnection) -> Result<()> {

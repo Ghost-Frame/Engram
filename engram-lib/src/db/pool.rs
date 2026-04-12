@@ -69,26 +69,28 @@ impl DatabasePools {
     }
 
     async fn validate(&self) -> Result<()> {
-        let reader = self
-            .reader
-            .get()
-            .await
-            .map_err(|e| EngError::Internal(format!("failed to acquire reader pool connection: {e}")))?;
-        let writer = self
-            .writer
-            .get()
-            .await
-            .map_err(|e| EngError::Internal(format!("failed to acquire writer pool connection: {e}")))?;
+        let reader = self.reader.get().await.map_err(|e| {
+            EngError::Internal(format!("failed to acquire reader pool connection: {e}"))
+        })?;
+        let writer = self.writer.get().await.map_err(|e| {
+            EngError::Internal(format!("failed to acquire writer pool connection: {e}"))
+        })?;
 
         let expected_busy_timeout = self.config.busy_timeout_ms as i64;
         let is_memory = is_in_memory_db(&self.db_path);
 
         for (label, conn) in [("reader", &reader), ("writer", &writer)] {
             let busy_timeout = conn
-                .interact(|conn| conn.query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0)))
+                .interact(|conn| {
+                    conn.query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
+                })
                 .await
-                .map_err(|e| EngError::Internal(format!("failed to validate {label} pool connection: {e}")))?
-                .map_err(|e| EngError::Internal(format!("failed to read {label} busy_timeout pragma: {e}")))?;
+                .map_err(|e| {
+                    EngError::Internal(format!("failed to validate {label} pool connection: {e}"))
+                })?
+                .map_err(|e| {
+                    EngError::Internal(format!("failed to read {label} busy_timeout pragma: {e}"))
+                })?;
 
             if busy_timeout != expected_busy_timeout {
                 return Err(EngError::Internal(format!(
@@ -97,10 +99,18 @@ impl DatabasePools {
             }
 
             let foreign_keys = conn
-                .interact(|conn| conn.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0)))
+                .interact(|conn| {
+                    conn.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+                })
                 .await
-                .map_err(|e| EngError::Internal(format!("failed to validate {label} foreign_keys pragma: {e}")))?
-                .map_err(|e| EngError::Internal(format!("failed to read {label} foreign_keys pragma: {e}")))?;
+                .map_err(|e| {
+                    EngError::Internal(format!(
+                        "failed to validate {label} foreign_keys pragma: {e}"
+                    ))
+                })?
+                .map_err(|e| {
+                    EngError::Internal(format!("failed to read {label} foreign_keys pragma: {e}"))
+                })?;
 
             if foreign_keys != 1 {
                 return Err(EngError::Internal(format!(
@@ -114,8 +124,16 @@ impl DatabasePools {
                         conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
                     })
                     .await
-                    .map_err(|e| EngError::Internal(format!("failed to validate {label} journal_mode pragma: {e}")))?
-                    .map_err(|e| EngError::Internal(format!("failed to read {label} journal_mode pragma: {e}")))?;
+                    .map_err(|e| {
+                        EngError::Internal(format!(
+                            "failed to validate {label} journal_mode pragma: {e}"
+                        ))
+                    })?
+                    .map_err(|e| {
+                        EngError::Internal(format!(
+                            "failed to read {label} journal_mode pragma: {e}"
+                        ))
+                    })?;
 
                 if !journal_mode.eq_ignore_ascii_case("wal") {
                     return Err(EngError::Internal(format!(
@@ -136,13 +154,19 @@ fn build_pool(db_path: &str, max_size: usize, config: DbPoolConfig) -> Result<Po
 
     manager
         .builder(Runtime::Tokio1)
-        .map_err(|e| EngError::Internal(format!("failed to configure sqlite pool for {db_path}: {e}")))?
+        .map_err(|e| {
+            EngError::Internal(format!(
+                "failed to configure sqlite pool for {db_path}: {e}"
+            ))
+        })?
         .post_create(Hook::async_fn(move |conn, _| {
             let db_path = db_path_owned.clone();
             Box::pin(async move {
                 conn.interact(move |conn| apply_pragmas(conn, &db_path, config))
                     .await
-                    .map_err(|e| HookError::message(format!("failed to initialize sqlite connection: {e}")))?
+                    .map_err(|e| {
+                        HookError::message(format!("failed to initialize sqlite connection: {e}"))
+                    })?
                     .map_err(HookError::Backend)?;
 
                 Ok(())
@@ -216,7 +240,9 @@ mod tests {
             .map_err(|e| EngError::Internal(format!("pragma interaction failed: {e}")))?
             .map_err(|e| EngError::Internal(format!("pragma query failed: {e}")))?;
         let journal_mode = conn
-            .interact(|conn| conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0)))
+            .interact(|conn| {
+                conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            })
             .await
             .map_err(|e| EngError::Internal(format!("journal_mode interaction failed: {e}")))?
             .map_err(|e| EngError::Internal(format!("journal_mode query failed: {e}")))?;

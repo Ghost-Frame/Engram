@@ -105,6 +105,7 @@ pub async fn build_cooccurrence_edges(
     info!(
         pairs = pair_counts.len(),
         window_size = ws,
+        user_id,
         "cooccurrence_edges_built"
     );
 

@@ -37,7 +37,11 @@ async fn stats_handler(
     Auth(_auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
-    let brain = state.brain.as_ref().unwrap();
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        AppError(engram_lib::EngError::Internal(
+            "brain not configured".into(),
+        ))
+    })?;
     let stats = brain.stats().await?;
     Ok(Json(json!({ "ok": true, "stats": stats })))
 }
@@ -48,7 +52,11 @@ async fn query_handler(
     Json(body): Json<BrainQueryOptions>,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
-    let brain = state.brain.as_ref().unwrap();
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        AppError(engram_lib::EngError::Internal(
+            "brain not configured".into(),
+        ))
+    })?;
     let embedder = state.embedder.as_ref().ok_or_else(|| {
         AppError(engram_lib::EngError::Internal(
             "no embedder configured".into(),
@@ -64,7 +72,11 @@ async fn absorb_handler(
     Json(body): Json<AbsorbRequest>,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
-    let brain = state.brain.as_ref().unwrap();
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        AppError(engram_lib::EngError::Internal(
+            "brain not configured".into(),
+        ))
+    })?;
     let embedder = state.embedder.as_ref().ok_or_else(|| {
         AppError(engram_lib::EngError::Internal(
             "no embedder configured".into(),
@@ -80,7 +92,11 @@ async fn dream_handler(
     Auth(_auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
-    let brain = state.brain.as_ref().unwrap();
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        AppError(engram_lib::EngError::Internal(
+            "brain not configured".into(),
+        ))
+    })?;
     let result = brain.dream_cycle().await?;
     Ok(Json(json!({ "ok": true, "result": result })))
 }
@@ -100,7 +116,11 @@ async fn feedback_handler(
         )));
     }
 
-    let brain = state.brain.as_ref().unwrap();
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        AppError(engram_lib::EngError::Internal(
+            "brain not configured".into(),
+        ))
+    })?;
     let result = brain
         .feedback_signal(body.memory_ids, body.edge_pairs, body.useful)
         .await?;
@@ -113,7 +133,11 @@ async fn decay_handler(
     Json(body): Json<DecayRequest>,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
-    let brain = state.brain.as_ref().unwrap();
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        AppError(engram_lib::EngError::Internal(
+            "brain not configured".into(),
+        ))
+    })?;
     brain.decay_tick(body.ticks).await?;
     Ok(Json(json!({ "ok": true })))
 }

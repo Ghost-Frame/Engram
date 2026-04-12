@@ -44,11 +44,7 @@ impl TenantLoader {
     /// Get a tenant handle, loading it if not resident.
     ///
     /// Returns the existing handle if already loaded, otherwise loads from disk.
-    pub async fn get_or_load(
-        &self,
-        tenant_id: &str,
-        row: &TenantRow,
-    ) -> Result<Arc<TenantHandle>> {
+    pub async fn get_or_load(&self, tenant_id: &str, row: &TenantRow) -> Result<Arc<TenantHandle>> {
         // Fast path: check if already loaded
         {
             let handles = self.handles.read().await;
@@ -76,7 +72,8 @@ impl TenantLoader {
         self.maybe_evict().await?;
 
         // Load database
-        let db_path = self.data_root
+        let db_path = self
+            .data_root
             .join("tenants")
             .join(tenant_id)
             .join("engram.db");
@@ -84,7 +81,8 @@ impl TenantLoader {
         let db = TenantDatabase::open(&db_path)?;
 
         // Load vector index
-        let lance_path = self.data_root
+        let lance_path = self
+            .data_root
             .join("tenants")
             .join(tenant_id)
             .join("hnsw")
@@ -146,7 +144,10 @@ impl TenantLoader {
         if let Some(handle) = handle {
             // Checkpoint WAL before dropping
             if let Err(e) = handle.db.checkpoint() {
-                warn!("failed to checkpoint tenant {} before eviction: {}", tenant_id, e);
+                warn!(
+                    "failed to checkpoint tenant {} before eviction: {}",
+                    tenant_id, e
+                );
             }
             info!("evicted tenant: {}", tenant_id);
         }
@@ -175,7 +176,11 @@ impl TenantLoader {
 
             // Take enough to get under the limit
             let excess = current_count.saturating_sub(self.config.max_resident) + 1;
-            candidates.into_iter().take(excess).map(|(id, _)| id).collect::<Vec<_>>()
+            candidates
+                .into_iter()
+                .take(excess)
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
         };
 
         for tenant_id in to_evict {
@@ -230,11 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resident_count() {
-        let loader = TenantLoader::new(
-            PathBuf::from("/tmp/test"),
-            test_config(),
-            1024,
-        );
+        let loader = TenantLoader::new(PathBuf::from("/tmp/test"), test_config(), 1024);
 
         assert_eq!(loader.resident_count().await, 0);
         assert!(!loader.is_loaded("tenant_1").await);

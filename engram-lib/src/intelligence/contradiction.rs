@@ -93,6 +93,7 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
     if !contradictions.is_empty() {
         info!(
             memory_id = memory.id,
+            user_id = memory.user_id,
             contradictions = contradictions.len(),
             "contradictions_detected"
         );

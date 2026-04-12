@@ -4,9 +4,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use engram_lib::apikeys;
 use engram_lib::audit;
-use engram_lib::auth::Scope;
+use engram_lib::auth::{self, Scope};
 use engram_lib::quota;
 use engram_lib::ratelimit;
 use serde::Deserialize;
@@ -32,6 +31,7 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 struct CreateApiKeyBody {
+    name: Option<String>,
     scopes: Option<String>,
     rate_limit: Option<i64>,
 }
@@ -64,9 +64,10 @@ async fn create_api_key_handler(
         match s.as_str() {
             "read" | "write" | "admin" | "*" => {}
             other => {
-                return Err(AppError::from(engram_lib::EngError::InvalidInput(
-                    format!("unknown scope: {}", other),
-                )));
+                return Err(AppError::from(engram_lib::EngError::InvalidInput(format!(
+                    "unknown scope: {}",
+                    other
+                ))));
             }
         }
     }
@@ -94,9 +95,19 @@ async fn create_api_key_handler(
         body.rate_limit.unwrap_or(caller_limit).min(caller_limit)
     };
     let rate_limit = max_limit.max(1);
-    let scopes_csv = requested.join(",");
-    let (key_record, full_key) =
-        apikeys::create_api_key(&state.db, auth.user_id, &scopes_csv, rate_limit).await?;
+    let key_name = body.name.as_deref().unwrap_or("api-key").trim().to_string();
+    let scopes_vec: Vec<Scope> = requested
+        .iter()
+        .filter_map(|s| s.parse::<Scope>().ok())
+        .collect();
+    let (key_record, full_key) = auth::create_key(
+        &state.db,
+        auth.user_id,
+        &key_name,
+        scopes_vec,
+        Some(rate_limit),
+    )
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({ "key": key_record, "full_key": full_key })),
@@ -107,7 +118,7 @@ async fn list_api_keys_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let keys = apikeys::list_api_keys(&state.db, auth.user_id).await?;
+    let keys = auth::list_keys(&state.db, auth.user_id).await?;
     Ok(Json(json!({ "keys": keys })))
 }
 
@@ -116,16 +127,11 @@ async fn delete_api_key_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    // Admins can delete any key; regular users can only delete their own
+    // Admins can revoke any key; regular users can only revoke their own.
     if auth.has_scope(&Scope::Admin) {
-        apikeys::delete_api_key(&state.db, id).await?;
+        auth::revoke_key_admin(&state.db, id).await?;
     } else {
-        let deleted = apikeys::delete_api_key_for_user(&state.db, id, auth.user_id).await?;
-        if !deleted {
-            return Err(AppError::from(engram_lib::EngError::NotFound(
-                "API key not found or not owned by you".into(),
-            )));
-        }
+        auth::revoke_key(&state.db, auth.user_id, id).await?;
     }
     Ok(Json(json!({ "deleted": true, "id": id })))
 }

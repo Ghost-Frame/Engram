@@ -1,8 +1,7 @@
 use axum::{
     extract::DefaultBodyLimit,
     http::{header, HeaderName, HeaderValue},
-    middleware as axum_mw,
-    Router,
+    middleware as axum_mw, Router,
 };
 use std::time::Duration;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -15,7 +14,9 @@ const BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 
 /// Default request timeout. Slow-loris attacks previously could tie up
 /// connections indefinitely; this provides an upper bound per request.
-const REQUEST_TIMEOUT_SECS: u64 = 60;
+/// Raised to 120s to accommodate ingestion routes; tighter per-route
+/// timeouts are applied on health (1s), search (10s), and context (30s).
+const REQUEST_TIMEOUT_SECS: u64 = 120;
 
 /// Build a CORS layer from the `ENGRAM_ALLOWED_ORIGINS` env var (comma
 /// separated). When the variable is unset we fall back to the same origin

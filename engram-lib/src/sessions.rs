@@ -50,11 +50,23 @@ pub async fn get_session(db: &Database, session_id: &str, user_id: i64) -> Resul
         .ok_or_else(|| crate::EngError::NotFound(format!("session {} not found", session_id)))
 }
 
-pub async fn list_sessions(db: &Database, user_id: i64) -> Result<Vec<SessionInfo>> {
-    let mut rows = db.conn.query(
-        "SELECT id, agent, user_id, status, created_at, updated_at FROM sessions WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100",
-        params![user_id],
-    ).await?;
+/// DOS-L4: enforce per-request pagination -- default 50 rows, max 500.
+pub async fn list_sessions(
+    db: &Database,
+    user_id: i64,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<SessionInfo>> {
+    let limit = limit.unwrap_or(50).min(500) as i64;
+    let offset = offset.unwrap_or(0) as i64;
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT id, agent, user_id, status, created_at, updated_at FROM sessions \
+         WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+            params![user_id, limit, offset],
+        )
+        .await?;
 
     let mut sessions = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -174,7 +186,7 @@ mod tests {
         };
         create_session(&db, &req, 1).await.expect("create");
 
-        let sessions = list_sessions(&db, 1).await.expect("list");
+        let sessions = list_sessions(&db, 1, None, None).await.expect("list");
         assert!(!sessions.is_empty());
     }
 

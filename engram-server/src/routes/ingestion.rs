@@ -1,12 +1,19 @@
 // Ingestion routes -- ported from ingestion/routes.ts
 
-use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use axum::{
+    extract::{DefaultBodyLimit, State},
+    http::StatusCode,
+    routing::post,
+    Json, Router,
+};
 use engram_lib::ingestion::{
     self,
     types::{FormatMeta, IngestMode, IngestOptions, SupportedFormat},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::time::Duration;
+use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
@@ -31,6 +38,13 @@ pub fn router() -> Router<AppState> {
         .route("/ingest", post(ingest_text))
         .route("/add", post(add_conversation))
         .route("/derive", post(derive))
+        // S7-26: ingestion may chunk + embed large documents; allow 120s.
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(120),
+        ))
+        // S7-27: ingestion handles large text bodies; allow up to 10 MiB.
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
 }
 
 #[derive(Debug, Deserialize)]

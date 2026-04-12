@@ -1,6 +1,6 @@
 use axum::{
     extract::ws::{Message, WebSocket},
-    extract::{Path, State, WebSocketUpgrade},
+    extract::{Path, Query, State, WebSocketUpgrade},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -48,12 +48,19 @@ async fn create_session_handler(
     Ok((StatusCode::CREATED, Json(json!(session))))
 }
 
+#[derive(Deserialize)]
+struct ListSessionsParams {
+    limit: Option<u32>,
+    offset: Option<u32>,
+}
+
 async fn list_sessions_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    Query(params): Query<ListSessionsParams>,
 ) -> Result<Json<Value>, AppError> {
     let sessions: Vec<engram_lib::sessions::SessionInfo> =
-        list_sessions(&state.db, auth.user_id).await?;
+        list_sessions(&state.db, auth.user_id, params.limit, params.offset).await?;
     Ok(Json(
         json!({ "sessions": sessions, "count": sessions.len() }),
     ))
@@ -173,31 +180,65 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, session_id: String, u
     }
 
     // Stream new output
+    // DOS-L3: ping every 30s, close after 10min idle, hard cap at 1h total.
+    let session_start = tokio::time::Instant::now();
+    const MAX_SESSION: std::time::Duration = std::time::Duration::from_secs(3600);
+    const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+    const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
     let mut rx = rx;
+    let mut last_activity = tokio::time::Instant::now();
+    let mut ping_tick = tokio::time::interval(PING_INTERVAL);
+    // Skip the immediate first tick so we don't ping before the session starts.
+    ping_tick.tick().await;
+
     loop {
-        match rx.recv().await {
-            Ok(line) => {
-                let msg = json!({"type": "output", "data": line});
-                if socket
-                    .send(Message::Text(msg.to_string().into()))
-                    .await
-                    .is_err()
-                {
-                    return;
+        tokio::select! {
+            msg = rx.recv() => {
+                match msg {
+                    Ok(line) => {
+                        last_activity = tokio::time::Instant::now();
+                        let out = json!({"type": "output", "data": line});
+                        if socket
+                            .send(Message::Text(out.to_string().into()))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        let _ = socket
+                            .send(Message::Text(
+                                json!({"type": "session_end"}).to_string().into(),
+                            ))
+                            .await;
+                        return;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        let _ = socket.send(Message::Text(
+                            json!({"type": "warning", "message": format!("lagged: missed {} messages", n)}).to_string().into()
+                        )).await;
+                    }
                 }
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                let _ = socket
-                    .send(Message::Text(
-                        json!({"type": "session_end"}).to_string().into(),
-                    ))
-                    .await;
-                return;
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                let _ = socket.send(Message::Text(
-                    json!({"type": "warning", "message": format!("lagged: missed {} messages", n)}).to_string().into()
-                )).await;
+            _ = ping_tick.tick() => {
+                let now = tokio::time::Instant::now();
+                if now.duration_since(session_start) >= MAX_SESSION {
+                    let _ = socket.send(Message::Text(
+                        json!({"type": "session_end", "status": "max_duration_reached"}).to_string().into()
+                    )).await;
+                    return;
+                }
+                if now.duration_since(last_activity) >= IDLE_TIMEOUT {
+                    let _ = socket.send(Message::Text(
+                        json!({"type": "session_end", "status": "idle_timeout"}).to_string().into()
+                    )).await;
+                    return;
+                }
+                // Send keepalive ping; ignore error (client may have closed).
+                // Empty ping frame -- just a keepalive; tokio_util re-exports Bytes.
+                let _ = socket.send(Message::Ping(axum::body::Bytes::new())).await;
             }
         }
     }

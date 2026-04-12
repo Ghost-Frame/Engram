@@ -1,14 +1,16 @@
 use super::fts::fts_search;
 use super::vector::vector_search;
+use super::{row_to_memory, MEMORY_COLUMNS};
 #[cfg(feature = "db_pool")]
 use super::{row_to_memory_rusqlite, rusqlite_to_eng_error, uses_pool_backend};
-use super::{row_to_memory, MEMORY_COLUMNS};
 use crate::db::Database;
 use crate::memory::scoring::{
     self, blend_strategies, classify_question_mixed, question_strategy, rrf_score, DECAY_FLOOR,
     RERANKER_TOP_K,
 };
-use crate::memory::types::{LinkedMemory, QuestionType, SearchRequest, SearchResult, VersionChainEntry};
+use crate::memory::types::{
+    LinkedMemory, QuestionType, SearchRequest, SearchResult, VersionChainEntry,
+};
 use crate::Result;
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
@@ -225,7 +227,11 @@ async fn fetch_graph_neighbors(
     Ok(linked)
 }
 
-async fn fetch_memory_for_search(db: &Database, id: i64, user_id: i64) -> Result<Option<crate::memory::types::Memory>> {
+async fn fetch_memory_for_search(
+    db: &Database,
+    id: i64,
+    user_id: i64,
+) -> Result<Option<crate::memory::types::Memory>> {
     let fetch_sql = format!(
         "SELECT {} FROM memories \
          WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_latest = 1 \
@@ -250,14 +256,21 @@ async fn fetch_memory_for_search(db: &Database, id: i64, user_id: i64) -> Result
             .await;
     }
 
-    let mut rows = db.conn.query(&fetch_sql, libsql::params![id, user_id]).await?;
+    let mut rows = db
+        .conn
+        .query(&fetch_sql, libsql::params![id, user_id])
+        .await?;
     match rows.next().await? {
         Some(row) => Ok(Some(row_to_memory(&row)?)),
         None => Ok(None),
     }
 }
 
-async fn fetch_links_for_search(db: &Database, memory_id: i64, user_id: i64) -> Result<Vec<LinkedMemory>> {
+async fn fetch_links_for_search(
+    db: &Database,
+    memory_id: i64,
+    user_id: i64,
+) -> Result<Vec<LinkedMemory>> {
     let link_sql = "SELECT ml.target_id, ml.similarity, ml.type, \
         m.content, m.category, m.is_forgotten \
         FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
@@ -283,7 +296,8 @@ async fn fetch_links_for_search(db: &Database, memory_id: i64, user_id: i64) -> 
                     }
                     links.push(LinkedMemory {
                         id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                        similarity: ((row.get::<_, f64>(1).map_err(rusqlite_to_eng_error)? * 1000.0)
+                        similarity: ((row.get::<_, f64>(1).map_err(rusqlite_to_eng_error)?
+                            * 1000.0)
                             .round())
                             / 1000.0,
                         link_type: row.get(2).map_err(rusqlite_to_eng_error)?,
@@ -639,7 +653,8 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                     let prev = graph_score_map.get(&row.link_id).copied().unwrap_or(0.0);
                     graph_score_map.insert(row.link_id, prev.max(gs));
 
-                    if let std::collections::hash_map::Entry::Vacant(e) = results.entry(row.link_id) {
+                    if let std::collections::hash_map::Entry::Vacant(e) = results.entry(row.link_id)
+                    {
                         e.insert(Candidate {
                             id: row.link_id,
                             content: row.content,
@@ -818,8 +833,24 @@ pub async fn auto_link(
 
     let mut linked = 0usize;
     for (target_id, similarity) in &similarities {
-        let _ = crate::memory::insert_link(db, memory_id, *target_id, *similarity, "similarity", user_id).await;
-        let _ = crate::memory::insert_link(db, *target_id, memory_id, *similarity, "similarity", user_id).await;
+        let _ = crate::memory::insert_link(
+            db,
+            memory_id,
+            *target_id,
+            *similarity,
+            "similarity",
+            user_id,
+        )
+        .await;
+        let _ = crate::memory::insert_link(
+            db,
+            *target_id,
+            memory_id,
+            *similarity,
+            "similarity",
+            user_id,
+        )
+        .await;
         linked += 1;
     }
 

@@ -137,9 +137,17 @@ async fn test_prune_removes_dead_patterns() {
     recall::store_pattern(&db, &mut network, 1, &make_pattern(64, 0), user_id, 5, 1.0)
         .await
         .unwrap();
-    recall::store_pattern(&db, &mut network, 2, &make_pattern(64, 10), user_id, 5, 0.01)
-        .await
-        .unwrap();
+    recall::store_pattern(
+        &db,
+        &mut network,
+        2,
+        &make_pattern(64, 10),
+        user_id,
+        5,
+        0.01,
+    )
+    .await
+    .unwrap();
 
     let report = crate::brain::dream::prune::prune(&db, &mut network, user_id, 100)
         .await
@@ -226,7 +234,14 @@ async fn test_run_dream_cycle_empty() {
     let stage_names: Vec<&str> = result.stages.iter().map(|s| s.stage.as_str()).collect();
     assert_eq!(
         stage_names,
-        &["replay", "merge", "prune", "discover", "decorrelate", "resolve"]
+        &[
+            "replay",
+            "merge",
+            "prune",
+            "discover",
+            "decorrelate",
+            "resolve"
+        ]
     );
 }
 
@@ -272,5 +287,8 @@ async fn test_dream_run_persisted() {
 
     assert_eq!(db_id, result.run_id);
     assert_eq!(db_user, user_id);
-    assert!(finished_at.is_some(), "finished_at should be set after cycle");
+    assert!(
+        finished_at.is_some(),
+        "finished_at should be set after cycle"
+    );
 }

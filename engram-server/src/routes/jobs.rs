@@ -1,10 +1,10 @@
+use axum::extract::Path;
 use axum::{
     extract::{Query, State},
     routing::{get, post},
     Json, Router,
 };
 use engram_lib::auth::Scope;
-use axum::extract::Path;
 use engram_lib::jobs::{
     self, cleanup_jobs, count_failed_jobs, list_failed_jobs, list_pending_jobs, list_running_jobs,
     purge_failed_jobs, retry_failed_job,
@@ -257,7 +257,9 @@ async fn list_failed_handler(
             })
         })
         .collect();
-    Ok(Json(json!({ "jobs": jobs_json, "total": total, "count": jobs_json.len() })))
+    Ok(Json(
+        json!({ "jobs": jobs_json, "total": total, "count": jobs_json.len() }),
+    ))
 }
 
 async fn retry_job_by_id_handler(

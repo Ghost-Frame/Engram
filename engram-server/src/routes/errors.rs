@@ -29,5 +29,7 @@ async fn get_errors(
     Query(query): Query<ListErrorsRequest>,
 ) -> Result<Json<Value>, AppError> {
     let events = errors_log::list_errors(&state.db, query).await?;
-    Ok(Json(serde_json::to_value(events).map_err(engram_lib::EngError::Serialization)?))
+    Ok(Json(
+        serde_json::to_value(events).map_err(engram_lib::EngError::Serialization)?,
+    ))
 }

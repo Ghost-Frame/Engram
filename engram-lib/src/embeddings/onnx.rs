@@ -42,15 +42,27 @@ impl OnnxProvider {
         )
         .await?;
 
-        Self::from_files(
-            &tokenizer_path,
-            &model_path,
-            config.embedding_dim,
-            config.embedding_max_seq,
-            config.embedding_chunk_max_chars,
-            config.embedding_chunk_overlap,
-            config.embedding_chunk_max_chunks,
-        )
+        // Load tokenizer + ONNX session on a blocking thread so we do not
+        // stall the tokio runtime during startup (S6-25).
+        let dim = config.embedding_dim;
+        let max_seq = config.embedding_max_seq;
+        let chunk_max_chars = config.embedding_chunk_max_chars;
+        let chunk_overlap = config.embedding_chunk_overlap;
+        let chunk_max_chunks = config.embedding_chunk_max_chunks;
+
+        tokio::task::spawn_blocking(move || {
+            Self::from_files(
+                &tokenizer_path,
+                &model_path,
+                dim,
+                max_seq,
+                chunk_max_chars,
+                chunk_overlap,
+                chunk_max_chunks,
+            )
+        })
+        .await
+        .map_err(|e| EngError::Internal(format!("onnx load task panicked: {}", e)))?
     }
 
     /// Create from explicit file paths (useful for testing).
@@ -212,9 +224,7 @@ impl EmbeddingProvider for OnnxProvider {
                 let inner_cloned = Arc::clone(&inner);
                 let result = tokio::task::spawn_blocking(move || inner_cloned.embed_single(&text))
                     .await
-                    .map_err(|e| {
-                        EngError::Internal(format!("spawn_blocking join error: {}", e))
-                    })?;
+                    .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))?;
                 return result;
             }
 
@@ -233,9 +243,7 @@ impl EmbeddingProvider for OnnxProvider {
                 let inner_cloned = Arc::clone(&inner);
                 let result = tokio::task::spawn_blocking(move || inner_cloned.embed_single(&chunk))
                     .await
-                    .map_err(|e| {
-                        EngError::Internal(format!("spawn_blocking join error: {}", e))
-                    })?;
+                    .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))?;
                 return result;
             }
 

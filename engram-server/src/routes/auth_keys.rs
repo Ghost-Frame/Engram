@@ -53,7 +53,8 @@ async fn create_key(
         .filter_map(|s| s.trim().parse().ok())
         .collect();
 
-    let (api_key, raw_key) = auth::create_key(&state.db, target_user_id, name, scopes).await?;
+    let (api_key, raw_key) =
+        auth::create_key(&state.db, target_user_id, name, scopes, None).await?;
 
     Ok((
         StatusCode::CREATED,
@@ -100,11 +101,7 @@ async fn revoke_key(
             )
             .await
             .map_err(engram_lib::EngError::Database)?;
-        if let Some(row) = rows
-            .next()
-            .await
-            .map_err(engram_lib::EngError::Database)?
-        {
+        if let Some(row) = rows.next().await.map_err(engram_lib::EngError::Database)? {
             target_user = row
                 .get::<i64>(0)
                 .map_err(|e| engram_lib::EngError::Internal(e.to_string()))?;
@@ -156,6 +153,7 @@ async fn rotate_key(
         auth_ctx.user_id,
         &new_name,
         old_key.scopes.clone(),
+        Some(old_key.rate_limit as i64),
     )
     .await?;
 

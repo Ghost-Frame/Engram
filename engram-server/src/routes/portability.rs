@@ -1,7 +1,10 @@
 // Portability routes: export, import (auto-detect), state, preferences
 
 use axum::{
+    body::Body,
     extract::{Path, State},
+    http::header,
+    response::Response,
     routing::get,
     Json, Router,
 };
@@ -35,14 +38,50 @@ pub fn router() -> Router<AppState> {
 // Export
 // ---------------------------------------------------------------------------
 
+// DOS-L2: stream export as NDJSON so large user datasets don't require
+// buffering the entire response as a single JSON blob. One JSON object per
+// line; clients can parse records as they arrive.
 async fn export_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
-) -> Result<Json<Value>, AppError> {
+) -> Result<Response, AppError> {
     let data = engram_lib::admin::export_user_data(&state.db, auth.user_id).await?;
-    Ok(Json(serde_json::to_value(data).map_err(|e| {
-        AppError(engram_lib::EngError::Internal(e.to_string()))
-    })?))
+
+    let mut lines: Vec<Result<axum::body::Bytes, std::convert::Infallible>> = Vec::new();
+
+    lines.push(Ok(axum::body::Bytes::from(
+        json!({
+            "type": "header",
+            "version": data.version,
+            "exported_at": data.exported_at,
+            "user_id": data.user_id,
+        })
+        .to_string()
+            + "\n",
+    )));
+
+    for (type_name, records) in [
+        ("memory", &data.memories),
+        ("conversation", &data.conversations),
+        ("episode", &data.episodes),
+        ("entity", &data.entities),
+        ("fact", &data.facts),
+        ("preference", &data.preferences),
+        ("skill", &data.skills),
+    ] {
+        for record in records {
+            let mut v = record.clone();
+            if let Value::Object(ref mut map) = v {
+                map.insert("type".into(), Value::String(type_name.to_string()));
+            }
+            lines.push(Ok(axum::body::Bytes::from(v.to_string() + "\n")));
+        }
+    }
+
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .body(Body::from_stream(futures::stream::iter(lines)))
+        .unwrap())
 }
 
 // ---------------------------------------------------------------------------
@@ -56,7 +95,12 @@ async fn import_handler(
 ) -> Result<Json<Value>, AppError> {
     // Auto-detect format based on shape
     if body.is_array() {
-        return import_array(&state, auth.user_id, body.as_array().unwrap()).await;
+        let arr = body.as_array().ok_or_else(|| {
+            AppError(engram_lib::EngError::InvalidInput(
+                "expected JSON array".into(),
+            ))
+        })?;
+        return import_array(&state, auth.user_id, arr).await;
     }
     if let Some(obj) = body.as_object() {
         if obj.contains_key("memories") {

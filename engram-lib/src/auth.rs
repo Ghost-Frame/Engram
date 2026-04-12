@@ -171,25 +171,29 @@ fn scopes_to_string(scopes: &[Scope]) -> String {
 
 /// Create a new API key for a user and store it in the database.
 /// Returns (ApiKey, raw_key). The raw_key is shown once and never stored.
+/// `rate_limit`: requests-per-minute cap. None uses the column default (1000).
 pub async fn create_key(
     db: &Database,
     user_id: i64,
     name: &str,
     scopes: Vec<Scope>,
+    rate_limit: Option<i64>,
 ) -> Result<(ApiKey, String)> {
     let (full_key, key_prefix, key_hash) = generate_key();
     let scopes_str = scopes_to_string(&scopes);
+    let rate_limit_val = rate_limit.unwrap_or(1000).max(1);
 
     db.conn
         .execute(
-            "INSERT INTO api_keys (user_id, key_prefix, key_hash, name, scopes)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO api_keys (user_id, key_prefix, key_hash, name, scopes, rate_limit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             libsql::params![
                 user_id,
                 key_prefix.clone(),
                 key_hash.clone(),
                 name,
-                scopes_str
+                scopes_str,
+                rate_limit_val
             ],
         )
         .await?;
@@ -249,9 +253,7 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     // `%Y-%m-%d %H:%M:%S` formatting we produce on insert.
     if let Some(ref expires_at) = api_key.expires_at {
         let parsed = chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%d %H:%M:%S")
-            .or_else(|_| {
-                chrono::DateTime::parse_from_rfc3339(expires_at).map(|dt| dt.naive_utc())
-            })
+            .or_else(|_| chrono::DateTime::parse_from_rfc3339(expires_at).map(|dt| dt.naive_utc()))
             .map_err(|_| crate::EngError::Auth("invalid key expiry format".into()))?;
         if parsed <= chrono::Utc::now().naive_utc() {
             return Err(crate::EngError::Auth("key has expired".into()));
@@ -287,6 +289,17 @@ pub async fn revoke_key(db: &Database, user_id: i64, key_id: i64) -> Result<()> 
         .execute(
             "UPDATE api_keys SET is_active = 0 WHERE id = ?1 AND user_id = ?2",
             libsql::params![key_id, user_id],
+        )
+        .await?;
+    Ok(())
+}
+
+/// Deactivate any API key by id regardless of owner (admin use only).
+pub async fn revoke_key_admin(db: &Database, key_id: i64) -> Result<()> {
+    db.conn
+        .execute(
+            "UPDATE api_keys SET is_active = 0 WHERE id = ?1",
+            libsql::params![key_id],
         )
         .await?;
     Ok(())

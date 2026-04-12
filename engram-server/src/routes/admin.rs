@@ -150,7 +150,9 @@ fn bootstrap_throttle() -> &'static Mutex<BootstrapThrottle> {
 
 /// Returns Err((status, body)) if currently locked out.
 fn check_bootstrap_cooldown() -> Result<(), (StatusCode, Json<Value>)> {
-    let mut throttle = bootstrap_throttle().lock().unwrap_or_else(|e| e.into_inner());
+    let mut throttle = bootstrap_throttle()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
     if now.duration_since(throttle.window_start).as_secs() >= BOOTSTRAP_WINDOW_SECS {
         throttle.window_start = now;
@@ -168,7 +170,9 @@ fn check_bootstrap_cooldown() -> Result<(), (StatusCode, Json<Value>)> {
 }
 
 fn record_bootstrap_failure() {
-    let mut throttle = bootstrap_throttle().lock().unwrap_or_else(|e| e.into_inner());
+    let mut throttle = bootstrap_throttle()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
     if now.duration_since(throttle.window_start).as_secs() >= BOOTSTRAP_WINDOW_SECS {
         throttle.window_start = now;
@@ -276,7 +280,7 @@ async fn bootstrap(
         .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
 
     let scopes = vec![Scope::Read, Scope::Write, Scope::Admin];
-    let (key, raw_key) = create_key(&state.db, 1, "admin", scopes).await?;
+    let (key, raw_key) = create_key(&state.db, 1, "admin", scopes, None).await?;
 
     Ok((
         StatusCode::CREATED,
@@ -583,10 +587,11 @@ async fn admin_cred_resolve(
         return Ok(Json(json!({ "text": resolved })));
     }
 
-    let service = body
-        .service
-        .as_deref()
-        .ok_or_else(|| AppError(engram_lib::EngError::InvalidInput("service is required".into())))?;
+    let service = body.service.as_deref().ok_or_else(|| {
+        AppError(engram_lib::EngError::InvalidInput(
+            "service is required".into(),
+        ))
+    })?;
     let key = body
         .key
         .as_deref()

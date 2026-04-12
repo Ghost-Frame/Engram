@@ -354,9 +354,7 @@ mod tests {
     #[test]
     fn test_gate_blocks_custom_patterns() {
         let patterns = vec!["blocked-domain.com".to_string()];
-        assert!(
-            check_blocked_patterns("curl https://blocked-domain.com", &patterns).is_some()
-        );
+        assert!(check_blocked_patterns("curl https://blocked-domain.com", &patterns).is_some());
     }
 
     #[test]

@@ -11,9 +11,9 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
-use subtle::ConstantTimeEq;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use subtle::ConstantTimeEq;
 use tokio::fs;
 
 use crate::error::AppError;
@@ -25,6 +25,10 @@ type HmacSha256 = Hmac<Sha256>;
 
 const GUI_COOKIE_MAX_AGE: i64 = 7 * 24 * 60 * 60; // 7 days
 const COOKIE_NAME: &str = "engram_auth";
+
+/// Process-lifetime cache for the HMAC secret. Avoids file I/O on every
+/// GUI request and eliminates the TOCTOU window between read-check and write.
+static HMAC_SECRET_CACHE: OnceLock<String> = OnceLock::new();
 
 // SPA routes that serve index.html
 const SPA_ROUTES: &[&str] = &[
@@ -66,6 +70,22 @@ fn mime_for_extension(ext: &str) -> &'static str {
 /// user on the box cannot read it and forge GUI auth cookies; if we find
 /// an existing file with permissive bits we tighten them in place.
 async fn get_hmac_secret(data_dir: &str) -> String {
+    // Fast path: return cached value (eliminates file I/O after first call).
+    if let Some(cached) = HMAC_SECRET_CACHE.get() {
+        return cached.clone();
+    }
+
+    let secret = load_or_generate_hmac_secret(data_dir).await;
+
+    // Race is harmless: both concurrent callers compute from the same file.
+    // The loser ignores its result and uses the winner's cached value.
+    let _ = HMAC_SECRET_CACHE.set(secret.clone());
+    HMAC_SECRET_CACHE.get().cloned().unwrap_or(secret)
+}
+
+/// Load the HMAC secret from env, disk, or generate a new one.
+/// Uses an atomic rename (write tmp + rename) to avoid partial-write corruption.
+async fn load_or_generate_hmac_secret(data_dir: &str) -> String {
     if let Ok(secret) = std::env::var("ENGRAM_HMAC_SECRET") {
         return secret;
     }
@@ -94,8 +114,14 @@ async fn get_hmac_secret(data_dir: &str) -> String {
     // Ensure data dir exists
     let _ = fs::create_dir_all(data_dir).await;
 
-    // Write secret (ignore errors, we'll use the generated one anyway)
-    let _ = fs::write(&secret_path, &secret).await;
+    // Atomic write: write to .tmp then rename to avoid TOCTOU partial-write.
+    // rename(2) is atomic on POSIX; on Windows this falls back to a replace.
+    let tmp_path = secret_path.with_extension("tmp");
+    if fs::write(&tmp_path, &secret).await.is_ok() {
+        if let Err(e) = fs::rename(&tmp_path, &secret_path).await {
+            tracing::warn!(error = %e, "failed to rename hmac secret tmp file");
+        }
+    }
     tighten_secret_perms(&secret_path).await;
     tracing::info!(path = ?secret_path, "generated HMAC secret");
 

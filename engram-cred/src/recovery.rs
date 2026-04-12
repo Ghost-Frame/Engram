@@ -151,7 +151,9 @@ pub async fn recover_master_key(
             master_key.copy_from_slice(&master_bytes);
             Ok(master_key)
         }
-        _ => Err(CredError::Decryption("unexpected recovery data type".into())),
+        _ => Err(CredError::Decryption(
+            "unexpected recovery data type".into(),
+        )),
     }
 }
 

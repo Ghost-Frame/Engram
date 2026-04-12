@@ -28,18 +28,22 @@ impl IntoResponse for AppError {
             CredError::PermissionDenied(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             CredError::KeyRevoked(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             CredError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            CredError::Encryption(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("encryption: {}", msg))
-            }
-            CredError::Decryption(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("decryption: {}", msg))
-            }
-            CredError::Database(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("database: {}", msg))
-            }
-            CredError::YubiKey(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("yubikey: {}", msg))
-            }
+            CredError::Encryption(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("encryption: {}", msg),
+            ),
+            CredError::Decryption(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("decryption: {}", msg),
+            ),
+            CredError::Database(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("database: {}", msg),
+            ),
+            CredError::YubiKey(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("yubikey: {}", msg),
+            ),
         };
 
         let body = Json(json!({

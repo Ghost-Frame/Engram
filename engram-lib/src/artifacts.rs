@@ -95,7 +95,11 @@ pub async fn index_artifact(
         Err(_) => false,
     };
     if !owned {
-        tracing::warn!(artifact_id, user_id, "artifact FTS index rejected: not owned");
+        tracing::warn!(
+            artifact_id,
+            user_id,
+            "artifact FTS index rejected: not owned"
+        );
         return false;
     }
     if db

@@ -1,12 +1,14 @@
 use axum::{
     body::Body,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
 use serde_json::{json, Value};
+use std::time::Duration;
+use tower_http::timeout::TimeoutLayer;
 
 use crate::{extractors::Auth, state::AppState};
 use engram_lib::auth::Scope;
@@ -18,6 +20,13 @@ pub fn router() -> Router<AppState> {
         .route("/live", get(get_live))
         .route("/ready", get(get_ready))
         .route("/metrics", get(get_metrics))
+        // S7-26: health probes must respond within 1s or they are useless.
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(1),
+        ))
+        // S7-27: health endpoints carry no body; 1 KB is generous.
+        .layer(DefaultBodyLimit::max(1024))
 }
 
 async fn get_health() -> Json<Value> {
@@ -49,11 +58,7 @@ async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Respons
     // a leaked read/write key can neither enumerate tenant sizes nor observe fleet
     // activity.
     if !auth.has_scope(&Scope::Admin) {
-        return (
-            StatusCode::FORBIDDEN,
-            "admin scope required for metrics\n",
-        )
-            .into_response();
+        return (StatusCode::FORBIDDEN, "admin scope required for metrics\n").into_response();
     }
     let mut lines = Vec::new();
 

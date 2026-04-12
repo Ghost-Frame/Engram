@@ -297,7 +297,7 @@ impl CreddClient {
                     request.key,
                     request.mode,
                 )
-                    .await?;
+                .await?;
                 return Ok(value);
             }
         }
@@ -459,7 +459,9 @@ fn parse_secret_refs(payload: &Value) -> Result<Vec<(String, String)>> {
         Value::Object(map) => map
             .get("secrets")
             .and_then(Value::as_array)
-            .ok_or_else(|| EngError::Internal("credd list response missing secrets array".into()))?,
+            .ok_or_else(|| {
+                EngError::Internal("credd list response missing secrets array".into())
+            })?,
         _ => {
             return Err(EngError::Internal(
                 "credd list response has unsupported shape".into(),

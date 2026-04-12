@@ -101,7 +101,12 @@ async fn main() {
     // interface without a shared-secret token. On loopback, allow unauthed
     // startup with a loud warning to avoid breaking existing dev flows.
     let loopback = auth::is_loopback_host(&cli.host);
-    let token = match cli.token.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let token = match cli
+        .token
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(t) => Some(t.to_string()),
         None => {
             if !loopback {

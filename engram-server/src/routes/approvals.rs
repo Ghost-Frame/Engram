@@ -11,8 +11,8 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::approvals::{
-    create_approval, decide, expire_stale_for_user, get_approval, list_pending,
-    Approval, ApprovalDecision, CreateApprovalRequest, DecideRequest,
+    create_approval, decide, expire_stale_for_user, get_approval, list_pending, Approval,
+    ApprovalDecision, CreateApprovalRequest, DecideRequest,
 };
 
 pub fn router() -> Router<AppState> {

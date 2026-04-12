@@ -25,26 +25,39 @@ pub fn register(out: &mut Vec<ToolDef>) {
 
 pub async fn consolidate(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let ids: Vec<String> = serde_json::from_value::<Vec<i64>>(args.get("memory_ids").cloned().ok_or_else(|| invalid_input("memory_ids required"))?)
-        .map_err(|e| invalid_input(e.to_string()))?
-        .into_iter()
-        .map(|id| id.to_string())
-        .collect();
-    Ok(json!(consolidation::consolidate(&app.db, &ids, auth.user_id).await?))
+    let ids: Vec<String> = serde_json::from_value::<Vec<i64>>(
+        args.get("memory_ids")
+            .cloned()
+            .ok_or_else(|| invalid_input("memory_ids required"))?,
+    )
+    .map_err(|e| invalid_input(e.to_string()))?
+    .into_iter()
+    .map(|id| id.to_string())
+    .collect();
+    Ok(json!(
+        consolidation::consolidate(&app.db, &ids, auth.user_id).await?
+    ))
 }
 
 pub async fn detect_contradictions(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     if let Some(memory_id) = args.get("memory_id").and_then(Value::as_i64) {
         let memory = memory::get(&app.db, memory_id, auth.user_id).await?;
-        return Ok(json!({"contradictions": contradiction::detect_contradictions(&app.db, &memory).await?}));
+        return Ok(
+            json!({"contradictions": contradiction::detect_contradictions(&app.db, &memory).await?}),
+        );
     }
-    Ok(json!({"contradictions": contradiction::scan_all_contradictions(&app.db, auth.user_id).await?}))
+    Ok(
+        json!({"contradictions": contradiction::scan_all_contradictions(&app.db, auth.user_id).await?}),
+    )
 }
 
 pub async fn decompose(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let memory_id = args.get("memory_id").and_then(Value::as_i64).ok_or_else(|| invalid_input("memory_id required"))?;
+    let memory_id = args
+        .get("memory_id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("memory_id required"))?;
     Ok(json!({"child_ids": decomposition::decompose(&app.db, memory_id, auth.user_id).await?}))
 }
 
@@ -54,14 +67,25 @@ pub async fn temporal_summary(app: &App, args: Value) -> Result<Value> {
         let patterns = temporal::detect_patterns(&app.db, auth.user_id).await?;
         return Ok(json!({"patterns": patterns, "count": patterns.len()}));
     }
-    let patterns = temporal::list_patterns(&app.db, auth.user_id, args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize).await?;
+    let patterns = temporal::list_patterns(
+        &app.db,
+        auth.user_id,
+        args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize,
+    )
+    .await?;
     Ok(json!({"patterns": patterns, "count": patterns.len()}))
 }
 
 pub async fn reflect(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let content = args.get("content").and_then(Value::as_str).ok_or_else(|| invalid_input("content required"))?;
-    let reflection_type = args.get("reflection_type").and_then(Value::as_str).unwrap_or("general");
+    let content = args
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_input("content required"))?;
+    let reflection_type = args
+        .get("reflection_type")
+        .and_then(Value::as_str)
+        .unwrap_or("general");
     let source_memory_ids = args
         .get("source_memory_ids")
         .cloned()
@@ -69,8 +93,21 @@ pub async fn reflect(app: &App, args: Value) -> Result<Value> {
         .transpose()
         .map_err(|e| invalid_input(e.to_string()))?
         .unwrap_or_default();
-    let confidence = args.get("confidence").and_then(Value::as_f64).unwrap_or(1.0);
-    Ok(json!(reflections::create_reflection(&app.db, content, reflection_type, &source_memory_ids, confidence, auth.user_id).await?))
+    let confidence = args
+        .get("confidence")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0);
+    Ok(json!(
+        reflections::create_reflection(
+            &app.db,
+            content,
+            reflection_type,
+            &source_memory_ids,
+            confidence,
+            auth.user_id
+        )
+        .await?
+    ))
 }
 
 pub async fn extract_facts(app: &App, args: Value) -> Result<Value> {
@@ -78,20 +115,36 @@ pub async fn extract_facts(app: &App, args: Value) -> Result<Value> {
     let memory_id = if let Some(id) = args.get("memory_id").and_then(Value::as_i64) {
         id
     } else {
-        let content = args.get("content").and_then(Value::as_str).ok_or_else(|| invalid_input("memory_id or content required"))?;
-        memory::store(&app.db, StoreRequest {
-            content: content.to_string(),
-            category: args.get("category").and_then(Value::as_str).unwrap_or("general").to_string(),
-            source: args.get("source").and_then(Value::as_str).unwrap_or("mcp.extract_facts").to_string(),
-            importance: 5,
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: Some(false),
-            user_id: Some(auth.user_id),
-            space_id: None,
-            parent_memory_id: None,
-        }).await?.id
+        let content = args
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid_input("memory_id or content required"))?;
+        memory::store(
+            &app.db,
+            StoreRequest {
+                content: content.to_string(),
+                category: args
+                    .get("category")
+                    .and_then(Value::as_str)
+                    .unwrap_or("general")
+                    .to_string(),
+                source: args
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .unwrap_or("mcp.extract_facts")
+                    .to_string(),
+                importance: 5,
+                tags: None,
+                embedding: None,
+                session_id: None,
+                is_static: Some(false),
+                user_id: Some(auth.user_id),
+                space_id: None,
+                parent_memory_id: None,
+            },
+        )
+        .await?
+        .id
     };
     let memory = memory::get(&app.db, memory_id, auth.user_id).await?;
     Ok(json!({
@@ -116,14 +169,17 @@ pub async fn sentiment(app: &App, args: Value) -> Result<Value> {
 pub async fn causal_trace(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     if let Some(chain_id) = args.get("chain_id").and_then(Value::as_i64) {
-        return Ok(json!(causal::get_chain(&app.db, chain_id, auth.user_id).await?));
+        return Ok(json!(
+            causal::get_chain(&app.db, chain_id, auth.user_id).await?
+        ));
     }
     let chain = causal::create_chain(
         &app.db,
         args.get("root_memory_id").and_then(Value::as_i64),
         args.get("description").and_then(Value::as_str),
         auth.user_id,
-    ).await?;
+    )
+    .await?;
     if let Some(links) = args.get("links").and_then(Value::as_array) {
         for (idx, link) in links.iter().enumerate() {
             if let (Some(cause), Some(effect)) = (
@@ -136,11 +192,16 @@ pub async fn causal_trace(app: &App, args: Value) -> Result<Value> {
                     cause,
                     effect,
                     link.get("strength").and_then(Value::as_f64).unwrap_or(1.0),
-                    link.get("order_index").and_then(Value::as_i64).unwrap_or(idx as i64) as i32,
+                    link.get("order_index")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(idx as i64) as i32,
                     auth.user_id,
-                ).await?;
+                )
+                .await?;
             }
         }
     }
-    Ok(json!(causal::get_chain(&app.db, chain.id, auth.user_id).await?))
+    Ok(json!(
+        causal::get_chain(&app.db, chain.id, auth.user_id).await?
+    ))
 }

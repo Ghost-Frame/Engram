@@ -78,7 +78,9 @@ pub async fn dispatch(app: &App, name: &str, args: Value) -> Result<Value> {
         "graph.louvain_communities" => graph::louvain_communities(app, args).await,
         "graph.cooccurrence" => graph::cooccurrence(app, args).await,
         "intelligence.consolidate" => intelligence::consolidate(app, args).await,
-        "intelligence.detect_contradictions" => intelligence::detect_contradictions(app, args).await,
+        "intelligence.detect_contradictions" => {
+            intelligence::detect_contradictions(app, args).await
+        }
         "intelligence.decompose" => intelligence::decompose(app, args).await,
         "intelligence.temporal_summary" => intelligence::temporal_summary(app, args).await,
         "intelligence.reflect" => intelligence::reflect(app, args).await,
@@ -98,15 +100,14 @@ pub async fn dispatch(app: &App, name: &str, args: Value) -> Result<Value> {
         "admin.vector_sync_replay" => admin::vector_sync_replay(app, args).await,
         "admin.backup" => admin::backup(app, args).await,
         "admin.checkpoint" => admin::checkpoint(app, args).await,
-        _ => Err(engram_lib::EngError::NotFound(format!("unknown tool: {name}"))),
+        _ => Err(engram_lib::EngError::NotFound(format!(
+            "unknown tool: {name}"
+        ))),
     }
 }
 
 pub fn with_auth_props(extra: Value, required: &[&str]) -> Value {
-    let mut properties = auth_prop()
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
+    let mut properties = auth_prop().as_object().cloned().unwrap_or_default();
     for (key, value) in extra.as_object().cloned().unwrap_or_default() {
         properties.insert(key, value);
     }

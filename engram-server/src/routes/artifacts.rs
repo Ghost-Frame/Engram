@@ -59,8 +59,7 @@ async fn list_for_memory(
         return Err(AppError(engram_lib::EngError::NotFound("Not found".into())));
     }
 
-    let artifacts =
-        artifacts::get_artifacts_by_memory(&state.db, memory_id, auth.user_id).await?;
+    let artifacts = artifacts::get_artifacts_by_memory(&state.db, memory_id, auth.user_id).await?;
     Ok(Json(
         json!({ "artifacts": artifacts, "memory_id": memory_id }),
     ))
@@ -78,7 +77,9 @@ async fn download_artifact(
     // Verify the owning memory belongs to this user
     // Reject orphaned artifacts (no memory_id) to prevent BOLA
     let memory_id = artifact.memory_id.ok_or_else(|| {
-        AppError(engram_lib::EngError::NotFound("Artifact has no associated memory".into()))
+        AppError(engram_lib::EngError::NotFound(
+            "Artifact has no associated memory".into(),
+        ))
     })?;
 
     let mut rows = state

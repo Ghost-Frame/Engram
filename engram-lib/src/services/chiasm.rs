@@ -158,7 +158,14 @@ pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> 
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  RETURNING {TASK_COLUMNS}"
             ),
-            libsql::params![req.agent, req.project, req.title, status, req.summary, user_id],
+            libsql::params![
+                req.agent,
+                req.project,
+                req.title,
+                status,
+                req.summary,
+                user_id
+            ],
         )
         .await?;
     let row = rows
@@ -239,7 +246,9 @@ pub async fn list_tasks(
             .read(move |conn| {
                 let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
                 let converted = rusqlite::params_from_iter(
-                    params.iter().map(crate::memory::libsql_value_to_rusqlite_value),
+                    params
+                        .iter()
+                        .map(crate::memory::libsql_value_to_rusqlite_value),
                 );
                 let mut rows = stmt.query(converted).map_err(rusqlite_to_eng_error)?;
                 let mut out = Vec::new();

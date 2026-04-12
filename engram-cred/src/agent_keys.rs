@@ -129,7 +129,13 @@ pub async fn create_agent_key(
         .execute(
             "INSERT INTO cred_agent_keys (user_id, key_hash, name, permissions, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            libsql::params![user_id, key_hash.clone(), name, permissions_json, now.clone()],
+            libsql::params![
+                user_id,
+                key_hash.clone(),
+                name,
+                permissions_json,
+                now.clone()
+            ],
         )
         .await?;
 
@@ -320,7 +326,7 @@ mod tests {
         let (key, hash) = generate_agent_key();
         assert_eq!(key.len(), 32);
         assert_eq!(hash.len(), 64); // SHA-256 hex
-        // Verify hash matches key
+                                    // Verify hash matches key
         assert_eq!(hash_key(&key), hash);
     }
 

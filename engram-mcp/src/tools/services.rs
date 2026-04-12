@@ -34,14 +34,35 @@ pub fn register(out: &mut Vec<ToolDef>) {
 
 pub async fn axon_publish(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    Ok(json!(axon::publish_event(&app.db, axon::PublishEventRequest {
-        channel: args.get("channel").and_then(Value::as_str).ok_or_else(|| invalid_input("channel required"))?.to_string(),
-        action: args.get("action").and_then(Value::as_str).or_else(|| args.get("event_type").and_then(Value::as_str)).unwrap_or("event").to_string(),
-        payload: args.get("payload").cloned(),
-        source: args.get("source").and_then(Value::as_str).map(str::to_string),
-        agent: args.get("agent").and_then(Value::as_str).map(str::to_string),
-        user_id: Some(auth.user_id),
-    }).await?))
+    Ok(json!(
+        axon::publish_event(
+            &app.db,
+            axon::PublishEventRequest {
+                channel: args
+                    .get("channel")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_input("channel required"))?
+                    .to_string(),
+                action: args
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .or_else(|| args.get("event_type").and_then(Value::as_str))
+                    .unwrap_or("event")
+                    .to_string(),
+                payload: args.get("payload").cloned(),
+                source: args
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                agent: args
+                    .get("agent")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                user_id: Some(auth.user_id),
+            }
+        )
+        .await?
+    ))
 }
 
 pub async fn axon_consume(app: &App, args: Value) -> Result<Value> {
@@ -61,70 +82,184 @@ pub async fn axon_consume(app: &App, args: Value) -> Result<Value> {
 
 pub async fn broca_log(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    Ok(json!(broca::log_action(&app.db, broca::LogActionRequest {
-        agent: args.get("agent").and_then(Value::as_str).ok_or_else(|| invalid_input("agent required"))?.to_string(),
-        service: args.get("service").and_then(Value::as_str).map(str::to_string),
-        action: args.get("action").and_then(Value::as_str).unwrap_or("unknown").to_string(),
-        narrative: args.get("narrative").and_then(Value::as_str).map(str::to_string),
-        payload: args.get("payload").cloned(),
-        axon_event_id: args.get("axon_event_id").and_then(Value::as_i64),
-        user_id: Some(auth.user_id),
-    }).await?))
+    Ok(json!(
+        broca::log_action(
+            &app.db,
+            broca::LogActionRequest {
+                agent: args
+                    .get("agent")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_input("agent required"))?
+                    .to_string(),
+                service: args
+                    .get("service")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                action: args
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                narrative: args
+                    .get("narrative")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                payload: args.get("payload").cloned(),
+                axon_event_id: args.get("axon_event_id").and_then(Value::as_i64),
+                user_id: Some(auth.user_id),
+            }
+        )
+        .await?
+    ))
 }
 
 pub async fn chiasm_create_task(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    Ok(json!(chiasm::create_task(&app.db, chiasm::CreateTaskRequest {
-        agent: args.get("agent").and_then(Value::as_str).ok_or_else(|| invalid_input("agent required"))?.to_string(),
-        project: args.get("project").and_then(Value::as_str).ok_or_else(|| invalid_input("project required"))?.to_string(),
-        title: args.get("title").and_then(Value::as_str).ok_or_else(|| invalid_input("title required"))?.to_string(),
-        status: args.get("status").and_then(Value::as_str).map(str::to_string),
-        summary: args.get("summary").and_then(Value::as_str).map(str::to_string),
-        user_id: Some(auth.user_id),
-    }).await?))
+    Ok(json!(
+        chiasm::create_task(
+            &app.db,
+            chiasm::CreateTaskRequest {
+                agent: args
+                    .get("agent")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_input("agent required"))?
+                    .to_string(),
+                project: args
+                    .get("project")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_input("project required"))?
+                    .to_string(),
+                title: args
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_input("title required"))?
+                    .to_string(),
+                status: args
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                summary: args
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                user_id: Some(auth.user_id),
+            }
+        )
+        .await?
+    ))
 }
 
 pub async fn chiasm_update_task(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let id = args.get("id").and_then(Value::as_i64).ok_or_else(|| invalid_input("id required"))?;
-    Ok(json!(chiasm::update_task(&app.db, id, chiasm::UpdateTaskRequest {
-        title: args.get("title").and_then(Value::as_str).map(str::to_string),
-        status: args.get("status").and_then(Value::as_str).map(str::to_string),
-        summary: args.get("summary").and_then(Value::as_str).map(str::to_string),
-        agent: args.get("agent").and_then(Value::as_str).map(str::to_string),
-    }, auth.user_id).await?))
+    let id = args
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("id required"))?;
+    Ok(json!(
+        chiasm::update_task(
+            &app.db,
+            id,
+            chiasm::UpdateTaskRequest {
+                title: args
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                status: args
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                summary: args
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                agent: args
+                    .get("agent")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            },
+            auth.user_id
+        )
+        .await?
+    ))
 }
 
 pub async fn soma_register(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    Ok(json!(soma::register_agent(&app.db, soma::RegisterAgentRequest {
-        name: args.get("name").and_then(Value::as_str).ok_or_else(|| invalid_input("name required"))?.to_string(),
-        type_: args.get("type").and_then(Value::as_str).ok_or_else(|| invalid_input("type required"))?.to_string(),
-        description: args.get("description").and_then(Value::as_str).map(str::to_string),
-        capabilities: args.get("capabilities").cloned(),
-        config: args.get("config").cloned(),
-        user_id: Some(auth.user_id),
-    }).await?))
+    Ok(json!(
+        soma::register_agent(
+            &app.db,
+            soma::RegisterAgentRequest {
+                name: args
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_input("name required"))?
+                    .to_string(),
+                type_: args
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_input("type required"))?
+                    .to_string(),
+                description: args
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                capabilities: args.get("capabilities").cloned(),
+                config: args.get("config").cloned(),
+                user_id: Some(auth.user_id),
+            }
+        )
+        .await?
+    ))
 }
 
 pub async fn soma_heartbeat(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    let id = args.get("id").and_then(Value::as_i64).ok_or_else(|| invalid_input("id required"))?;
+    let id = args
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_input("id required"))?;
     soma::heartbeat(&app.db, id, auth.user_id).await?;
     Ok(json!({"ok": true, "id": id}))
 }
 
 pub async fn thymus_review(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
-    Ok(json!(thymus::evaluate(&app.db, thymus::EvaluateRequest {
-        rubric_id: args.get("rubric_id").and_then(Value::as_i64).ok_or_else(|| invalid_input("rubric_id required"))?,
-        agent: args.get("agent").and_then(Value::as_str).ok_or_else(|| invalid_input("agent required"))?.to_string(),
-        subject: args.get("subject").and_then(Value::as_str).ok_or_else(|| invalid_input("subject required"))?.to_string(),
-        input: args.get("input").cloned(),
-        output: args.get("output").cloned(),
-        scores: args.get("scores").cloned().ok_or_else(|| invalid_input("scores required"))?,
-        notes: args.get("notes").and_then(Value::as_str).map(str::to_string),
-        evaluator: args.get("evaluator").and_then(Value::as_str).ok_or_else(|| invalid_input("evaluator required"))?.to_string(),
-        user_id: Some(auth.user_id),
-    }).await?))
+    Ok(json!(
+        thymus::evaluate(
+            &app.db,
+            thymus::EvaluateRequest {
+                rubric_id: args
+                    .get("rubric_id")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| invalid_input("rubric_id required"))?,
+                agent: args
+                    .get("agent")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_input("agent required"))?
+                    .to_string(),
+                subject: args
+                    .get("subject")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_input("subject required"))?
+                    .to_string(),
+                input: args.get("input").cloned(),
+                output: args.get("output").cloned(),
+                scores: args
+                    .get("scores")
+                    .cloned()
+                    .ok_or_else(|| invalid_input("scores required"))?,
+                notes: args
+                    .get("notes")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                evaluator: args
+                    .get("evaluator")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_input("evaluator required"))?
+                    .to_string(),
+                user_id: Some(auth.user_id),
+            }
+        )
+        .await?
+    ))
 }

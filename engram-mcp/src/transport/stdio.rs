@@ -26,7 +26,8 @@ fn read_message<R: BufRead>(reader: &mut R) -> Result<Option<Value>> {
         }
     }
 
-    let len = content_length.ok_or_else(|| EngError::Internal("missing Content-Length header".into()))?;
+    let len =
+        content_length.ok_or_else(|| EngError::Internal("missing Content-Length header".into()))?;
     let mut buf = vec![0u8; len];
     reader
         .read_exact(&mut buf)

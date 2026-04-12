@@ -396,7 +396,11 @@ async fn main() {
 
 async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
     match cmd {
-        CredCommands::Get { category, name, raw } => {
+        CredCommands::Get {
+            category,
+            name,
+            raw,
+        } => {
             match client.get(&format!("/secret/{}/{}", category, name)).await {
                 Ok(v) => {
                     if *raw {
@@ -472,7 +476,10 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
             };
 
             let body = json!({ "data": data });
-            match client.post(&format!("/secret/{}/{}", category, name), body).await {
+            match client
+                .post(&format!("/secret/{}/{}", category, name), body)
+                .await
+            {
                 Ok(v) => {
                     println!(
                         "Stored {}/{} (id: {})",
@@ -503,7 +510,8 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
                         for s in &secrets {
                             let cat = s.get("category").and_then(|x| x.as_str()).unwrap_or("?");
                             let name = s.get("name").and_then(|x| x.as_str()).unwrap_or("?");
-                            let stype = s.get("secret_type").and_then(|x| x.as_str()).unwrap_or("?");
+                            let stype =
+                                s.get("secret_type").and_then(|x| x.as_str()).unwrap_or("?");
                             println!("{}/{} [{}]", cat, name, stype);
                         }
                     }
@@ -513,7 +521,10 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
         }
 
         CredCommands::Delete { category, name } => {
-            match client.delete(&format!("/secret/{}/{}", category, name)).await {
+            match client
+                .delete(&format!("/secret/{}/{}", category, name))
+                .await
+            {
                 Ok(_) => println!("Deleted {}/{}", category, name),
                 Err(e) => eprintln!("Error: {}", e),
             }
@@ -574,7 +585,10 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
         },
 
         CredCommands::AgentRevoke { name } => {
-            match client.post(&format!("/agents/{}/revoke", name), json!({})).await {
+            match client
+                .post(&format!("/agents/{}/revoke", name), json!({}))
+                .await
+            {
                 Ok(_) => println!("Revoked agent key: {}", name),
                 Err(e) => eprintln!("Error: {}", e),
             }

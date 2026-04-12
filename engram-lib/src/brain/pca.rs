@@ -74,8 +74,7 @@ impl PcaTransform {
             // Deterministic pseudo-random initialization
             let mut v = Array1::<f32>::zeros(n_features);
             for i in 0..n_features {
-                let seed =
-                    (i as f32 * 1.618_034 + comp_idx as f32 * std::f32::consts::E).sin();
+                let seed = (i as f32 * 1.618_034 + comp_idx as f32 * std::f32::consts::E).sin();
                 v[i] = seed;
             }
             // Normalize
@@ -156,12 +155,7 @@ impl PcaTransform {
         let mut projected: Vec<f32> = self
             .components
             .iter()
-            .map(|comp| {
-                comp.iter()
-                    .zip(&centered)
-                    .map(|(c, x)| c * x)
-                    .sum::<f32>()
-            })
+            .map(|comp| comp.iter().zip(&centered).map(|(c, x)| c * x).sum::<f32>())
             .collect();
 
         // L2 normalize
@@ -231,8 +225,7 @@ pub async fn store_pca_model(
     target_dim: usize,
     transform: &PcaTransform,
 ) -> Result<i64> {
-    let blob =
-        serde_json::to_vec(transform).map_err(|e| EngError::Internal(e.to_string()))?;
+    let blob = serde_json::to_vec(transform).map_err(|e| EngError::Internal(e.to_string()))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     db.conn
@@ -243,10 +236,7 @@ pub async fn store_pca_model(
         )
         .await?;
 
-    let mut rows = db
-        .conn
-        .query("SELECT last_insert_rowid()", ())
-        .await?;
+    let mut rows = db.conn.query("SELECT last_insert_rowid()", ()).await?;
 
     let id: i64 = match rows.next().await? {
         Some(row) => row.get(0)?,
@@ -312,9 +302,7 @@ mod tests {
         (0..n)
             .map(|i| {
                 (0..d)
-                    .map(|j| {
-                        ((i as f32 * 0.1 + j as f32 * 0.01) * std::f32::consts::PI).sin()
-                    })
+                    .map(|j| ((i as f32 * 0.1 + j as f32 * 0.01) * std::f32::consts::PI).sin())
                     .collect()
             })
             .collect()

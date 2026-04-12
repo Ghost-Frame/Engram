@@ -28,7 +28,7 @@ impl SecretType {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "login" => Some(Self::Login),
             "api_key" => Some(Self::ApiKey),
@@ -118,9 +118,7 @@ impl SecretData {
             Self::OAuthApp { client_secret, .. } => client_secret.clone(),
             Self::SshKey { private_key, .. } => private_key.clone(),
             Self::Note { content } => content.clone(),
-            Self::Environment { variables } => {
-                serde_json::to_string(variables).unwrap_or_default()
-            }
+            Self::Environment { variables } => serde_json::to_string(variables).unwrap_or_default(),
         }
     }
 
@@ -194,7 +192,7 @@ mod tests {
             SecretType::Note,
             SecretType::Environment,
         ] {
-            assert_eq!(SecretType::from_str(st.as_str()), Some(st));
+            assert_eq!(SecretType::parse(st.as_str()), Some(st));
         }
     }
 
@@ -244,10 +242,7 @@ mod tests {
         };
         assert_eq!(login.get_field("username"), Some("admin".into()));
         assert_eq!(login.get_field("password"), Some("hunter2".into()));
-        assert_eq!(
-            login.get_field("url"),
-            Some("https://example.com".into())
-        );
+        assert_eq!(login.get_field("url"), Some("https://example.com".into()));
         assert_eq!(login.get_field("notes"), None);
         assert_eq!(login.get_field("nonexistent"), None);
     }

@@ -3,6 +3,7 @@ use axum::http::{Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use engram_lib::auth::{validate_key, ApiKey, AuthContext, Scope};
+use tracing::Instrument;
 
 use crate::state::AppState;
 
@@ -127,8 +128,16 @@ pub async fn auth_middleware(
                 if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
                     return forbid("read scope required for this method");
                 }
+                let user_id = auth_ctx.user_id;
                 request.extensions_mut().insert(auth_ctx);
-                next.run(request).await
+                // MT-F25: attach per-request span so all downstream logs carry user_id.
+                let span = tracing::info_span!(
+                    "request",
+                    user_id = user_id,
+                    method = %method,
+                    path = %path,
+                );
+                next.run(request).instrument(span).await
             }
             Err(e) => {
                 // SECURITY: normalize the client-facing error so an attacker

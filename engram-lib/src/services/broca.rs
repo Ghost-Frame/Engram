@@ -213,9 +213,7 @@ pub async fn query_actions(
 }
 
 pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEntry> {
-    let sql = format!(
-        "SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2"
-    );
+    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
 
     #[cfg(feature = "db_pool")]
     if uses_pool_backend(db) {
@@ -358,7 +356,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let other = query_actions(&db, None, None, None, 10, 0, 2).await.unwrap();
+        let other = query_actions(&db, None, None, None, 10, 0, 2)
+            .await
+            .unwrap();
         assert!(other.is_empty());
     }
 }

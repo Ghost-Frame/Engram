@@ -47,14 +47,8 @@ pub async fn run(listen: &str, db_path: &str, master_password: &str) -> anyhow::
         // Agent key management
         .route("/agents", get(agents::list_handler))
         .route("/agents", post(agents::create_handler))
-        .route(
-            "/agents/{name}",
-            delete(agents::delete_handler),
-        )
-        .route(
-            "/agents/{name}/revoke",
-            post(agents::revoke_handler),
-        )
+        .route("/agents/{name}", delete(agents::delete_handler))
+        .route("/agents/{name}/revoke", post(agents::revoke_handler))
         // Health check (no auth)
         .route("/health", get(health_handler))
         // Apply middleware

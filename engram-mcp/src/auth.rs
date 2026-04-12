@@ -9,7 +9,11 @@ pub async fn resolve_auth(app: &App, args: &Value) -> Result<AuthContext> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| std::env::var("ENGRAM_MCP_BEARER_TOKEN").ok())
-        .ok_or_else(|| EngError::Auth("missing bearer token; set ENGRAM_MCP_BEARER_TOKEN or pass bearer_token".into()))?;
+        .ok_or_else(|| {
+            EngError::Auth(
+                "missing bearer token; set ENGRAM_MCP_BEARER_TOKEN or pass bearer_token".into(),
+            )
+        })?;
     validate_key(&app.db, &token).await
 }
 

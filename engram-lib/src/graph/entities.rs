@@ -36,9 +36,9 @@ pub async fn create_entity(db: &Database, req: CreateEntityRequest) -> Result<En
     let entity_type = req.entity_type.unwrap_or_else(|| "general".to_string());
     // SECURITY: fail closed when user_id is missing so an unauthenticated path
     // cannot silently create tenant-0 rows that other callers may trust.
-    let user_id = req.user_id.ok_or_else(|| {
-        EngError::InvalidInput("user_id is required to create an entity".into())
-    })?;
+    let user_id = req
+        .user_id
+        .ok_or_else(|| EngError::InvalidInput("user_id is required to create an entity".into()))?;
     let aliases_json = match req.aliases {
         Some(ref v) => Some(serde_json::to_string(v)?),
         None => None,

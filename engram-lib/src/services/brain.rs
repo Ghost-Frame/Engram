@@ -872,8 +872,8 @@ impl BrainBackend for HopfieldBrainManager {
 
         // Dream cycle: decay, prune dead patterns, merge similar
         let stats = recall::decay_tick(&self.db, &mut network, user_id, 1).await?;
-        let pruned = recall::prune_weak(&self.db, &mut network, user_id, recall::DEATH_THRESHOLD)
-            .await?;
+        let pruned =
+            recall::prune_weak(&self.db, &mut network, user_id, recall::DEATH_THRESHOLD).await?;
         let merged = recall::merge_similar(&self.db, &mut network, user_id, 0.0).await?;
 
         Ok(BrainResponse {

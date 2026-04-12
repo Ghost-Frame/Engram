@@ -90,8 +90,9 @@ pub async fn get_secret(
     let created_at: String = row.get(7)?;
     let updated_at: String = row.get(8)?;
 
-    let secret_type = SecretType::from_str(&secret_type_str)
-        .ok_or_else(|| CredError::InvalidInput(format!("unknown secret type: {}", secret_type_str)))?;
+    let secret_type = SecretType::parse(&secret_type_str).ok_or_else(|| {
+        CredError::InvalidInput(format!("unknown secret type: {}", secret_type_str))
+    })?;
 
     let mut nonce = [0u8; NONCE_SIZE];
     if nonce_vec.len() != NONCE_SIZE {
@@ -155,7 +156,7 @@ pub async fn list_secrets(
         let created_at: String = row.get(5)?;
         let updated_at: String = row.get(6)?;
 
-        let secret_type = SecretType::from_str(&secret_type_str).unwrap_or(SecretType::Note);
+        let secret_type = SecretType::parse(&secret_type_str).unwrap_or(SecretType::Note);
 
         secrets.push(SecretRow {
             id,
@@ -210,12 +211,7 @@ pub async fn update_secret(
 }
 
 /// Delete a secret.
-pub async fn delete_secret(
-    db: &Database,
-    user_id: i64,
-    category: &str,
-    name: &str,
-) -> Result<()> {
+pub async fn delete_secret(db: &Database, user_id: i64, category: &str, name: &str) -> Result<()> {
     let affected = db
         .conn
         .execute(

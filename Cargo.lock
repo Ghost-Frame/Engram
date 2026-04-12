@@ -2263,6 +2263,7 @@ dependencies = [
  "chrono",
  "clap",
  "engram-lib",
+ "futures",
  "hex",
  "hmac",
  "libsql",

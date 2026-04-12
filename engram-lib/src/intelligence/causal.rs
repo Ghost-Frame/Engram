@@ -77,7 +77,10 @@ pub async fn add_link(
         )
         .await?;
     if chain_rows.next().await?.is_none() {
-        return Err(EngError::NotFound(format!("causal chain {} not found", chain_id)));
+        return Err(EngError::NotFound(format!(
+            "causal chain {} not found",
+            chain_id
+        )));
     }
 
     // Verify both memories belong to caller
@@ -87,9 +90,15 @@ pub async fn add_link(
             params![cause_memory_id, effect_memory_id, user_id],
         )
         .await?;
-    let count: i64 = if let Some(r) = mem_rows.next().await? { r.get(0)? } else { 0 };
+    let count: i64 = if let Some(r) = mem_rows.next().await? {
+        r.get(0)?
+    } else {
+        0
+    };
     if count != 2 {
-        return Err(EngError::NotFound("one or more memories not found or not owned".into()));
+        return Err(EngError::NotFound(
+            "one or more memories not found or not owned".into(),
+        ));
     }
 
     conn.execute(
