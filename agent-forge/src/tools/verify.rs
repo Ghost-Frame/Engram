@@ -98,8 +98,33 @@ pub struct SessionDiffInput {
     pub base: Option<String>,
 }
 
+/// Validate a git ref to prevent flag injection or shell metacharacters.
+fn validate_git_ref(s: &str) -> std::result::Result<(), ToolError> {
+    if s.len() > 100 {
+        return Err(ToolError::InvalidValue("git ref too long".into()));
+    }
+    // Allow alphanumeric, dash, underscore, dot, slash, tilde, caret, colon
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_.~/^:@{}".contains(c))
+    {
+        return Err(ToolError::InvalidValue(
+            "git ref contains disallowed characters".into(),
+        ));
+    }
+    // Reject refs that look like flags
+    if s.starts_with('-') {
+        return Err(ToolError::InvalidValue(
+            "git ref must not start with '-'".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn session_diff(_db: &Database, input: SessionDiffInput) -> ToolResult {
     let base = input.base.unwrap_or_else(|| "HEAD~10".into());
+    // SECURITY: validate the ref to prevent flag injection into git args.
+    validate_git_ref(&base)?;
 
     let output = Command::new("git")
         .args(["diff", "--stat", &base])

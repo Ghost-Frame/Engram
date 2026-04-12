@@ -101,11 +101,14 @@ async fn main() {
         Some(t) => Some(t.to_string()),
         None => {
             let generated = auth::generate_token();
+            // SECURITY: log that a token was generated but do NOT log the value.
+            // Use --token flag or ENGRAM_SIDECAR_TOKEN env to set explicitly.
             tracing::warn!(
                 host = %cli.host,
-                token = %generated,
-                "ENGRAM_SIDECAR_TOKEN not set; generated one-time sidecar token"
+                "ENGRAM_SIDECAR_TOKEN not set; generated one-time sidecar token (printed to stderr)"
             );
+            // Print token once to stderr so the launching process can capture it.
+            eprintln!("SIDECAR_TOKEN={}", generated);
             Some(generated)
         }
     };

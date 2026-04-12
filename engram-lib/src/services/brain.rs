@@ -506,17 +506,24 @@ impl BrainManager {
 
         self.ready.store(false, Ordering::Relaxed);
 
+        // SECURITY: acquire locks in the same order as send_command()
+        // (pending -> stdin) to prevent AB/BA deadlock. child lock is
+        // independent (never held by send_command) so acquired separately.
+        {
+            let mut pending = self.pending.lock().await;
+            pending.clear();
+        }
+        {
+            let mut stdin_lock = self.stdin.lock().await;
+            *stdin_lock = None;
+        }
+
         // Kill the process
         let mut child_lock = self.child.lock().await;
         if let Some(ref mut child) = *child_lock {
             let _ = child.kill().await;
         }
         *child_lock = None;
-        *self.stdin.lock().await = None;
-
-        // Reject all pending
-        let mut pending = self.pending.lock().await;
-        pending.clear();
 
         info!(msg = "brain_stopped");
     }

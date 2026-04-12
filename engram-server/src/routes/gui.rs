@@ -272,6 +272,13 @@ async fn require_gui_scope(
     headers: &HeaderMap,
     scope: Scope,
 ) -> Result<i64, AppError> {
+    // SECURITY: enforce safe mode on GUI write paths (GUI routes bypass the
+    // normal safe_mode_middleware because they are merged outside api_routes).
+    if scope == Scope::Write && state.safe_mode.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(AppError::from(engram_lib::EngError::Internal(
+            "server is in safe mode; writes are temporarily disabled".into(),
+        )));
+    }
     let session = get_gui_session(state, headers)
         .await
         .ok_or_else(|| AppError::from(engram_lib::EngError::Auth("GUI auth required".into())))?;
@@ -483,6 +490,10 @@ fn login_html() -> &'static str {
 
 /// GET /_app/* - serve SvelteKit static assets
 async fn serve_app_assets(State(state): State<AppState>, Path(path): Path<String>) -> Response {
+    // SECURITY: when gui_password is not configured, the GUI is disabled entirely.
+    if state.config.gui_password.is_none() {
+        return (StatusCode::NOT_FOUND, "GUI not available").into_response();
+    }
     let Some(build_dir) = resolve_gui_build_dir(&state) else {
         return (StatusCode::NOT_FOUND, "GUI not available").into_response();
     };
@@ -535,13 +546,16 @@ pub async fn gui_spa_middleware(
         return next.run(request).await;
     };
 
+    // SECURITY: when gui_password is not configured, the GUI is disabled.
+    // Return 404 for all SPA routes to avoid serving an unauthenticated app shell.
+    if state.config.gui_password.is_none() {
+        return next.run(request).await;
+    }
+
     // Check GUI auth if password is configured
-    let gui_auth_required = state.config.gui_password.is_some();
-    if gui_auth_required {
-        let headers = request.headers();
-        if !is_gui_authenticated(&state, headers).await {
-            return Html(login_html()).into_response();
-        }
+    let headers = request.headers();
+    if !is_gui_authenticated(&state, headers).await {
+        return Html(login_html()).into_response();
     }
 
     // Serve index.html
