@@ -85,6 +85,7 @@ MCP stdio entrypoint: `ENGRAM_MCP_BEARER_TOKEN=engram_... cargo run -p engram-mc
 - **Episodic Memory.** Conversation episodes stored as searchable narratives.
 - **Bulk Ingestion.** Markdown, PDFs, chat exports, ZIP archives through the async ingestion pipeline.
 - **LanceDB Vector Index.** Optional ANN backend for large corpora. Small tenants fall back to in-memory scan.
+- **Claude Code Hooks.** Ready-to-use hooks for session memory, context injection, and tool tracking. See [`hooks/README.md`](hooks/README.md).
 
 <details>
 <summary><strong>Full Capabilities</strong></summary>
