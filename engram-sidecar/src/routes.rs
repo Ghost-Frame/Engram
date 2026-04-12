@@ -6,7 +6,7 @@ use axum::{
     Json, Router,
 };
 use engram_lib::llm::local::{CallOptions, Priority};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::info;
 
@@ -131,11 +131,51 @@ fn default_recall_limit() -> usize {
     10
 }
 
+/// Try POST to primary path, fall back to alternate on 404.
+async fn post_with_fallback(
+    state: &SidecarState,
+    primary: &str,
+    fallback: &str,
+    body: &Value,
+) -> Result<reqwest::Response, (StatusCode, Json<Value>)> {
+    let url = format!("{}{}", state.engram_url, primary);
+    let mut req = state.client.post(&url).json(body);
+    if let Some(ref api_key) = state.engram_api_key {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = req.send().await.map_err(|e| {
+        tracing::error!(error = %e, "engram server request failed");
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "engram server unreachable" })),
+        )
+    })?;
+
+    // If 404, try fallback path (supports both Node.js and Rust server)
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        tracing::debug!(primary = %primary, fallback = %fallback, "trying fallback path");
+        let url = format!("{}{}", state.engram_url, fallback);
+        let mut req = state.client.post(&url).json(body);
+        if let Some(ref api_key) = state.engram_api_key {
+            req = req.header("Authorization", format!("Bearer {}", api_key));
+        }
+        return req.send().await.map_err(|e| {
+            tracing::error!(error = %e, "engram server fallback request failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "engram server unreachable" })),
+            )
+        });
+    }
+
+    Ok(response)
+}
+
 async fn recall(
     State(state): State<SidecarState>,
     Json(body): Json<RecallBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // Build search request for Engram server
     let search_req = json!({
         "query": body.query,
         "limit": body.limit.min(100),
@@ -144,19 +184,8 @@ async fn recall(
         "latest_only": true,
     });
 
-    let url = format!("{}/search", state.engram_url);
-    let mut req = state.client.post(&url).json(&search_req);
-    if let Some(ref api_key) = state.engram_api_key {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
-    }
-
-    let response = req.send().await.map_err(|e| {
-        tracing::error!(user_id = state.user_id, error = %e, "engram server request failed");
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "engram server unreachable" })),
-        )
-    })?;
+    // Try /search (Node.js), fall back to /memory/search (Rust)
+    let response = post_with_fallback(&state, "/search", "/memory/search", &search_req).await?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -347,18 +376,6 @@ async fn end_session(
     })))
 }
 
-/// Request body for Engram server /store endpoint
-#[derive(Serialize)]
-struct StoreRequest {
-    content: String,
-    category: String,
-    source: String,
-    importance: i32,
-    tags: Vec<String>,
-    session_id: Option<String>,
-    user_id: Option<i64>,
-}
-
 async fn flush_pending(state: &SidecarState) -> usize {
     let observations = {
         let mut session = state.session.write().await;
@@ -374,26 +391,21 @@ async fn flush_pending(state: &SidecarState) -> usize {
         session.id.clone()
     };
 
-    let url = format!("{}/store", state.engram_url);
     let mut stored = 0usize;
 
     for obs in &observations {
-        let req = StoreRequest {
-            content: format!("[{}] {}", obs.tool_name, obs.content),
-            category: obs.category.clone(),
-            source: state.source.clone(),
-            importance: obs.importance,
-            tags: vec!["sidecar".to_string(), obs.tool_name.clone()],
-            session_id: Some(session_id.clone()),
-            user_id: Some(state.user_id),
-        };
+        let req = json!({
+            "content": format!("[{}] {}", obs.tool_name, obs.content),
+            "category": obs.category,
+            "source": state.source,
+            "importance": obs.importance,
+            "tags": vec!["sidecar".to_string(), obs.tool_name.clone()],
+            "session_id": session_id,
+            "user_id": state.user_id,
+        });
 
-        let mut http_req = state.client.post(&url).json(&req);
-        if let Some(ref api_key) = state.engram_api_key {
-            http_req = http_req.header("Authorization", format!("Bearer {}", api_key));
-        }
-
-        match http_req.send().await {
+        // Try /store (Node.js), fall back to /memory/store (Rust)
+        match post_with_fallback(state, "/store", "/memory/store", &req).await {
             Ok(response) if response.status().is_success() => {
                 stored += 1;
                 tracing::debug!(tool = %obs.tool_name, "observation stored via engram server");
@@ -405,11 +417,10 @@ async fn flush_pending(state: &SidecarState) -> usize {
                     "engram server rejected observation"
                 );
             }
-            Err(e) => {
+            Err(_) => {
                 tracing::error!(
                     tool = %obs.tool_name,
                     user_id = state.user_id,
-                    error = %e,
                     "failed to send observation to engram server"
                 );
             }
