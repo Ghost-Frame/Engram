@@ -9,6 +9,8 @@
 pub mod database;
 pub mod id;
 pub mod loader;
+#[cfg(feature = "db_pool")]
+pub mod pool;
 pub mod registry;
 pub mod registry_db;
 pub mod schema;
@@ -16,5 +18,7 @@ pub mod types;
 
 pub use database::TenantDatabase;
 pub use id::tenant_id_from_user;
+#[cfg(feature = "db_pool")]
+pub use pool::{TenantPoolConfig, TenantPools};
 pub use registry::TenantRegistry;
 pub use types::{TenantConfig, TenantHandle, TenantRow, TenantStatus};

@@ -1,4 +1,6 @@
 pub mod pagerank_refresh;
+#[cfg(feature = "tenant-sharding")]
+pub mod pagerank_refresh_tenant;
 
 // JOBS - Durable job queue with retries (ported from TS jobs/index.ts + scheduler.ts)
 use crate::Result;
