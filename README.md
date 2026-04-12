@@ -37,7 +37,7 @@ The TypeScript kleos remains the reference design. This is the runtime.
 ## Quick Start
 
 ```bash
-git clone https://codeberg.org/Ghost-Frame/kleos.git && cd kleos
+git clone https://github.com/Ghost-Frame/Kleos-rust.git && cd kleos
 cargo build --release
 ./target/release/kleos-server
 ```
@@ -459,7 +459,7 @@ This repo is the Rust port of the TypeScript kleos. API shapes, database schemas
 
 <div align="center">
 
-[kleos.lol](https://kleos.lol) · [Reference implementation](https://codeberg.org/Ghost-Frame/kleos)
+[kleos.lol](https://kleos.lol) · [Reference implementation (GitHub)](https://github.com/Ghost-Frame/kleos)
 
 Elastic License 2.0
 
