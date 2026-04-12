@@ -39,11 +39,14 @@ struct Cli {
     token: Option<String>,
 }
 
+/// Shared embedder slot, populated asynchronously after the server starts.
+pub type SharedEmbedder = Arc<RwLock<Option<Arc<dyn EmbeddingProvider>>>>;
+
 #[derive(Clone)]
 pub struct SidecarState {
     pub db: Arc<Database>,
     pub config: Arc<Config>,
-    pub embedder: Option<Arc<dyn EmbeddingProvider>>,
+    pub embedder: SharedEmbedder,
     pub llm: Option<Arc<LocalModelClient>>,
     pub session: Arc<RwLock<session::Session>>,
     pub source: String,
@@ -66,17 +69,10 @@ async fn main() {
         .await
         .expect("failed to connect to database");
 
-    let embedder: Option<Arc<dyn EmbeddingProvider>> = match OnnxProvider::new(&config).await {
-        Ok(provider) => Some(Arc::new(provider)),
-        Err(e) => {
-            tracing::warn!(
-                "embedding provider unavailable: {}. Observations will be stored without embeddings.",
-                e
-            );
-            None
-        }
-    };
+    // Embedder loads in the background -- the server starts immediately.
+    let embedder: SharedEmbedder = Arc::new(RwLock::new(None));
 
+    // Probe LLM quickly (non-blocking network check).
     let llm: Option<Arc<LocalModelClient>> = {
         let llm_config = OllamaConfig::from_env();
         let client = LocalModelClient::new(llm_config);
@@ -129,14 +125,33 @@ async fn main() {
 
     let state = SidecarState {
         db: Arc::new(db),
-        config: Arc::new(config),
-        embedder,
+        config: Arc::new(config.clone()),
+        embedder: embedder.clone(),
         llm,
         session: Arc::new(RwLock::new(session::Session::new(session_id))),
         source: cli.source,
         user_id: cli.user_id,
         token,
     };
+
+    // Spawn background embedder initialization (non-blocking for server).
+    let embedder_slot = embedder.clone();
+    let embedder_config = config;
+    tokio::spawn(async move {
+        tracing::info!("loading embedding model in background...");
+        match OnnxProvider::new(&embedder_config).await {
+            Ok(provider) => {
+                *embedder_slot.write().await = Some(Arc::new(provider));
+                tracing::info!("embedding provider ready (loaded in background)");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "embedding provider unavailable: {}. Observations stored without embeddings.",
+                    e
+                );
+            }
+        }
+    });
 
     let app = routes::router(state);
     let addr = format!("{}:{}", cli.host, cli.port);
