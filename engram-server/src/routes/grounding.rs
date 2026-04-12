@@ -237,7 +237,11 @@ async fn execute_tool(
             }
         }
         let guard = tenants().read().await;
-        let lock = guard.get(&auth.user_id).expect("tenant client initialized");
+        let lock = guard.get(&auth.user_id).ok_or_else(|| {
+            AppError(engram_lib::EngError::Internal(
+                "tenant grounding client not initialized".into(),
+            ))
+        })?;
         let client = lock.read().await;
         client.execute_tool(tool_name, &args, body.timeout_ms).await
     };

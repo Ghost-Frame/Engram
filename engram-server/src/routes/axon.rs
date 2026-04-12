@@ -171,6 +171,10 @@ async fn subscribe_handler(
     Auth(auth): Auth,
     Json(body): Json<SubscribeBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    // SECURITY: validate webhook URL before storing to prevent SSRF on delivery.
+    if let Some(ref url) = body.webhook_url {
+        engram_lib::webhooks::validate_webhook_url(url)?;
+    }
     let req = SubscribeRequest {
         agent: body.agent,
         channel: body.channel,

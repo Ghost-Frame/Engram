@@ -118,6 +118,26 @@ pub fn validate_webhook_url(raw: &str) -> Result<()> {
                     ip
                 )));
             }
+            // SECURITY: reject IPv6-mapped/compat IPv4 addresses (e.g. ::ffff:127.0.0.1)
+            // that bypass the IPv4 deny list above.
+            if let Some(v4) = ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()) {
+                let octets = v4.octets();
+                if v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_broadcast()
+                    || v4.is_multicast()
+                    || (octets[0] == 169 && octets[1] == 254)
+                    || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
+                    || octets[0] == 0
+                {
+                    return Err(EngError::InvalidInput(format!(
+                        "webhook host {} maps to a disallowed IPv4 address",
+                        ip
+                    )));
+                }
+            }
             // ULA fc00::/7
             let segments = ip.segments();
             if segments[0] & 0xfe00 == 0xfc00 {
