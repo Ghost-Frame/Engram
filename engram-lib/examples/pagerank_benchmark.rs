@@ -265,12 +265,7 @@ fn improvement_pct(before: f64, after: f64) -> f64 {
 fn print_stats(label: &str, stats: &Stats) {
     println!(
         "{label}: min={:.2}ms avg={:.2}ms p50={:.2}ms p95={:.2}ms p99={:.2}ms max={:.2}ms",
-        stats.min_ms,
-        stats.avg_ms,
-        stats.p50_ms,
-        stats.p95_ms,
-        stats.p99_ms,
-        stats.max_ms
+        stats.min_ms, stats.avg_ms, stats.p50_ms, stats.p95_ms, stats.p99_ms, stats.max_ms
     );
 }
 

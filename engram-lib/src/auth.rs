@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
 use crate::db::Database;
 use crate::Result;
@@ -107,13 +106,22 @@ fn normalize_key(raw_key: &str) -> Option<String> {
 }
 
 /// Generate a new random API key.
-/// Returns (full_key, key_prefix, key_hash).
+///
+/// SECURITY (SEC-HIGH-2): keys draw 16 raw bytes from `OsRng`, giving a
+/// full 128 bits of unpredictability rendered as 32 lowercase hex chars.
+/// The previous implementation concatenated two UUID v4 strings and
+/// truncated to 32 characters, which embedded fixed version/variant bits
+/// in the middle of the key and reduced effective entropy below the
+/// advertised 128-bit strength. Returns `(full_key, key_prefix, key_hash)`.
 fn generate_key() -> (String, String, String) {
-    // Two UUIDs concatenated and stripped of hyphens give 64 hex chars.
-    // Take the first 32.
-    let part_a = Uuid::new_v4().simple().to_string(); // 32 hex chars
-    let part_b = Uuid::new_v4().simple().to_string(); // 32 hex chars
-    let raw_hex: String = format!("{}{}", part_a, part_b).chars().take(32).collect();
+    use rand::RngCore;
+    let mut raw = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut raw);
+    let mut raw_hex = String::with_capacity(32);
+    for byte in raw {
+        use std::fmt::Write;
+        let _ = write!(&mut raw_hex, "{:02x}", byte);
+    }
 
     let full_key = format!("kleos_{}", raw_hex);
     // key_prefix = first 8 chars of the hex portion (chars 7..15 of full_key)
@@ -163,25 +171,29 @@ fn scopes_to_string(scopes: &[Scope]) -> String {
 
 /// Create a new API key for a user and store it in the database.
 /// Returns (ApiKey, raw_key). The raw_key is shown once and never stored.
+/// `rate_limit`: requests-per-minute cap. None uses the column default (1000).
 pub async fn create_key(
     db: &Database,
     user_id: i64,
     name: &str,
     scopes: Vec<Scope>,
+    rate_limit: Option<i64>,
 ) -> Result<(ApiKey, String)> {
     let (full_key, key_prefix, key_hash) = generate_key();
     let scopes_str = scopes_to_string(&scopes);
+    let rate_limit_val = rate_limit.unwrap_or(1000).max(1);
 
     db.conn
         .execute(
-            "INSERT INTO api_keys (user_id, key_prefix, key_hash, name, scopes)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO api_keys (user_id, key_prefix, key_hash, name, scopes, rate_limit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             libsql::params![
                 user_id,
                 key_prefix.clone(),
                 key_hash.clone(),
                 name,
-                scopes_str
+                scopes_str,
+                rate_limit_val
             ],
         )
         .await?;
@@ -241,9 +253,7 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     // `%Y-%m-%d %H:%M:%S` formatting we produce on insert.
     if let Some(ref expires_at) = api_key.expires_at {
         let parsed = chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%d %H:%M:%S")
-            .or_else(|_| {
-                chrono::DateTime::parse_from_rfc3339(expires_at).map(|dt| dt.naive_utc())
-            })
+            .or_else(|_| chrono::DateTime::parse_from_rfc3339(expires_at).map(|dt| dt.naive_utc()))
             .map_err(|_| crate::EngError::Auth("invalid key expiry format".into()))?;
         if parsed <= chrono::Utc::now().naive_utc() {
             return Err(crate::EngError::Auth("key has expired".into()));
@@ -268,8 +278,24 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     })
 }
 
-/// Deactivate an API key by id.
-pub async fn revoke_key(db: &Database, key_id: i64) -> Result<()> {
+/// Deactivate an API key by id, scoped to the owning user.
+///
+/// SECURITY (SEC-HIGH-5): the `user_id` filter is defense-in-depth. All
+/// callers should already verify ownership before reaching this function,
+/// but constraining the UPDATE here means any future caller that forgets
+/// to check ownership still cannot revoke another tenant's keys.
+pub async fn revoke_key(db: &Database, user_id: i64, key_id: i64) -> Result<()> {
+    db.conn
+        .execute(
+            "UPDATE api_keys SET is_active = 0 WHERE id = ?1 AND user_id = ?2",
+            libsql::params![key_id, user_id],
+        )
+        .await?;
+    Ok(())
+}
+
+/// Deactivate any API key by id regardless of owner (admin use only).
+pub async fn revoke_key_admin(db: &Database, key_id: i64) -> Result<()> {
     db.conn
         .execute(
             "UPDATE api_keys SET is_active = 0 WHERE id = ?1",

@@ -545,11 +545,7 @@ pub async fn get_tool_quality(db: &Database, tool_name: &str) -> Result<serde_js
 
 // -- Skill tags --
 
-pub async fn get_skill_tags(
-    db: &Database,
-    skill_id: i64,
-    user_id: i64,
-) -> Result<Vec<String>> {
+pub async fn get_skill_tags(db: &Database, skill_id: i64, user_id: i64) -> Result<Vec<String>> {
     let conn = db.connection();
     get_skill(db, skill_id, user_id).await?;
     let mut rows = conn
@@ -569,11 +565,7 @@ pub async fn get_skill_tags(
 
 // -- Tool deps --
 
-pub async fn get_tool_deps(
-    db: &Database,
-    skill_id: i64,
-    user_id: i64,
-) -> Result<Vec<String>> {
+pub async fn get_tool_deps(db: &Database, skill_id: i64, user_id: i64) -> Result<Vec<String>> {
     let conn = db.connection();
     get_skill(db, skill_id, user_id).await?;
     let mut rows = conn

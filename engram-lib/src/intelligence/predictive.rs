@@ -213,6 +213,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
         time_context = %time_context,
         proactive = proactive_memories.len(),
         predicted_categories = predicted_categories.len(),
+        user_id,
         "predictive_recall"
     );
 

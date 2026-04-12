@@ -100,14 +100,18 @@ async fn record_vector_sync_failure(
 }
 
 fn embedding_to_json(embedding: &[f32]) -> String {
-    format!(
-        "[{}]",
-        embedding
-            .iter()
-            .map(|f| f.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+    use std::fmt::Write as _;
+    // Pre-allocate: each f32 is at most ~12 chars + comma, plus 2 for brackets.
+    let mut out = String::with_capacity(embedding.len() * 12 + 2);
+    out.push('[');
+    for (i, f) in embedding.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "{}", f);
+    }
+    out.push(']');
+    out
 }
 
 /// Map a libsql Row to a Memory struct.
@@ -287,6 +291,12 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
     let user_id = req
         .user_id
         .ok_or_else(|| EngError::InvalidInput("user_id required".into()))?;
+
+    // SECURITY (MT-F20): enforce tenant memory quota on every write path.
+    // Without this check a single tenant can exhaust disk by looping on
+    // memory::store. Runs after user_id is known so the check is scoped.
+    crate::quota::enforce_memory_quota(db, user_id).await?;
+
     let importance = clamp_importance(req.importance);
 
     // 2. Compute simhash of content
@@ -349,8 +359,7 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
             if let Some(index) = db.vector_index.as_ref() {
                 if let Err(e) = index.insert(new_id, user_id, emb).await {
                     warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
-                    record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string())
-                        .await;
+                    record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string()).await;
                 }
             }
         }
@@ -613,15 +622,30 @@ fn store_transactional_rusqlite(
     Ok(new_id)
 }
 
+/// Retrieve a memory by ID for content access. Filters out forgotten and archived memories.
 pub async fn get(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
+    let sql = format!(
+        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_archived = 0",
+        MEMORY_COLUMNS
+    );
+    get_internal(db, id, user_id, &sql, true).await
+}
+
+/// Retrieve a memory by ID for ownership/existence checks. Only filters forgotten memories,
+/// allowing archived memories to be returned. Use this for permission checks, link targets,
+/// and version chain lookups where the memory must exist but doesn't need to be active.
+pub async fn get_for_ownership(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
     let sql = format!(
         "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
         MEMORY_COLUMNS
     );
+    get_internal(db, id, user_id, &sql, false).await
+}
 
+async fn get_internal(db: &Database, id: i64, user_id: i64, sql: &str, log_access: bool) -> Result<Memory> {
     #[cfg(feature = "db_pool")]
     if uses_pool_backend(db) {
-        let sql_for_read = sql.clone();
+        let sql_for_read = sql.to_string();
         let memory = db
             .read(move |conn| {
                 let mut stmt = conn.prepare(&sql_for_read).map_err(rusqlite_to_eng_error)?;
@@ -636,41 +660,44 @@ pub async fn get(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
             })
             .await?;
 
-        db.write(move |conn| {
-            conn.execute(
-                "UPDATE memories SET \
-                    access_count = access_count + 1, \
-                    last_accessed_at = datetime('now'), \
-                    updated_at = datetime('now') \
-                 WHERE id = ?1 AND user_id = ?2",
-                rusqlite::params![id, user_id],
-            )
-            .map_err(rusqlite_to_eng_error)?;
-            Ok(())
-        })
-        .await?;
+        if log_access {
+            db.write(move |conn| {
+                conn.execute(
+                    "UPDATE memories SET \
+                        access_count = access_count + 1, \
+                        last_accessed_at = datetime('now'), \
+                        updated_at = datetime('now') \
+                     WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![id, user_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                Ok(())
+            })
+            .await?;
+        }
 
         return Ok(memory);
     }
 
-    let mut rows = db.conn.query(&sql, params![id, user_id]).await?;
+    let mut rows = db.conn.query(sql, params![id, user_id]).await?;
     let memory = if let Some(row) = rows.next().await? {
         row_to_memory(&row)?
     } else {
         return Err(EngError::NotFound(format!("memory {} not found", id)));
     };
 
-    // Log the access -- update access_count and last_accessed_at
-    db.conn
-        .execute(
-            "UPDATE memories SET \
-                access_count = access_count + 1, \
-                last_accessed_at = datetime('now'), \
-                updated_at = datetime('now') \
-             WHERE id = ?1 AND user_id = ?2",
-            params![id, user_id],
-        )
-        .await?;
+    if log_access {
+        db.conn
+            .execute(
+                "UPDATE memories SET \
+                    access_count = access_count + 1, \
+                    last_accessed_at = datetime('now'), \
+                    updated_at = datetime('now') \
+                 WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )
+            .await?;
+    }
 
     Ok(memory)
 }
@@ -819,7 +846,10 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
         }
     }
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
-        warn!("mark_pagerank_dirty failed after delete for user {}: {}", user_id, e);
+        warn!(
+            "mark_pagerank_dirty failed after delete for user {}: {}",
+            user_id, e
+        );
     }
     Ok(())
 }
@@ -909,8 +939,7 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
             if let Some(index) = db.vector_index.as_ref() {
                 if let Err(e) = index.insert(new_id, user_id, emb).await {
                     warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
-                    record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string())
-                        .await;
+                    record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string()).await;
                 }
                 if let Err(e) = index.delete(id).await {
                     warn!(
@@ -1029,8 +1058,7 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
                             "LanceDB vector delete failed for superseded memory {}: {}",
                             id, e
                         );
-                        record_vector_sync_failure(db, id, user_id, "delete", &e.to_string())
-                            .await;
+                        record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
                     }
                 }
             }
@@ -1286,7 +1314,10 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
             }
         }
         if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
-            warn!("mark_pagerank_dirty failed after mark_forgotten for user {}: {}", user_id, e);
+            warn!(
+                "mark_pagerank_dirty failed after mark_forgotten for user {}: {}",
+                user_id, e
+            );
         }
         return Ok(());
     }
@@ -1308,7 +1339,10 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
         }
     }
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
-        warn!("mark_pagerank_dirty failed after mark_forgotten for user {}: {}", user_id, e);
+        warn!(
+            "mark_pagerank_dirty failed after mark_forgotten for user {}: {}",
+            user_id, e
+        );
     }
     Ok(())
 }
@@ -1329,7 +1363,10 @@ pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
             return Err(EngError::NotFound(format!("memory {} not found", id)));
         }
         if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
-            warn!("mark_pagerank_dirty failed after mark_archived for user {}: {}", user_id, e);
+            warn!(
+                "mark_pagerank_dirty failed after mark_archived for user {}: {}",
+                user_id, e
+            );
         }
         return Ok(());
     }
@@ -1345,7 +1382,10 @@ pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
         return Err(EngError::NotFound(format!("memory {} not found", id)));
     }
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
-        warn!("mark_pagerank_dirty failed after mark_archived for user {}: {}", user_id, e);
+        warn!(
+            "mark_pagerank_dirty failed after mark_archived for user {}: {}",
+            user_id, e
+        );
     }
     Ok(())
 }
@@ -1366,7 +1406,10 @@ pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()>
             return Err(EngError::NotFound(format!("memory {} not found", id)));
         }
         if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
-            warn!("mark_pagerank_dirty failed after mark_unarchived for user {}: {}", user_id, e);
+            warn!(
+                "mark_pagerank_dirty failed after mark_unarchived for user {}: {}",
+                user_id, e
+            );
         }
         return Ok(());
     }
@@ -1382,7 +1425,10 @@ pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()>
         return Err(EngError::NotFound(format!("memory {} not found", id)));
     }
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
-        warn!("mark_pagerank_dirty failed after mark_unarchived for user {}: {}", user_id, e);
+        warn!(
+            "mark_pagerank_dirty failed after mark_unarchived for user {}: {}",
+            user_id, e
+        );
     }
     Ok(())
 }
@@ -1491,7 +1537,10 @@ pub async fn insert_link(
         })
         .await?;
         if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
-            warn!("mark_pagerank_dirty failed after insert_link for user {}: {}", user_id, e);
+            warn!(
+                "mark_pagerank_dirty failed after insert_link for user {}: {}",
+                user_id, e
+            );
         }
         return Ok(());
     }
@@ -1514,7 +1563,10 @@ pub async fn insert_link(
         params![source_id, target_id, similarity, link_type.to_string()],
     ).await?;
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
-        warn!("mark_pagerank_dirty failed after insert_link for user {}: {}", user_id, e);
+        warn!(
+            "mark_pagerank_dirty failed after insert_link for user {}: {}",
+            user_id, e
+        );
     }
     Ok(())
 }
@@ -1680,10 +1732,134 @@ pub async fn replay_vector_sync_pending(
             }
             Err(e) => {
                 report.failed += 1;
-                warn!(
-                    "replay failed for memory {} op {}: {}",
-                    memory_id, op, e
-                );
+                warn!("replay failed for memory {} op {}: {}", memory_id, op, e);
+                db.conn
+                    .execute(
+                        "UPDATE vector_sync_pending \
+                         SET error = ?1, attempts = attempts + 1, \
+                             last_attempt_at = datetime('now') \
+                         WHERE id = ?2",
+                        params![e, ledger_id],
+                    )
+                    .await?;
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+/// Returns the distinct user_ids that have rows in `vector_sync_pending`.
+/// Used by the background task for per-user round-robin scheduling (MT-F17).
+pub async fn vector_sync_pending_users(db: &Database) -> Result<Vec<i64>> {
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT DISTINCT user_id FROM vector_sync_pending ORDER BY user_id ASC",
+            (),
+        )
+        .await?;
+    let mut users = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let uid: i64 = row.get(0)?;
+        users.push(uid);
+    }
+    Ok(users)
+}
+
+/// Same as `replay_vector_sync_pending` but processes only entries belonging
+/// to a single user. Called by the per-user round-robin background task (MT-F17).
+pub async fn replay_vector_sync_pending_for_user(
+    db: &Database,
+    user_id: i64,
+    limit: usize,
+) -> Result<VectorSyncReplayReport> {
+    let mut report = VectorSyncReplayReport::default();
+    let Some(index) = db.vector_index.as_ref() else {
+        return Ok(report);
+    };
+
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT id, memory_id, user_id, op FROM vector_sync_pending \
+             WHERE user_id = ?1 ORDER BY id ASC LIMIT ?2",
+            params![user_id, limit as i64],
+        )
+        .await?;
+
+    let mut pending: Vec<(i64, i64, i64, String)> = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let ledger_id: i64 = row.get(0)?;
+        let memory_id: i64 = row.get(1)?;
+        let uid: i64 = row.get(2)?;
+        let op: String = row.get(3)?;
+        pending.push((ledger_id, memory_id, uid, op));
+    }
+
+    for (ledger_id, memory_id, uid, op) in pending {
+        report.processed += 1;
+        let outcome: std::result::Result<(), String> = match op.as_str() {
+            "delete" => index.delete(memory_id).await.map_err(|e| e.to_string()),
+            "insert" => {
+                let mut emb_rows = db
+                    .conn
+                    .query(
+                        "SELECT vector_extract(embedding_vec_1024), user_id \
+                         FROM memories WHERE id = ?1 AND user_id = ?2",
+                        params![memory_id, uid],
+                    )
+                    .await?;
+                match emb_rows.next().await? {
+                    Some(erow) => {
+                        let embedding_json: Option<String> = erow.get(0).ok();
+                        match embedding_json {
+                            Some(json) => match serde_json::from_str::<Vec<f32>>(&json) {
+                                Ok(embedding) => index
+                                    .insert(memory_id, uid, &embedding)
+                                    .await
+                                    .map_err(|e| e.to_string()),
+                                Err(e) => {
+                                    report.skipped += 1;
+                                    warn!(
+                                        "replay skipped memory {}: embedding decode failed: {}",
+                                        memory_id, e
+                                    );
+                                    Ok(())
+                                }
+                            },
+                            None => {
+                                report.skipped += 1;
+                                Ok(())
+                            }
+                        }
+                    }
+                    None => {
+                        report.skipped += 1;
+                        Ok(())
+                    }
+                }
+            }
+            other => {
+                report.skipped += 1;
+                warn!("replay skipped unknown vector_sync op '{}'", other);
+                Ok(())
+            }
+        };
+
+        match outcome {
+            Ok(()) => {
+                db.conn
+                    .execute(
+                        "DELETE FROM vector_sync_pending WHERE id = ?1",
+                        params![ledger_id],
+                    )
+                    .await?;
+                report.succeeded += 1;
+            }
+            Err(e) => {
+                report.failed += 1;
+                warn!("replay failed for memory {} op {}: {}", memory_id, op, e);
                 db.conn
                     .execute(
                         "UPDATE vector_sync_pending \

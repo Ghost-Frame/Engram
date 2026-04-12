@@ -122,11 +122,14 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
         ));
     };
 
+    // SECURITY (MT-F6): scope the re-fetch by user_id even though we just
+    // inserted the row. Defense-in-depth against any future change that
+    // moves the insert and select onto separate connections.
     let sql = format!(
-        "SELECT {} FROM structured_facts WHERE id = ?1",
+        "SELECT {} FROM structured_facts WHERE id = ?1 AND user_id = ?2",
         FACT_COLUMNS
     );
-    let mut rows = db.conn.query(&sql, params![new_id]).await?;
+    let mut rows = db.conn.query(&sql, params![new_id, user_id]).await?;
     if let Some(row) = rows.next().await? {
         row_to_fact(&row)
     } else {

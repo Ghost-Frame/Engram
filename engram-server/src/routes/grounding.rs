@@ -116,8 +116,7 @@ async fn create_session(
         metadata: body.metadata,
     };
 
-    let session =
-        with_tenant_client(auth.user_id, |client| client.create_session(&config)).await;
+    let session = with_tenant_client(auth.user_id, |client| client.create_session(&config)).await;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::to_value(session).unwrap_or(json!({}))),

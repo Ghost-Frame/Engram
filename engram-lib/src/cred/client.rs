@@ -59,18 +59,24 @@ pub struct CreddClient {
     allow_raw: bool,
     cache_ttl: Duration,
     cache: Arc<Mutex<HashMap<String, CachedSecret>>>,
+    /// SECURITY (SEC-CRIT-3): production clients always refuse to proxy
+    /// outbound requests to loopback or private ranges. The test
+    /// constructor flips this to true so integration tests can hit a mock
+    /// server on 127.0.0.1. `from_config` must never set this.
+    pub(crate) allow_loopback_proxy: bool,
 }
 
 impl CreddClient {
     pub fn from_config(config: &Config) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: build_http_client(),
             base_url: config.eidolon.credd.url.clone(),
             agent_key: None,
             agent_key_env: config.eidolon.credd.agent_key_env.clone(),
             allow_raw: config.eidolon.credd.allow_raw,
             cache_ttl: Duration::from_secs(config.eidolon.credd.cache_ttl_secs.max(1)),
             cache: Arc::new(Mutex::new(HashMap::new())),
+            allow_loopback_proxy: false,
         }
     }
 
@@ -81,13 +87,16 @@ impl CreddClient {
         cache_ttl_secs: u64,
     ) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: build_http_client(),
             base_url: base_url.into(),
             agent_key: Some(agent_key.into()),
             agent_key_env: "CREDD_AGENT_KEY".to_string(),
             allow_raw,
             cache_ttl: Duration::from_secs(cache_ttl_secs.max(1)),
             cache: Arc::new(Mutex::new(HashMap::new())),
+            // Tests bind mock upstreams on 127.0.0.1; without this flag
+            // the SSRF validator would block them.
+            allow_loopback_proxy: true,
         }
     }
 
@@ -95,9 +104,28 @@ impl CreddClient {
         self.allow_raw
     }
 
-    pub fn invalidate(&self, service: &str, key: &str) {
+    /// Base URL the client is pointed at. Used by scrub-cache keys so
+    /// two CreddClient instances talking to different upstreams never
+    /// share a cache entry.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// SECURITY (SEC-MED-1): cache entries are scoped per tenant. Callers
+    /// must pass the user_id so rotation invalidation does not cross
+    /// tenants (and, more importantly, one tenant cannot read another
+    /// tenant's cached secret by coincidence of service/key).
+    pub fn invalidate(&self, user_id: i64, service: &str, key: &str) {
         let mut cache = self.cache.lock().expect("credd cache mutex poisoned");
-        cache.remove(&cache_key(service, key));
+        cache.remove(&cache_key(user_id, service, key));
+    }
+
+    /// Drop every cached entry matching `(service, key)` regardless of
+    /// tenant. Useful when a rotation signal arrives without a user_id.
+    pub fn invalidate_all_tenants(&self, service: &str, key: &str) {
+        let suffix = format!(":{service}/{key}");
+        let mut cache = self.cache.lock().expect("credd cache mutex poisoned");
+        cache.retain(|k, _| !k.ends_with(&suffix));
     }
 
     pub fn invalidate_all(&self) {
@@ -258,7 +286,9 @@ impl CreddClient {
         request: FetchSecretRequest<'_>,
     ) -> Result<String> {
         if request.use_cache {
-            if let Some(value) = self.cached_value(request.service, request.key) {
+            // SECURITY (SEC-MED-1): cache lookups must include user_id so
+            // one tenant never reads another tenant's cached value.
+            if let Some(value) = self.cached_value(user_id, request.service, request.key) {
                 self.audit_resolution(
                     db,
                     user_id,
@@ -267,7 +297,7 @@ impl CreddClient {
                     request.key,
                     request.mode,
                 )
-                    .await?;
+                .await?;
                 return Ok(value);
             }
         }
@@ -278,7 +308,8 @@ impl CreddClient {
         let secret = extract_secret_value(&document.value)?;
 
         if request.use_cache {
-            self.store_cache(request.service, request.key, &secret);
+            // SECURITY (SEC-MED-1): cache inserts are scoped per tenant.
+            self.store_cache(user_id, request.service, request.key, &secret);
         }
 
         self.audit_resolution(
@@ -378,19 +409,19 @@ impl CreddClient {
         })
     }
 
-    fn cached_value(&self, service: &str, key: &str) -> Option<String> {
+    fn cached_value(&self, user_id: i64, service: &str, key: &str) -> Option<String> {
         let cache = self.cache.lock().expect("credd cache mutex poisoned");
-        let entry = cache.get(&cache_key(service, key))?;
+        let entry = cache.get(&cache_key(user_id, service, key))?;
         if entry.expires_at <= Instant::now() {
             return None;
         }
         Some(entry.value.clone())
     }
 
-    fn store_cache(&self, service: &str, key: &str, value: &str) {
+    fn store_cache(&self, user_id: i64, service: &str, key: &str, value: &str) {
         let mut cache = self.cache.lock().expect("credd cache mutex poisoned");
         cache.insert(
-            cache_key(service, key),
+            cache_key(user_id, service, key),
             CachedSecret {
                 value: value.to_string(),
                 expires_at: Instant::now() + self.cache_ttl,
@@ -399,8 +430,27 @@ impl CreddClient {
     }
 }
 
-fn cache_key(service: &str, key: &str) -> String {
-    format!("{service}/{key}")
+/// Build the reqwest client used for every credd call.
+///
+/// SECURITY / ROBUSTNESS: every HTTP call to credd must time out. Without
+/// an explicit timeout a hung credd (or a misconfigured URL pointing at a
+/// port where nothing is listening but the kernel still holds the SYN)
+/// can pin request handlers forever and exhaust tokio's task pool. The
+/// scrub path in `sessions::scrub` catches errors and falls back to
+/// unredacted text, so a timeout is a safe default.
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Cache key shape: `{user_id}:{service}/{key}`. The `user_id` prefix is
+/// what enforces tenant isolation (SEC-MED-1); the `:{service}/{key}`
+/// suffix is stable so `invalidate_all_tenants` can match across tenants.
+fn cache_key(user_id: i64, service: &str, key: &str) -> String {
+    format!("{user_id}:{service}/{key}")
 }
 
 fn parse_secret_refs(payload: &Value) -> Result<Vec<(String, String)>> {
@@ -409,7 +459,9 @@ fn parse_secret_refs(payload: &Value) -> Result<Vec<(String, String)>> {
         Value::Object(map) => map
             .get("secrets")
             .and_then(Value::as_array)
-            .ok_or_else(|| EngError::Internal("credd list response missing secrets array".into()))?,
+            .ok_or_else(|| {
+                EngError::Internal("credd list response missing secrets array".into())
+            })?,
         _ => {
             return Err(EngError::Internal(
                 "credd list response has unsupported shape".into(),

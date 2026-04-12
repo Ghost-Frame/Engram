@@ -107,12 +107,7 @@ pub async fn list_patterns(db: &Database, user_id: i64) -> Result<Vec<BrainPatte
 }
 
 /// Update the strength (decay_factor) of a pattern.
-pub async fn update_strength(
-    db: &Database,
-    id: i64,
-    user_id: i64,
-    strength: f32,
-) -> Result<()> {
+pub async fn update_strength(db: &Database, id: i64, user_id: i64, strength: f32) -> Result<()> {
     let affected = db
         .conn
         .execute(
@@ -161,11 +156,7 @@ pub async fn delete_pattern(db: &Database, id: i64, user_id: i64) -> Result<()> 
 
 /// Delete all patterns whose strength is below the given threshold.
 /// Returns the number of deleted patterns.
-pub async fn delete_weak_patterns(
-    db: &Database,
-    user_id: i64,
-    threshold: f32,
-) -> Result<usize> {
+pub async fn delete_weak_patterns(db: &Database, user_id: i64, threshold: f32) -> Result<usize> {
     // First collect IDs so we can clean edges
     let mut rows = db
         .conn

@@ -3,10 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
-#[cfg(feature = "db_pool")]
-use crate::memory::uses_pool_backend;
 use crate::memory;
 use crate::memory::types::StoreRequest;
+#[cfg(feature = "db_pool")]
+use crate::memory::uses_pool_backend;
 #[cfg(feature = "db_pool")]
 use crate::EngError;
 use crate::Result;
@@ -52,15 +52,14 @@ pub async fn receive_sync(
                     let exists = db
                         .read(move |conn| {
                             let mut stmt = conn
-                                .prepare("SELECT id FROM memories WHERE sync_id = ?1 AND user_id = ?2")
+                                .prepare(
+                                    "SELECT id FROM memories WHERE sync_id = ?1 AND user_id = ?2",
+                                )
                                 .map_err(rusqlite_to_eng_error)?;
                             let mut rows = stmt
                                 .query(rusqlite::params![sync_id, user_id])
                                 .map_err(rusqlite_to_eng_error)?;
-                            Ok(rows
-                                .next()
-                                .map_err(rusqlite_to_eng_error)?
-                                .is_some())
+                            Ok(rows.next().map_err(rusqlite_to_eng_error)?.is_some())
                         })
                         .await?;
                     if exists {

@@ -57,6 +57,13 @@ fn build_attribution(block: &ContextBlock) -> String {
 
 /// Assembles the final context string from layers of blocks plus supplementary
 /// sections (working memory, current state, personality, preferences, facts).
+/// Wrap user-supplied memory content with a structural delimiter so that
+/// embedded instructions in stored memories cannot escape into the prompt
+/// as top-level directives (SEC-LOW-3).
+fn wrap_user_content(content: &str) -> String {
+    format!("<user_memory>{}</user_memory>", content)
+}
+
 /// This is the formatting step only -- no DB calls here.
 pub fn assemble_context_string(
     blocks: &[ContextBlock],
@@ -64,9 +71,16 @@ pub fn assemble_context_string(
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
 
-    // Supplementary sections come first
+    // Supplementary sections come first.
+    // Wrap user-generated content with structural delimiters to prevent prompt injection
+    // (SEC-LOW-3 fix). working_memory already has its own <working-memory> tags.
     for s in supplementary {
-        parts.push(s.content.clone());
+        let wrapped = match s.label.as_str() {
+            "working_memory" => s.content.clone(), // Already has structural tags
+            "current_state" | "personality" | "preferences" => wrap_user_content(&s.content),
+            _ => s.content.clone(), // Unknown labels pass through unchanged
+        };
+        parts.push(wrapped);
     }
 
     let static_blocks: Vec<_> = blocks
@@ -101,7 +115,13 @@ pub fn assemble_context_string(
     if !static_blocks.is_empty() {
         let lines: Vec<String> = static_blocks
             .iter()
-            .map(|b| format!("- {}{}", b.content, build_attribution(b)))
+            .map(|b| {
+                format!(
+                    "- {}{}",
+                    wrap_user_content(&b.content),
+                    build_attribution(b)
+                )
+            })
             .collect();
         parts.push(format!("## Permanent Facts\n{}", lines.join("\n")));
     }
@@ -121,7 +141,7 @@ pub fn assemble_context_string(
             lines.push(format!(
                 "- [{}] {}{}",
                 b.category,
-                b.content,
+                wrap_user_content(&b.content),
                 build_attribution(b)
             ));
         }
@@ -136,11 +156,11 @@ pub fn assemble_context_string(
                 if *parent_id > 0 {
                     lines.push(format!("- [facts from memory #{}]", parent_id));
                     for f in facts {
-                        lines.push(format!("  - {}", f.content));
+                        lines.push(format!("  - {}", wrap_user_content(&f.content)));
                     }
                 } else {
                     for f in facts {
-                        lines.push(format!("- [fact] {}", f.content));
+                        lines.push(format!("- [fact] {}", wrap_user_content(&f.content)));
                     }
                 }
             }
@@ -150,7 +170,10 @@ pub fn assemble_context_string(
     }
 
     if !evolution_blocks.is_empty() {
-        let lines: Vec<String> = evolution_blocks.iter().map(|b| b.content.clone()).collect();
+        let lines: Vec<String> = evolution_blocks
+            .iter()
+            .map(|b| wrap_user_content(&b.content))
+            .collect();
         parts.push(format!(
             "## Preference/Fact Evolution\n{}",
             lines.join("\n\n")
@@ -164,7 +187,7 @@ pub fn assemble_context_string(
                 format!(
                     "- [{}] {}{}",
                     b.created_at.as_deref().unwrap_or(""),
-                    b.content,
+                    wrap_user_content(&b.content),
                     build_attribution(b)
                 )
             })
@@ -175,7 +198,13 @@ pub fn assemble_context_string(
     if !linked_blocks.is_empty() {
         let lines: Vec<String> = linked_blocks
             .iter()
-            .map(|b| format!("- {}{}", b.content, build_attribution(b)))
+            .map(|b| {
+                format!(
+                    "- {}{}",
+                    wrap_user_content(&b.content),
+                    build_attribution(b)
+                )
+            })
             .collect();
         parts.push(format!("## Related Context\n{}", lines.join("\n")));
     }
@@ -187,7 +216,7 @@ pub fn assemble_context_string(
                 format!(
                     "- [{}] {}{}",
                     b.created_at.as_deref().unwrap_or(""),
-                    b.content,
+                    wrap_user_content(&b.content),
                     build_attribution(b)
                 )
             })
@@ -196,7 +225,10 @@ pub fn assemble_context_string(
     }
 
     if !inference_blocks.is_empty() {
-        let lines: Vec<String> = inference_blocks.iter().map(|b| b.content.clone()).collect();
+        let lines: Vec<String> = inference_blocks
+            .iter()
+            .map(|b| wrap_user_content(&b.content))
+            .collect();
         parts.push(format!("## Implicit Connections\n{}", lines.join("\n")));
     }
 
@@ -460,12 +492,22 @@ pub async fn assemble_context(
             None
         };
         if let Some(ref emb) = candidate_emb {
-            if !block_embeddings.is_empty()
-                && block_embeddings
-                    .iter()
-                    .any(|e| cosine_similarity(emb, e) as f64 > dedup_thresh)
-            {
-                continue;
+            if !block_embeddings.is_empty() {
+                // Cosine similarity over potentially large embedding vectors is
+                // CPU-bound. Offload to a blocking thread so the async runtime
+                // is not stalled (S5-22).
+                let emb_clone = emb.clone();
+                let embeddings_clone = block_embeddings.clone();
+                let is_dup = tokio::task::spawn_blocking(move || {
+                    embeddings_clone
+                        .iter()
+                        .any(|e| cosine_similarity(&emb_clone, e) as f64 > dedup_thresh)
+                })
+                .await
+                .unwrap_or(false);
+                if is_dup {
+                    continue;
+                }
             }
         }
 
@@ -675,12 +717,19 @@ pub async fn assemble_context(
                     None
                 };
                 if let Some(ref emb) = candidate_emb {
-                    if !block_embeddings.is_empty()
-                        && block_embeddings
-                            .iter()
-                            .any(|e| cosine_similarity(emb, e) as f64 > dedup_thresh)
-                    {
-                        continue;
+                    if !block_embeddings.is_empty() {
+                        let emb_clone = emb.clone();
+                        let embeddings_clone = block_embeddings.clone();
+                        let is_dup = tokio::task::spawn_blocking(move || {
+                            embeddings_clone
+                                .iter()
+                                .any(|e| cosine_similarity(&emb_clone, e) as f64 > dedup_thresh)
+                        })
+                        .await
+                        .unwrap_or(false);
+                        if is_dup {
+                            continue;
+                        }
                     }
                 }
                 blocks.push(ContextBlock {
@@ -725,12 +774,19 @@ pub async fn assemble_context(
                 None
             };
             if let Some(ref emb) = candidate_emb {
-                if !block_embeddings.is_empty()
-                    && block_embeddings
-                        .iter()
-                        .any(|e| cosine_similarity(emb, e) as f64 > dedup_thresh)
-                {
-                    continue;
+                if !block_embeddings.is_empty() {
+                    let emb_clone = emb.clone();
+                    let embeddings_clone = block_embeddings.clone();
+                    let is_dup = tokio::task::spawn_blocking(move || {
+                        embeddings_clone
+                            .iter()
+                            .any(|e| cosine_similarity(&emb_clone, e) as f64 > dedup_thresh)
+                    })
+                    .await
+                    .unwrap_or(false);
+                    if is_dup {
+                        continue;
+                    }
                 }
             }
             blocks.push(ContextBlock {

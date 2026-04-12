@@ -69,9 +69,7 @@ pub fn load_instincts_bin(path: &Path) -> Result<InstinctsCorpus> {
 
     // Header is: 4-byte magic + 4-byte version u32-LE + 4-byte compressed-length u32-LE
     if raw.len() < 12 {
-        return Err(EngError::Internal(
-            "instincts: file too short".to_string(),
-        ));
+        return Err(EngError::Internal("instincts: file too short".to_string()));
     }
 
     // Validate magic header
@@ -83,7 +81,7 @@ pub fn load_instincts_bin(path: &Path) -> Result<InstinctsCorpus> {
 
     // Validate version
     let version = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
-    if version < INST_VERSION_MIN || version > INST_VERSION_MAX {
+    if !(INST_VERSION_MIN..=INST_VERSION_MAX).contains(&version) {
         return Err(EngError::Internal(format!(
             "instincts: unsupported version {} (supported {}-{})",
             version, INST_VERSION_MIN, INST_VERSION_MAX
@@ -209,9 +207,7 @@ async fn is_seeded(db: &Database, user_id: i64) -> Result<bool> {
 }
 
 async fn mark_seeded(db: &Database, user_id: i64) -> Result<()> {
-    let now = chrono::Utc::now()
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     db.conn
         .execute(

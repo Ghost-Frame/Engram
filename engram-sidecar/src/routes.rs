@@ -1,6 +1,7 @@
 use axum::{
     extract::State,
     http::StatusCode,
+    middleware,
     routing::{get, post},
     Json, Router,
 };
@@ -13,6 +14,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::info;
 
+use crate::auth::require_token;
 use crate::session::Observation;
 use crate::SidecarState;
 
@@ -24,6 +26,7 @@ pub fn router(state: SidecarState) -> Router {
         .route("/observe", post(observe))
         .route("/recall", post(recall))
         .route("/end", post(end_session))
+        .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state)
 }
 
@@ -114,7 +117,7 @@ async fn recall(
         match embedder.embed(&body.query).await {
             Ok(emb) => Some(emb),
             Err(e) => {
-                tracing::warn!("embedding failed for recall: {}", e);
+                tracing::warn!(user_id = state.user_id, error = %e, "embedding failed for recall");
                 None
             }
         }
@@ -141,10 +144,13 @@ async fn recall(
         source_filter: None,
     };
 
+    // SECURITY (SEC-MED-6): do not leak libsql table/column names or the
+    // inner error string to unauthenticated callers. Log server-side only.
     let results = hybrid_search(&state.db, req).await.map_err(|e| {
+        tracing::error!(user_id = state.user_id, error = %e, "sidecar hybrid_search failed");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
+            Json(json!({ "error": "internal error" })),
         )
     })?;
 
@@ -174,6 +180,7 @@ async fn end_session(
 
     info!(
         session_id = %session.id,
+        user_id = state.user_id,
         observations = session.observation_count,
         stored = session.stored_count,
         duration_secs = duration,
@@ -211,7 +218,7 @@ async fn flush_pending(state: &SidecarState) -> usize {
             match embedder.embed(&obs.content).await {
                 Ok(emb) => Some(emb),
                 Err(e) => {
-                    tracing::warn!("embedding failed for observation: {}", e);
+                    tracing::warn!(user_id = state.user_id, error = %e, "embedding failed for observation");
                     None
                 }
             }
@@ -243,7 +250,7 @@ async fn flush_pending(state: &SidecarState) -> usize {
                 }
             }
             Err(e) => {
-                tracing::error!(tool = %obs.tool_name, error = %e, "failed to store observation");
+                tracing::error!(tool = %obs.tool_name, user_id = state.user_id, error = %e, "failed to store observation");
             }
         }
     }

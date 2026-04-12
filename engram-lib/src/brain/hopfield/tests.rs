@@ -41,7 +41,10 @@ mod hopfield_tests {
         let results = net.retrieve(&p, 5, DEFAULT_BETA);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 1);
-        assert!(results[0].1 > 0.9, "activation should be high for exact match");
+        assert!(
+            results[0].1 > 0.9,
+            "activation should be high for exact match"
+        );
     }
 
     #[test]

@@ -7,7 +7,9 @@ use serde_json::Value;
 use std::net::SocketAddr;
 
 async fn mcp(State(app): State<App>, Json(body): Json<Value>) -> Json<Value> {
-    let response = handle_jsonrpc(&app, body).await.unwrap_or_else(|| serde_json::json!({}));
+    let response = handle_jsonrpc(&app, body)
+        .await
+        .unwrap_or_else(|| serde_json::json!({}));
     Json(response)
 }
 

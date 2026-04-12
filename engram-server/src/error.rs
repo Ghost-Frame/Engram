@@ -18,6 +18,7 @@ impl IntoResponse for AppError {
             EngError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             EngError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             EngError::Auth(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
+            EngError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             EngError::NotImplemented(msg) => (StatusCode::NOT_IMPLEMENTED, msg.clone()),
             // Don't leak internal DB/serialization details to clients
             EngError::Database(e) => {

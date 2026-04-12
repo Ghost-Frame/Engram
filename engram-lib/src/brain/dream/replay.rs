@@ -27,10 +27,7 @@ pub async fn replay(
     let items_processed = db_patterns.len().min(budget as usize);
 
     // Sort by access_count descending -- most recently active patterns first
-    let mut candidates: Vec<_> = db_patterns
-        .iter()
-        .filter(|p| p.access_count > 0)
-        .collect();
+    let mut candidates: Vec<_> = db_patterns.iter().filter(|p| p.access_count > 0).collect();
     candidates.sort_by(|a, b| b.access_count.cmp(&a.access_count));
     candidates.truncate(budget as usize);
 

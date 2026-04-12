@@ -37,12 +37,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
             .await?;
 
         if let Some(row) = rows.next().await? {
-            sources.push((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-            ));
+            sources.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
         }
     }
 
@@ -132,7 +127,12 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
     )
     .await?;
 
-    info!(summary_id = new_id, sources = sources.len(), "consolidated");
+    info!(
+        summary_id = new_id,
+        sources = sources.len(),
+        user_id,
+        "consolidated"
+    );
 
     // Fetch and return the new memory
     let mut result_rows = conn

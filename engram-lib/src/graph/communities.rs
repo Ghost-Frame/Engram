@@ -113,13 +113,24 @@ pub async fn detect_communities(
         .flat_map(|(k, vs)| vs.iter().filter(move |(v, _)| **v > *k).map(|(_, w)| w))
         .sum();
     if m == 0.0 {
-        for (idx, &id) in memory_ids.iter().enumerate() {
-            conn.execute(
-                "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
-                libsql::params![idx as i64, id, user_id],
-            )
-            .await?;
+        // Wrap batch UPDATEs in transaction for atomicity (S1-5/S1-6 fix).
+        conn.execute("BEGIN IMMEDIATE", ()).await?;
+        let update_result: crate::Result<()> = async {
+            for (idx, &id) in memory_ids.iter().enumerate() {
+                conn.execute(
+                    "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
+                    libsql::params![idx as i64, id, user_id],
+                )
+                .await?;
+            }
+            Ok(())
+        }.await;
+        if update_result.is_err() {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            return Err(update_result.unwrap_err());
         }
+        conn.execute("COMMIT", ()).await?;
+
         return Ok(CommunitiesResult {
             communities: memory_ids.len(),
             memories: memory_ids.len(),
@@ -136,6 +147,15 @@ pub async fn detect_communities(
     }
     let two_m = 2.0 * m;
 
+    // Build sigma_tot (sum of k-values per community) once and maintain it
+    // incrementally. The previous approach recomputed it by scanning all N
+    // nodes inside the per-node inner loop, making each iteration O(N^2)
+    // instead of O(N) (RB-L2).
+    let mut sigma_tot: HashMap<usize, f64> = HashMap::new();
+    for (&n, &c) in &community {
+        *sigma_tot.entry(c).or_insert(0.0) += k.get(&n).copied().unwrap_or(0.0);
+    }
+
     for _ in 0..max_iterations {
         let mut improved = false;
         for &node in &memory_ids {
@@ -148,10 +168,6 @@ pub async fn detect_communities(
                         .entry(*community.get(&nbr).unwrap())
                         .or_insert(0.0) += w;
                 }
-            }
-            let mut sigma_tot: HashMap<usize, f64> = HashMap::new();
-            for (&n, &c) in &community {
-                *sigma_tot.entry(c).or_insert(0.0) += k.get(&n).unwrap();
             }
             let kic = comm_weights.get(&node_comm).copied().unwrap_or(0.0);
             let sc = sigma_tot.get(&node_comm).copied().unwrap_or(0.0);
@@ -170,6 +186,9 @@ pub async fn detect_communities(
                 }
             }
             if bc != node_comm && bd > 1e-10 {
+                // Update sigma_tot incrementally: node moves from node_comm to bc.
+                *sigma_tot.entry(node_comm).or_insert(0.0) -= ki;
+                *sigma_tot.entry(bc).or_insert(0.0) += ki;
                 community.insert(node, bc);
                 improved = true;
             }
@@ -187,14 +206,24 @@ pub async fn detect_communities(
             next_community += 1;
         }
     }
-    for (&node_id, &comm) in &community {
-        let cid = label_map.get(&comm).copied().unwrap_or(0);
-        conn.execute(
-            "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
-            libsql::params![cid, node_id, user_id],
-        )
-        .await?;
+    // Wrap batch UPDATEs in transaction for atomicity (S1-5/S1-6 fix).
+    conn.execute("BEGIN IMMEDIATE", ()).await?;
+    let update_result: crate::Result<()> = async {
+        for (&node_id, &comm) in &community {
+            let cid = label_map.get(&comm).copied().unwrap_or(0);
+            conn.execute(
+                "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
+                libsql::params![cid, node_id, user_id],
+            )
+            .await?;
+        }
+        Ok(())
+    }.await;
+    if update_result.is_err() {
+        let _ = conn.execute("ROLLBACK", ()).await;
+        return Err(update_result.unwrap_err());
     }
+    conn.execute("COMMIT", ()).await?;
 
     let num_communities = label_map.len();
     let mut comm_sizes: HashMap<i64, usize> = HashMap::new();
@@ -210,6 +239,7 @@ pub async fn detect_communities(
         memories = memory_ids.len(),
         largest,
         isolated,
+        user_id,
         "communities_detected"
     );
     Ok(CommunitiesResult {

@@ -52,10 +52,7 @@ async fn log_action_handler(
     Auth(auth): Auth,
     Json(body): Json<LogActionBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let action = body
-        .action
-        .clone()
-        .unwrap_or_else(|| "unknown".to_string());
+    let action = body.action.clone().unwrap_or_else(|| "unknown".to_string());
 
     let narrative = body.narrative.or(body.summary).or(body.detail);
 

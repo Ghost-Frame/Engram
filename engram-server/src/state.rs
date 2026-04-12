@@ -31,6 +31,11 @@ impl Default for SessionBroadcast {
     }
 }
 
+/// SECURITY (MT-F10): session map keyed by `(user_id, session_id)` so two
+/// tenants cannot collide on the same opaque session id.
+pub type SessionMap =
+    Arc<RwLock<HashMap<(i64, String), Arc<tokio::sync::Mutex<SessionBroadcast>>>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Database>,
@@ -41,7 +46,7 @@ pub struct AppState {
     pub brain: Option<Arc<dyn BrainBackend>>,
     #[allow(dead_code)]
     pub llm: Option<Arc<LocalModelClient>>,
-    pub sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SessionBroadcast>>>>>,
+    pub sessions: SessionMap,
     #[allow(dead_code)]
     pub eidolon_config: Option<EidolonConfig>,
     /// Notification channel for approval events. TUI clients can subscribe to

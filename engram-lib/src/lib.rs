@@ -2,21 +2,20 @@
 
 pub mod activity;
 pub mod admin;
-pub mod errors_log;
 pub mod agents;
 pub mod approvals;
-pub mod apikeys;
 pub mod artifacts;
 pub mod audit;
 pub mod auth;
 pub mod cognithor;
 pub mod config;
-pub mod cred;
 pub mod context;
 pub mod conversations;
+pub mod cred;
 pub mod db;
 pub mod embeddings;
 pub mod episodes;
+pub mod errors_log;
 pub mod facts;
 pub mod fsrs;
 pub mod gate;
@@ -70,6 +69,9 @@ pub enum EngError {
 
     #[error("auth error: {0}")]
     Auth(String),
+
+    #[error("forbidden: {0}")]
+    Forbidden(String),
 
     #[error("internal error: {0}")]
     Internal(String),

@@ -61,6 +61,7 @@ impl AccessTier {
 }
 
 /// Log an audit entry.
+#[allow(clippy::too_many_arguments)]
 pub async fn log_audit(
     db: &Database,
     user_id: i64,
@@ -188,7 +189,11 @@ pub async fn get_secret_audit(
 
 async fn parse_audit_rows(mut rows: libsql::Rows) -> Result<Vec<AuditEntry>> {
     let mut entries = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| CredError::Database(e.to_string()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?
+    {
         let id: i64 = row.get(0)?;
         let user_id: i64 = row.get(1)?;
         let agent_name: Option<String> = row.get(2)?;

@@ -32,7 +32,10 @@ pub fn router() -> Router<AppState> {
             post(log_event_handler).get(list_logs_handler),
         )
         .route("/soma/agents/{id}/logs", get(list_logs_handler))
-        .route("/soma/groups", post(create_group_handler).get(list_groups_handler))
+        .route(
+            "/soma/groups",
+            post(create_group_handler).get(list_groups_handler),
+        )
         .route("/soma/groups/{id}/members", post(add_member_handler))
         .route(
             "/soma/groups/{id}/members/{agent_id}",
@@ -220,7 +223,9 @@ async fn add_member_handler(
     Json(body): Json<AddMemberBody>,
 ) -> Result<Json<Value>, AppError> {
     add_agent_to_group(&state.db, body.agent_id, group_id, auth.user_id).await?;
-    Ok(Json(json!({ "ok": true, "group_id": group_id, "agent_id": body.agent_id })))
+    Ok(Json(
+        json!({ "ok": true, "group_id": group_id, "agent_id": body.agent_id }),
+    ))
 }
 
 async fn remove_member_handler(

@@ -95,7 +95,11 @@ pub async fn index_artifact(
         Err(_) => false,
     };
     if !owned {
-        tracing::warn!(artifact_id, user_id, "artifact FTS index rejected: not owned");
+        tracing::warn!(
+            artifact_id,
+            user_id,
+            "artifact FTS index rejected: not owned"
+        );
         return false;
     }
     if db
@@ -120,9 +124,16 @@ pub async fn index_artifact(
     true
 }
 
+/// Insert an artifact row attached to `memory_id`.
+///
+/// SECURITY (MT-F3): callers must pass the authenticated `user_id` so we
+/// can verify the target memory belongs to that tenant *before* inserting.
+/// Without this gate, a tenant holding any numeric memory id could attach
+/// files to another tenant's memory row.
 #[allow(clippy::too_many_arguments)]
 pub async fn store_artifact(
     db: &Database,
+    user_id: i64,
     memory_id: i64,
     filename: &str,
     mime_type: &str,
@@ -133,6 +144,19 @@ pub async fn store_artifact(
     disk_path: Option<&str>,
     is_encrypted: bool,
 ) -> Result<i64> {
+    let mut owner_rows = db
+        .conn
+        .query(
+            "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+            libsql::params![memory_id, user_id],
+        )
+        .await?;
+    if owner_rows.next().await?.is_none() {
+        return Err(crate::EngError::NotFound(
+            "memory not found for this tenant".into(),
+        ));
+    }
+
     let mut rows = db.conn.query(
         "INSERT INTO artifacts (memory_id, filename, mime_type, size_bytes, sha256, storage_mode, data, disk_path, is_encrypted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id",
         libsql::params![memory_id, filename.to_string(), mime_type.to_string(), size_bytes, sha256.to_string(), storage_mode.to_string(), data, disk_path.map(|s| s.to_string()), is_encrypted as i64],
@@ -182,18 +206,51 @@ pub async fn get_artifact_by_id(
     }
 }
 
-pub async fn get_artifact_stats(db: &Database, user_id: Option<i64>) -> Result<ArtifactStats> {
-    let (sql, has_uid) = match user_id {
-        Some(_) => ("SELECT COUNT(*), COALESCE(SUM(a.size_bytes),0), COALESCE(SUM(CASE WHEN a.storage_mode='inline' THEN a.size_bytes ELSE 0 END),0), COALESCE(SUM(CASE WHEN a.storage_mode='disk' THEN a.size_bytes ELSE 0 END),0), COALESCE(SUM(CASE WHEN a.storage_mode='inline' THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN a.storage_mode='disk' THEN 1 ELSE 0 END),0) FROM artifacts a JOIN memories m ON a.memory_id = m.id WHERE m.user_id = ?1", true),
-        None => ("SELECT COUNT(*), COALESCE(SUM(size_bytes),0), COALESCE(SUM(CASE WHEN storage_mode='inline' THEN size_bytes ELSE 0 END),0), COALESCE(SUM(CASE WHEN storage_mode='disk' THEN size_bytes ELSE 0 END),0), COALESCE(SUM(CASE WHEN storage_mode='inline' THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN storage_mode='disk' THEN 1 ELSE 0 END),0) FROM artifacts", false),
-    };
-    let mut rows = if has_uid {
-        db.conn
-            .query(sql, libsql::params![user_id.unwrap()])
-            .await?
-    } else {
-        db.conn.query(sql, libsql::params![]).await?
-    };
+/// Per-tenant artifact statistics (SECURITY: MT-F4).
+///
+/// The previous helper accepted `Option<i64>` where `None` meant "every
+/// tenant's artifacts collapsed into one number." That was an admin
+/// backdoor reachable from an otherwise tenant-scoped handler. Split into
+/// two explicit entry points so the scope is obvious at the call site.
+pub async fn get_artifact_stats(db: &Database, user_id: i64) -> Result<ArtifactStats> {
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT COUNT(*), \
+                    COALESCE(SUM(a.size_bytes),0), \
+                    COALESCE(SUM(CASE WHEN a.storage_mode='inline' THEN a.size_bytes ELSE 0 END),0), \
+                    COALESCE(SUM(CASE WHEN a.storage_mode='disk' THEN a.size_bytes ELSE 0 END),0), \
+                    COALESCE(SUM(CASE WHEN a.storage_mode='inline' THEN 1 ELSE 0 END),0), \
+                    COALESCE(SUM(CASE WHEN a.storage_mode='disk' THEN 1 ELSE 0 END),0) \
+             FROM artifacts a \
+             JOIN memories m ON a.memory_id = m.id \
+             WHERE m.user_id = ?1",
+            libsql::params![user_id],
+        )
+        .await?;
+    stats_from_row(&mut rows).await
+}
+
+/// Cluster-wide artifact statistics. Only call from explicitly admin-gated
+/// routes. Never expose to tenant-scoped handlers.
+pub async fn get_artifact_stats_all(db: &Database) -> Result<ArtifactStats> {
+    let mut rows = db
+        .conn
+        .query(
+            "SELECT COUNT(*), \
+                    COALESCE(SUM(size_bytes),0), \
+                    COALESCE(SUM(CASE WHEN storage_mode='inline' THEN size_bytes ELSE 0 END),0), \
+                    COALESCE(SUM(CASE WHEN storage_mode='disk' THEN size_bytes ELSE 0 END),0), \
+                    COALESCE(SUM(CASE WHEN storage_mode='inline' THEN 1 ELSE 0 END),0), \
+                    COALESCE(SUM(CASE WHEN storage_mode='disk' THEN 1 ELSE 0 END),0) \
+             FROM artifacts",
+            libsql::params![],
+        )
+        .await?;
+    stats_from_row(&mut rows).await
+}
+
+async fn stats_from_row(rows: &mut libsql::Rows) -> Result<ArtifactStats> {
     let row = rows
         .next()
         .await?

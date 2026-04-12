@@ -126,10 +126,7 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
         .capabilities
         .clone()
         .unwrap_or_else(|| serde_json::json!([]));
-    let config = req
-        .config
-        .clone()
-        .unwrap_or_else(|| serde_json::json!({}));
+    let config = req.config.clone().unwrap_or_else(|| serde_json::json!({}));
     let capabilities_str = serde_json::to_string(&capabilities)?;
     let config_str = serde_json::to_string(&config)?;
 
@@ -284,7 +281,9 @@ pub async fn list_agents(
             .read(move |conn| {
                 let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
                 let converted = rusqlite::params_from_iter(
-                    params.iter().map(crate::memory::libsql_value_to_rusqlite_value),
+                    params
+                        .iter()
+                        .map(crate::memory::libsql_value_to_rusqlite_value),
                 );
                 let mut rows = stmt.query(converted).map_err(rusqlite_to_eng_error)?;
                 let mut out = Vec::new();
@@ -335,8 +334,7 @@ pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
 }
 
 pub async fn get_agent_by_name(db: &Database, user_id: i64, name: &str) -> Result<Agent> {
-    let sql =
-        format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE user_id = ?1 AND name = ?2");
+    let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE user_id = ?1 AND name = ?2");
 
     #[cfg(feature = "db_pool")]
     if uses_pool_backend(db) {
@@ -600,9 +598,7 @@ pub async fn log_event(
     message: &str,
     data: Option<serde_json::Value>,
 ) -> Result<i64> {
-    let data_str = data
-        .map(|d| serde_json::to_string(&d))
-        .transpose()?;
+    let data_str = data.map(|d| serde_json::to_string(&d)).transpose()?;
 
     #[cfg(feature = "db_pool")]
     if uses_pool_backend(db) {
