@@ -337,7 +337,13 @@ pub async fn emit_webhook_event(
         let url = hook.url.clone();
         let hook_id = hook.id;
         tokio::spawn(async move {
-            let client = reqwest::Client::new();
+            // SECURITY (SEC-H2): disable redirect following to prevent
+            // X-Engram-Signature header leakage to attacker-controlled hosts
+            // via open redirect chains.
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
             let mut req = client
                 .post(&url)
                 .body(body_str)

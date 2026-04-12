@@ -213,10 +213,11 @@ async fn bootstrap(
         .and_then(|Json(b)| b.secret.as_deref())
         .map(|s| s.to_string())
         .unwrap_or_default();
+    // SECURITY (SEC-LOW-1): pure constant-time comparison without a length
+    // short-circuit. The prior `len != len` guard leaked secret length via
+    // timing. When lengths differ, ct_eq returns 0 anyway, so this is safe.
     use subtle::ConstantTimeEq;
-    if supplied.len() != expected.len()
-        || supplied.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() != 1
-    {
+    if supplied.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() != 1 {
         // SECURITY (SEC-HIGH-6): record failure toward the sliding-window
         // cooldown so repeated wrong secrets lock the endpoint.
         record_bootstrap_failure();
@@ -577,7 +578,9 @@ async fn admin_cred_resolve(
     Json(body): Json<AdminCredResolveBody>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let agent = auth.key.name.as_str();
+    // SECURITY (SEC-LOW-4): use key_id for audit trail instead of
+    // auth.key.name which is user-controlled and could be misleading.
+    let agent = &format!("key:{}", auth.key.id);
 
     if let Some(text) = body.text.as_deref() {
         let resolved = state
@@ -891,6 +894,9 @@ async fn export_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
+    // SECURITY (SEC-MED-1): gate admin-path export behind admin scope.
+    // User-facing export lives in the portability module.
+    require_admin(&auth)?;
     let result = engram_lib::admin::export_user_data(&state.db, auth.user_id).await?;
     to_json(result)
 }
@@ -903,6 +909,8 @@ async fn reset_user(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
+    // SECURITY (SEC-MED-2): destructive reset must require admin scope.
+    require_admin(&auth)?;
     let uid = auth.user_id;
     let tables = &[
         "DELETE FROM memories WHERE user_id = ?1",

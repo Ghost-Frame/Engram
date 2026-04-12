@@ -314,16 +314,33 @@ async fn get_state_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let all = engram_lib::admin::list_state(&state.db).await?;
+    // SECURITY (SEC-LOW-8): push user filter into SQL instead of fetching all
+    // rows and filtering in memory. Avoids leaking timing information about
+    // total state table size and reduces unnecessary data transfer.
     let prefix = format!("user:{}:", auth.user_id);
-    let user_state: serde_json::Map<String, Value> = all
-        .into_iter()
-        .filter(|r| r.key.starts_with(&prefix))
-        .map(|r| {
-            let k = r.key[prefix.len()..].to_string();
-            (k, Value::String(r.value))
+    let prefix_like = format!("{}%", prefix);
+    let prefix_len = prefix.len();
+    let user_state: serde_json::Map<String, Value> = state
+        .db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT key, value FROM app_state WHERE key LIKE ?1 ORDER BY key")
+                .map_err(|e| engram_lib::EngError::Internal(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![prefix_like], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| engram_lib::EngError::Internal(e.to_string()))?;
+            let mut result = serde_json::Map::new();
+            for row in rows {
+                let (k, v) = row.map_err(|e| engram_lib::EngError::Internal(e.to_string()))?;
+                let short_key = k[prefix_len..].to_string();
+                result.insert(short_key, Value::String(v));
+            }
+            Ok(result)
         })
-        .collect();
+        .await
+        .map_err(AppError)?;
     Ok(Json(json!({ "state": user_state })))
 }
 

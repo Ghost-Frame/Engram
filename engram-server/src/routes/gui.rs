@@ -88,7 +88,16 @@ async fn get_hmac_secret(data_dir: &str) -> SecretString {
 /// Uses an atomic rename (write tmp + rename) to avoid partial-write corruption.
 async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
     if let Ok(secret) = std::env::var("ENGRAM_HMAC_SECRET") {
-        return SecretString::new(secret);
+        // SECURITY (SEC-LOW-6): reject HMAC secrets shorter than 32 chars
+        // to prevent weak signing keys.
+        if secret.len() < 32 {
+            tracing::error!(
+                len = secret.len(),
+                "ENGRAM_HMAC_SECRET is too short (minimum 32 characters); ignoring"
+            );
+        } else {
+            return SecretString::new(secret);
+        }
     }
 
     let secret_path = PathBuf::from(data_dir).join(".hmac_secret");
@@ -296,15 +305,20 @@ pub async fn is_gui_authenticated(state: &AppState, headers: &HeaderMap) -> bool
     get_gui_user_id(state, headers).await.is_some()
 }
 
-/// Determine cookie attributes based on request protocol
-fn cookie_attributes(headers: &HeaderMap) -> &'static str {
-    let is_https = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v == "https")
-        .unwrap_or(false);
+/// Determine cookie attributes based on config, not client-supplied headers.
+///
+/// SECURITY (SEC-MED-6): X-Forwarded-Proto is trivially spoofable when no
+/// trusted reverse proxy strips it. Use the `ENGRAM_SECURE_COOKIES` env var
+/// (set to "1" or "true") when the server is behind TLS.
+fn cookie_attributes(_headers: &HeaderMap) -> &'static str {
+    static SECURE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let secure = *SECURE.get_or_init(|| {
+        std::env::var("ENGRAM_SECURE_COOKIES")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    });
 
-    if is_https {
+    if secure {
         "Path=/; HttpOnly; Secure; SameSite=Strict"
     } else {
         "Path=/; HttpOnly; SameSite=Lax"
@@ -322,7 +336,9 @@ async fn gui_auth(
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    // GUI auth requires gui_password to be set (as a feature flag)
+    // SECURITY (SEC-MED-7): gui_password is used as a feature flag (Some = GUI
+    // enabled, None = disabled). It does NOT gate a password prompt -- the actual
+    // authentication uses the API key submitted in the form.
     if state.config.gui_password.is_none() {
         return (StatusCode::FORBIDDEN, "GUI authentication not configured").into_response();
     }

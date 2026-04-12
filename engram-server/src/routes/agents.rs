@@ -261,11 +261,35 @@ fn load_or_create_signing_secret() -> String {
         }
     }
 
-    let generated = uuid::Uuid::new_v4().to_string();
+    // SECURITY (SEC-MED-5): use OsRng for 256-bit signing secret instead of
+    // UUID v4 which has only ~122 bits and fixed version/variant bits.
+    let generated = {
+        use rand::RngCore;
+        let mut raw = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut raw);
+        hex::encode(raw)
+    };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let _ = fs::write(&path, &generated);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                f.write_all(generated.as_bytes())
+            });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = fs::write(&path, &generated);
+    }
     generated
 }
 

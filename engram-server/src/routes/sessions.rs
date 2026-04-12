@@ -35,10 +35,21 @@ async fn create_session_handler(
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let session = create_session(&state.db, &body, auth.user_id).await?;
 
-    // Register in-memory broadcast state keyed by (user_id, session_id) so
-    // tenants cannot collide on an opaque session id (MT-F10).
+    // SECURITY (SEC-H4): enforce per-tenant session count limit to prevent
+    // unbounded HashMap growth from a single API key creating sessions in a loop.
+    const MAX_SESSIONS_PER_USER: usize = 64;
     {
         let mut sessions = state.sessions.write().await;
+        let count = sessions
+            .keys()
+            .filter(|(uid, _)| *uid == auth.user_id)
+            .count();
+        if count >= MAX_SESSIONS_PER_USER {
+            return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+                "session limit reached ({} max)",
+                MAX_SESSIONS_PER_USER
+            ))));
+        }
         sessions.insert(
             (auth.user_id, session.id.clone()),
             Arc::new(tokio::sync::Mutex::new(SessionBroadcast::new())),
@@ -87,6 +98,16 @@ async fn append_handler(
     Path(id): Path<String>,
     Json(body): Json<AppendBody>,
 ) -> Result<Json<Value>, AppError> {
+    // SECURITY (SEC-H3): cap individual line length to prevent a single tenant
+    // from filling the 10k-entry buffer with 2 MiB lines (~20 GiB total).
+    const MAX_LINE_LEN: usize = 65536;
+    if body.line.len() > MAX_LINE_LEN {
+        return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+            "line exceeds max length ({} bytes)",
+            MAX_LINE_LEN
+        ))));
+    }
+
     append_output(&state.db, &id, &body.line, auth.user_id).await?;
 
     // Broadcast to any WebSocket subscribers (scoped to this tenant only).
@@ -96,9 +117,10 @@ async fn append_handler(
             let mut b = broadcast.lock().await;
             const MAX_BUFFER: usize = 10_000;
             if b.buffer.len() >= MAX_BUFFER {
-                b.buffer.remove(0); // drop oldest
+                // SECURITY (SEC-M8): O(1) removal instead of Vec::remove(0) which is O(n).
+                b.buffer.pop_front();
             }
-            b.buffer.push(body.line.clone());
+            b.buffer.push_back(body.line.clone());
             let _ = b.tx.send(body.line);
         }
     }

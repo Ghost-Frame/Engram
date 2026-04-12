@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
+use subtle::ConstantTimeEq;
 
 use crate::db::Database;
 use crate::Result;
@@ -162,6 +163,12 @@ fn hash_key_versioned(raw_key: &str, version: i32) -> Option<String> {
     }
 }
 
+/// Normalise a raw API key to its canonical `engram_<hex>` form.
+///
+/// SECURITY (SEC-LOW-2): the `eg_` prefix is a legacy shorthand alias kept
+/// for backwards compatibility with older clients. Both prefixes map to the
+/// same canonical form so hash lookups succeed regardless of which prefix the
+/// caller used.
 fn normalize_key(raw_key: &str) -> Option<String> {
     let hex_portion = if let Some(rest) = raw_key.strip_prefix("engram_") {
         rest
@@ -353,10 +360,37 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
 
                 let expected_hash = match hash_version {
                     HASH_VERSION_PEPPERED => hash_v2.as_ref(),
-                    _ => Some(&hash_v1),
+                    _ => {
+                        // SECURITY (SEC-C5): reject v1 (unpeppered) keys when
+                        // pepper is configured. This prevents a downgrade attack
+                        // where an attacker who can modify the api_keys table
+                        // flips hash_version to bypass the pepper.
+                        if hash_v2.is_some() {
+                            tracing::warn!(
+                                key_prefix = %key_prefix,
+                                "rejecting v1 (unpeppered) key while pepper is configured -- run key migration"
+                            );
+                            continue;
+                        }
+                        Some(&hash_v1)
+                    }
                 };
 
-                if expected_hash == Some(&stored_hash) {
+                // SECURITY (SEC-C2): constant-time comparison to prevent
+                // timing oracle attacks on hash values.
+                let matches = match expected_hash {
+                    Some(expected) => {
+                        expected.as_bytes().len() == stored_hash.as_bytes().len()
+                            && expected
+                                .as_bytes()
+                                .ct_eq(stored_hash.as_bytes())
+                                .unwrap_u8()
+                                == 1
+                    }
+                    None => false,
+                };
+
+                if matches {
                     // Found matching key -- reconstruct without key_hash column
                     return row_to_api_key_rusqlite_with_offset(row);
                 }

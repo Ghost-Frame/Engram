@@ -32,6 +32,10 @@ pub fn sanitize_fts_query(query: &str) -> String {
         .join(" ")
 }
 
+/// Maximum FTS query length in bytes. Queries beyond this are rejected to
+/// prevent denial-of-service through pathological FTS5 expressions.
+const MAX_FTS_QUERY_LEN: usize = 4096;
+
 /// Search memories using FTS5 full-text search with BM25 ranking.
 /// Returns up to `limit` results ordered by relevance (most relevant first).
 pub async fn fts_search(
@@ -40,6 +44,14 @@ pub async fn fts_search(
     limit: usize,
     user_id: i64,
 ) -> Result<Vec<FtsHit>> {
+    // SECURITY (SEC-MED-9): reject oversized queries before sanitization to
+    // avoid CPU-intensive tokenisation on pathologically large input.
+    if query.len() > MAX_FTS_QUERY_LEN {
+        return Err(EngError::InvalidInput(format!(
+            "query exceeds maximum length of {} bytes",
+            MAX_FTS_QUERY_LEN
+        )));
+    }
     let sanitized = sanitize_fts_query(query);
     if sanitized.is_empty() {
         return Ok(vec![]);
