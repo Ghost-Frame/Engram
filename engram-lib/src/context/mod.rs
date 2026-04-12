@@ -71,9 +71,16 @@ pub fn assemble_context_string(
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
 
-    // Supplementary sections come first
+    // Supplementary sections come first.
+    // Wrap user-generated content with structural delimiters to prevent prompt injection
+    // (SEC-LOW-3 fix). working_memory already has its own <working-memory> tags.
     for s in supplementary {
-        parts.push(s.content.clone());
+        let wrapped = match s.label.as_str() {
+            "working_memory" => s.content.clone(), // Already has structural tags
+            "current_state" | "personality" | "preferences" => wrap_user_content(&s.content),
+            _ => s.content.clone(), // Unknown labels pass through unchanged
+        };
+        parts.push(wrapped);
     }
 
     let static_blocks: Vec<_> = blocks

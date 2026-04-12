@@ -622,15 +622,30 @@ fn store_transactional_rusqlite(
     Ok(new_id)
 }
 
+/// Retrieve a memory by ID for content access. Filters out forgotten and archived memories.
 pub async fn get(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
+    let sql = format!(
+        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_archived = 0",
+        MEMORY_COLUMNS
+    );
+    get_internal(db, id, user_id, &sql, true).await
+}
+
+/// Retrieve a memory by ID for ownership/existence checks. Only filters forgotten memories,
+/// allowing archived memories to be returned. Use this for permission checks, link targets,
+/// and version chain lookups where the memory must exist but doesn't need to be active.
+pub async fn get_for_ownership(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
     let sql = format!(
         "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
         MEMORY_COLUMNS
     );
+    get_internal(db, id, user_id, &sql, false).await
+}
 
+async fn get_internal(db: &Database, id: i64, user_id: i64, sql: &str, log_access: bool) -> Result<Memory> {
     #[cfg(feature = "db_pool")]
     if uses_pool_backend(db) {
-        let sql_for_read = sql.clone();
+        let sql_for_read = sql.to_string();
         let memory = db
             .read(move |conn| {
                 let mut stmt = conn.prepare(&sql_for_read).map_err(rusqlite_to_eng_error)?;
@@ -645,41 +660,44 @@ pub async fn get(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
             })
             .await?;
 
-        db.write(move |conn| {
-            conn.execute(
-                "UPDATE memories SET \
-                    access_count = access_count + 1, \
-                    last_accessed_at = datetime('now'), \
-                    updated_at = datetime('now') \
-                 WHERE id = ?1 AND user_id = ?2",
-                rusqlite::params![id, user_id],
-            )
-            .map_err(rusqlite_to_eng_error)?;
-            Ok(())
-        })
-        .await?;
+        if log_access {
+            db.write(move |conn| {
+                conn.execute(
+                    "UPDATE memories SET \
+                        access_count = access_count + 1, \
+                        last_accessed_at = datetime('now'), \
+                        updated_at = datetime('now') \
+                     WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![id, user_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                Ok(())
+            })
+            .await?;
+        }
 
         return Ok(memory);
     }
 
-    let mut rows = db.conn.query(&sql, params![id, user_id]).await?;
+    let mut rows = db.conn.query(sql, params![id, user_id]).await?;
     let memory = if let Some(row) = rows.next().await? {
         row_to_memory(&row)?
     } else {
         return Err(EngError::NotFound(format!("memory {} not found", id)));
     };
 
-    // Log the access -- update access_count and last_accessed_at
-    db.conn
-        .execute(
-            "UPDATE memories SET \
-                access_count = access_count + 1, \
-                last_accessed_at = datetime('now'), \
-                updated_at = datetime('now') \
-             WHERE id = ?1 AND user_id = ?2",
-            params![id, user_id],
-        )
-        .await?;
+    if log_access {
+        db.conn
+            .execute(
+                "UPDATE memories SET \
+                    access_count = access_count + 1, \
+                    last_accessed_at = datetime('now'), \
+                    updated_at = datetime('now') \
+                 WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )
+            .await?;
+    }
 
     Ok(memory)
 }

@@ -152,14 +152,26 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
     }
 
     let conn = db.connection();
-    for (&id, &rank) in &result.scores {
-        let normalized = rank / max_rank;
-        conn.execute(
-            "UPDATE memories SET pagerank_score = ?1 WHERE id = ?2 AND user_id = ?3",
-            libsql::params![normalized, id, user_id],
-        )
-        .await?;
+
+    // Wrap batch UPDATEs in transaction for atomicity (S1-5/S1-6 fix).
+    conn.execute("BEGIN IMMEDIATE", ()).await?;
+    let update_result: Result<()> = async {
+        for (&id, &rank) in &result.scores {
+            let normalized = rank / max_rank;
+            conn.execute(
+                "UPDATE memories SET pagerank_score = ?1 WHERE id = ?2 AND user_id = ?3",
+                libsql::params![normalized, id, user_id],
+            )
+            .await?;
+        }
+        Ok(())
+    }.await;
+
+    if update_result.is_err() {
+        let _ = conn.execute("ROLLBACK", ()).await;
+        return Err(update_result.unwrap_err());
     }
+    conn.execute("COMMIT", ()).await?;
 
     info!(
         user_id,
