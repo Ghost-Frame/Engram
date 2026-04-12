@@ -21,7 +21,7 @@ async fn get_stats(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let stats = artifacts::get_artifact_stats(&state.db, Some(auth.user_id)).await?;
+    let stats = artifacts::get_artifact_stats(&state.db, auth.user_id).await?;
     Ok(Json(json!({
         "total_count": stats.total_count,
         "total_bytes": stats.total_bytes,

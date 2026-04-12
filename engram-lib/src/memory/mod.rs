@@ -287,6 +287,12 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
     let user_id = req
         .user_id
         .ok_or_else(|| EngError::InvalidInput("user_id required".into()))?;
+
+    // SECURITY (MT-F20): enforce tenant memory quota on every write path.
+    // Without this check a single tenant can exhaust disk by looping on
+    // memory::store. Runs after user_id is known so the check is scoped.
+    crate::quota::enforce_memory_quota(db, user_id).await?;
+
     let importance = clamp_importance(req.importance);
 
     // 2. Compute simhash of content

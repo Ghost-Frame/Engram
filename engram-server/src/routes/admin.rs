@@ -260,6 +260,21 @@ async fn bootstrap(
         ));
     }
 
+    // SECURITY (MT-F15): user_id=1 is the reserved operator sentinel.
+    // Insert the row explicitly so later AUTOINCREMENT-driven user
+    // creation never collides with it and so every tenant-scoped query
+    // has a real FK target. INSERT OR IGNORE is idempotent.
+    state
+        .db
+        .conn
+        .execute(
+            "INSERT OR IGNORE INTO users (id, username, role, is_admin) \
+             VALUES (1, 'operator', 'admin', 1)",
+            (),
+        )
+        .await
+        .map_err(|e| AppError(engram_lib::EngError::Database(e)))?;
+
     let scopes = vec![Scope::Read, Scope::Write, Scope::Admin];
     let (key, raw_key) = create_key(&state.db, 1, "admin", scopes).await?;
 

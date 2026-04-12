@@ -35,11 +35,12 @@ async fn create_session_handler(
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let session = create_session(&state.db, &body, auth.user_id).await?;
 
-    // Register in-memory broadcast state
+    // Register in-memory broadcast state keyed by (user_id, session_id) so
+    // tenants cannot collide on an opaque session id (MT-F10).
     {
         let mut sessions = state.sessions.write().await;
         sessions.insert(
-            session.id.clone(),
+            (auth.user_id, session.id.clone()),
             Arc::new(tokio::sync::Mutex::new(SessionBroadcast::new())),
         );
     }
@@ -81,10 +82,10 @@ async fn append_handler(
 ) -> Result<Json<Value>, AppError> {
     append_output(&state.db, &id, &body.line, auth.user_id).await?;
 
-    // Broadcast to any WebSocket subscribers
+    // Broadcast to any WebSocket subscribers (scoped to this tenant only).
     {
         let sessions = state.sessions.read().await;
-        if let Some(broadcast) = sessions.get(&id) {
+        if let Some(broadcast) = sessions.get(&(auth.user_id, id.clone())) {
             let mut b = broadcast.lock().await;
             const MAX_BUFFER: usize = 10_000;
             if b.buffer.len() >= MAX_BUFFER {
@@ -108,10 +109,26 @@ async fn stream_handler(
 }
 
 async fn handle_ws(mut socket: WebSocket, state: AppState, session_id: String, user_id: i64) {
+    // Verify the caller actually owns this session before attaching a
+    // broadcast subscriber. Without this check a tenant with a valid API
+    // key could stream another tenant's session by guessing the id
+    // (MT-F10). We hit the DB here because the in-memory map might miss
+    // and we still want DB fallback to run.
+    if get_session(&state.db, &session_id, user_id).await.is_err() {
+        let _ = socket
+            .send(Message::Text(
+                json!({"type": "session_end", "status": "not_found"})
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+        return;
+    }
+
     // Verify session exists and get buffered output
     let (buffered, rx) = {
         let sessions = state.sessions.read().await;
-        match sessions.get(&session_id) {
+        match sessions.get(&(user_id, session_id.clone())) {
             Some(broadcast) => {
                 let b = broadcast.lock().await;
                 (b.buffer.clone(), b.tx.subscribe())

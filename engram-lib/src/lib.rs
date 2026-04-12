@@ -71,6 +71,9 @@ pub enum EngError {
     #[error("auth error: {0}")]
     Auth(String),
 
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 
