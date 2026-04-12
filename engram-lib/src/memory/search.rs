@@ -15,6 +15,10 @@ use tracing::{info, warn};
 
 const DEFAULT_LIMIT: usize = 10;
 
+/// Hard ceiling on results returned by hybrid_search. Applied at the library
+/// level so all consumers (HTTP routes, MCP, sidecar, CLI) inherit the cap.
+const MAX_LIMIT: usize = 100;
+
 /// Internal candidate accumulator used during search pipeline.
 struct Candidate {
     id: i64,
@@ -284,7 +288,10 @@ fn resolve_strategy(req: &SearchRequest) -> (QuestionType, crate::memory::types:
 
 /// Run the full hybrid search pipeline matching TS hybridSearch.
 pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<SearchResult>> {
-    let limit = req.limit.unwrap_or(DEFAULT_LIMIT);
+    // SECURITY (SEC-MED-6): clamp at library entry point so MCP, sidecar,
+    // and CLI callers inherit the cap. HTTP route-level clamp is kept as
+    // defense-in-depth.
+    let limit = req.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
     let user_id = req
         .user_id
         .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;

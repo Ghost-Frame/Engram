@@ -41,6 +41,7 @@ async-trait.workspace = true
 rpassword = "7"
 anyhow = "1"
 hex = "0.4"
+subtle = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

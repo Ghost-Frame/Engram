@@ -40,10 +40,7 @@ pub async fn require_token(
     }
 
     let Some(expected) = state.token.as_deref() else {
-        // No token configured. main() refuses to start in this mode unless
-        // the listener is loopback-only, so reaching here means loopback
-        // clients are allowed to skip auth by policy.
-        return next.run(request).await;
+        return unauthorized();
     };
 
     let presented = request
@@ -82,38 +79,9 @@ pub fn generate_token() -> String {
     out
 }
 
-/// Return true if the given host binds to a loopback-only interface.
-/// Accepts literal IPv4/IPv6 loopback and the common `localhost` alias.
-pub fn is_loopback_host(host: &str) -> bool {
-    let trimmed = host.trim().trim_matches(|c| c == '[' || c == ']');
-    if trimmed.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    if let Ok(ip) = trimmed.parse::<std::net::Ipv4Addr>() {
-        return ip.is_loopback();
-    }
-    if let Ok(ip) = trimmed.parse::<std::net::Ipv6Addr>() {
-        return ip.is_loopback();
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn loopback_variants_recognized() {
-        assert!(is_loopback_host("127.0.0.1"));
-        assert!(is_loopback_host("127.0.0.2"));
-        assert!(is_loopback_host("localhost"));
-        assert!(is_loopback_host("LOCALHOST"));
-        assert!(is_loopback_host("::1"));
-        assert!(is_loopback_host("[::1]"));
-        assert!(!is_loopback_host("0.0.0.0"));
-        assert!(!is_loopback_host("10.0.0.1"));
-        assert!(!is_loopback_host("192.168.1.1"));
-    }
 
     #[test]
     fn generate_token_is_64_hex_chars() {

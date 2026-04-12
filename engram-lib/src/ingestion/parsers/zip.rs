@@ -15,6 +15,11 @@ use std::io::{Cursor, Read};
 /// are skipped with a warning to guard against decompression bombs.
 const MAX_ZIP_ENTRY_SIZE: u64 = 50 * 1024 * 1024;
 
+/// Maximum aggregate uncompressed bytes across all entries in a single
+/// ZIP archive. Prevents zip bombs where many entries each fit under
+/// the per-entry cap but total to gigabytes.
+const MAX_ZIP_AGGREGATE_SIZE: u64 = 500 * 1024 * 1024; // 500 MiB
+
 /// Parse a ZIP archive; returns one ParsedDocument per successfully parsed entry.
 pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
     let cursor = Cursor::new(input);
@@ -22,6 +27,7 @@ pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
         .map_err(|e| crate::EngError::Internal(format!("ZIP open failed: {}", e)))?;
 
     let mut documents: Vec<ParsedDocument> = Vec::new();
+    let mut aggregate_bytes: u64 = 0;
 
     for i in 0..archive.len() {
         // Gather metadata in its own scope so the borrow on `archive` ends
@@ -57,11 +63,23 @@ pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
             continue;
         }
 
+        if aggregate_bytes.saturating_add(uncompressed_size) > MAX_ZIP_AGGREGATE_SIZE {
+            tracing::warn!(
+                "ZIP: skipping {} -- aggregate uncompressed size {} would exceed limit {}",
+                name,
+                aggregate_bytes.saturating_add(uncompressed_size),
+                MAX_ZIP_AGGREGATE_SIZE
+            );
+            continue;
+        }
+
         // Only process formats we can handle
         let format = match format_from_ext(&ext_lower) {
             Some(f) => f,
             None => continue,
         };
+
+        aggregate_bytes = aggregate_bytes.saturating_add(uncompressed_size);
 
         // Read the entry bytes
         let data = {

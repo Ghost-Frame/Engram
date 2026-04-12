@@ -340,6 +340,45 @@ pub async fn revoke_key_admin(db: &Database, key_id: i64) -> Result<()> {
     .await
 }
 
+/// Look up an active, unexpired API key by id.
+pub async fn get_active_key_by_id(db: &Database, key_id: i64) -> Result<ApiKey> {
+    let api_key = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
+                            agent_id, last_used_at, expires_at, created_at
+                     FROM api_keys
+                     WHERE id = ?1 AND is_active = 1
+                     LIMIT 1",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            let key = stmt
+                .query_row(rusqlite::params![key_id], |row| row_to_api_key_rusqlite(row))
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => {
+                        crate::EngError::Auth("invalid or revoked key".into())
+                    }
+                    other => rusqlite_to_eng_error(other),
+                })?;
+
+            Ok(key)
+        })
+        .await?;
+
+    if let Some(ref expires_at) = api_key.expires_at {
+        let parsed = chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%d %H:%M:%S")
+            .or_else(|_| chrono::DateTime::parse_from_rfc3339(expires_at).map(|dt| dt.naive_utc()))
+            .map_err(|_| crate::EngError::Auth("invalid key expiry format".into()))?;
+        if parsed <= chrono::Utc::now().naive_utc() {
+            return Err(crate::EngError::Auth("key has expired".into()));
+        }
+    }
+
+    Ok(api_key)
+}
+
 /// List active API keys for a user. Never exposes key_hash.
 pub async fn list_keys(db: &Database, user_id: i64) -> Result<Vec<ApiKey>> {
     db.read(move |conn| {

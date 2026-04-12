@@ -123,7 +123,7 @@ pub async fn fast_extract_facts(
     let mut states: Vec<StateUpsert> = Vec::new();
 
     // Extract date context from content
-    let date_approx = extract_date_approx(content);
+    let _date_approx = extract_date_approx(content);
     let date_ref = extract_date_ref(content);
 
     // -- Pattern 1: bought/purchased N items --
