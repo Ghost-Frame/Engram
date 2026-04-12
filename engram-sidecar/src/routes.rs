@@ -144,7 +144,7 @@ async fn recall(
         "latest_only": true,
     });
 
-    let url = format!("{}/memory/search", state.kleos_url);
+    let url = format!("{}/search", state.kleos_url);
     let mut req = state.client.post(&url).json(&search_req);
     if let Some(ref api_key) = state.kleos_api_key {
         req = req.header("Authorization", format!("Bearer {}", api_key));
@@ -347,7 +347,7 @@ async fn end_session(
     })))
 }
 
-/// Request body for Kleos server /memory/store endpoint
+/// Request body for Kleos server /store endpoint
 #[derive(Serialize)]
 struct StoreRequest {
     content: String,
@@ -374,7 +374,7 @@ async fn flush_pending(state: &SidecarState) -> usize {
         session.id.clone()
     };
 
-    let url = format!("{}/memory/store", state.kleos_url);
+    let url = format!("{}/store", state.kleos_url);
     let mut stored = 0usize;
 
     for obs in &observations {

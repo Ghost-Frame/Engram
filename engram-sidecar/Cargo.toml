@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Sidecar only uses kleos-lib for LLM client - no database needed
+# Sidecar only uses kleos-lib for LLM client, but rusqlite still compiles
+# so Windows needs bundled-sqlite to avoid missing sqlite3.lib
 kleos-lib = { path = "../kleos-lib" }
+
+[target.'cfg(windows)'.dependencies]
+kleos-lib = { path = "../kleos-lib", features = ["bundled-sqlite"] }
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
