@@ -22,6 +22,7 @@ fn scrub_cache() -> &'static Mutex<HashMap<String, CachedSecrets>> {
 
 pub async fn scrub_message(
     db: &Database,
+    credd: &CreddClient,
     user_id: i64,
     agent: &str,
     message: &str,
@@ -31,12 +32,11 @@ pub async fn scrub_message(
         return Ok(message.to_string());
     }
 
-    let credd = CreddClient::from_config(&config);
     let secrets = match load_scrub_secrets(
         db,
         user_id,
         agent,
-        &credd,
+        credd,
         Duration::from_secs(config.eidolon.credd.cache_ttl_secs.max(1)),
     )
     .await
@@ -61,7 +61,17 @@ async fn load_scrub_secrets(
     credd: &CreddClient,
     ttl: Duration,
 ) -> Result<Vec<String>> {
-    let cache_key = format!("scrub:{user_id}:{agent}:{}", ttl.as_secs());
+    // ROBUSTNESS: include the credd base URL in the cache key. The cache
+    // is a process-wide static, and tests (plus prod if credd is ever
+    // reconfigured) can create multiple CreddClient instances pointed at
+    // different upstreams. Without the URL in the key, the first client
+    // to resolve a (user_id, agent) pair poisons the cache for every
+    // other client.
+    let cache_key = format!(
+        "scrub:{}:{user_id}:{agent}:{}",
+        credd.base_url(),
+        ttl.as_secs()
+    );
     if let Some(cached) = cached_scrub_secrets(&cache_key, ttl) {
         return Ok(cached);
     }

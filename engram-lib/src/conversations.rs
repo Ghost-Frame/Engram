@@ -338,6 +338,7 @@ pub async fn touch_conversation(db: &Database, id: i64, user_id: i64) -> Result<
 
 pub async fn add_message(
     db: &Database,
+    credd: &crate::cred::CreddClient,
     conversation_id: i64,
     user_id: i64,
     req: AddMessageRequest,
@@ -347,7 +348,7 @@ pub async fn add_message(
     // tenant's conversation.
     let conversation = get_conversation_for_user(db, conversation_id, user_id).await?;
     let meta_str = metadata_to_string(&req.metadata);
-    let content = scrub_message(db, user_id, &conversation.agent, &req.content).await?;
+    let content = scrub_message(db, credd, user_id, &conversation.agent, &req.content).await?;
     db.conn.execute(
         "INSERT INTO messages (conversation_id, role, content, metadata) VALUES (?1, ?2, ?3, ?4)",
         params![conversation_id, req.role.clone(), content, meta_str],
@@ -458,6 +459,7 @@ pub async fn search_messages(
 
 pub async fn bulk_insert_conversation(
     db: &Database,
+    credd: &crate::cred::CreddClient,
     req: BulkInsertRequest,
     user_id: i64,
 ) -> Result<Conversation> {
@@ -488,6 +490,7 @@ pub async fn bulk_insert_conversation(
     for msg in req.messages {
         add_message(
             db,
+            credd,
             conv_id,
             user_id,
             AddMessageRequest {
@@ -503,6 +506,7 @@ pub async fn bulk_insert_conversation(
 
 pub async fn upsert_conversation(
     db: &Database,
+    credd: &crate::cred::CreddClient,
     req: UpsertConversationRequest,
     user_id: i64,
 ) -> Result<Conversation> {
@@ -543,6 +547,7 @@ pub async fn upsert_conversation(
         for msg in messages {
             add_message(
                 db,
+                credd,
                 conv.id,
                 user_id,
                 AddMessageRequest {

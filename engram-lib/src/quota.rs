@@ -1,7 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
+
+// Single source of truth for default quota values when no tenant_quotas
+// row exists for a user. Keep `check_quota`, `TenantQuota::default`, and
+// this constant in sync (MT-F22).
+pub const DEFAULT_MAX_MEMORIES: i64 = 100_000;
+pub const DEFAULT_MAX_SPACES: i64 = 10;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -150,7 +156,7 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
             .map_err(|e| crate::EngError::Internal(e.to_string()))?;
         (ml, sl)
     } else {
-        (100_000, 10)
+        (DEFAULT_MAX_MEMORIES, DEFAULT_MAX_SPACES)
     };
 
     let mut mem_rows = db
@@ -191,6 +197,24 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
         spaces_limit,
         within_limits,
     })
+}
+
+/// Gate a memory write on tenant quota (MT-F20).
+///
+/// Call at the top of every handler that can create a new memory (store,
+/// import, ingest, skill creation, etc.). Returns `Err(EngError::Forbidden)`
+/// with a `quota_exceeded` marker when the tenant is already at or above
+/// their limit, so callers can surface a 429/403 without leaking the
+/// underlying numbers.
+pub async fn enforce_memory_quota(db: &Database, user_id: i64) -> Result<()> {
+    let status = check_quota(db, user_id).await?;
+    if !status.within_limits || status.memory_count >= status.memory_limit {
+        return Err(EngError::Forbidden(format!(
+            "quota exceeded: {} of {} memories used",
+            status.memory_count, status.memory_limit
+        )));
+    }
+    Ok(())
 }
 
 /// Record a usage event in the usage_events table.
