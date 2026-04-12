@@ -71,7 +71,11 @@ pub fn derive_key_legacy(yubikey_response: &[u8]) -> [u8; KEY_SIZE] {
 /// and the password material.
 ///
 /// Parameters: m = 64 MiB, t = 3, p = 1, output = 32 bytes (OWASP 2023).
-pub fn derive_key(user_id: i64, password: &[u8], yubikey_response: Option<&[u8]>) -> [u8; KEY_SIZE] {
+pub fn derive_key(
+    user_id: i64,
+    password: &[u8],
+    yubikey_response: Option<&[u8]>,
+) -> [u8; KEY_SIZE] {
     // Deterministic 16-byte salt: SHA-256(domain || user_id) truncated.
     let mut salt_hasher = Sha256::new();
     salt_hasher.update(KDF_DOMAIN);
@@ -80,9 +84,8 @@ pub fn derive_key(user_id: i64, password: &[u8], yubikey_response: Option<&[u8]>
     let salt = &salt_digest[..16];
 
     // Password material: user_id || password || yubikey_response.
-    let mut material = Vec::with_capacity(
-        8 + password.len() + yubikey_response.map(|r| r.len()).unwrap_or(0),
-    );
+    let mut material =
+        Vec::with_capacity(8 + password.len() + yubikey_response.map(|r| r.len()).unwrap_or(0));
     material.extend_from_slice(&user_id.to_le_bytes());
     material.extend_from_slice(password);
     if let Some(response) = yubikey_response {
@@ -108,16 +111,18 @@ pub fn derive_key(user_id: i64, password: &[u8], yubikey_response: Option<&[u8]>
 /// Encrypt secret data with AES-256-GCM.
 ///
 /// Returns (encrypted_data, nonce).
-pub fn encrypt_secret(key: &[u8; KEY_SIZE], data: &SecretData) -> Result<(Vec<u8>, [u8; NONCE_SIZE])> {
-    let plaintext =
-        serde_json::to_vec(data).map_err(|e| CredError::Encryption(e.to_string()))?;
+pub fn encrypt_secret(
+    key: &[u8; KEY_SIZE],
+    data: &SecretData,
+) -> Result<(Vec<u8>, [u8; NONCE_SIZE])> {
+    let plaintext = serde_json::to_vec(data).map_err(|e| CredError::Encryption(e.to_string()))?;
 
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| CredError::Encryption(format!("invalid key: {}", e)))?;
 
     // Generate random nonce
     let mut nonce_bytes = [0u8; NONCE_SIZE];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
@@ -148,7 +153,7 @@ pub fn decrypt_secret(
 /// Generate a random 256-bit key.
 pub fn generate_random_key() -> [u8; KEY_SIZE] {
     let mut key = [0u8; KEY_SIZE];
-    rand::thread_rng().fill_bytes(&mut key);
+    rand::rngs::OsRng.fill_bytes(&mut key);
     key
 }
 

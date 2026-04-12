@@ -43,11 +43,10 @@ async fn health(State(state): State<SidecarState>) -> Json<Value> {
     let session = state.session.read().await;
     let llm_available = state.llm.as_ref().map(|l| l.is_available()).unwrap_or(false);
     let has_embedder = state.embedder.read().await.is_some();
+    // SECURITY: only expose liveness-level info without auth. Internal state
+    // (session_id, counters) is stripped to avoid leaking operational details.
     Json(json!({
         "status": "ok",
-        "session_id": session.id,
-        "observation_count": session.observation_count,
-        "stored_count": session.stored_count,
         "ended": session.ended,
         "llm_available": llm_available,
         "embedder_available": has_embedder,

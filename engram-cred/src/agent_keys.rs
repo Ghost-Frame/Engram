@@ -101,7 +101,7 @@ impl AgentKeyPermissions {
 /// Returns (raw_key_bytes, key_hash).
 pub fn generate_agent_key() -> ([u8; 32], String) {
     let mut key = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut key);
+    rand::rngs::OsRng.fill_bytes(&mut key);
     let hash = hash_key(&key);
     (key, hash)
 }

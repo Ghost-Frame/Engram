@@ -178,7 +178,7 @@ async fn cmd_init() -> Result<()> {
     // Generate HMAC secret
     eprintln!("generating 20-byte HMAC-SHA1 secret...");
     let mut secret = [0u8; 20];
-    rand::thread_rng().fill_bytes(&mut secret);
+    rand::rngs::OsRng.fill_bytes(&mut secret);
     let secret_hex = hex::encode(&secret);
 
     eprintln!();
@@ -595,10 +595,11 @@ fn encrypt_recovery(passphrase: &str, secret: &[u8]) -> Result<Vec<u8>> {
 
     // Generate random salt
     let mut salt = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut salt);
+    rand::rngs::OsRng.fill_bytes(&mut salt);
 
-    // Derive key from passphrase
-    let params = Params::new(19 * 1024, 2, 1, Some(32))
+    // Derive key from passphrase -- use the same strong params as the main vault
+    // (64 MiB memory, 3 iterations) to resist offline brute-force.
+    let params = Params::new(65536, 3, 1, Some(32))
         .map_err(|e| anyhow::anyhow!("argon2 params error: {}", e))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; 32];
@@ -609,7 +610,7 @@ fn encrypt_recovery(passphrase: &str, secret: &[u8]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| anyhow::anyhow!("cipher init failed: {}", e))?;
     let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher.encrypt(nonce, secret)
@@ -637,7 +638,7 @@ fn decrypt_recovery(passphrase: &str, data: &[u8]) -> Result<Vec<u8>> {
     let ciphertext = &data[28..];
 
     // Derive key from passphrase
-    let params = Params::new(19 * 1024, 2, 1, Some(32))
+    let params = Params::new(65536, 3, 1, Some(32))
         .map_err(|e| anyhow::anyhow!("argon2 params error: {}", e))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; 32];

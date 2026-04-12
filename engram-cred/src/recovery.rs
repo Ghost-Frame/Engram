@@ -34,7 +34,7 @@ pub struct RecoveryInfo {
 /// and store it securely offline.
 pub fn generate_recovery_key() -> [u8; RECOVERY_KEY_SIZE] {
     let mut key = [0u8; RECOVERY_KEY_SIZE];
-    rand::thread_rng().fill_bytes(&mut key);
+    rand::rngs::OsRng.fill_bytes(&mut key);
     key
 }
 
