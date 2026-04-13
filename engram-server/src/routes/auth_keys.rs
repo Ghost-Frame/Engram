@@ -63,9 +63,10 @@ async fn create_key(
             })
             .await?;
         if !exists {
-            return Err(AppError(engram_lib::EngError::NotFound(
-                format!("user {} not found", target_user_id),
-            )));
+            return Err(AppError(engram_lib::EngError::NotFound(format!(
+                "user {} not found",
+                target_user_id
+            ))));
         }
     }
 
@@ -80,9 +81,10 @@ async fn create_key(
     // scopes they do not themselves possess.
     for scope in &scopes {
         if !auth_ctx.has_scope(scope) {
-            return Err(AppError(engram_lib::EngError::Auth(
-                format!("cannot grant scope '{}' that caller does not hold", scope),
-            )));
+            return Err(AppError(engram_lib::EngError::Auth(format!(
+                "cannot grant scope '{}' that caller does not hold",
+                scope
+            ))));
         }
     }
 
@@ -450,8 +452,8 @@ async fn delete_space(
         })
         .await?;
 
-    let (owner, name) = row
-        .ok_or_else(|| AppError(engram_lib::EngError::NotFound("Not found".into())))?;
+    let (owner, name) =
+        row.ok_or_else(|| AppError(engram_lib::EngError::NotFound("Not found".into())))?;
 
     if owner != auth_ctx.user_id && !auth_ctx.has_scope(&auth::Scope::Admin) {
         return Err(AppError(engram_lib::EngError::Auth("Forbidden".into())));

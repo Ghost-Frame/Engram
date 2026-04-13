@@ -107,7 +107,11 @@ pub async fn get_agent_by_id(db: &Database, id: i64, user_id: i64) -> Result<Opt
     .await
 }
 
-pub async fn get_agent_by_name(db: &Database, name: &str, user_id: i64) -> Result<Option<AgentRow>> {
+pub async fn get_agent_by_name(
+    db: &Database,
+    name: &str,
+    user_id: i64,
+) -> Result<Option<AgentRow>> {
     let name = name.to_string();
     db.read(move |conn| {
         conn.query_row(
@@ -148,18 +152,28 @@ pub async fn revoke_agent(db: &Database, id: i64, user_id: i64, reason: &str) ->
     .await
 }
 
-pub async fn link_key_to_agent(db: &Database, agent_id: i64, key_id: i64, user_id: i64) -> Result<()> {
+pub async fn link_key_to_agent(
+    db: &Database,
+    agent_id: i64,
+    key_id: i64,
+    user_id: i64,
+) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
             "UPDATE api_keys SET agent_id = ?1 WHERE id = ?2 AND user_id = ?3",
             params![agent_id, key_id, user_id],
-        ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         Ok(())
     })
     .await
 }
 
-pub async fn get_agent_executions(db: &Database, agent_id: i64, limit: i64) -> Result<Vec<AgentExecutionRow>> {
+pub async fn get_agent_executions(
+    db: &Database,
+    agent_id: i64,
+    limit: i64,
+) -> Result<Vec<AgentExecutionRow>> {
     db.read(move |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, action, target_type, target_id, details, execution_hash, signature, created_at FROM audit_log WHERE agent_id = ?1 ORDER BY created_at DESC LIMIT ?2"

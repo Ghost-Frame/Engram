@@ -19,7 +19,10 @@ pub fn router() -> Router<AppState> {
         .route("/brain/dream", post(dream_handler))
         .route("/brain/feedback", post(feedback_handler))
         .route("/brain/decay", post(decay_handler))
-        .route("/brain/evolution/feedback", post(evolution_feedback_handler))
+        .route(
+            "/brain/evolution/feedback",
+            post(evolution_feedback_handler),
+        )
         .route("/brain/evolution/train", post(evolution_train_handler))
         .route("/brain/evolution/stats", get(evolution_stats_handler))
 }

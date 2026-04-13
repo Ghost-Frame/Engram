@@ -18,32 +18,30 @@ static API_KEY_PEPPER: OnceLock<Option<[u8; 32]>> = OnceLock::new();
 
 fn get_pepper() -> Option<[u8; 32]> {
     *API_KEY_PEPPER.get_or_init(|| {
-        std::env::var("ENGRAM_API_KEY_PEPPER")
-            .ok()
-            .and_then(|hex| {
-                if hex.len() != 64 {
-                    tracing::warn!(
-                        "ENGRAM_API_KEY_PEPPER must be 64 hex chars (32 bytes), got {}",
-                        hex.len()
-                    );
-                    return None;
+        std::env::var("ENGRAM_API_KEY_PEPPER").ok().and_then(|hex| {
+            if hex.len() != 64 {
+                tracing::warn!(
+                    "ENGRAM_API_KEY_PEPPER must be 64 hex chars (32 bytes), got {}",
+                    hex.len()
+                );
+                return None;
+            }
+            let bytes: std::result::Result<Vec<u8>, _> = (0..32)
+                .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16))
+                .collect();
+            match bytes {
+                Ok(v) => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&v);
+                    tracing::info!("API key pepper loaded (v2 hashing enabled)");
+                    Some(arr)
                 }
-                let bytes: std::result::Result<Vec<u8>, _> = (0..32)
-                    .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16))
-                    .collect();
-                match bytes {
-                    Ok(v) => {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&v);
-                        tracing::info!("API key pepper loaded (v2 hashing enabled)");
-                        Some(arr)
-                    }
-                    Err(_) => {
-                        tracing::warn!("ENGRAM_API_KEY_PEPPER contains invalid hex");
-                        None
-                    }
+                Err(_) => {
+                    tracing::warn!("ENGRAM_API_KEY_PEPPER contains invalid hex");
+                    None
                 }
-            })
+            }
+        })
     })
 }
 

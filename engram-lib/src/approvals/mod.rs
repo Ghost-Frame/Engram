@@ -257,14 +257,7 @@ pub async fn decide(
             "UPDATE approvals
              SET status = ?1, decision_by = ?2, decision_reason = ?3, decided_at = ?4
              WHERE id = ?5 AND user_id = ?6",
-            rusqlite::params![
-                new_status,
-                decided_by,
-                reason,
-                decided_str,
-                id_str,
-                user_id,
-            ],
+            rusqlite::params![new_status, decided_by, reason, decided_str, id_str, user_id,],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())

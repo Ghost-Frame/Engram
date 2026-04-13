@@ -155,8 +155,10 @@ fn get_memory_count(db: &TenantDatabase) -> Result<i64> {
 
 /// Get the last computed pagerank count for a tenant.
 fn get_pagerank_count(db: &TenantDatabase) -> Result<i64> {
-    db.query_one("SELECT COUNT(*) FROM memory_pagerank", &[], |row| row.get(0))?
-        .ok_or_else(|| EngError::Internal("no count returned".into()))
+    db.query_one("SELECT COUNT(*) FROM memory_pagerank", &[], |row| {
+        row.get(0)
+    })?
+    .ok_or_else(|| EngError::Internal("no count returned".into()))
 }
 
 /// Check if a tenant needs PageRank refresh.

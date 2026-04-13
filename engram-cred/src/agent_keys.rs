@@ -176,7 +176,15 @@ pub async fn validate_agent_key(db: &Database, raw_key: &[u8]) -> Result<AgentKe
                     let permissions_json: String = row.get(4)?;
                     let created_at: String = row.get(5)?;
                     let revoked_at: Option<String> = row.get(6)?;
-                    Ok((id, user_id, key_hash, name, permissions_json, created_at, revoked_at))
+                    Ok((
+                        id,
+                        user_id,
+                        key_hash,
+                        name,
+                        permissions_json,
+                        created_at,
+                        revoked_at,
+                    ))
                 },
             );
             match result {
@@ -228,7 +236,15 @@ pub async fn list_agent_keys(db: &Database, user_id: i64) -> Result<Vec<AgentKey
                 let permissions_json: String = row.get(4)?;
                 let created_at: String = row.get(5)?;
                 let revoked_at: Option<String> = row.get(6)?;
-                Ok((id, user_id, key_hash, name, permissions_json, created_at, revoked_at))
+                Ok((
+                    id,
+                    user_id,
+                    key_hash,
+                    name,
+                    permissions_json,
+                    created_at,
+                    revoked_at,
+                ))
             })
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 

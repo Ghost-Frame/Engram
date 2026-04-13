@@ -46,7 +46,10 @@ async fn report_activity(
         let source = body.agent.clone();
 
         tokio::spawn(async move {
-            absorb_activity_to_brain(brain, embedder, memory_id, content, category, importance, source).await;
+            absorb_activity_to_brain(
+                brain, embedder, memory_id, content, category, importance, source,
+            )
+            .await;
         });
     }
 

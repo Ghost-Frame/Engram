@@ -68,7 +68,13 @@ async fn main() -> anyhow::Result<()> {
     };
 
     info!("Starting credd on {}", args.listen);
-    server::run(&args.listen, &args.db_path, &master_password, encryption_key).await?;
+    server::run(
+        &args.listen,
+        &args.db_path,
+        &master_password,
+        encryption_key,
+    )
+    .await?;
 
     Ok(())
 }

@@ -6,11 +6,7 @@ use crate::target::TargetDb;
 use crate::vectors::LanceDb;
 
 /// Run validation checks after migration
-pub async fn run(
-    source: &SourceDb,
-    target: &TargetDb,
-    lance: Option<&LanceDb>,
-) -> Result<()> {
+pub async fn run(source: &SourceDb, target: &TargetDb, lance: Option<&LanceDb>) -> Result<()> {
     info!("Running validation checks...");
 
     // Compare row counts for key tables
@@ -40,14 +36,17 @@ pub async fn run(
         };
 
         // Target count
-        let target_count: i64 = target_conn.query_row(
-            &format!("SELECT COUNT(*) FROM \"{}\"", table),
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let target_count: i64 = target_conn
+            .query_row(&format!("SELECT COUNT(*) FROM \"{}\"", table), [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
 
         if source_count != target_count {
-            warn!("{}: source={} target={} (MISMATCH)", table, source_count, target_count);
+            warn!(
+                "{}: source={} target={} (MISMATCH)",
+                table, source_count, target_count
+            );
             discrepancies += 1;
         } else {
             info!("{}: {} rows OK", table, target_count);
@@ -70,7 +69,10 @@ pub async fn run(
         let lance_count = table.count_rows(None).await? as i64;
 
         if source_vec_count != lance_count {
-            warn!("Vectors: source={} lance={} (MISMATCH)", source_vec_count, lance_count);
+            warn!(
+                "Vectors: source={} lance={} (MISMATCH)",
+                source_vec_count, lance_count
+            );
             discrepancies += 1;
         } else {
             info!("Vectors: {} OK", lance_count);
@@ -90,11 +92,11 @@ pub async fn run(
         let id: i64 = row.get(0)?;
         let source_content: String = row.get(1)?;
 
-        let target_content: Option<String> = target_conn.query_row(
-            "SELECT content FROM memories WHERE id = ?",
-            [id],
-            |row| row.get(0),
-        ).ok();
+        let target_content: Option<String> = target_conn
+            .query_row("SELECT content FROM memories WHERE id = ?", [id], |row| {
+                row.get(0)
+            })
+            .ok();
 
         checked += 1;
         if Some(&source_content) == target_content.as_ref() {

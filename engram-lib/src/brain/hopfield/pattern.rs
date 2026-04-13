@@ -118,9 +118,7 @@ pub async fn list_patterns(db: &Database, user_id: i64) -> Result<Vec<BrainPatte
             .map_err(rusqlite_to_eng_error)?;
 
         let patterns = stmt
-            .query_map(rusqlite::params![user_id], |row| {
-                Ok(row_to_pattern(row))
-            })
+            .query_map(rusqlite::params![user_id], |row| Ok(row_to_pattern(row)))
             .map_err(rusqlite_to_eng_error)?
             .map(|r| r.map_err(rusqlite_to_eng_error).and_then(|inner| inner))
             .collect::<Result<Vec<BrainPattern>>>()?;
@@ -189,9 +187,7 @@ pub async fn delete_weak_patterns(db: &Database, user_id: i64, threshold: f32) -
     db.write(move |conn| {
         // First collect IDs so we can clean edges
         let mut stmt = conn
-            .prepare(
-                "SELECT id FROM brain_patterns WHERE user_id = ?1 AND strength < ?2",
-            )
+            .prepare("SELECT id FROM brain_patterns WHERE user_id = ?1 AND strength < ?2")
             .map_err(rusqlite_to_eng_error)?;
 
         let dead_ids: Vec<i64> = stmt
@@ -267,4 +263,3 @@ fn row_to_pattern(row: &rusqlite::Row<'_>) -> Result<BrainPattern> {
         created_at,
     })
 }
-

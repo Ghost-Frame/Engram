@@ -29,8 +29,17 @@ const CONTEXT_CAUSAL: &[&str] = &["because", "since", "therefore", "consequently
 const WEAK_CAUSAL: &[&str] = &["broke", "fixed"];
 
 const NEGATION: &[&str] = &[
-    "not", "never", "didn't", "wasn't", "isn't", "won't", "can't", "couldn't", "wouldn't",
-    "shouldn't", "no",
+    "not",
+    "never",
+    "didn't",
+    "wasn't",
+    "isn't",
+    "won't",
+    "can't",
+    "couldn't",
+    "wouldn't",
+    "shouldn't",
+    "no",
 ];
 
 // ---------------------------------------------------------------------------
@@ -197,8 +206,8 @@ pub async fn store_pattern_with_causal_edges(
             let existing_words: Vec<&str> = existing_lower.split_whitespace().collect();
             let reverse_score = compute_causal_score(&existing_lower, &existing_words);
             if reverse_score >= 3.0 {
-                let _ = edges::store_edge(db, id, ep.id, edge_weight, EdgeType::Causal, user_id)
-                    .await;
+                let _ =
+                    edges::store_edge(db, id, ep.id, edge_weight, EdgeType::Causal, user_id).await;
             }
         }
     }
@@ -235,7 +244,8 @@ fn parse_datetime_approx(s: &str) -> f64 {
     let sec: i64 = time_parts[2].parse().unwrap_or(0);
 
     // Very rough epoch approximation (ignores leap years/months precisely).
-    let days = (year - 1970) * 365 + (year - 1969) / 4
+    let days = (year - 1970) * 365
+        + (year - 1969) / 4
         + [0i64, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
             [(month.clamp(1, 12) - 1) as usize]
         + (day - 1);
@@ -264,7 +274,8 @@ async fn load_memory_content(
 
     db.read(move |conn| {
         // Build parameterised query with one ?N per ID.
-        let placeholders: Vec<String> = (1..=ids_cap.len()).map(|i| format!("?{}", i + 1)).collect();
+        let placeholders: Vec<String> =
+            (1..=ids_cap.len()).map(|i| format!("?{}", i + 1)).collect();
         let sql = format!(
             "SELECT id, content FROM memories WHERE user_id = ?1 AND id IN ({})",
             placeholders.join(", ")

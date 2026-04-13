@@ -385,7 +385,13 @@ pub async fn get_for_ownership(db: &Database, id: i64, user_id: i64) -> Result<M
     get_internal(db, id, user_id, &sql, false).await
 }
 
-async fn get_internal(db: &Database, id: i64, user_id: i64, sql: &str, log_access: bool) -> Result<Memory> {
+async fn get_internal(
+    db: &Database,
+    id: i64,
+    user_id: i64,
+    sql: &str,
+    log_access: bool,
+) -> Result<Memory> {
     let sql_for_read = sql.to_string();
     let memory = db
         .read(move |conn| {
@@ -1090,9 +1096,7 @@ pub async fn replay_vector_sync_pending(
 pub async fn vector_sync_pending_users(db: &Database) -> Result<Vec<i64>> {
     db.read(|conn| {
         let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT user_id FROM vector_sync_pending ORDER BY user_id ASC",
-            )
+            .prepare("SELECT DISTINCT user_id FROM vector_sync_pending ORDER BY user_id ASC")
             .map_err(rusqlite_to_eng_error)?;
         let users: Vec<i64> = stmt
             .query_map([], |row| row.get(0))
@@ -1285,8 +1289,7 @@ pub async fn search_by_tags(
 
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             let memory = row_to_memory(row)?;
-            let memory_tags: HashSet<String> =
-                parse_tags_json(&memory.tags).into_iter().collect();
+            let memory_tags: HashSet<String> = parse_tags_json(&memory.tags).into_iter().collect();
             let matched = if match_all {
                 wanted.iter().all(|tag| memory_tags.contains(tag))
             } else {

@@ -138,7 +138,9 @@ fn row_to_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation
     })
 }
 
-fn row_to_conversation_list_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationListItem> {
+fn row_to_conversation_list_item(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ConversationListItem> {
     Ok(ConversationListItem {
         id: row.get(0)?,
         agent: row.get(1)?,

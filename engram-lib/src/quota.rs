@@ -69,7 +69,9 @@ pub async fn get_quota(db: &Database, user_id: i64) -> Result<Option<TenantQuota
             )
             .map_err(rusqlite_to_eng_error)?;
 
-        let mut rows = stmt.query(params![user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
 
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => Ok(Some(TenantQuota {
@@ -172,12 +174,12 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
         // Fetch quota limits (or use defaults).
         let (memory_limit, spaces_limit): (i64, i64) = {
             let mut stmt = conn
-                .prepare(
-                    "SELECT max_memories, max_spaces FROM tenant_quotas WHERE user_id = ?1",
-                )
+                .prepare("SELECT max_memories, max_spaces FROM tenant_quotas WHERE user_id = ?1")
                 .map_err(rusqlite_to_eng_error)?;
 
-            let mut rows = stmt.query(params![user_id]).map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(params![user_id])
+                .map_err(rusqlite_to_eng_error)?;
 
             match rows.next().map_err(rusqlite_to_eng_error)? {
                 Some(row) => {

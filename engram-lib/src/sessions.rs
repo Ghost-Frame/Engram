@@ -145,7 +145,11 @@ impl ManagedSession {
     }
 
     pub fn short_id(&self) -> &str {
-        if self.id.len() >= 8 { &self.id[..8] } else { &self.id }
+        if self.id.len() >= 8 {
+            &self.id[..8]
+        } else {
+            &self.id
+        }
     }
 }
 
@@ -229,7 +233,11 @@ impl SessionManager {
     }
 
     /// Send SIGTERM/taskkill to the session process and mark it Killed.
-    pub fn kill_session(&mut self, id: &str, user: Option<&str>) -> std::result::Result<(), String> {
+    pub fn kill_session(
+        &mut self,
+        id: &str,
+        user: Option<&str>,
+    ) -> std::result::Result<(), String> {
         let session = self
             .sessions
             .get_mut(id)
@@ -261,9 +269,7 @@ impl SessionManager {
         self.sessions
             .values()
             .filter(|s| s.user == user)
-            .filter(|s| {
-                s.status == SessionStatus::Running || s.status == SessionStatus::Pending
-            })
+            .filter(|s| s.status == SessionStatus::Running || s.status == SessionStatus::Pending)
             .map(|s| s.to_json())
             .collect()
     }
@@ -271,9 +277,7 @@ impl SessionManager {
     pub fn count_active_global(&self) -> usize {
         self.sessions
             .values()
-            .filter(|s| {
-                s.status == SessionStatus::Running || s.status == SessionStatus::Pending
-            })
+            .filter(|s| s.status == SessionStatus::Running || s.status == SessionStatus::Pending)
             .count()
     }
 

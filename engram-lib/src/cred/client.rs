@@ -444,10 +444,7 @@ impl CreddClient {
 /// Returns an error if the secret is not of type `"Environment"`, or if
 /// the value object is empty.
 pub fn extract_env_export_block(secret: &Value) -> crate::Result<String> {
-    let secret_type = secret
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let secret_type = secret.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
     if secret_type != "Environment" {
         return Err(crate::EngError::InvalidInput(format!(
@@ -460,9 +457,7 @@ pub fn extract_env_export_block(secret: &Value) -> crate::Result<String> {
         .get("value")
         .and_then(|v| v.as_object())
         .ok_or_else(|| {
-            crate::EngError::InvalidInput(
-                "Environment secret has no value object".to_string(),
-            )
+            crate::EngError::InvalidInput("Environment secret has no value object".to_string())
         })?;
 
     // Filter out the serde tag field "type" from the export block.

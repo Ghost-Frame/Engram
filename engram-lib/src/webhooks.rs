@@ -180,8 +180,8 @@ pub async fn resolve_and_validate_url(raw: &str) -> Result<()> {
     // Fast-path: reject obvious bad schemes, literal IPs, and known names.
     validate_webhook_url(raw)?;
 
-    let parsed = url::Url::parse(raw)
-        .map_err(|e| EngError::InvalidInput(format!("invalid URL: {}", e)))?;
+    let parsed =
+        url::Url::parse(raw).map_err(|e| EngError::InvalidInput(format!("invalid URL: {}", e)))?;
 
     // Only domain names need DNS resolution; literal IPs are already
     // validated by the synchronous check above.

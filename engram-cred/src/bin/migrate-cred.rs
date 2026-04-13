@@ -69,7 +69,12 @@ impl BackupEntry {
                 notes: self.value.notes.clone(),
             }),
             "api_key" => Some(SecretData::ApiKey {
-                key: self.value.api_key.clone().or(self.value.password.clone()).unwrap_or_default(),
+                key: self
+                    .value
+                    .api_key
+                    .clone()
+                    .or(self.value.password.clone())
+                    .unwrap_or_default(),
                 endpoint: self.value.endpoint.clone().or(self.value.url.clone()),
                 notes: self.value.notes.clone(),
             }),
@@ -149,7 +154,16 @@ async fn main() -> anyhow::Result<()> {
 
         match entry.to_secret_data() {
             Some(data) => {
-                match engram_cred::storage::store_secret(&db, 0, category, name, &data, &encryption_key).await {
+                match engram_cred::storage::store_secret(
+                    &db,
+                    0,
+                    category,
+                    name,
+                    &data,
+                    &encryption_key,
+                )
+                .await
+                {
                     Ok(id) => {
                         println!("  [OK] {}/{} -> id={}", category, name, id);
                         imported += 1;
@@ -157,7 +171,16 @@ async fn main() -> anyhow::Result<()> {
                     Err(e) => {
                         // Might be duplicate - try update instead
                         if e.to_string().contains("UNIQUE constraint") {
-                            match engram_cred::storage::update_secret(&db, 0, category, name, &data, &encryption_key).await {
+                            match engram_cred::storage::update_secret(
+                                &db,
+                                0,
+                                category,
+                                name,
+                                &data,
+                                &encryption_key,
+                            )
+                            .await
+                            {
                                 Ok(()) => {
                                     println!("  [UPDATE] {}/{}", category, name);
                                     imported += 1;
@@ -181,6 +204,9 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("\nMigration complete: {} imported, {} skipped", imported, skipped);
+    println!(
+        "\nMigration complete: {} imported, {} skipped",
+        imported, skipped
+    );
     Ok(())
 }

@@ -52,20 +52,17 @@ pub async fn find_duplicates(
             .map_err(rusqlite_to_eng_error)?;
 
         let pairs = stmt
-            .query_map(
-                rusqlite::params![threshold, user_id, limit],
-                |row| {
-                    Ok(DuplicatePair {
-                        id_a: row.get(0)?,
-                        id_b: row.get(1)?,
-                        similarity: row.get(2)?,
-                        content_a: row.get(3)?,
-                        content_b: row.get(4)?,
-                        importance_a: row.get(5)?,
-                        importance_b: row.get(6)?,
-                    })
-                },
-            )
+            .query_map(rusqlite::params![threshold, user_id, limit], |row| {
+                Ok(DuplicatePair {
+                    id_a: row.get(0)?,
+                    id_b: row.get(1)?,
+                    similarity: row.get(2)?,
+                    content_a: row.get(3)?,
+                    content_b: row.get(4)?,
+                    importance_a: row.get(5)?,
+                    importance_b: row.get(6)?,
+                })
+            })
             .map_err(rusqlite_to_eng_error)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(rusqlite_to_eng_error)?;

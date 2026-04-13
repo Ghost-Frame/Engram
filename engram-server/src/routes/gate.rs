@@ -104,17 +104,24 @@ async fn check_handler(
             if approved {
                 tracing::info!(
                     "gate: APPROVED by user gate_id={} tool={} agent={}",
-                    gate_id, tool_name, body.agent
+                    gate_id,
+                    tool_name,
+                    body.agent
                 );
                 return Ok((StatusCode::CREATED, Json(json!(result))));
             } else {
                 tracing::warn!(
                     "gate: DENIED/TIMEOUT gate_id={} tool={} agent={}",
-                    gate_id, tool_name, body.agent
+                    gate_id,
+                    tool_name,
+                    body.agent
                 );
                 let denied_result = engram_lib::gate::GateCheckResult {
                     allowed: false,
-                    reason: Some(format!("{} denied -- approval timed out or rejected", tool_name)),
+                    reason: Some(format!(
+                        "{} denied -- approval timed out or rejected",
+                        tool_name
+                    )),
                     resolved_command: result.resolved_command.clone(),
                     gate_id,
                     requires_approval: false,

@@ -206,29 +206,62 @@ impl SecretData {
     /// Field names for list display (values never shown).
     pub fn field_names(&self) -> Vec<String> {
         match self {
-            Self::Login { url, totp_seed, notes, .. } => {
+            Self::Login {
+                url,
+                totp_seed,
+                notes,
+                ..
+            } => {
                 let mut f = vec!["username".to_string(), "password".to_string()];
-                if url.is_some() { f.push("url".to_string()); }
-                if totp_seed.is_some() { f.push("totp_seed".to_string()); }
-                if notes.is_some() { f.push("notes".to_string()); }
+                if url.is_some() {
+                    f.push("url".to_string());
+                }
+                if totp_seed.is_some() {
+                    f.push("totp_seed".to_string());
+                }
+                if notes.is_some() {
+                    f.push("notes".to_string());
+                }
                 f
             }
-            Self::ApiKey { endpoint, notes, .. } => {
+            Self::ApiKey {
+                endpoint, notes, ..
+            } => {
                 let mut f = vec!["key".to_string()];
-                if endpoint.is_some() { f.push("endpoint".to_string()); }
-                if notes.is_some() { f.push("notes".to_string()); }
+                if endpoint.is_some() {
+                    f.push("endpoint".to_string());
+                }
+                if notes.is_some() {
+                    f.push("notes".to_string());
+                }
                 f
             }
-            Self::OAuthApp { redirect_uri, scopes, .. } => {
+            Self::OAuthApp {
+                redirect_uri,
+                scopes,
+                ..
+            } => {
                 let mut f = vec!["client_id".to_string(), "client_secret".to_string()];
-                if redirect_uri.is_some() { f.push("redirect_uri".to_string()); }
-                if scopes.is_some() { f.push("scopes".to_string()); }
+                if redirect_uri.is_some() {
+                    f.push("redirect_uri".to_string());
+                }
+                if scopes.is_some() {
+                    f.push("scopes".to_string());
+                }
                 f
             }
-            Self::SshKey { public_key, passphrase, .. } => {
+            Self::SshKey {
+                public_key,
+                passphrase,
+                ..
+            } => {
                 let mut f = vec!["private_key".to_string()];
-                if public_key.is_some() { f.push("public_key".to_string()); }
-                if passphrase.is_some() { f.push("passphrase".to_string()); }
+                if public_key.is_some() {
+                    f.push("public_key".to_string());
+                }
+                if passphrase.is_some() {
+                    f.push("passphrase".to_string());
+                }
                 f
             }
             Self::Note { .. } => vec!["content".to_string()],
@@ -432,7 +465,9 @@ mod tests {
         };
         assert_eq!(api.bare_value(), Some("mykey".to_string()));
 
-        let note = SecretData::Note { content: "hello".into() };
+        let note = SecretData::Note {
+            content: "hello".into(),
+        };
         assert_eq!(note.bare_value(), Some("hello".to_string()));
 
         let ssh = SecretData::SshKey {

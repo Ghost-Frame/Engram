@@ -1,8 +1,8 @@
 mod source;
-mod target;
-mod vectors;
 mod tables;
+mod target;
 mod validate;
+mod vectors;
 
 use anyhow::Result;
 use clap::Parser;
@@ -35,7 +35,9 @@ struct Args {
 async fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("engram_migrate=info".parse()?))
+        .with_env_filter(
+            EnvFilter::from_default_env().add_directive("engram_migrate=info".parse()?),
+        )
         .init();
 
     let args = Args::parse();

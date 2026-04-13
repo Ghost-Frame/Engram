@@ -76,8 +76,18 @@ async fn review(
         })
         .await?;
 
-    let (owner, stability, difficulty, storage, retrieval, learning_state_int, reps, lapses, last_review, created_at) =
-        row_data.ok_or_else(|| AppError(engram_lib::EngError::NotFound("not found".into())))?;
+    let (
+        owner,
+        stability,
+        difficulty,
+        storage,
+        retrieval,
+        learning_state_int,
+        reps,
+        lapses,
+        last_review,
+        created_at,
+    ) = row_data.ok_or_else(|| AppError(engram_lib::EngError::NotFound("not found".into())))?;
 
     if owner != auth.user_id {
         return Err(AppError(engram_lib::EngError::NotFound("not found".into())));
@@ -199,8 +209,18 @@ async fn get_state(
         })
         .await?;
 
-    let (owner, stability, difficulty, storage_strength, retrieval_strength, learning_state, reps, lapses, last_review_at, created_at) =
-        row_data.ok_or_else(|| AppError(engram_lib::EngError::NotFound("not found".into())))?;
+    let (
+        owner,
+        stability,
+        difficulty,
+        storage_strength,
+        retrieval_strength,
+        learning_state,
+        reps,
+        lapses,
+        last_review_at,
+        created_at,
+    ) = row_data.ok_or_else(|| AppError(engram_lib::EngError::NotFound("not found".into())))?;
 
     if owner != auth.user_id {
         return Err(AppError(engram_lib::EngError::NotFound("not found".into())));

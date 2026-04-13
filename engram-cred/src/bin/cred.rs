@@ -8,14 +8,18 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use engram_cred::crypto::{derive_key_legacy, encrypt_recovery, decrypt_recovery, generate_hmac_secret, KEY_SIZE};
-use engram_cred::yubikey;
-use engram_cred::types::SecretData;
-use engram_cred::storage;
-use engram_lib::db::Database;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::ExecutableCommand;
+use engram_cred::crypto::{
+    decrypt_recovery, derive_key_legacy, encrypt_recovery, generate_hmac_secret, KEY_SIZE,
+};
+use engram_cred::storage;
+use engram_cred::types::SecretData;
+use engram_cred::yubikey;
+use engram_lib::db::Database;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 use zeroize::Zeroize;
@@ -136,8 +140,7 @@ fn shellexpand(path: &str) -> String {
 
 /// Derive master key from YubiKey using legacy (private cred compatible) KDF.
 fn derive_master_key() -> Result<[u8; KEY_SIZE]> {
-    let challenge = yubikey::get_or_create_challenge()
-        .context("failed to get challenge file")?;
+    let challenge = yubikey::get_or_create_challenge().context("failed to get challenge file")?;
 
     let response = yubikey::challenge_response(&challenge)
         .context("failed to get YubiKey challenge-response -- is the YubiKey plugged in?")?;
@@ -158,34 +161,32 @@ async fn main() -> Result<()> {
             let key = derive_master_key()?;
             eprintln!("unlocked.");
 
-            let db = Database::connect(&db_path().to_string_lossy()).await
+            let db = Database::connect(&db_path().to_string_lossy())
+                .await
                 .context("failed to open database")?;
 
             match cmd {
-                Commands::Store { service, key: secret_key, secret_type } => {
-                    cmd_store(&db, &key, &service, &secret_key, &secret_type).await
-                }
-                Commands::Get { service, key: secret_key, field, raw } => {
-                    cmd_get(&db, &key, &service, &secret_key, field.as_deref(), raw).await
-                }
-                Commands::List { service } => {
-                    cmd_list(&db, &key, service.as_deref()).await
-                }
-                Commands::Delete { service, key: secret_key, yes } => {
-                    cmd_delete(&db, &key, &service, &secret_key, yes).await
-                }
-                Commands::Import { dry_run } => {
-                    cmd_import(&db, &key, dry_run).await
-                }
-                Commands::Export => {
-                    cmd_export(&db, &key).await
-                }
-                Commands::AgentKey { action } => {
-                    cmd_agent_key(&db, action).await
-                }
-                Commands::Tui => {
-                    cmd_tui(&db, &key).await
-                }
+                Commands::Store {
+                    service,
+                    key: secret_key,
+                    secret_type,
+                } => cmd_store(&db, &key, &service, &secret_key, &secret_type).await,
+                Commands::Get {
+                    service,
+                    key: secret_key,
+                    field,
+                    raw,
+                } => cmd_get(&db, &key, &service, &secret_key, field.as_deref(), raw).await,
+                Commands::List { service } => cmd_list(&db, &key, service.as_deref()).await,
+                Commands::Delete {
+                    service,
+                    key: secret_key,
+                    yes,
+                } => cmd_delete(&db, &key, &service, &secret_key, yes).await,
+                Commands::Import { dry_run } => cmd_import(&db, &key, dry_run).await,
+                Commands::Export => cmd_export(&db, &key).await,
+                Commands::AgentKey { action } => cmd_agent_key(&db, action).await,
+                Commands::Tui => cmd_tui(&db, &key).await,
                 Commands::Init | Commands::Recover { .. } => unreachable!(),
             }
         }
@@ -252,10 +253,10 @@ async fn cmd_init() -> Result<()> {
     // Create recovery file
     eprintln!();
     eprintln!("creating recovery file...");
-    let passphrase = rpassword::prompt_password("recovery passphrase: ")
-        .context("failed to read passphrase")?;
-    let passphrase_confirm = rpassword::prompt_password("confirm passphrase: ")
-        .context("failed to read passphrase")?;
+    let passphrase =
+        rpassword::prompt_password("recovery passphrase: ").context("failed to read passphrase")?;
+    let passphrase_confirm =
+        rpassword::prompt_password("confirm passphrase: ").context("failed to read passphrase")?;
 
     if passphrase != passphrase_confirm {
         anyhow::bail!("passphrases do not match");
@@ -301,11 +302,11 @@ async fn cmd_recover(from: &str) -> Result<()> {
     eprintln!("reading recovery file: {}", path);
     let data = std::fs::read(&path)?;
 
-    let passphrase = rpassword::prompt_password("recovery passphrase: ")
-        .context("failed to read passphrase")?;
+    let passphrase =
+        rpassword::prompt_password("recovery passphrase: ").context("failed to read passphrase")?;
 
-    let secret = decrypt_recovery(&passphrase, &data)
-        .context("decryption failed -- wrong passphrase?")?;
+    let secret =
+        decrypt_recovery(&passphrase, &data).context("decryption failed -- wrong passphrase?")?;
 
     eprintln!("secret recovered ({} bytes)", secret.len());
     eprintln!();
@@ -344,7 +345,8 @@ async fn cmd_store(
 ) -> Result<()> {
     let data = prompt_secret_data(secret_type)?;
 
-    storage::store_secret(db, 0, service, key, &data, master_key).await
+    storage::store_secret(db, 0, service, key, &data, master_key)
+        .await
         .context("failed to store secret")?;
 
     eprintln!("stored: {}/{}", service, key);
@@ -359,7 +361,8 @@ async fn cmd_get(
     field: Option<&str>,
     raw: bool,
 ) -> Result<()> {
-    let (_row, data) = storage::get_secret(db, 0, service, key, master_key).await
+    let (_row, data) = storage::get_secret(db, 0, service, key, master_key)
+        .await
         .context("secret not found")?;
 
     if raw {
@@ -395,18 +398,31 @@ async fn cmd_list(
     }
 
     // Find column widths
-    let max_svc = secrets.iter().map(|s| s.category.len()).max().unwrap_or(7).max(7);
-    let max_key = secrets.iter().map(|s| s.name.len()).max().unwrap_or(3).max(3);
+    let max_svc = secrets
+        .iter()
+        .map(|s| s.category.len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+    let max_key = secrets
+        .iter()
+        .map(|s| s.name.len())
+        .max()
+        .unwrap_or(3)
+        .max(3);
 
     println!(
         "{:<width_s$}  {:<width_k$}  TYPE",
-        "SERVICE", "KEY",
+        "SERVICE",
+        "KEY",
         width_s = max_svc,
         width_k = max_key,
     );
     println!(
         "{:-<width_s$}  {:-<width_k$}  {:-<10}",
-        "", "", "",
+        "",
+        "",
+        "",
         width_s = max_svc,
         width_k = max_key,
     );
@@ -434,7 +450,8 @@ async fn cmd_delete(
     skip_confirm: bool,
 ) -> Result<()> {
     // Verify it exists first
-    let _ = storage::get_secret(db, 0, service, key, master_key).await
+    let _ = storage::get_secret(db, 0, service, key, master_key)
+        .await
         .context("secret not found")?;
 
     if !skip_confirm {
@@ -479,7 +496,12 @@ async fn cmd_import(db: &Database, master_key: &[u8; KEY_SIZE], dry_run: bool) -
     }
 }
 
-async fn cmd_import_json(db: &Database, master_key: &[u8; KEY_SIZE], input: &str, dry_run: bool) -> Result<()> {
+async fn cmd_import_json(
+    db: &Database,
+    master_key: &[u8; KEY_SIZE],
+    input: &str,
+    dry_run: bool,
+) -> Result<()> {
     #[derive(serde::Deserialize)]
     struct ImportEntry {
         service: String,
@@ -487,16 +509,22 @@ async fn cmd_import_json(db: &Database, master_key: &[u8; KEY_SIZE], input: &str
         value: SecretData,
     }
 
-    let entries: Vec<ImportEntry> = serde_json::from_str(input)
-        .context("failed to parse JSON import")?;
+    let entries: Vec<ImportEntry> =
+        serde_json::from_str(input).context("failed to parse JSON import")?;
 
     let mut imported = 0u32;
 
     for entry in &entries {
         if dry_run {
-            eprintln!("  [dry run] would store: {}/{} ({})", entry.service, entry.key, entry.value.type_name());
+            eprintln!(
+                "  [dry run] would store: {}/{} ({})",
+                entry.service,
+                entry.key,
+                entry.value.type_name()
+            );
         } else {
-            storage::store_secret(db, 0, &entry.service, &entry.key, &entry.value, master_key).await?;
+            storage::store_secret(db, 0, &entry.service, &entry.key, &entry.value, master_key)
+                .await?;
             eprintln!("  stored: {}/{}", entry.service, entry.key);
         }
         imported += 1;
@@ -511,7 +539,12 @@ async fn cmd_import_json(db: &Database, master_key: &[u8; KEY_SIZE], input: &str
     Ok(())
 }
 
-async fn cmd_import_tsv(db: &Database, master_key: &[u8; KEY_SIZE], input: &str, dry_run: bool) -> Result<()> {
+async fn cmd_import_tsv(
+    db: &Database,
+    master_key: &[u8; KEY_SIZE],
+    input: &str,
+    dry_run: bool,
+) -> Result<()> {
     let mut imported = 0u32;
     let mut skipped = 0u32;
 
@@ -524,7 +557,10 @@ async fn cmd_import_tsv(db: &Database, master_key: &[u8; KEY_SIZE], input: &str,
 
         let parts: Vec<&str> = line.splitn(3, '\t').collect();
         if parts.len() != 3 {
-            eprintln!("  line {}: skipping (expected 3 tab-separated fields)", lineno + 1);
+            eprintln!(
+                "  line {}: skipping (expected 3 tab-separated fields)",
+                lineno + 1
+            );
             skipped += 1;
             continue;
         }
@@ -538,7 +574,12 @@ async fn cmd_import_tsv(db: &Database, master_key: &[u8; KEY_SIZE], input: &str,
         }
 
         if dry_run {
-            eprintln!("  [dry run] would store: {}/{} ({} chars)", service, key, value.len());
+            eprintln!(
+                "  [dry run] would store: {}/{} ({} chars)",
+                service,
+                key,
+                value.len()
+            );
         } else {
             let data = SecretData::ApiKey {
                 key: value.to_string(),
@@ -553,7 +594,10 @@ async fn cmd_import_tsv(db: &Database, master_key: &[u8; KEY_SIZE], input: &str,
 
     eprintln!();
     if dry_run {
-        eprintln!("dry run complete: {} would be imported, {} skipped", imported, skipped);
+        eprintln!(
+            "dry run complete: {} would be imported, {} skipped",
+            imported, skipped
+        );
     } else {
         eprintln!("import complete: {} stored, {} skipped", imported, skipped);
     }
@@ -587,7 +631,10 @@ async fn cmd_export(db: &Database, master_key: &[u8; KEY_SIZE]) -> Result<()> {
                 });
             }
             Err(e) => {
-                eprintln!("warning: failed to decrypt {}/{}: {}", row.category, row.name, e);
+                eprintln!(
+                    "warning: failed to decrypt {}/{}: {}",
+                    row.category, row.name, e
+                );
             }
         }
     }
@@ -613,7 +660,11 @@ fn prompt_secret_data(secret_type: &str) -> Result<SecretData> {
 
             Ok(SecretData::ApiKey {
                 key,
-                endpoint: if endpoint.is_empty() { None } else { Some(endpoint.to_string()) },
+                endpoint: if endpoint.is_empty() {
+                    None
+                } else {
+                    Some(endpoint.to_string())
+                },
                 notes: None,
             })
         }
@@ -667,8 +718,21 @@ fn prompt_secret_data(secret_type: &str) -> Result<SecretData> {
             Ok(SecretData::OAuthApp {
                 client_id: client_id.trim().to_string(),
                 client_secret,
-                redirect_uri: if redirect_uri.is_empty() { None } else { Some(redirect_uri.to_string()) },
-                scopes: if scopes_str.is_empty() { None } else { Some(scopes_str.split(',').map(|s| s.trim().to_string()).collect()) },
+                redirect_uri: if redirect_uri.is_empty() {
+                    None
+                } else {
+                    Some(redirect_uri.to_string())
+                },
+                scopes: if scopes_str.is_empty() {
+                    None
+                } else {
+                    Some(
+                        scopes_str
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .collect(),
+                    )
+                },
             })
         }
         "ssh-key" => {
@@ -683,7 +747,11 @@ fn prompt_secret_data(secret_type: &str) -> Result<SecretData> {
             Ok(SecretData::SshKey {
                 private_key,
                 public_key: None,
-                passphrase: if passphrase.is_empty() { None } else { Some(passphrase) },
+                passphrase: if passphrase.is_empty() {
+                    None
+                } else {
+                    Some(passphrase)
+                },
             })
         }
         "environment" | "env" => {
@@ -736,7 +804,6 @@ fn program_yubikey_slot2(secret_hex: &str) -> Result<()> {
     Ok(())
 }
 
-
 async fn init_schema(db: &Database) -> Result<()> {
     db.write(|conn| {
         conn.execute_batch(
@@ -767,7 +834,8 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
     match action {
         AgentKeyAction::Generate { name, description } => {
             let perms = engram_cred::AgentKeyPermissions::default();
-            let (key_str, agent_key) = agent_keys::create_agent_key(db, 0, &name, &perms).await
+            let (key_str, agent_key) = agent_keys::create_agent_key(db, 0, &name, &perms)
+                .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             eprintln!("generated agent key for '{}'", name);
             if !description.is_empty() {
@@ -781,20 +849,27 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
             Ok(())
         }
         AgentKeyAction::List => {
-            let keys = agent_keys::list_agent_keys(db, 0).await
+            let keys = agent_keys::list_agent_keys(db, 0)
+                .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             if keys.is_empty() {
                 println!("no agent keys");
                 return Ok(());
             }
 
-            println!("{:<20} {:<10} {:<20} HASH PREFIX", "NAME", "STATUS", "CREATED");
+            println!(
+                "{:<20} {:<10} {:<20} HASH PREFIX",
+                "NAME", "STATUS", "CREATED"
+            );
             println!("{:-<20} {:-<10} {:-<20} {:-<16}", "", "", "", "");
 
             for k in &keys {
                 let status = if k.is_valid() { "active" } else { "revoked" };
                 let hash_prefix = &k.key_hash[..16.min(k.key_hash.len())];
-                println!("{:<20} {:<10} {:<20} {}", k.name, status, k.created_at, hash_prefix);
+                println!(
+                    "{:<20} {:<10} {:<20} {}",
+                    k.name, status, k.created_at, hash_prefix
+                );
             }
             println!("\n{} key(s)", keys.len());
             Ok(())
@@ -810,7 +885,8 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
                     return Ok(());
                 }
             }
-            agent_keys::revoke_agent_key(db, 0, &name).await
+            agent_keys::revoke_agent_key(db, 0, &name)
+                .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             eprintln!("revoked agent key: {}", name);
             Ok(())
@@ -881,8 +957,14 @@ impl<'a> TuiApp<'a> {
                 let mut secrets = Vec::new();
                 for row in rows {
                     match storage::get_secret(
-                        self.db, 0, &row.category, &row.name, &self.master_key,
-                    ).await {
+                        self.db,
+                        0,
+                        &row.category,
+                        &row.name,
+                        &self.master_key,
+                    )
+                    .await
+                    {
                         Ok((_r, data)) => {
                             secrets.push(TuiSecret {
                                 id: row.id,
@@ -917,8 +999,7 @@ impl<'a> TuiApp<'a> {
             self.secrets
                 .iter()
                 .filter(|s| {
-                    s.service.to_lowercase().contains(&f)
-                        || s.key.to_lowercase().contains(&f)
+                    s.service.to_lowercase().contains(&f) || s.key.to_lowercase().contains(&f)
                 })
                 .collect()
         }
@@ -978,13 +1059,7 @@ async fn cmd_tui(db: &Database, master_key: &[u8; 32]) -> Result<()> {
                                 let i = app
                                     .table_state
                                     .selected()
-                                    .map(|i| {
-                                        if i == 0 {
-                                            filtered.len() - 1
-                                        } else {
-                                            i - 1
-                                        }
-                                    })
+                                    .map(|i| if i == 0 { filtered.len() - 1 } else { i - 1 })
                                     .unwrap_or(0);
                                 app.table_state.select(Some(i));
                             }
@@ -1068,8 +1143,15 @@ async fn cmd_tui(db: &Database, master_key: &[u8; 32]) -> Result<()> {
                                     };
                                     app.input_buf.zeroize();
                                     match storage::store_secret(
-                                        app.db, 0, &add_service, &add_key, &data, &app.master_key,
-                                    ).await {
+                                        app.db,
+                                        0,
+                                        &add_service,
+                                        &add_key,
+                                        &data,
+                                        &app.master_key,
+                                    )
+                                    .await
+                                    {
                                         Ok(id) => {
                                             app.status_msg = format!(
                                                 "stored {}/{} (id={})",
@@ -1115,11 +1197,12 @@ async fn cmd_tui(db: &Database, master_key: &[u8; 32]) -> Result<()> {
                             } else {
                                 format!("filter: {}", app.filter)
                             };
-                            app.table_state.select(if app.filtered_secrets().is_empty() {
-                                None
-                            } else {
-                                Some(0)
-                            });
+                            app.table_state
+                                .select(if app.filtered_secrets().is_empty() {
+                                    None
+                                } else {
+                                    Some(0)
+                                });
                         }
                         KeyCode::Backspace => {
                             app.input_buf.pop();
@@ -1175,7 +1258,7 @@ fn draw_ui(f: &mut Frame, app: &mut TuiApp) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // header
-            Constraint::Min(5),   // table
+            Constraint::Min(5),    // table
             Constraint::Length(3), // status / input
         ])
         .split(f.area());
@@ -1194,7 +1277,12 @@ fn draw_ui(f: &mut Frame, app: &mut TuiApp) {
 
 fn draw_header(f: &mut Frame, area: Rect) {
     let header = Paragraph::new(Line::from(vec![
-        Span::styled("cred", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "cred",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" | "),
         Span::styled("a", Style::default().fg(Color::Yellow)),
         Span::raw("dd "),
@@ -1209,7 +1297,11 @@ fn draw_header(f: &mut Frame, area: Rect) {
         Span::styled("q", Style::default().fg(Color::Yellow)),
         Span::raw("uit"),
     ]))
-    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
 
     f.render_widget(header, area);
 }
@@ -1218,10 +1310,26 @@ fn draw_table(f: &mut Frame, app: &mut TuiApp, area: Rect) {
     let filtered = app.filtered_secrets();
 
     let header = Row::new(vec![
-        Cell::from("SERVICE").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Cell::from("KEY").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Cell::from("TYPE").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Cell::from("PREVIEW").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Cell::from("SERVICE").style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("KEY").style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("TYPE").style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("PREVIEW").style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
     ])
     .height(1);
 
@@ -1366,4 +1474,3 @@ fn draw_detail_modal(f: &mut Frame, secret: &TuiSecret, show_value: bool) {
     );
     f.render_widget(detail, modal_area);
 }
-

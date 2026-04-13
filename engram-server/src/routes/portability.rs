@@ -352,11 +352,8 @@ async fn delete_state_handler(
     let affected = state
         .db
         .write(move |conn| {
-            conn.execute(
-                "DELETE FROM app_state WHERE key LIKE ?1",
-                params![prefix],
-            )
-            .map_err(|e| engram_lib::EngError::Internal(e.to_string()))
+            conn.execute("DELETE FROM app_state WHERE key LIKE ?1", params![prefix])
+                .map_err(|e| engram_lib::EngError::Internal(e.to_string()))
         })
         .await
         .map_err(AppError)? as i64;

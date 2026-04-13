@@ -68,8 +68,8 @@ impl EmbeddingProvider for HttpProvider {
                 .await
                 .map_err(|e| EngError::Internal(format!("http embed parse: {}", e)))?;
 
-            let embedding: Vec<f32> = serde_json::from_value(body["embedding"].clone())
-                .map_err(|e| {
+            let embedding: Vec<f32> =
+                serde_json::from_value(body["embedding"].clone()).map_err(|e| {
                     EngError::Internal(format!("http embed: embedding field invalid: {}", e))
                 })?;
 

@@ -80,13 +80,7 @@ pub async fn store_edge(
              VALUES (?1, ?2, ?3, ?4, ?5) \
              ON CONFLICT(source_id, target_id, edge_type) \
              DO UPDATE SET weight = MAX(weight, excluded.weight)",
-            rusqlite::params![
-                source_id,
-                target_id,
-                weight as f64,
-                edge_type_str,
-                user_id
-            ],
+            rusqlite::params![source_id, target_id, weight as f64, edge_type_str, user_id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -160,13 +154,7 @@ pub async fn strengthen_edge(
                      SET weight = MIN(1.0, weight + ?1) \
                      WHERE source_id = ?2 AND target_id = ?3 \
                        AND edge_type = ?4 AND user_id = ?5",
-                    rusqlite::params![
-                        boost as f64,
-                        source_id,
-                        target_id,
-                        edge_type_str,
-                        user_id
-                    ],
+                    rusqlite::params![boost as f64, source_id, target_id, edge_type_str, user_id],
                 )
                 .map_err(rusqlite_to_eng_error)?;
             Ok(n)

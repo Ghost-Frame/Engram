@@ -30,13 +30,12 @@ async fn main() {
         EncryptionMode::None => None,
         EncryptionMode::Yubikey => {
             tracing::info!("encryption mode: yubikey -- touch slot 2 to unlock database...");
-            let challenge = engram_cred::yubikey::get_or_create_challenge()
-                .unwrap_or_else(|e| {
-                    eprintln!("failed to load YubiKey challenge: {e}");
-                    std::process::exit(1);
-                });
-            let response = engram_cred::yubikey::challenge_response(&challenge)
-                .unwrap_or_else(|e| {
+            let challenge = engram_cred::yubikey::get_or_create_challenge().unwrap_or_else(|e| {
+                eprintln!("failed to load YubiKey challenge: {e}");
+                std::process::exit(1);
+            });
+            let response =
+                engram_cred::yubikey::challenge_response(&challenge).unwrap_or_else(|e| {
                     eprintln!("YubiKey challenge-response failed: {e}");
                     std::process::exit(1);
                 });
@@ -45,11 +44,10 @@ async fn main() {
         _ => {
             let mode_name = format!("{:?}", config.encryption.mode).to_ascii_lowercase();
             tracing::info!("encryption mode: {}", mode_name);
-            engram_lib::encryption::resolve_key(&config)
-                .unwrap_or_else(|e| {
-                    eprintln!("encryption key resolution failed: {e}");
-                    std::process::exit(1);
-                })
+            engram_lib::encryption::resolve_key(&config).unwrap_or_else(|e| {
+                eprintln!("encryption key resolution failed: {e}");
+                std::process::exit(1);
+            })
         }
     };
 
