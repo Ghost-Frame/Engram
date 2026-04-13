@@ -88,6 +88,102 @@ pub fn is_available() -> bool {
     }
 }
 
+/// Program slot 2 with an HMAC-SHA1 secret.
+///
+/// WARNING: This overwrites whatever is currently in the slot.
+pub fn program_hmac_secret(secret: &[u8]) -> Result<()> {
+    if secret.len() != RESPONSE_SIZE {
+        return Err(CredError::YubiKey(format!(
+            "HMAC secret must be exactly {} bytes",
+            RESPONSE_SIZE
+        )));
+    }
+
+    let secret_hex = hex::encode(secret);
+
+    #[cfg(not(windows))]
+    {
+        try_ykman_program(&secret_hex)
+            .or_else(|first| try_python_ykman_program(&secret_hex).map_err(|_| first))?;
+    }
+
+    #[cfg(windows)]
+    {
+        // On Windows, use ykman directly (no ykchallenge equivalent for programming)
+        let out = Command::new("ykman")
+            .args(["otp", "chalresp", &SLOT.to_string(), "--force", &secret_hex])
+            .output()
+            .map_err(|e| CredError::YubiKey(format!("ykman not found: {}", e)))?;
+
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(CredError::YubiKey(format!("ykman program failed: {}", stderr.trim())));
+        }
+    }
+
+    info!("programmed HMAC-SHA1 secret on slot {}", SLOT);
+    Ok(())
+}
+
+/// Delete the OTP slot configuration.
+pub fn delete_slot() -> Result<()> {
+    #[cfg(not(windows))]
+    {
+        try_ykman_delete()
+            .or_else(|first| try_python_ykman_delete().map_err(|_| first))?;
+    }
+
+    #[cfg(windows)]
+    {
+        let out = Command::new("ykman")
+            .args(["otp", "delete", &SLOT.to_string(), "--force"])
+            .output()
+            .map_err(|e| CredError::YubiKey(format!("ykman not found: {}", e)))?;
+
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(CredError::YubiKey(format!("ykman delete failed: {}", stderr.trim())));
+        }
+    }
+
+    info!("deleted slot {} configuration", SLOT);
+    Ok(())
+}
+
+/// Get YubiKey device info (serial, firmware, etc.)
+pub fn device_info() -> Result<String> {
+    #[cfg(not(windows))]
+    {
+        try_ykman_info()
+            .or_else(|first| try_python_ykman_info().map_err(|_| first))
+    }
+
+    #[cfg(windows)]
+    {
+        let out = Command::new("ykman")
+            .args(["info"])
+            .output()
+            .map_err(|e| CredError::YubiKey(format!("ykman not found: {}", e)))?;
+
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(CredError::YubiKey(format!("ykman info failed: {}", stderr.trim())));
+        }
+
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+}
+
+/// Derive the AES-256-GCM master key from YubiKey challenge-response.
+///
+/// Loads the stored challenge, sends it to the YubiKey, and derives
+/// the encryption key using the legacy KDF (compatible with private cred).
+pub fn derive_master_key() -> Result<[u8; crate::crypto::KEY_SIZE]> {
+    let challenge = get_or_create_challenge()?;
+    let response = challenge_response(&challenge)?;
+    Ok(crate::crypto::derive_key_legacy(&response))
+}
+
 /// Load or create the persistent 32-byte engram challenge.
 ///
 /// Stored under `~/.config/engram/challenge` (or `$XDG_CONFIG_HOME/engram/
@@ -232,6 +328,108 @@ fn try_python_ykman_calculate(challenge_hex: &str) -> Result<String> {
             "python ykman calculate failed: {}",
             stderr.trim()
         )));
+    }
+
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[cfg(not(windows))]
+fn try_ykman_program(secret_hex: &str) -> Result<String> {
+    let out = Command::new("ykman")
+        .args(["otp", "chalresp", &SLOT.to_string(), "--force", secret_hex])
+        .output()
+        .map_err(|e| CredError::YubiKey(format!("ykman not found: {}", e)))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(CredError::YubiKey(format!("ykman program failed: {}", stderr.trim())));
+    }
+
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[cfg(not(windows))]
+fn try_python_ykman_program(secret_hex: &str) -> Result<String> {
+    let script = format!(
+        "import sys\nfrom ykman._cli.__main__ import main\nsys.argv = ['ykman', 'otp', 'chalresp', '{}', '--force', '{}']\nmain()\n",
+        SLOT, secret_hex
+    );
+
+    let out = Command::new("sudo")
+        .args(["python3", "-c", &script])
+        .output()
+        .map_err(|e| CredError::YubiKey(format!("sudo python3 ykman failed: {}", e)))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(CredError::YubiKey(format!("python ykman program failed: {}", stderr.trim())));
+    }
+
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[cfg(not(windows))]
+fn try_ykman_delete() -> Result<String> {
+    let out = Command::new("ykman")
+        .args(["otp", "delete", &SLOT.to_string(), "--force"])
+        .output()
+        .map_err(|e| CredError::YubiKey(format!("ykman not found: {}", e)))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(CredError::YubiKey(format!("ykman delete failed: {}", stderr.trim())));
+    }
+
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[cfg(not(windows))]
+fn try_python_ykman_delete() -> Result<String> {
+    let script = format!(
+        "import sys\nfrom ykman._cli.__main__ import main\nsys.argv = ['ykman', 'otp', 'delete', '{}', '--force']\nmain()\n",
+        SLOT
+    );
+
+    let out = Command::new("sudo")
+        .args(["python3", "-c", &script])
+        .output()
+        .map_err(|e| CredError::YubiKey(format!("sudo python3 ykman failed: {}", e)))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(CredError::YubiKey(format!("python ykman delete failed: {}", stderr.trim())));
+    }
+
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[cfg(not(windows))]
+fn try_ykman_info() -> Result<String> {
+    let out = Command::new("ykman")
+        .args(["info"])
+        .output()
+        .map_err(|e| CredError::YubiKey(format!("ykman not found: {}", e)))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(CredError::YubiKey(format!("ykman info failed: {}", stderr.trim())));
+    }
+
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[cfg(not(windows))]
+fn try_python_ykman_info() -> Result<String> {
+    let script = "import sys\nfrom ykman._cli.__main__ import main\nsys.argv = ['ykman', 'info']\nmain()\n";
+
+    let out = Command::new("sudo")
+        .args(["python3", "-c", script])
+        .output()
+        .map_err(|e| CredError::YubiKey(format!("sudo python3 ykman failed: {}", e)))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(CredError::YubiKey(format!("python ykman info failed: {}", stderr.trim())));
     }
 
     Ok(String::from_utf8_lossy(&out.stdout).to_string())

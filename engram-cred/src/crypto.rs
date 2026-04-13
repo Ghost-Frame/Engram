@@ -17,6 +17,9 @@ pub const NONCE_SIZE: usize = 12;
 /// Key size for AES-256-GCM (256 bits = 32 bytes).
 pub const KEY_SIZE: usize = 32;
 
+/// Salt size for Argon2id key derivation (16 bytes).
+pub const SALT_SIZE: usize = 16;
+
 /// Argon2id memory parameter in KiB. 64 MiB resists GPU brute force while
 /// staying under the smallest container footprint we ship.
 const ARGON2_MEMORY_KIB: u32 = 65536;
@@ -143,6 +146,46 @@ pub fn encrypt_secret(
     Ok((ciphertext, nonce_bytes))
 }
 
+/// Encrypt raw bytes with AES-256-GCM.
+///
+/// Returns: nonce (12 bytes) || ciphertext+tag.
+pub fn encrypt(key: &[u8; KEY_SIZE], plaintext: &[u8]) -> Result<Vec<u8>> {
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| CredError::Encryption(format!("invalid key: {}", e)))?;
+
+    let mut nonce_bytes = [0u8; NONCE_SIZE];
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| CredError::Encryption(format!("encryption failed: {}", e)))?;
+
+    let mut output = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
+    output.extend_from_slice(&nonce_bytes);
+    output.extend_from_slice(&ciphertext);
+    Ok(output)
+}
+
+/// Decrypt AES-256-GCM ciphertext.
+///
+/// Input format: nonce (12 bytes) || ciphertext+tag.
+pub fn decrypt(key: &[u8; KEY_SIZE], data: &[u8]) -> Result<Vec<u8>> {
+    if data.len() < NONCE_SIZE + 16 {
+        return Err(CredError::Decryption("ciphertext too short".into()));
+    }
+
+    let cipher = Aes256Gcm::new_from_slice(&key[..])
+        .map_err(|e| CredError::Decryption(format!("invalid key: {}", e)))?;
+
+    let nonce = Nonce::from_slice(&data[..NONCE_SIZE]);
+    let ciphertext = &data[NONCE_SIZE..];
+
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| CredError::Decryption(format!("decryption failed: {}", e)))
+}
+
 /// Decrypt secret data with AES-256-GCM.
 pub fn decrypt_secret(
     key: &[u8; KEY_SIZE],
@@ -173,6 +216,61 @@ pub fn hash_key(key: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(key);
     hex::encode(hasher.finalize())
+}
+
+/// Derive a 256-bit AES key from a passphrase and random salt.
+///
+/// Uses the modern Argon2id parameters (64 MiB, 3 iterations).
+/// The salt must be stored alongside the ciphertext.
+pub fn derive_key_from_passphrase(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_SIZE]> {
+    let params = Params::new(ARGON2_MEMORY_KIB, ARGON2_ITERATIONS, ARGON2_PARALLELISM, Some(KEY_SIZE))
+        .expect("argon2 params within library bounds");
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+
+    let mut key = [0u8; KEY_SIZE];
+    argon2
+        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
+        .map_err(|e| CredError::Encryption(format!("passphrase key derivation failed: {}", e)))?;
+
+    Ok(key)
+}
+
+/// Encrypt the HMAC secret for the recovery file.
+///
+/// Format: salt (16 bytes) || nonce (12 bytes) || ciphertext+tag.
+pub fn encrypt_recovery(passphrase: &str, hmac_secret: &[u8]) -> Result<Vec<u8>> {
+    let mut salt = [0u8; SALT_SIZE];
+    rand::rngs::OsRng.fill_bytes(&mut salt);
+
+    let key = derive_key_from_passphrase(passphrase, &salt)?;
+    let encrypted = encrypt(&key, hmac_secret)?;
+
+    let mut output = Vec::with_capacity(SALT_SIZE + encrypted.len());
+    output.extend_from_slice(&salt);
+    output.extend_from_slice(&encrypted);
+    Ok(output)
+}
+
+/// Decrypt the HMAC secret from a recovery file.
+///
+/// Input format: salt (16 bytes) || nonce (12 bytes) || ciphertext+tag.
+pub fn decrypt_recovery(passphrase: &str, data: &[u8]) -> Result<Vec<u8>> {
+    if data.len() < SALT_SIZE + NONCE_SIZE + 16 {
+        return Err(CredError::Decryption("recovery file too short or corrupted".into()));
+    }
+
+    let salt = &data[..SALT_SIZE];
+    let encrypted = &data[SALT_SIZE..];
+
+    let key = derive_key_from_passphrase(passphrase, salt)?;
+    decrypt(&key, encrypted)
+}
+
+/// Generate a random 20-byte HMAC-SHA1 secret for YubiKey programming.
+pub fn generate_hmac_secret() -> [u8; 20] {
+    let mut secret = [0u8; 20];
+    rand::rngs::OsRng.fill_bytes(&mut secret);
+    secret
 }
 
 #[cfg(test)]
@@ -284,5 +382,67 @@ mod tests {
         let legacy = derive_key_legacy(response);
         let new = derive_key(0, b"", Some(response));
         assert_ne!(legacy, new);
+    }
+
+    #[test]
+    fn encrypt_decrypt_raw_roundtrip() {
+        let key = generate_random_key();
+        let plaintext = b"raw plaintext data for testing";
+
+        let ciphertext = encrypt(&key, plaintext).unwrap();
+        let decrypted = decrypt(&key, &ciphertext).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn encrypt_decrypt_raw_wrong_key_fails() {
+        let key1 = generate_random_key();
+        let key2 = generate_random_key();
+        let plaintext = b"some secret data";
+
+        let ciphertext = encrypt(&key1, plaintext).unwrap();
+        let result = decrypt(&key2, &ciphertext);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_too_short_fails() {
+        let key = generate_random_key();
+        let short_data = [0u8; 10];
+        let result = decrypt(&key, &short_data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn encrypt_recovery_decrypt_recovery_roundtrip() {
+        let passphrase = "correct-horse-battery-staple";
+        let hmac_secret = b"20-byte-hmac-secret!";
+
+        let encrypted = encrypt_recovery(passphrase, hmac_secret).unwrap();
+        let decrypted = decrypt_recovery(passphrase, &encrypted).unwrap();
+        assert_eq!(decrypted, hmac_secret);
+    }
+
+    #[test]
+    fn decrypt_recovery_wrong_passphrase_fails() {
+        let hmac_secret = b"20-byte-hmac-secret!";
+
+        let encrypted = encrypt_recovery("correct-passphrase", hmac_secret).unwrap();
+        let result = decrypt_recovery("wrong-passphrase", &encrypted);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn generate_hmac_secret_length() {
+        let secret = generate_hmac_secret();
+        assert_eq!(secret.len(), 20);
+    }
+
+    #[test]
+    fn generate_hmac_secret_random() {
+        let s1 = generate_hmac_secret();
+        let s2 = generate_hmac_secret();
+        // Astronomically unlikely to be equal
+        assert_ne!(s1, s2);
     }
 }

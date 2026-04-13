@@ -19,6 +19,11 @@ path = "src/bin/derive-db-key.rs"
 name = "migrate-cred"
 path = "src/bin/migrate-cred.rs"
 
+[[bin]]
+name = "cred-gui"
+path = "src/bin/cred-gui.rs"
+required-features = ["gui"]
+
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -48,12 +53,24 @@ async-trait.workspace = true
 # Database
 rusqlite.workspace = true
 
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# GUI
+eframe = { version = "0.31", optional = true }
+reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
+
 # Utils
 chrono.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 hex = "0.4"
 base64 = "0.22"
+
+[features]
+default = []
+gui = ["eframe", "reqwest"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

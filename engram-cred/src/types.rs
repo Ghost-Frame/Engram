@@ -57,6 +57,8 @@ pub enum SecretData {
         #[serde(skip_serializing_if = "Option::is_none")]
         url: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        totp_seed: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         notes: Option<String>,
     },
     ApiKey {
@@ -129,11 +131,13 @@ impl SecretData {
                 username,
                 password,
                 url,
+                totp_seed,
                 notes,
             } => match field {
                 "username" => Some(username.clone()),
                 "password" => Some(password.clone()),
                 "url" => url.clone(),
+                "totp_seed" => totp_seed.clone(),
                 "notes" => notes.clone(),
                 _ => None,
             },
@@ -190,9 +194,71 @@ impl SecretData {
     }
 
     /// Get the bare/primary value for simple output.
-    /// Alias for primary_value() for CLI compatibility.
+    /// Only returns a value for ApiKey and Note types.
     pub fn bare_value(&self) -> Option<String> {
-        Some(self.primary_value())
+        match self {
+            Self::ApiKey { key, .. } => Some(key.clone()),
+            Self::Note { content } => Some(content.clone()),
+            _ => None,
+        }
+    }
+
+    /// Field names for list display (values never shown).
+    pub fn field_names(&self) -> Vec<String> {
+        match self {
+            Self::Login { url, totp_seed, notes, .. } => {
+                let mut f = vec!["username".to_string(), "password".to_string()];
+                if url.is_some() { f.push("url".to_string()); }
+                if totp_seed.is_some() { f.push("totp_seed".to_string()); }
+                if notes.is_some() { f.push("notes".to_string()); }
+                f
+            }
+            Self::ApiKey { endpoint, notes, .. } => {
+                let mut f = vec!["key".to_string()];
+                if endpoint.is_some() { f.push("endpoint".to_string()); }
+                if notes.is_some() { f.push("notes".to_string()); }
+                f
+            }
+            Self::OAuthApp { redirect_uri, scopes, .. } => {
+                let mut f = vec!["client_id".to_string(), "client_secret".to_string()];
+                if redirect_uri.is_some() { f.push("redirect_uri".to_string()); }
+                if scopes.is_some() { f.push("scopes".to_string()); }
+                f
+            }
+            Self::SshKey { public_key, passphrase, .. } => {
+                let mut f = vec!["private_key".to_string()];
+                if public_key.is_some() { f.push("public_key".to_string()); }
+                if passphrase.is_some() { f.push("passphrase".to_string()); }
+                f
+            }
+            Self::Note { .. } => vec!["content".to_string()],
+            Self::Environment { variables } => variables.keys().cloned().collect(),
+        }
+    }
+
+    /// One-line redacted preview for list display.
+    pub fn redacted_preview(&self) -> String {
+        match self {
+            Self::Login { username, url, .. } => {
+                let url_str = url.as_deref().unwrap_or("(no url)");
+                format!("{} @ {}", username, url_str)
+            }
+            Self::ApiKey { key, .. } => {
+                let start = &key[..2.min(key.len())];
+                let end = &key[key.len().saturating_sub(2)..];
+                format!("{}...{}", start, end)
+            }
+            Self::OAuthApp { client_id, .. } => format!("client_id={}", client_id),
+            Self::SshKey { .. } => "[private key]".to_string(),
+            Self::Note { content } => {
+                let preview = &content[..40.min(content.len())];
+                format!("{}...", preview)
+            }
+            Self::Environment { variables } => {
+                let names: Vec<_> = variables.keys().map(|k| format!("{}=***", k)).collect();
+                names.join(", ")
+            }
+        }
     }
 }
 
@@ -220,6 +286,7 @@ mod tests {
             username: "user".into(),
             password: "pass".into(),
             url: Some("https://example.com".into()),
+            totp_seed: None,
             notes: None,
         };
 
@@ -238,6 +305,7 @@ mod tests {
             username: "user".into(),
             password: "secret123".into(),
             url: None,
+            totp_seed: None,
             notes: None,
         };
         assert_eq!(login.primary_value(), "secret123");
@@ -256,6 +324,7 @@ mod tests {
             username: "admin".into(),
             password: "hunter2".into(),
             url: Some("https://example.com".into()),
+            totp_seed: None,
             notes: None,
         };
         assert_eq!(login.get_field("username"), Some("admin".into()));
@@ -276,5 +345,101 @@ mod tests {
         assert_eq!(env.get_field("DB_HOST"), Some("localhost".into()));
         assert_eq!(env.get_field("DB_PORT"), Some("5432".into()));
         assert_eq!(env.get_field("DB_MISSING"), None);
+    }
+
+    #[test]
+    fn field_names_login() {
+        let login_basic = SecretData::Login {
+            username: "user".into(),
+            password: "pass".into(),
+            url: None,
+            totp_seed: None,
+            notes: None,
+        };
+        assert_eq!(login_basic.field_names(), vec!["username", "password"]);
+
+        let login_full = SecretData::Login {
+            username: "user".into(),
+            password: "pass".into(),
+            url: Some("https://example.com".into()),
+            totp_seed: Some("JBSWY3DPEHPK3PXP".into()),
+            notes: Some("work account".into()),
+        };
+        assert_eq!(
+            login_full.field_names(),
+            vec!["username", "password", "url", "totp_seed", "notes"]
+        );
+    }
+
+    #[test]
+    fn field_names_api_key() {
+        let api = SecretData::ApiKey {
+            key: "sk-abc123".into(),
+            endpoint: None,
+            notes: None,
+        };
+        assert_eq!(api.field_names(), vec!["key"]);
+    }
+
+    #[test]
+    fn redacted_preview_login() {
+        let login = SecretData::Login {
+            username: "alice".into(),
+            password: "secret".into(),
+            url: Some("https://example.com".into()),
+            totp_seed: None,
+            notes: None,
+        };
+        assert_eq!(login.redacted_preview(), "alice @ https://example.com");
+
+        let login_no_url = SecretData::Login {
+            username: "bob".into(),
+            password: "secret".into(),
+            url: None,
+            totp_seed: None,
+            notes: None,
+        };
+        assert_eq!(login_no_url.redacted_preview(), "bob @ (no url)");
+    }
+
+    #[test]
+    fn redacted_preview_api_key() {
+        let api = SecretData::ApiKey {
+            key: "sk-abcdef".into(),
+            endpoint: None,
+            notes: None,
+        };
+        let preview = api.redacted_preview();
+        assert!(preview.starts_with("sk"));
+        assert!(preview.contains("..."));
+    }
+
+    #[test]
+    fn bare_value_only_api_key_and_note() {
+        let login = SecretData::Login {
+            username: "user".into(),
+            password: "pass".into(),
+            url: None,
+            totp_seed: None,
+            notes: None,
+        };
+        assert_eq!(login.bare_value(), None);
+
+        let api = SecretData::ApiKey {
+            key: "mykey".into(),
+            endpoint: None,
+            notes: None,
+        };
+        assert_eq!(api.bare_value(), Some("mykey".to_string()));
+
+        let note = SecretData::Note { content: "hello".into() };
+        assert_eq!(note.bare_value(), Some("hello".to_string()));
+
+        let ssh = SecretData::SshKey {
+            private_key: "-----BEGIN...".into(),
+            public_key: None,
+            passphrase: None,
+        };
+        assert_eq!(ssh.bare_value(), None);
     }
 }
