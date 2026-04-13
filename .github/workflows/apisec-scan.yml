@@ -31,7 +31,7 @@ jobs:
         with:
           apisec-username: ${{ secrets.APISEC_USERNAME }}
           apisec-password: ${{ secrets.APISEC_PASSWORD }}
-          apisec-project: "engram-rust"
+          apisec-project: "Engram"
           sarif-result-file: "apisec-results.sarif"
 
       - name: Upload results
