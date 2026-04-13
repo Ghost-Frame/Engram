@@ -186,6 +186,22 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
         })
         .await?;
 
+    // -- Phase 2b: Normalize edge weights to 0..1 ----------------------------------
+    // Raw similarity scores cluster in a narrow band (e.g. 0.63-1.0 for cosine).
+    // The GUI force simulation thresholds expect a full 0-1 range, so we min-max
+    // normalize to spread them out.
+    let mut edges = edges;
+    if edges.len() > 1 {
+        let min_w = edges.iter().map(|e| e.weight).fold(f32::INFINITY, f32::min);
+        let max_w = edges.iter().map(|e| e.weight).fold(f32::NEG_INFINITY, f32::max);
+        let range = max_w - min_w;
+        if range > 0.001 {
+            for edge in &mut edges {
+                edge.weight = (edge.weight - min_w) / range;
+            }
+        }
+    }
+
     // -- Phase 3: Prune orphan memory nodes (no edges) ----------------------------
     let connected_ids: HashSet<String> = edges
         .iter()
