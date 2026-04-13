@@ -476,16 +476,26 @@ function resolveDotPath(obj: Record<string, unknown>, path: string): unknown {
   return current;
 }
 
+function isUnsafePathSegment(segment: string): boolean {
+  return segment === "__proto__" || segment === "constructor" || segment === "prototype";
+}
+
 function setDotPath(obj: Record<string, unknown>, path: string, value: unknown): void {
   const parts = path.split(".");
+  if (parts.length === 0 || parts.some(isUnsafePathSegment)) return;
+
   let current: Record<string, unknown> = obj;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!(parts[i] in current) || typeof current[parts[i]] !== "object") {
-      current[parts[i]] = {};
+    const key = parts[i];
+    if (!Object.hasOwn(current, key) || typeof current[key] !== "object" || current[key] === null) {
+      current[key] = {};
     }
-    current = current[parts[i]] as Record<string, unknown>;
+    current = current[key] as Record<string, unknown>;
   }
-  current[parts[parts.length - 1]] = value;
+
+  const lastKey = parts[parts.length - 1];
+  if (isUnsafePathSegment(lastKey)) return;
+  current[lastKey] = value;
 }
 
 function interpolate(template: string, vars: Record<string, unknown>): string {
