@@ -4,7 +4,7 @@
 
 **The cognitive layer for AI agents. Rewritten in Rust.**
 
-[![License](https://img.shields.io/badge/License-Elastic--2.0-blue.svg)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org) [![Workspace](https://img.shields.io/badge/workspace-5%20crates-brightgreen.svg)](Cargo.toml)
+[![License](https://img.shields.io/badge/License-Elastic--2.0-blue.svg)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org) [![Workspace](https://img.shields.io/badge/workspace-10%20crates-brightgreen.svg)](Cargo.toml)
 
 </div>
 
@@ -106,7 +106,9 @@ MCP stdio entrypoint: `KLEOS_MCP_BEARER_TOKEN=kleos_... cargo run -p kleos-mcp`
 ### Developer Platform
 - **REST API**: 80+ endpoints, drop-in compatible with the reference kleos
 - **Rust CLI**: `kleos-cli` for store, search, context, recall, list, bootstrap
+- **MCP Server**: `kleos-mcp` for LLM tool integration via Model Context Protocol (stdio or HTTP)
 - **Sidecar**: `kleos-sidecar` for session-scoped agent runs
+- **Credential Manager**: `kleos-cred` CLI + `kleos-credd` daemon for encrypted credential vault with YubiKey support
 - **Multi-Tenant + RBAC**: isolated memory per user, role-based access, quota enforcement
 - **Webhooks & Digests**: event hooks and scheduled digests
 - **Audit Trail**: every mutation logged with who, what, when, from where
@@ -136,7 +138,7 @@ Kleos bundles a set of coordination services behind the same auth and database:
 
 ## Workspace
 
-Five Cargo crates:
+Ten Cargo crates:
 
 | Crate | Role |
 |-------|------|
@@ -144,7 +146,12 @@ Five Cargo crates:
 | `kleos-server` | Axum HTTP server. Binds routes to library functions. Handles middleware, auth, rate limiting, GUI. |
 | `kleos-cli` | Command-line client over the HTTP API. |
 | `kleos-sidecar` | Session-scoped memory companion for individual agent runs. Embeds `kleos-lib`. |
-| `agent-forge` | Agent-facing protocol helpers: spec, hypothesis, verify primitives. |
+| `kleos-mcp` | MCP (Model Context Protocol) stdio and HTTP entrypoint for LLM tool integration. |
+| `kleos-cred` | Credential management CLI with encrypted vault and YubiKey support. |
+| `kleos-credd` | Credential management daemon. Serves credentials over local HTTP with session auth. |
+| `kleos-approval-tui` | Terminal UI for human approval workflow. Ratatui-based interactive review queue. (WIP) |
+| `kleos-migrate` | ETL tool for migrating from libsql to rusqlite + LanceDB. |
+| `agent-forge` | Agent-facing protocol helpers: spec, hypothesis, verify primitives. Tree-sitter AST parsing. |
 
 ```bash
 cargo build --release --workspace   # build everything
