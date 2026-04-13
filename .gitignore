@@ -27,3 +27,4 @@ node_modules/
 clippy_output.txt
 migration-data/
 data/
+migration-test/
