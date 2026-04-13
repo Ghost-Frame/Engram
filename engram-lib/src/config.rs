@@ -311,6 +311,7 @@ pub struct Config {
     pub embedding_chunk_max_chunks: usize,
     pub reranker_enabled: bool,
     pub reranker_top_k: usize,
+    pub reranker_model_dir: Option<String>,
     pub data_dir: String,
     pub lance_index_path: Option<String>,
     pub vector_dimensions: usize,
@@ -359,6 +360,7 @@ impl Default for Config {
             embedding_chunk_max_chunks: 6,
             reranker_enabled: true,
             reranker_top_k: 12,
+            reranker_model_dir: None,
             data_dir: "./data".to_string(),
             lance_index_path: None,
             vector_dimensions: 1024,
@@ -472,8 +474,13 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_CROSS_ENCODER") {
+        if let Ok(v) = std::env::var("ENGRAM_RERANKER_ENABLED") {
+            config.reranker_enabled = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
+        } else if let Ok(v) = std::env::var("ENGRAM_CROSS_ENCODER") {
             config.reranker_enabled = v != "0";
+        }
+        if let Ok(v) = std::env::var("ENGRAM_RERANKER_MODEL_DIR") {
+            config.reranker_model_dir = Some(v);
         }
         if let Ok(v) = std::env::var("ENGRAM_RERANKER_TOP_K") {
             match v.parse() {
@@ -573,17 +580,37 @@ impl Config {
     }
 
     /// Returns the resolved model directory for a given model name.
-    /// Priority: ENGRAM_EMBEDDING_MODEL_DIR env > data_dir/engram/models/<model_short_name>
+    ///
+    /// For the reranker, checks `reranker_model_dir` first.
+    /// For embeddings, checks `embedding_model_dir` first.
+    /// Falls back to `<data_dir>/engram/models/<model_short_name>`.
     pub fn model_dir(&self, model_short_name: &str) -> std::path::PathBuf {
-        if let Some(ref dir) = self.embedding_model_dir {
-            std::path::PathBuf::from(dir)
-        } else {
-            dirs::data_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("engram")
-                .join("models")
-                .join(model_short_name)
+        // Reranker gets its own config path
+        if model_short_name.contains("reranker") || model_short_name.contains("granite") {
+            if let Some(ref dir) = self.reranker_model_dir {
+                return std::path::PathBuf::from(dir);
+            }
         }
+
+        if let Some(ref dir) = self.embedding_model_dir {
+            // If the embedding_model_dir points to a specific model (has model
+            // name in it), use its parent as the base and append the short name.
+            // This lets /opt/engram/data/models/bge-m3 resolve
+            // /opt/engram/data/models/granite-reranker for other models.
+            let path = std::path::PathBuf::from(dir);
+            if path.file_name().is_some() && model_short_name != "bge-m3" {
+                if let Some(parent) = path.parent() {
+                    return parent.join(model_short_name);
+                }
+            }
+            return path;
+        }
+
+        dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("engram")
+            .join("models")
+            .join(model_short_name)
     }
 }
 

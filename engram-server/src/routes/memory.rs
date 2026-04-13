@@ -5,6 +5,7 @@ use axum::{
     Json, Router,
 };
 use rusqlite::params;
+use engram_lib::intelligence::extraction::fast_extract_facts;
 use engram_lib::memory::{
     self,
     search::hybrid_search,
@@ -98,6 +99,7 @@ async fn store_memory(
         }
     }
     let embedded = req.embedding.is_some();
+    let content = req.content.clone();
     let result = memory::store(&state.db, req).await?;
     if let Some(existing_id) = result.duplicate_of {
         return Ok((
@@ -109,6 +111,33 @@ async fn store_memory(
             })),
         ));
     }
+
+    // Background: extract facts, preferences, and state from the new memory.
+    // Fire-and-forget so the store response is not delayed.
+    {
+        let db = state.db.clone();
+        let memory_id = result.id;
+        let user_id = auth.user_id;
+        let content_for_extract = content;
+        tokio::spawn(async move {
+            match fast_extract_facts(&db, &content_for_extract, memory_id, user_id, None).await {
+                Ok(stats) => {
+                    let total = stats.facts + stats.preferences + stats.state_updates;
+                    if total > 0 {
+                        tracing::debug!(
+                            memory_id,
+                            facts = stats.facts,
+                            prefs = stats.preferences,
+                            states = stats.state_updates,
+                            "auto-extraction completed"
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!(memory_id, "auto-extraction failed: {}", e),
+            }
+        });
+    }
+
     let mem = memory::get(&state.db, result.id, auth.user_id).await?;
     Ok((
         StatusCode::CREATED,
