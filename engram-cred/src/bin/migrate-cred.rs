@@ -148,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
 
         match entry.to_secret_data() {
             Some(data) => {
-                match kleos_cred::storage::store_secret(&db, 1, category, name, &data, &encryption_key).await {
+                match kleos_cred::storage::store_secret(&db, 0, category, name, &data, &encryption_key).await {
                     Ok(id) => {
                         println!("  [OK] {}/{} -> id={}", category, name, id);
                         imported += 1;
@@ -156,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
                     Err(e) => {
                         // Might be duplicate - try update instead
                         if e.to_string().contains("UNIQUE constraint") {
-                            match kleos_cred::storage::update_secret(&db, 1, category, name, &data, &encryption_key).await {
+                            match kleos_cred::storage::update_secret(&db, 0, category, name, &data, &encryption_key).await {
                                 Ok(()) => {
                                     println!("  [UPDATE] {}/{}", category, name);
                                     imported += 1;
