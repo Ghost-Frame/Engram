@@ -61,7 +61,9 @@ async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Erro
         },
     )?;
 
-    debouncer.watcher().watch(&watch_dir, RecursiveMode::Recursive)?;
+    debouncer
+        .watcher()
+        .watch(&watch_dir, RecursiveMode::Recursive)?;
     tracing::info!(path = %watch_dir.display(), "file watcher started");
 
     // Process events
@@ -182,7 +184,8 @@ fn parse_jsonl_entry(line: &str) -> Option<FileObservation> {
 
     // Look for tool_use entries
     if msg_type == "tool_use" || obj.contains_key("tool_name") {
-        let tool_name = obj.get("tool_name")
+        let tool_name = obj
+            .get("tool_name")
             .or_else(|| obj.get("name"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
@@ -194,8 +197,7 @@ fn parse_jsonl_entry(line: &str) -> Option<FileObservation> {
         }
 
         // Extract content summary
-        let input = obj.get("tool_input")
-            .or_else(|| obj.get("input"));
+        let input = obj.get("tool_input").or_else(|| obj.get("input"));
 
         let content = if let Some(input) = input {
             summarize_input(&tool_name, input)
@@ -230,14 +232,16 @@ fn summarize_input(tool_name: &str, input: &serde_json::Value) -> String {
     // Extract key fields based on tool type
     match tool_name {
         "Read" | "Edit" | "Write" => {
-            let path = obj.get("file_path")
+            let path = obj
+                .get("file_path")
                 .or_else(|| obj.get("filePath"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             format!("{}: {}", tool_name, path)
         }
         "Bash" | "PowerShell" => {
-            let cmd = obj.get("command")
+            let cmd = obj
+                .get("command")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .chars()
@@ -246,7 +250,8 @@ fn summarize_input(tool_name: &str, input: &serde_json::Value) -> String {
             format!("{}: {}", tool_name, cmd)
         }
         "Agent" => {
-            let desc = obj.get("description")
+            let desc = obj
+                .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("subagent");
             format!("Agent: {}", desc)

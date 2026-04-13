@@ -80,10 +80,7 @@ async fn observe(
         .tool_name
         .or(body.tool)
         .unwrap_or_else(|| "unknown".to_string());
-    let content = body
-        .content
-        .or(body.summary)
-        .unwrap_or_default();
+    let content = body.content.or(body.summary).unwrap_or_default();
 
     let obs = Observation {
         tool_name,
@@ -180,10 +177,7 @@ async fn recall(
     Json(body): Json<RecallBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     // Accept both {query: "..."} (current) and {message: "..."} (legacy mnemonic)
-    let query = body
-        .query
-        .or(body.message)
-        .unwrap_or_default();
+    let query = body.query.or(body.message).unwrap_or_default();
 
     if query.is_empty() {
         return Ok(Json(json!({
@@ -352,7 +346,11 @@ async fn compress(
         ..Default::default()
     };
 
-    match state.llm.call(COMPRESS_SYSTEM_PROMPT, &user_prompt, Some(opts)).await {
+    match state
+        .llm
+        .call(COMPRESS_SYSTEM_PROMPT, &user_prompt, Some(opts))
+        .await
+    {
         Ok(summary) => {
             tracing::info!(
                 file = %file_path,
@@ -364,7 +362,11 @@ async fn compress(
             // Also record as an observation for session tracking
             let obs = Observation {
                 tool_name: body.tool_name.clone(),
-                content: format!("[compressed {}] {}", file_path, &summary[..summary.len().min(200)]),
+                content: format!(
+                    "[compressed {}] {}",
+                    file_path,
+                    &summary[..summary.len().min(200)]
+                ),
                 importance: 2,
                 category: "discovery".to_string(),
                 timestamp: chrono::Utc::now(),
