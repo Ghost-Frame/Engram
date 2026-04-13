@@ -1,10 +1,9 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
-use kleos_lib::audit;
 use kleos_lib::auth::{self, Scope};
 use kleos_lib::quota;
 use kleos_lib::ratelimit;
@@ -23,7 +22,6 @@ pub fn router() -> Router<AppState> {
             "/api-keys/{id}",
             axum::routing::delete(delete_api_key_handler),
         )
-        .route("/audit", get(list_audit_handler))
         .route("/rate-limit/{key}", get(rate_limit_status_handler))
         .route("/quota", get(get_quota_handler))
         .route("/usage", post(record_usage_handler))
@@ -134,50 +132,6 @@ async fn delete_api_key_handler(
         auth::revoke_key(&state.db, auth.user_id, id).await?;
     }
     Ok(Json(json!({ "deleted": true, "id": id })))
-}
-
-#[derive(Debug, Deserialize)]
-struct AuditParams {
-    limit: Option<usize>,
-    target_type: Option<String>,
-    target_id: Option<String>,
-    all: Option<bool>,
-}
-
-async fn list_audit_handler(
-    State(state): State<AppState>,
-    Auth(auth): Auth,
-    Query(params): Query<AuditParams>,
-) -> Result<Json<Value>, AppError> {
-    // SECURITY: the /audit endpoint previously returned entries across every
-    // tenant to any authenticated caller. It now filters by auth.user_id by
-    // default. Admins can opt in to the global view via `?all=true`.
-    let limit = params.limit.unwrap_or(50).min(1000);
-    let entries = if params.all.unwrap_or(false) {
-        if !auth.has_scope(&Scope::Admin) {
-            return Err(AppError::from(kleos_lib::EngError::Auth(
-                "admin scope required for global audit view".into(),
-            )));
-        }
-        audit::query_audit_log_admin(
-            &state.db,
-            params.target_type.as_deref(),
-            params.target_id.as_deref(),
-            limit,
-        )
-        .await?
-    } else {
-        audit::query_audit_log(
-            &state.db,
-            params.target_type.as_deref(),
-            params.target_id.as_deref(),
-            limit,
-            auth.user_id,
-        )
-        .await?
-    };
-    let count = entries.len();
-    Ok(Json(json!({ "entries": entries, "count": count })))
 }
 
 async fn rate_limit_status_handler(
