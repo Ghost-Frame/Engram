@@ -3,7 +3,7 @@
 use crate::{handle_jsonrpc, App};
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, State},
+    extract::{ConnectInfo, DefaultBodyLimit, State},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -77,14 +77,13 @@ async fn bearer_auth(request: Request<Body>, next: Next) -> Response {
 }
 
 async fn preauth_rate_limit(State(app): State<App>, request: Request<Body>, next: Next) -> Response {
+    // Use the real TCP peer address from ConnectInfo (injected by
+    // into_make_service_with_connect_info) instead of the spoofable
+    // x-forwarded-for header.
     let key = request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(|ip| format!("mcp:http:{}", ip))
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| format!("mcp:http:{}", ci.0.ip()))
         .unwrap_or_else(|| "mcp:http:unknown".to_string());
 
     match engram_lib::ratelimit::check_and_increment(&app.db, &key, PREAUTH_IP_LIMIT, 60).await {
@@ -143,7 +142,10 @@ pub async fn serve(app: App, listen: &str) -> Result<()> {
         .await
         .map_err(|e| EngError::Internal(e.to_string()))?;
     tracing::info!(addr = %addr, "MCP HTTP transport listening (auth required)");
-    axum::serve(listener, router(app))
-        .await
-        .map_err(|e| EngError::Internal(e.to_string()))
+    axum::serve(
+        listener,
+        router(app).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .map_err(|e| EngError::Internal(e.to_string()))
 }
