@@ -37,7 +37,7 @@ The TypeScript engram remains the reference design. This is the runtime.
 ## Quick Start
 
 ```bash
-git clone https://github.com/Ghost-Frame/Engram-rust.git && cd engram-rust
+git clone https://github.com/Ghost-Frame/Engram.git && cd engram
 cargo build --release
 ./target/release/engram-server
 ```
