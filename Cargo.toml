@@ -35,10 +35,10 @@ zip = "2"
 pdf-extract = "0.7"
 rand = "0.8"
 async-trait = "0.1"
-arrow-array = "56"
-arrow-schema = "56"
+arrow-array = "57"
+arrow-schema = "57"
 futures = "0.3"
-lancedb = { version = "0.23", default-features = false }
+lancedb = { version = "0.27", default-features = false }
 protoc-bin-vendored-linux-x86_64 = "3"
 flate2 = "1"
 hex = "0.4.3"

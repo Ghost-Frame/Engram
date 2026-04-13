@@ -2,7 +2,7 @@ use super::{VectorHit, VectorIndex};
 use crate::{EngError, Result};
 use arrow_array::types::Float32Type;
 use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, RecordBatchIterator,
+    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
@@ -160,14 +160,13 @@ impl VectorIndex for LanceIndex {
             schema.clone(),
             self.dimensions,
         )?;
-        let batches = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
 
         table
             .delete(&format!("memory_id = {}", memory_id))
             .await
             .map_err(|e| lance_err("delete previous LanceDB vector row", e))?;
         table
-            .add(batches)
+            .add(vec![batch])
             .execute()
             .await
             .map_err(|e| lance_err("insert LanceDB vector row", e))?;
