@@ -137,6 +137,17 @@ pub async fn index_artifact(
     true
 }
 
+/// Options for storing an artifact, beyond the required fields.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StoreArtifactOpts {
+    pub artifact_type: Option<String>,
+    pub content: Option<String>,
+    pub source_url: Option<String>,
+    pub agent: Option<String>,
+    pub session_id: Option<String>,
+    pub metadata: Option<String>,
+}
+
 /// Insert an artifact row attached to `memory_id`.
 ///
 /// SECURITY (MT-F3): callers must pass the authenticated `user_id` so we
@@ -148,6 +159,7 @@ pub async fn store_artifact(
     db: &Database,
     user_id: i64,
     memory_id: i64,
+    name: &str,
     filename: &str,
     mime_type: &str,
     size_bytes: i64,
@@ -156,12 +168,23 @@ pub async fn store_artifact(
     data: Option<Vec<u8>>,
     disk_path: Option<&str>,
     is_encrypted: bool,
+    opts: &StoreArtifactOpts,
 ) -> Result<i64> {
+    let name = name.to_string();
     let filename = filename.to_string();
     let mime_type = mime_type.to_string();
     let sha256 = sha256.to_string();
     let storage_mode = storage_mode.to_string();
     let disk_path = disk_path.map(|s| s.to_string());
+    let artifact_type = opts
+        .artifact_type
+        .clone()
+        .unwrap_or_else(|| "file".to_string());
+    let content = opts.content.clone();
+    let source_url = opts.source_url.clone();
+    let agent = opts.agent.clone();
+    let session_id = opts.session_id.clone();
+    let metadata = opts.metadata.clone();
 
     db.write(move |conn| {
         let owned = conn
@@ -181,18 +204,29 @@ pub async fn store_artifact(
 
         conn.query_row(
             "INSERT INTO artifacts \
-             (memory_id, filename, mime_type, size_bytes, sha256, storage_mode, data, disk_path, is_encrypted) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id",
+             (name, memory_id, filename, artifact_type, content, mime_type, \
+              size_bytes, sha256, storage_mode, data, disk_path, is_encrypted, \
+              source_url, agent, session_id, metadata, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
+             RETURNING id",
             params![
+                name,
                 memory_id,
                 filename,
+                artifact_type,
+                content,
                 mime_type,
                 size_bytes,
                 sha256,
                 storage_mode,
                 data,
                 disk_path,
-                is_encrypted as i64
+                is_encrypted as i64,
+                source_url,
+                agent,
+                session_id,
+                metadata,
+                user_id
             ],
             |row| row.get::<_, i64>(0),
         )

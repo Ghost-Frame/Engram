@@ -33,12 +33,29 @@ pub struct GraphNode {
     pub pagerank: Option<f32>,
     pub community: Option<u32>,
     pub metadata: Option<serde_json::Value>,
+    // Fields expected by engram-gui graph visualization
+    #[serde(rename = "type")]
+    pub node_type: String,
+    pub category: String,
+    pub importance: i64,
+    pub group: String,
+    pub size: f32,
+    pub source: String,
+    pub created_at: String,
+    pub is_static: bool,
+    pub content: String,
+    pub source_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub community_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decay_score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphEdge {
     pub source: String,
     pub target: String,
+    #[serde(rename = "type")]
     pub link_type: LinkType,
     pub weight: f32,
 }
