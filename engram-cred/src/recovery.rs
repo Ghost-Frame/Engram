@@ -124,7 +124,10 @@ pub async fn recover_master_key(
                 .query(params![user_id])
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-            match rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+            match rows
+                .next()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            {
                 Some(row) => {
                     let blob: Vec<u8> = row
                         .get(0)

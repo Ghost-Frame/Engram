@@ -597,7 +597,13 @@ pub async fn record_tool_quality(
         conn.execute(
             "INSERT INTO tool_quality_records (tool_name, agent, success, latency_ms, error_type) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![tool_name_owned, agent_owned, success as i32, latency_ms, error_type_owned],
+            params![
+                tool_name_owned,
+                agent_owned,
+                success as i32,
+                latency_ms,
+                error_type_owned
+            ],
         )
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         Ok(())

@@ -568,7 +568,8 @@ pub async fn list_evaluations(
                 notes, evaluator, user_id, created_at
          FROM evaluations WHERE user_id = ?1",
     );
-    let mut params_vec: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(user_id)];
+    let mut params_vec: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Integer(user_id)];
     let mut idx = 2usize;
 
     if let Some(a) = agent {
@@ -754,7 +755,8 @@ pub async fn get_metrics(
         "SELECT id, agent, metric, value, tags, user_id, recorded_at
          FROM quality_metrics WHERE user_id = ?1",
     );
-    let mut params_vec: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(user_id)];
+    let mut params_vec: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Integer(user_id)];
     let mut idx = 2usize;
 
     if let Some(a) = agent {

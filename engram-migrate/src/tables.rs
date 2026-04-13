@@ -7,12 +7,12 @@ use crate::target::TargetDb;
 
 /// Tables to skip during migration
 const SKIP_TABLES: &[&str] = &[
-    "rate_limits",           // ephemeral
-    "schema_version",        // target gets fresh one
-    "schema_versions",       // target gets fresh one
-    "vector_sync_pending",   // stale after migration
-    "app_state",             // fresh bootstrap on target
-    "sqlite_sequence",       // auto-managed
+    "rate_limits",         // ephemeral
+    "schema_version",      // target gets fresh one
+    "schema_versions",     // target gets fresh one
+    "vector_sync_pending", // stale after migration
+    "app_state",           // fresh bootstrap on target
+    "sqlite_sequence",     // auto-managed
     // FTS virtual tables (rebuilt via triggers)
     "memories_fts",
     "memories_fts_data",
@@ -49,11 +49,7 @@ const SKIP_TABLES: &[&str] = &[
 ];
 
 /// Columns to skip (vector/embedding columns -- will be extracted to LanceDB)
-const SKIP_COLUMNS: &[&str] = &[
-    "embedding",
-    "embedding_vec_1024",
-    "embedding_vec_1536",
-];
+const SKIP_COLUMNS: &[&str] = &["embedding", "embedding_vec_1024", "embedding_vec_1536"];
 
 /// FK-ordered tables (copy these first in order)
 const FK_ORDERED_TABLES: &[&str] = &[
@@ -107,10 +103,10 @@ pub async fn copy_all(source: &SourceDb, target: &TargetDb) -> Result<()> {
 }
 
 fn should_skip(table: &str) -> bool {
-    SKIP_TABLES.contains(&table) ||
-    table.contains("_shadow") ||
-    table.contains("_idx") ||
-    table.ends_with("_fts")
+    SKIP_TABLES.contains(&table)
+        || table.contains("_shadow")
+        || table.contains("_idx")
+        || table.ends_with("_fts")
 }
 
 /// Get target table columns
@@ -181,10 +177,8 @@ async fn copy_table(source: &SourceDb, target: &TargetDb, table: &str) -> Result
     }
 
     // Check if all required target columns are present in source
-    let missing_required: Vec<&String> = required_cols
-        .iter()
-        .filter(|c| !cols.contains(c))
-        .collect();
+    let missing_required: Vec<&String> =
+        required_cols.iter().filter(|c| !cols.contains(c)).collect();
 
     if !missing_required.is_empty() {
         info!(
@@ -210,13 +204,21 @@ async fn copy_table(source: &SourceDb, target: &TargetDb, table: &str) -> Result
     }
 
     let pb = ProgressBar::new(total as u64);
-    pb.set_style(ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")?
-        .progress_chars("#>-"));
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}",
+            )?
+            .progress_chars("#>-"),
+    );
     pb.set_message(table.to_string());
 
     // Query all rows
-    let col_list = cols.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", ");
+    let col_list = cols
+        .iter()
+        .map(|c| format!("\"{}\"", c))
+        .collect::<Vec<_>>()
+        .join(", ");
     let query = format!("SELECT {} FROM \"{}\"", col_list, table);
     let mut stmt = source.conn.prepare(&query).await?;
     let mut rows = stmt.query(()).await?;
@@ -247,7 +249,8 @@ async fn copy_table(source: &SourceDb, target: &TargetDb, table: &str) -> Result
             values.push(value);
         }
 
-        let params: Vec<&dyn rusqlite::ToSql> = values.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let params: Vec<&dyn rusqlite::ToSql> =
+            values.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         insert_stmt.execute(params.as_slice())?;
 
         batch_count += 1;

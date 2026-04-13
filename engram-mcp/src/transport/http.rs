@@ -76,7 +76,11 @@ async fn bearer_auth(request: Request<Body>, next: Next) -> Response {
     next.run(request).await
 }
 
-async fn preauth_rate_limit(State(app): State<App>, request: Request<Body>, next: Next) -> Response {
+async fn preauth_rate_limit(
+    State(app): State<App>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
     // Use the real TCP peer address from ConnectInfo (injected by
     // into_make_service_with_connect_info) instead of the spoofable
     // x-forwarded-for header.
@@ -113,7 +117,10 @@ async fn preauth_rate_limit(State(app): State<App>, request: Request<Body>, next
 pub fn router(app: App) -> Router {
     Router::new()
         .route("/mcp", post(mcp))
-        .layer(middleware::from_fn_with_state(app.clone(), preauth_rate_limit))
+        .layer(middleware::from_fn_with_state(
+            app.clone(),
+            preauth_rate_limit,
+        ))
         .layer(middleware::from_fn(bearer_auth))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(TimeoutLayer::with_status_code(

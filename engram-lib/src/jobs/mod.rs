@@ -220,9 +220,16 @@ pub async fn get_job_stats(db: &Database) -> Result<JobStats> {
         let mut rows = stmt
             .query([])
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
-        while let Some(row) = rows.next().map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))? {
-            let s: String = row.get(0).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
-            let n: i64 = row.get(1).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
+        {
+            let s: String = row
+                .get(0)
+                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            let n: i64 = row
+                .get(1)
+                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
             match s.as_str() {
                 "pending" => stats.pending = n,
                 "running" => stats.running = n,
@@ -292,18 +299,35 @@ pub async fn list_failed_jobs(db: &Database, limit: i64, offset: i64) -> Result<
             .query(params![limit, offset])
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         let mut jobs = Vec::new();
-        while let Some(r) = rows.next().map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))? {
+        while let Some(r) = rows
+            .next()
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
+        {
             jobs.push(Job {
-                id: r.get(0).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
-                job_type: r.get(1).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
-                payload: r.get(2).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                id: r
+                    .get(0)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                job_type: r
+                    .get(1)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                payload: r
+                    .get(2)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
                 status: JobStatus::Failed,
-                attempts: r.get(3).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
-                max_attempts: r.get(4).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
-                error: r.get(5).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                attempts: r
+                    .get(3)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                max_attempts: r
+                    .get(4)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                error: r
+                    .get(5)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
                 created_at: r.get::<_, String>(6).unwrap_or_default(),
                 claimed_at: None,
-                completed_at: r.get(7).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                completed_at: r
+                    .get(7)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
                 next_retry_at: None,
             });
         }
@@ -324,19 +348,34 @@ pub async fn list_pending_jobs(db: &Database, limit: i64, offset: i64) -> Result
             .query(params![limit, offset])
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         let mut jobs = Vec::new();
-        while let Some(r) = rows.next().map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))? {
+        while let Some(r) = rows
+            .next()
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
+        {
             jobs.push(Job {
-                id: r.get(0).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
-                job_type: r.get(1).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
-                payload: r.get(2).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                id: r
+                    .get(0)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                job_type: r
+                    .get(1)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                payload: r
+                    .get(2)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
                 status: JobStatus::Pending,
-                attempts: r.get(3).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
-                max_attempts: r.get(4).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                attempts: r
+                    .get(3)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                max_attempts: r
+                    .get(4)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
                 error: None,
                 created_at: r.get::<_, String>(5).unwrap_or_default(),
                 claimed_at: None,
                 completed_at: None,
-                next_retry_at: r.get(6).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                next_retry_at: r
+                    .get(6)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
             });
         }
         Ok(jobs)
@@ -356,17 +395,32 @@ pub async fn list_running_jobs(db: &Database) -> Result<Vec<Job>> {
             .query([])
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         let mut jobs = Vec::new();
-        while let Some(r) = rows.next().map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))? {
+        while let Some(r) = rows
+            .next()
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
+        {
             jobs.push(Job {
-                id: r.get(0).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
-                job_type: r.get(1).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
-                payload: r.get(2).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                id: r
+                    .get(0)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                job_type: r
+                    .get(1)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                payload: r
+                    .get(2)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
                 status: JobStatus::Running,
-                attempts: r.get(3).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
-                max_attempts: r.get(4).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                attempts: r
+                    .get(3)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                max_attempts: r
+                    .get(4)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
                 error: None,
                 created_at: r.get::<_, String>(5).unwrap_or_default(),
-                claimed_at: r.get(6).map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                claimed_at: r
+                    .get(6)
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
                 completed_at: None,
                 next_retry_at: None,
             });

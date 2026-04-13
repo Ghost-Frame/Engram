@@ -1,9 +1,7 @@
 use super::{VectorHit, VectorIndex};
 use crate::{EngError, Result};
 use arrow_array::types::Float32Type;
-use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch,
-};
+use arrow_array::{Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use futures::TryStreamExt;

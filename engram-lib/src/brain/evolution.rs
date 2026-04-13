@@ -5,8 +5,8 @@
 // Persisted to brain_meta table as JSON.
 // ============================================================================
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::db::Database;
 use crate::{EngError, Result};

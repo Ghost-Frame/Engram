@@ -38,14 +38,8 @@ async fn build_context(
     }
 
     let embedder = state.embedder.read().await.clone();
-    let result = assemble_context(
-        &state.db,
-        body,
-        auth.user_id,
-        embedder,
-        state.llm.clone(),
-    )
-    .await?;
+    let result =
+        assemble_context(&state.db, body, auth.user_id, embedder, state.llm.clone()).await?;
 
     Ok(Json(json!(result)))
 }

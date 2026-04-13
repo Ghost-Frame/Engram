@@ -85,7 +85,9 @@ fn build_forward_adj(edges: &[BrainEdge], kind: EdgeType) -> HashMap<i64, Vec<(i
     let mut adj: HashMap<i64, Vec<(i64, f32)>> = HashMap::new();
     for e in edges {
         if e.edge_type == kind {
-            adj.entry(e.source_id).or_default().push((e.target_id, e.weight));
+            adj.entry(e.source_id)
+                .or_default()
+                .push((e.target_id, e.weight));
         }
     }
     adj
@@ -97,7 +99,9 @@ fn build_backward_adj(edges: &[BrainEdge], kind: EdgeType) -> HashMap<i64, Vec<(
     let mut adj: HashMap<i64, Vec<(i64, f32)>> = HashMap::new();
     for e in edges {
         if e.edge_type == kind {
-            adj.entry(e.target_id).or_default().push((e.source_id, e.weight));
+            adj.entry(e.target_id)
+                .or_default()
+                .push((e.source_id, e.weight));
         }
     }
     adj
@@ -153,7 +157,12 @@ fn build_chain_description(
             .iter()
             .map(|s| s.as_str())
             .collect();
-        format!("'{}' -> [{}] -> '{}'", root, intermediates.join(" -> "), effect)
+        format!(
+            "'{}' -> [{}] -> '{}'",
+            root,
+            intermediates.join(" -> "),
+            effect
+        )
     }
 }
 
@@ -298,10 +307,7 @@ pub fn abductive_reason(
         }
 
         for (root_id, confidences) in root_groups {
-            let combined =
-                1.0 - confidences
-                    .iter()
-                    .fold(1.0_f32, |acc, c| acc * (1.0 - c));
+            let combined = 1.0 - confidences.iter().fold(1.0_f32, |acc, c| acc * (1.0 - c));
             if combined < config.min_confidence {
                 continue;
             }
@@ -386,8 +392,7 @@ pub fn predictive_reason(
                         continue;
                     }
                     visited.insert(succ_id);
-                    let chain_conf =
-                        confidence * weight * spread_decay.powi((hops + 1) as i32);
+                    let chain_conf = confidence * weight * spread_decay.powi((hops + 1) as i32);
                     if chain_conf < config.min_confidence {
                         continue;
                     }
@@ -396,8 +401,7 @@ pub fn predictive_reason(
 
                     // Only emit predictions for consequences not already activated
                     if !activated_set.contains(&succ_id) {
-                        let description =
-                            build_prediction_description(&new_path, content_map);
+                        let description = build_prediction_description(&new_path, content_map);
                         let supporting_ids = new_path.clone();
 
                         inferences.push(Inference {
@@ -479,8 +483,9 @@ pub fn synthesize_contradictions(
             )
         };
 
-        let confidence =
-            (pair.winner_activation - pair.loser_activation).abs().min(1.0);
+        let confidence = (pair.winner_activation - pair.loser_activation)
+            .abs()
+            .min(1.0);
         if confidence < config.min_confidence {
             continue;
         }
@@ -628,7 +633,11 @@ pub fn filter_cached_rules(
     let activated_set: HashSet<i64> = activated.keys().cloned().collect();
     let mut relevant: Vec<Inference> = cached_rules
         .iter()
-        .filter(|rule| rule.supporting_ids.iter().any(|id| activated_set.contains(id)))
+        .filter(|rule| {
+            rule.supporting_ids
+                .iter()
+                .any(|id| activated_set.contains(id))
+        })
         .cloned()
         .collect();
     relevant.truncate(config.max_inferences);
@@ -708,9 +717,7 @@ pub fn analogical_reason(
         // Find the most-activated pattern as anchor for the analogy label
         let anchor_preview = activated
             .iter()
-            .max_by(|a, b| {
-                a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .and_then(|(id, _)| memory_index.get(id))
             .and_then(|&idx| content_map.get(&patterns[idx].id))
             .map(|c| content_preview(c, 80))

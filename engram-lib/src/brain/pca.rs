@@ -267,8 +267,8 @@ pub async fn load_pca_model(
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => {
                 let blob: Vec<u8> = row.get(0).map_err(rusqlite_to_eng_error)?;
-                let transform: PcaTransform = serde_json::from_slice(&blob)
-                    .map_err(|e| EngError::Internal(e.to_string()))?;
+                let transform: PcaTransform =
+                    serde_json::from_slice(&blob).map_err(|e| EngError::Internal(e.to_string()))?;
                 Ok(Some(transform))
             }
             None => Ok(None),

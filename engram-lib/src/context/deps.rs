@@ -73,7 +73,9 @@ pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memo
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
         let mut memories = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             memories.push(row_to_memory(row)?);
@@ -94,7 +96,9 @@ pub async fn get_memory_without_embedding(
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![id, user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => Ok(Some(row_to_memory(row)?)),
             None => Ok(None),
@@ -114,7 +118,9 @@ pub async fn get_version_chain(
                ORDER BY version ASC";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![root_id, user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![root_id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
         let mut chain = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             chain.push(VersionChainEntry {
@@ -139,12 +145,18 @@ pub async fn get_episode_summary(
     let sql = "SELECT id, summary, started_at FROM episodes WHERE id = ?1 AND user_id = ?2";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![ep_id, user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![ep_id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => Ok(Some(EpisodeSummary {
                 id: row.get::<_, i64>(0).map_err(rusqlite_to_eng_error)?,
-                summary: row.get::<_, Option<String>>(1).map_err(rusqlite_to_eng_error)?,
-                started_at: row.get::<_, Option<String>>(2).map_err(rusqlite_to_eng_error)?,
+                summary: row
+                    .get::<_, Option<String>>(1)
+                    .map_err(rusqlite_to_eng_error)?,
+                started_at: row
+                    .get::<_, Option<String>>(2)
+                    .map_err(rusqlite_to_eng_error)?,
             })),
             None => Ok(None),
         }
@@ -161,7 +173,9 @@ pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<L
                ORDER BY ml.similarity DESC LIMIT 10";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![mem_id, user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![mem_id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
         let mut linked = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             linked.push(LinkedMemory {
@@ -170,8 +184,12 @@ pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<L
                 category: row.get::<_, String>(2).map_err(rusqlite_to_eng_error)?,
                 similarity: row.get::<_, f64>(3).map_err(rusqlite_to_eng_error)?,
                 is_forgotten: row.get::<_, i32>(4).map_err(rusqlite_to_eng_error)? != 0,
-                model: row.get::<_, Option<String>>(5).map_err(rusqlite_to_eng_error)?,
-                source: row.get::<_, Option<String>>(6).map_err(rusqlite_to_eng_error)?,
+                model: row
+                    .get::<_, Option<String>>(5)
+                    .map_err(rusqlite_to_eng_error)?,
+                source: row
+                    .get::<_, Option<String>>(6)
+                    .map_err(rusqlite_to_eng_error)?,
             });
         }
         Ok(linked)
@@ -188,7 +206,9 @@ pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Re
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![user_id, limit as i64]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id, limit as i64])
+            .map_err(rusqlite_to_eng_error)?;
         let mut memories = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             memories.push(row_to_memory(row)?);
@@ -203,7 +223,9 @@ pub async fn get_current_state(db: &Database, user_id: i64) -> Result<Vec<StateE
                WHERE user_id = ?1 ORDER BY updated_at DESC LIMIT 30";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
         let mut entries = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             entries.push(StateEntry {
@@ -222,7 +244,9 @@ pub async fn get_user_preferences(db: &Database, user_id: i64) -> Result<Vec<Pre
                WHERE user_id = ?1 AND strength >= 1.5 ORDER BY strength DESC LIMIT 15";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
         let mut prefs = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             prefs.push(PreferenceEntry {
@@ -254,19 +278,35 @@ pub async fn get_structured_facts(
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
         let mut facts = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             facts.push(StructuredFact {
                 subject: row.get::<_, String>(0).map_err(rusqlite_to_eng_error)?,
                 verb: row.get::<_, String>(1).map_err(rusqlite_to_eng_error)?,
-                object: row.get::<_, Option<String>>(2).map_err(rusqlite_to_eng_error)?,
-                quantity: row.get::<_, Option<f64>>(3).map_err(rusqlite_to_eng_error)?,
-                unit: row.get::<_, Option<String>>(4).map_err(rusqlite_to_eng_error)?,
-                date_ref: row.get::<_, Option<String>>(5).map_err(rusqlite_to_eng_error)?,
-                date_approx: row.get::<_, Option<String>>(6).map_err(rusqlite_to_eng_error)?,
-                valid_at: row.get::<_, Option<String>>(7).map_err(rusqlite_to_eng_error)?,
-                invalid_at: row.get::<_, Option<String>>(8).map_err(rusqlite_to_eng_error)?,
+                object: row
+                    .get::<_, Option<String>>(2)
+                    .map_err(rusqlite_to_eng_error)?,
+                quantity: row
+                    .get::<_, Option<f64>>(3)
+                    .map_err(rusqlite_to_eng_error)?,
+                unit: row
+                    .get::<_, Option<String>>(4)
+                    .map_err(rusqlite_to_eng_error)?,
+                date_ref: row
+                    .get::<_, Option<String>>(5)
+                    .map_err(rusqlite_to_eng_error)?,
+                date_approx: row
+                    .get::<_, Option<String>>(6)
+                    .map_err(rusqlite_to_eng_error)?,
+                valid_at: row
+                    .get::<_, Option<String>>(7)
+                    .map_err(rusqlite_to_eng_error)?,
+                invalid_at: row
+                    .get::<_, Option<String>>(8)
+                    .map_err(rusqlite_to_eng_error)?,
             });
         }
         Ok(facts)

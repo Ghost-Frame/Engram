@@ -35,10 +35,12 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
 pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result<Option<String>> {
     let name = name.to_string();
     db.read(move |conn| {
-        let mut stmt = conn.prepare("SELECT name FROM skill_records WHERE user_id = ?1 AND is_active = 1")
+        let mut stmt = conn
+            .prepare("SELECT name FROM skill_records WHERE user_id = ?1 AND is_active = 1")
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-        let names: Vec<String> = stmt.query_map(params![user_id], |row| row.get(0))
+        let names: Vec<String> = stmt
+            .query_map(params![user_id], |row| row.get(0))
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
             .filter_map(|r| r.ok())
             .collect();
@@ -69,7 +71,8 @@ pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result
         }
 
         Ok(None)
-    }).await
+    })
+    .await
 }
 
 // -- Analysis types --

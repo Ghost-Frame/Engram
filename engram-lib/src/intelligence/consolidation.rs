@@ -94,8 +94,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
     );
 
     let source_ids_json =
-        serde_json::to_string(&sources.iter().map(|s| s.0).collect::<Vec<_>>())
-            .unwrap_or_default();
+        serde_json::to_string(&sources.iter().map(|s| s.0).collect::<Vec<_>>()).unwrap_or_default();
     let source_count = sources.len() as i64;
     let sources_for_write: Vec<i64> = sources.iter().map(|s| s.0).collect();
 

@@ -51,9 +51,7 @@ pub async fn receive_sync(
                 let exists = db
                     .read(move |conn| {
                         let mut stmt = conn
-                            .prepare(
-                                "SELECT id FROM memories WHERE sync_id = ?1 AND user_id = ?2",
-                            )
+                            .prepare("SELECT id FROM memories WHERE sync_id = ?1 AND user_id = ?2")
                             .map_err(rusqlite_to_eng_error)?;
                         let mut rows = stmt
                             .query(rusqlite::params![sync_id, user_id])

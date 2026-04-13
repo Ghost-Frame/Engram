@@ -66,16 +66,24 @@ pub async fn reconsolidate_memory(
         })
         .await?;
 
-    let (importance, confidence, is_static, access_count, recall_hits, recall_misses, fsrs_stability, created_at) =
-        match row_opt {
-            Some(r) => r,
-            None => {
-                return Err(crate::EngError::NotFound(format!(
-                    "memory {} not found",
-                    memory_id
-                )));
-            }
-        };
+    let (
+        importance,
+        confidence,
+        is_static,
+        access_count,
+        recall_hits,
+        recall_misses,
+        fsrs_stability,
+        created_at,
+    ) = match row_opt {
+        Some(r) => r,
+        None => {
+            return Err(crate::EngError::NotFound(format!(
+                "memory {} not found",
+                memory_id
+            )));
+        }
+    };
 
     let mut new_importance = importance;
     let mut new_confidence = confidence;
@@ -132,8 +140,7 @@ pub async fn reconsolidate_memory(
     // Parse created_at and compute age in days
     if !is_static && access_count < 3 {
         // Rough age check: if created_at is more than 30 days ago
-        if let Ok(created) =
-            chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S")
+        if let Ok(created) = chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S")
         {
             let now = chrono::Utc::now().naive_utc();
             let age_days = (now - created).num_days();

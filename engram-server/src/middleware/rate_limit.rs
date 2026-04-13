@@ -40,7 +40,9 @@ fn client_ip_key(request: &Request, trusted_proxies: &[String]) -> String {
         .map(|ci| ci.0.ip().to_string());
 
     let ip = match &peer_ip {
-        Some(peer) if !trusted_proxies.is_empty() && trusted_proxies.iter().any(|tp| tp == peer) => {
+        Some(peer)
+            if !trusted_proxies.is_empty() && trusted_proxies.iter().any(|tp| tp == peer) =>
+        {
             // Peer is a trusted reverse proxy -- use first XFF hop.
             request
                 .headers()
@@ -134,9 +136,7 @@ pub async fn rate_limit_middleware(
 
     match ratelimit::check_and_increment(&state.db, &key, limit, 60).await {
         Ok(true) => next.run(request).await,
-        Ok(false) => {
-            too_many_requests(60)
-        }
+        Ok(false) => too_many_requests(60),
         Err(e) => {
             // SECURITY: fail CLOSED on backend errors for authenticated
             // requests. Previously we passed the request through on error,

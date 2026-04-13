@@ -168,9 +168,7 @@ pub async fn list_facts(
     };
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let rows = stmt
             .query_map(params![user_id], row_to_fact)
             .map_err(rusqlite_to_eng_error)?;
@@ -253,9 +251,7 @@ pub async fn get_state(
         conn.query_row(&sql, params![agent, key, user_id], row_to_state)
             .optional()
             .map_err(rusqlite_to_eng_error)?
-            .ok_or_else(|| {
-                EngError::NotFound(format!("state not found for user {}", user_id))
-            })
+            .ok_or_else(|| EngError::NotFound(format!("state not found for user {}", user_id)))
     })
     .await
 }
@@ -268,9 +264,7 @@ pub async fn list_state(db: &Database, agent: &str, user_id: i64) -> Result<Vec<
         STATE_COLUMNS
     );
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let rows = stmt
             .query_map(params![agent, user_id], row_to_state)
             .map_err(rusqlite_to_eng_error)?;

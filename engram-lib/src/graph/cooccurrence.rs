@@ -193,7 +193,10 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
 
             for row in rows {
                 let (memory_id, entity_id) = row.map_err(rusqlite_to_eng_error)?;
-                memory_entities.entry(memory_id).or_default().push(entity_id);
+                memory_entities
+                    .entry(memory_id)
+                    .or_default()
+                    .push(entity_id);
             }
 
             Ok(memory_entities)

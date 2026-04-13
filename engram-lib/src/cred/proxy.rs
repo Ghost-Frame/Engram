@@ -48,12 +48,14 @@ impl CreddClient {
         // Test clients set `allow_loopback_proxy` so mock HTTP servers on
         // 127.0.0.1 still work; production clients never do.
         if !self.allow_loopback_proxy {
-            resolve_and_validate_url(&request.url).await.map_err(|e| match e {
-                EngError::InvalidInput(msg) => {
-                    EngError::InvalidInput(format!("cred proxy URL rejected: {}", msg))
-                }
-                other => other,
-            })?;
+            resolve_and_validate_url(&request.url)
+                .await
+                .map_err(|e| match e {
+                    EngError::InvalidInput(msg) => {
+                        EngError::InvalidInput(format!("cred proxy URL rejected: {}", msg))
+                    }
+                    other => other,
+                })?;
         }
 
         let secret = self

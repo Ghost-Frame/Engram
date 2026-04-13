@@ -38,7 +38,10 @@ pub async fn absorb_activity_to_brain(
     let embedder_ref = match embedder_guard.as_ref() {
         Some(e) => e.clone(),
         None => {
-            tracing::warn!("brain_absorber: embedder not ready, skipping absorption for memory {}", memory_id);
+            tracing::warn!(
+                "brain_absorber: embedder not ready, skipping absorption for memory {}",
+                memory_id
+            );
             return;
         }
     };
@@ -56,7 +59,11 @@ pub async fn absorb_activity_to_brain(
 
     match brain.absorb(embedder_ref.as_ref(), memory).await {
         Ok(()) => tracing::debug!("brain_absorber: absorbed activity memory id={}", memory_id),
-        Err(e) => tracing::warn!("brain_absorber: brain absorb failed for memory {}: {}", memory_id, e),
+        Err(e) => tracing::warn!(
+            "brain_absorber: brain absorb failed for memory {}: {}",
+            memory_id,
+            e
+        ),
     }
 }
 
@@ -118,7 +125,10 @@ pub async fn absorb_session_to_brain(
 
     // 2. Absorb gate blocks as strong correction signals (importance 8)
     for line in issue_lines.iter().take(5) {
-        let block_content = format!("Gate blocked action in session {}: {}", session_short_id, line);
+        let block_content = format!(
+            "Gate blocked action in session {}: {}",
+            session_short_id, line
+        );
         absorb_one(
             &brain,
             &embedder,
@@ -174,7 +184,10 @@ async fn absorb_one(
     let embedder_ref = match embedder_guard.as_ref() {
         Some(e) => e.clone(),
         None => {
-            tracing::warn!("brain_absorber: embedder not ready, skipping absorption of {:?}", &content[..content.len().min(60)]);
+            tracing::warn!(
+                "brain_absorber: embedder not ready, skipping absorption of {:?}",
+                &content[..content.len().min(60)]
+            );
             return;
         }
     };
@@ -195,7 +208,11 @@ async fn absorb_one(
 
     match brain.absorb(embedder_ref.as_ref(), memory).await {
         Ok(()) => tracing::debug!("brain_absorber: absorbed id={} category={}", id, category),
-        Err(e) => tracing::warn!("brain_absorber: brain absorb failed (category={}): {}", category, e),
+        Err(e) => tracing::warn!(
+            "brain_absorber: brain absorb failed (category={}): {}",
+            category,
+            e
+        ),
     }
 }
 

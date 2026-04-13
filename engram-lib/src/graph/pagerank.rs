@@ -581,12 +581,7 @@ pub async fn needs_full_recompute(
             .query_row(
                 "SELECT SUM(score), COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
                 rusqlite::params![user_id],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<f64>>(0)?,
-                        row.get::<_, i64>(1)?,
-                    ))
-                },
+                |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, i64>(1)?)),
             )
             .optional()
             .map_err(rusqlite_to_eng_error)?;
@@ -654,9 +649,8 @@ pub async fn compute_pagerank_for_community(
     let ids_for_sql = memory_ids.clone();
     let edges: Vec<(i64, i64, f64, String)> = db
         .read(move |conn| {
-            conn.execute_batch(
-                "CREATE TEMP TABLE IF NOT EXISTS _pr_ids (id INTEGER PRIMARY KEY)"
-            ).map_err(rusqlite_to_eng_error)?;
+            conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS _pr_ids (id INTEGER PRIMARY KEY)")
+                .map_err(rusqlite_to_eng_error)?;
             conn.execute("DELETE FROM temp._pr_ids", [])
                 .map_err(rusqlite_to_eng_error)?;
             {
@@ -668,12 +662,14 @@ pub async fn compute_pagerank_for_community(
                         .map_err(rusqlite_to_eng_error)?;
                 }
             }
-            let mut stmt = conn.prepare(
-                "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
+            let mut stmt = conn
+                .prepare(
+                    "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
                  FROM memory_links ml \
                  INNER JOIN temp._pr_ids s ON ml.source_id = s.id \
-                 INNER JOIN temp._pr_ids t ON ml.target_id = t.id"
-            ).map_err(rusqlite_to_eng_error)?;
+                 INNER JOIN temp._pr_ids t ON ml.target_id = t.id",
+                )
+                .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
                 .query_map([], |row| {
                     Ok((
@@ -854,9 +850,7 @@ pub async fn rebuild_all_users(db: &Database) -> Result<usize> {
     let user_ids: Vec<i64> = db
         .read(move |conn| {
             let mut stmt = conn
-                .prepare(
-                    "SELECT DISTINCT user_id FROM memories WHERE is_forgotten = 0",
-                )
+                .prepare("SELECT DISTINCT user_id FROM memories WHERE is_forgotten = 0")
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
                 .query_map([], |row| row.get(0))

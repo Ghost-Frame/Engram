@@ -417,9 +417,15 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_rejects_private_rfc1918() {
-        assert!(resolve_and_validate_url("http://10.0.0.1/admin").await.is_err());
-        assert!(resolve_and_validate_url("http://192.168.1.1/admin").await.is_err());
-        assert!(resolve_and_validate_url("http://172.16.0.1/admin").await.is_err());
+        assert!(resolve_and_validate_url("http://10.0.0.1/admin")
+            .await
+            .is_err());
+        assert!(resolve_and_validate_url("http://192.168.1.1/admin")
+            .await
+            .is_err());
+        assert!(resolve_and_validate_url("http://172.16.0.1/admin")
+            .await
+            .is_err());
     }
 
     #[tokio::test]

@@ -49,8 +49,7 @@ pub async fn compress_weekly(db: &Database, user_id: i64) -> Result<Vec<Compress
 
             let mut weeks = Vec::new();
             for row in rows {
-                let (week, ids_str, start, end) =
-                    row.map_err(rusqlite_to_eng_error)?;
+                let (week, ids_str, start, end) = row.map_err(rusqlite_to_eng_error)?;
                 let ids: Vec<i64> = ids_str
                     .split(',')
                     .filter_map(|s| s.trim().parse().ok())

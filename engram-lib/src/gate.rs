@@ -9,8 +9,7 @@ use serde_json::Value;
 pub const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "TodoRead"];
 
 /// Tools that require human approval before execution.
-pub const TOOLS_REQUIRING_APPROVAL: &[&str] =
-    &["Bash", "Write", "Edit", "WebFetch", "WebSearch"];
+pub const TOOLS_REQUIRING_APPROVAL: &[&str] = &["Bash", "Write", "Edit", "WebFetch", "WebSearch"];
 
 /// Seconds to wait for a human approval before timing out and blocking.
 pub const APPROVAL_TIMEOUT_SECS: u64 = 120;
@@ -230,7 +229,11 @@ pub async fn respond_to_gate(
 ) -> Result<Value> {
     let status = if approved { "approved" } else { "denied" };
     let reason_str = reason
-        .unwrap_or(if approved { "approved by user" } else { "denied by user" })
+        .unwrap_or(if approved {
+            "approved by user"
+        } else {
+            "denied by user"
+        })
         .to_string();
     let approved_copy = approved;
 
@@ -252,9 +255,7 @@ pub async fn respond_to_gate(
 
         if approved_copy {
             let mut stmt = conn
-                .prepare(
-                    "SELECT command FROM gate_requests WHERE id = ?1 AND user_id = ?2",
-                )
+                .prepare("SELECT command FROM gate_requests WHERE id = ?1 AND user_id = ?2")
                 .map_err(rusqlite_to_eng_error)?;
             let command: Option<String> = stmt
                 .query_row(rusqlite::params![gate_id, user_id], |row| row.get(0))
@@ -403,9 +404,7 @@ pub fn check_dangerous_patterns(command: &str, config: &Config) -> Option<String
         }
         // Generic reboot/shutdown block when no server inventory is configured
         if config.eidolon.gate.servers.is_empty() {
-            return Some(
-                "Reboot/shutdown commands require explicit confirmation".to_string(),
-            );
+            return Some("Reboot/shutdown commands require explicit confirmation".to_string());
         }
     }
 
@@ -425,9 +424,7 @@ pub fn check_dangerous_patterns(command: &str, config: &Config) -> Option<String
     if (cmd_lower.contains("sample") || cmd_lower.contains("demo"))
         && (cmd_lower.contains("insert") || cmd_lower.contains("create"))
     {
-        return Some(
-            "Inserting sample/demo data requires explicit authorization".to_string(),
-        );
+        return Some("Inserting sample/demo data requires explicit authorization".to_string());
     }
 
     // Stop/restart protected services
@@ -502,8 +499,8 @@ pub fn check_dangerous_patterns(command: &str, config: &Config) -> Option<String
         }
 
         // base64 decode piped to sh/bash (base64 -d, base64 --decode, base64 -D)
-        let has_base64_decode = cmd_lower.contains("base64 -d")
-            || cmd_lower.contains("base64 --decode");
+        let has_base64_decode =
+            cmd_lower.contains("base64 -d") || cmd_lower.contains("base64 --decode");
         let has_shell_pipe = cmd_lower.contains("| sh")
             || cmd_lower.contains("| bash")
             || cmd_lower.contains("|sh")
@@ -547,9 +544,7 @@ pub fn check_dangerous_patterns(command: &str, config: &Config) -> Option<String
                 format!("={} ", cmd),
                 format!("={}&", cmd),
             ];
-            if patterns.iter().any(|p| cmd_lower.contains(p))
-                && cmd_lower.contains('$')
-            {
+            if patterns.iter().any(|p| cmd_lower.contains(p)) && cmd_lower.contains('$') {
                 return Some(format!(
                     "Shell variable indirection constructing '{}' command blocked",
                     cmd
@@ -611,9 +606,7 @@ pub fn check_dangerous_patterns(command: &str, config: &Config) -> Option<String
         return Some("DROP DATABASE statement requires manual confirmation".to_string());
     }
     if cmd_lower.contains("mkfs.") || cmd_lower.contains("mkfs ") {
-        return Some(
-            "Disk format command blocked - requires manual confirmation".to_string(),
-        );
+        return Some("Disk format command blocked - requires manual confirmation".to_string());
     }
 
     None
@@ -848,15 +841,13 @@ pub fn scrub_output(output: &str, known_secrets: &[String]) -> String {
         // Encoded variant scrubbing (only for secrets long enough to avoid false positives)
         if secret.len() >= MIN_ENCODED_SCRUB_LEN {
             // Base64 standard encoding
-            let b64_std =
-                base64::engine::general_purpose::STANDARD.encode(secret.as_bytes());
+            let b64_std = base64::engine::general_purpose::STANDARD.encode(secret.as_bytes());
             if result.contains(&b64_std) {
                 result = result.replace(&b64_std, "[REDACTED:b64]");
             }
 
             // Base64 URL-safe encoding
-            let b64_url =
-                base64::engine::general_purpose::URL_SAFE.encode(secret.as_bytes());
+            let b64_url = base64::engine::general_purpose::URL_SAFE.encode(secret.as_bytes());
             if b64_url != b64_std && result.contains(&b64_url) {
                 result = result.replace(&b64_url, "[REDACTED:b64]");
             }
@@ -1124,7 +1115,10 @@ mod tests {
     #[test]
     fn test_protected_service_blocked() {
         let mut c = cfg();
-        c.eidolon.gate.protected_services.push("chat-proxy".to_string());
+        c.eidolon
+            .gate
+            .protected_services
+            .push("chat-proxy".to_string());
         assert!(check_dangerous_patterns("systemctl stop chat-proxy", &c).is_some());
         assert!(check_dangerous_patterns("docker stop chat-proxy", &c).is_some());
         assert!(check_dangerous_patterns("systemctl stop nginx", &c).is_none());

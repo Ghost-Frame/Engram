@@ -87,12 +87,10 @@ fn spawn_worker(
                         .bearer_auth(&owner_key)
                         .send()
                     {
-                        Ok(r) if r.status().is_success() => {
-                            match r.json::<ListResponse>() {
-                                Ok(resp) => WorkerMsg::List(resp.secrets),
-                                Err(e) => WorkerMsg::Error(format!("parse error: {e}")),
-                            }
-                        }
+                        Ok(r) if r.status().is_success() => match r.json::<ListResponse>() {
+                            Ok(resp) => WorkerMsg::List(resp.secrets),
+                            Err(e) => WorkerMsg::Error(format!("parse error: {e}")),
+                        },
                         Ok(r) => WorkerMsg::Error(format!("credd error: {}", r.status())),
                         Err(e) => WorkerMsg::Error(format!("connection failed: {e}")),
                     }
@@ -106,15 +104,13 @@ fn spawn_worker(
                         urlencod(&key)
                     );
                     match client.get(&url).bearer_auth(&owner_key).send() {
-                        Ok(r) if r.status().is_success() => {
-                            match r.json::<SecretValueRaw>() {
-                                Ok(sv) => {
-                                    let display = value_to_display(&sv.value);
-                                    WorkerMsg::Revealed(service, key, display)
-                                }
-                                Err(e) => WorkerMsg::Error(format!("parse error: {e}")),
+                        Ok(r) if r.status().is_success() => match r.json::<SecretValueRaw>() {
+                            Ok(sv) => {
+                                let display = value_to_display(&sv.value);
+                                WorkerMsg::Revealed(service, key, display)
                             }
-                        }
+                            Err(e) => WorkerMsg::Error(format!("parse error: {e}")),
+                        },
                         Ok(r) => WorkerMsg::Error(format!("reveal failed: {}", r.status())),
                         Err(e) => WorkerMsg::Error(format!("connection failed: {e}")),
                     }
@@ -133,12 +129,7 @@ fn spawn_worker(
                         urlencod(&service),
                         urlencod(&key)
                     );
-                    match client
-                        .post(&url)
-                        .bearer_auth(&owner_key)
-                        .json(&body)
-                        .send()
-                    {
+                    match client.post(&url).bearer_auth(&owner_key).json(&body).send() {
                         Ok(r) if r.status().is_success() || r.status().as_u16() == 201 => {
                             WorkerMsg::Stored
                         }
@@ -172,15 +163,26 @@ fn spawn_worker(
 /// Extract a human-readable display string from a SecretData JSON value.
 fn value_to_display(value: &serde_json::Value) -> String {
     if let Some(obj) = value.as_object() {
-        let type_str = obj.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let type_str = obj
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         match type_str {
-            "api_key" => obj.get("key").and_then(|v| v.as_str()).unwrap_or("[no key]").to_string(),
+            "api_key" => obj
+                .get("key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("[no key]")
+                .to_string(),
             "login" => {
                 let u = obj.get("username").and_then(|v| v.as_str()).unwrap_or("?");
                 let p = obj.get("password").and_then(|v| v.as_str()).unwrap_or("?");
                 format!("username={} password={}", u, p)
             }
-            "note" => obj.get("content").and_then(|v| v.as_str()).unwrap_or("[no content]").to_string(),
+            "note" => obj
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("[no content]")
+                .to_string(),
             "oauth_app" => {
                 let cid = obj.get("client_id").and_then(|v| v.as_str()).unwrap_or("?");
                 format!("client_id={}", cid)
@@ -283,7 +285,8 @@ impl CredApp {
                     self.loading = true;
                 }
                 WorkerMsg::Deleted(service, key) => {
-                    self.secrets.retain(|s| !(s.service == service && s.key == key));
+                    self.secrets
+                        .retain(|s| !(s.service == service && s.key == key));
                     self.revealed.remove(&(service.clone(), key.clone()));
                     self.status = format!("Deleted {}/{}", service, key);
                 }
@@ -447,9 +450,7 @@ impl eframe::App for CredApp {
                         if self.add.show_value {
                             ui.text_edit_singleline(&mut self.add.value);
                         } else {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.add.value).password(true),
-                            );
+                            ui.add(egui::TextEdit::singleline(&mut self.add.value).password(true));
                         }
                         ui.end_row();
                         ui.label("");
@@ -522,8 +523,8 @@ impl eframe::App for CredApp {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    let credd_url = std::env::var("CREDD_URL")
-        .unwrap_or_else(|_| "http://localhost:4400".to_string());
+    let credd_url =
+        std::env::var("CREDD_URL").unwrap_or_else(|_| "http://localhost:4400".to_string());
 
     let owner_key = match std::env::var("CRED_OWNER_KEY") {
         Ok(k) => k,

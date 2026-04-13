@@ -43,7 +43,13 @@ pub async fn log_error(db: &Database, req: LogErrorRequest, user_id: Option<&str
             .query_row(
                 "INSERT INTO error_events (source, level, message, context, user_id) \
                  VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
-                rusqlite::params![req.source, req.level, req.message, req.context, user_id_owned],
+                rusqlite::params![
+                    req.source,
+                    req.level,
+                    req.message,
+                    req.context,
+                    user_id_owned
+                ],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)?;

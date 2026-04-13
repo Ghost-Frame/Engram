@@ -75,8 +75,7 @@ pub async fn set_fact_validity(
     let valid_at = if let Some(ref approx) = date_approx {
         approx.clone()
     } else if let Some(ref dref) = date_ref {
-        resolve_relative_date(dref, &memory_created_at)
-            .unwrap_or_else(|| memory_created_at.clone())
+        resolve_relative_date(dref, &memory_created_at).unwrap_or_else(|| memory_created_at.clone())
     } else {
         memory_created_at.clone()
     };

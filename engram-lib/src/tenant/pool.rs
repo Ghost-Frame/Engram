@@ -153,7 +153,9 @@ impl TenantPools {
 
     async fn validate(&self) -> Result<()> {
         let reader = self.reader.get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire tenant reader for validation: {e}"))
+            EngError::Internal(format!(
+                "failed to acquire tenant reader for validation: {e}"
+            ))
         })?;
 
         let expected = self.config.busy_timeout_ms as i64;
@@ -210,9 +212,7 @@ fn build_pool(db_path: &str, max_size: usize, config: TenantPoolConfig) -> Resul
             })
         }))
         .build()
-        .map_err(|e| {
-            EngError::Internal(format!("failed to build tenant pool for {db_path}: {e}"))
-        })
+        .map_err(|e| EngError::Internal(format!("failed to build tenant pool for {db_path}: {e}")))
 }
 
 fn apply_pragmas(

@@ -279,7 +279,16 @@ fn days_to_ymd(days_from_epoch: i64) -> (i32, u32, u32) {
     let month_days: [i64; 12] = [
         31,
         if is_leap(year) { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     let mut month = 1u32;
     for md in &month_days {
@@ -328,20 +337,75 @@ pub fn generate_instincts() -> InstinctsCorpus {
 
     // -- Category 1: Infrastructure state transitions (10 sets x 4 memories = 40) --
     let infra_sets: &[(&str, &str, &str, &str, i64)] = &[
-        ("nginx v1.18", "nginx v1.24", "web-proxy", "HTTP reverse proxy", 0),
-        ("PostgreSQL 13", "PostgreSQL 16", "db-primary", "primary database", 48),
+        (
+            "nginx v1.18",
+            "nginx v1.24",
+            "web-proxy",
+            "HTTP reverse proxy",
+            0,
+        ),
+        (
+            "PostgreSQL 13",
+            "PostgreSQL 16",
+            "db-primary",
+            "primary database",
+            48,
+        ),
         ("Redis 6.2", "Redis 7.2", "cache-layer", "session cache", 96),
-        ("Node.js 18", "Node.js 22", "api-server", "REST API runtime", 144),
-        ("Docker 20.10", "Podman 4.9", "container-runtime", "container orchestration", 192),
-        ("Python 3.10", "Python 3.12", "worker-service", "background task runner", 240),
-        ("Elasticsearch 7", "OpenSearch 2.11", "search-cluster", "full-text search index", 288),
-        ("RabbitMQ 3.10", "RabbitMQ 3.12", "message-broker", "async job queue", 336),
-        ("Traefik 2.x", "Traefik 3.x", "ingress-controller", "TLS termination and routing", 384),
-        ("Grafana 9", "Grafana 11", "monitoring-ui", "metrics dashboard", 432),
+        (
+            "Node.js 18",
+            "Node.js 22",
+            "api-server",
+            "REST API runtime",
+            144,
+        ),
+        (
+            "Docker 20.10",
+            "Podman 4.9",
+            "container-runtime",
+            "container orchestration",
+            192,
+        ),
+        (
+            "Python 3.10",
+            "Python 3.12",
+            "worker-service",
+            "background task runner",
+            240,
+        ),
+        (
+            "Elasticsearch 7",
+            "OpenSearch 2.11",
+            "search-cluster",
+            "full-text search index",
+            288,
+        ),
+        (
+            "RabbitMQ 3.10",
+            "RabbitMQ 3.12",
+            "message-broker",
+            "async job queue",
+            336,
+        ),
+        (
+            "Traefik 2.x",
+            "Traefik 3.x",
+            "ingress-controller",
+            "TLS termination and routing",
+            384,
+        ),
+        (
+            "Grafana 9",
+            "Grafana 11",
+            "monitoring-ui",
+            "metrics dashboard",
+            432,
+        ),
     ];
 
     for (old_ver, new_ver, service, desc, base_hours) in infra_sets {
-        let id1 = next_id; next_id -= 1;
+        let id1 = next_id;
+        next_id -= 1;
         let c1 = format!(
             "{} is running {} on {} - {}. Deployed 2026-01-15. Status: stable.",
             service, old_ver, service, desc
@@ -355,7 +419,8 @@ pub fn generate_instincts() -> InstinctsCorpus {
             embedding: make_embedding(&c1),
         });
 
-        let id2 = next_id; next_id -= 1;
+        let id2 = next_id;
+        next_id -= 1;
         let c2 = format!(
             "Decision to migrate {} from {} to {} on {}. Reason: upstream EOL and security patches. Scheduled downtime: 30 minutes.",
             service, old_ver, new_ver, service
@@ -369,7 +434,8 @@ pub fn generate_instincts() -> InstinctsCorpus {
             embedding: make_embedding(&c2),
         });
 
-        let id3 = next_id; next_id -= 1;
+        let id3 = next_id;
+        next_id -= 1;
         let c3 = format!(
             "{} successfully migrated to {} on {}. Migration completed 2026-01. All health checks passing. Previous version {} decommissioned.",
             service, new_ver, service, old_ver
@@ -383,7 +449,8 @@ pub fn generate_instincts() -> InstinctsCorpus {
             embedding: make_embedding(&c3),
         });
 
-        let id4 = next_id; next_id -= 1;
+        let id4 = next_id;
+        next_id -= 1;
         let c4 = format!(
             "{} is NOW running {} on {} - {}. Upgraded from {}. Status: stable, verified.",
             service, new_ver, service, desc, old_ver
@@ -397,10 +464,30 @@ pub fn generate_instincts() -> InstinctsCorpus {
             embedding: make_embedding(&c4),
         });
 
-        edges.push(SyntheticEdge { source_id: id1, target_id: id2, weight: 0.8, edge_type: "temporal".to_string() });
-        edges.push(SyntheticEdge { source_id: id2, target_id: id3, weight: 0.8, edge_type: "temporal".to_string() });
-        edges.push(SyntheticEdge { source_id: id3, target_id: id4, weight: 0.8, edge_type: "temporal".to_string() });
-        edges.push(SyntheticEdge { source_id: id1, target_id: id4, weight: 0.7, edge_type: "contradiction".to_string() });
+        edges.push(SyntheticEdge {
+            source_id: id1,
+            target_id: id2,
+            weight: 0.8,
+            edge_type: "temporal".to_string(),
+        });
+        edges.push(SyntheticEdge {
+            source_id: id2,
+            target_id: id3,
+            weight: 0.8,
+            edge_type: "temporal".to_string(),
+        });
+        edges.push(SyntheticEdge {
+            source_id: id3,
+            target_id: id4,
+            weight: 0.8,
+            edge_type: "temporal".to_string(),
+        });
+        edges.push(SyntheticEdge {
+            source_id: id1,
+            target_id: id4,
+            weight: 0.7,
+            edge_type: "contradiction".to_string(),
+        });
     }
 
     // -- Category 2: Architecture decision records (10 x 2 = 20) --
@@ -438,7 +525,8 @@ pub fn generate_instincts() -> InstinctsCorpus {
     ];
 
     for (domain, title, rationale, outcome, base_hours) in decisions {
-        let id1 = next_id; next_id -= 1;
+        let id1 = next_id;
+        next_id -= 1;
         let c1 = format!(
             "Architecture decision [{}]: {}. Rationale: {}",
             domain, title, rationale
@@ -452,7 +540,8 @@ pub fn generate_instincts() -> InstinctsCorpus {
             embedding: make_embedding(&c1),
         });
 
-        let id2 = next_id; next_id -= 1;
+        let id2 = next_id;
+        next_id -= 1;
         let c2 = format!(
             "Decision outcome [{}]: {} Implemented and verified in production.",
             domain, outcome
@@ -466,8 +555,18 @@ pub fn generate_instincts() -> InstinctsCorpus {
             embedding: make_embedding(&c2),
         });
 
-        edges.push(SyntheticEdge { source_id: id1, target_id: id2, weight: 0.75, edge_type: "association".to_string() });
-        edges.push(SyntheticEdge { source_id: id2, target_id: id1, weight: 0.75, edge_type: "association".to_string() });
+        edges.push(SyntheticEdge {
+            source_id: id1,
+            target_id: id2,
+            weight: 0.75,
+            edge_type: "association".to_string(),
+        });
+        edges.push(SyntheticEdge {
+            source_id: id2,
+            target_id: id1,
+            weight: 0.75,
+            edge_type: "association".to_string(),
+        });
     }
 
     // -- Category 3: Reference / discovery notes (20) --
@@ -495,7 +594,8 @@ pub fn generate_instincts() -> InstinctsCorpus {
     ];
 
     for (category, content, base_hours, importance) in references {
-        let id = next_id; next_id -= 1;
+        let id = next_id;
+        next_id -= 1;
         memories.push(SyntheticMemory {
             id,
             content: content.to_string(),
@@ -531,7 +631,8 @@ pub fn generate_instincts() -> InstinctsCorpus {
     ];
 
     for (content, base_hours, importance) in tasks {
-        let id = next_id; next_id -= 1;
+        let id = next_id;
+        next_id -= 1;
         memories.push(SyntheticMemory {
             id,
             content: content.to_string(),
@@ -647,8 +748,10 @@ pub fn generate_instincts() -> InstinctsCorpus {
     ];
 
     for (wrong, correction, h1, h2, imp1, imp2) in corrections {
-        let id1 = next_id; next_id -= 1;
-        let id2 = next_id; next_id -= 1;
+        let id1 = next_id;
+        next_id -= 1;
+        let id2 = next_id;
+        next_id -= 1;
 
         memories.push(SyntheticMemory {
             id: id1,
@@ -668,9 +771,24 @@ pub fn generate_instincts() -> InstinctsCorpus {
             embedding: make_embedding(correction),
         });
 
-        edges.push(SyntheticEdge { source_id: id1, target_id: id2, weight: 0.8, edge_type: "contradiction".to_string() });
-        edges.push(SyntheticEdge { source_id: id2, target_id: id1, weight: 0.8, edge_type: "contradiction".to_string() });
-        edges.push(SyntheticEdge { source_id: id1, target_id: id2, weight: 0.6, edge_type: "temporal".to_string() });
+        edges.push(SyntheticEdge {
+            source_id: id1,
+            target_id: id2,
+            weight: 0.8,
+            edge_type: "contradiction".to_string(),
+        });
+        edges.push(SyntheticEdge {
+            source_id: id2,
+            target_id: id1,
+            weight: 0.8,
+            edge_type: "contradiction".to_string(),
+        });
+        edges.push(SyntheticEdge {
+            source_id: id1,
+            target_id: id2,
+            weight: 0.6,
+            edge_type: "temporal".to_string(),
+        });
     }
 
     InstinctsCorpus {

@@ -117,7 +117,10 @@ pub fn program_hmac_secret(secret: &[u8]) -> Result<()> {
 
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(CredError::YubiKey(format!("ykman program failed: {}", stderr.trim())));
+            return Err(CredError::YubiKey(format!(
+                "ykman program failed: {}",
+                stderr.trim()
+            )));
         }
     }
 
@@ -129,8 +132,7 @@ pub fn program_hmac_secret(secret: &[u8]) -> Result<()> {
 pub fn delete_slot() -> Result<()> {
     #[cfg(not(windows))]
     {
-        try_ykman_delete()
-            .or_else(|first| try_python_ykman_delete().map_err(|_| first))?;
+        try_ykman_delete().or_else(|first| try_python_ykman_delete().map_err(|_| first))?;
     }
 
     #[cfg(windows)]
@@ -142,7 +144,10 @@ pub fn delete_slot() -> Result<()> {
 
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(CredError::YubiKey(format!("ykman delete failed: {}", stderr.trim())));
+            return Err(CredError::YubiKey(format!(
+                "ykman delete failed: {}",
+                stderr.trim()
+            )));
         }
     }
 
@@ -154,8 +159,7 @@ pub fn delete_slot() -> Result<()> {
 pub fn device_info() -> Result<String> {
     #[cfg(not(windows))]
     {
-        try_ykman_info()
-            .or_else(|first| try_python_ykman_info().map_err(|_| first))
+        try_ykman_info().or_else(|first| try_python_ykman_info().map_err(|_| first))
     }
 
     #[cfg(windows)]
@@ -167,7 +171,10 @@ pub fn device_info() -> Result<String> {
 
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(CredError::YubiKey(format!("ykman info failed: {}", stderr.trim())));
+            return Err(CredError::YubiKey(format!(
+                "ykman info failed: {}",
+                stderr.trim()
+            )));
         }
 
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
@@ -342,7 +349,10 @@ fn try_ykman_program(secret_hex: &str) -> Result<String> {
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(CredError::YubiKey(format!("ykman program failed: {}", stderr.trim())));
+        return Err(CredError::YubiKey(format!(
+            "ykman program failed: {}",
+            stderr.trim()
+        )));
     }
 
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
@@ -362,7 +372,10 @@ fn try_python_ykman_program(secret_hex: &str) -> Result<String> {
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(CredError::YubiKey(format!("python ykman program failed: {}", stderr.trim())));
+        return Err(CredError::YubiKey(format!(
+            "python ykman program failed: {}",
+            stderr.trim()
+        )));
     }
 
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
@@ -377,7 +390,10 @@ fn try_ykman_delete() -> Result<String> {
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(CredError::YubiKey(format!("ykman delete failed: {}", stderr.trim())));
+        return Err(CredError::YubiKey(format!(
+            "ykman delete failed: {}",
+            stderr.trim()
+        )));
     }
 
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
@@ -397,7 +413,10 @@ fn try_python_ykman_delete() -> Result<String> {
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(CredError::YubiKey(format!("python ykman delete failed: {}", stderr.trim())));
+        return Err(CredError::YubiKey(format!(
+            "python ykman delete failed: {}",
+            stderr.trim()
+        )));
     }
 
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
@@ -412,7 +431,10 @@ fn try_ykman_info() -> Result<String> {
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(CredError::YubiKey(format!("ykman info failed: {}", stderr.trim())));
+        return Err(CredError::YubiKey(format!(
+            "ykman info failed: {}",
+            stderr.trim()
+        )));
     }
 
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
@@ -420,7 +442,8 @@ fn try_ykman_info() -> Result<String> {
 
 #[cfg(not(windows))]
 fn try_python_ykman_info() -> Result<String> {
-    let script = "import sys\nfrom ykman._cli.__main__ import main\nsys.argv = ['ykman', 'info']\nmain()\n";
+    let script =
+        "import sys\nfrom ykman._cli.__main__ import main\nsys.argv = ['ykman', 'info']\nmain()\n";
 
     let out = Command::new("sudo")
         .args(["python3", "-c", script])
@@ -429,7 +452,10 @@ fn try_python_ykman_info() -> Result<String> {
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(CredError::YubiKey(format!("python ykman info failed: {}", stderr.trim())));
+        return Err(CredError::YubiKey(format!(
+            "python ykman info failed: {}",
+            stderr.trim()
+        )));
     }
 
     Ok(String::from_utf8_lossy(&out.stdout).to_string())

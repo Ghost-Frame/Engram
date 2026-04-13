@@ -152,7 +152,8 @@ pub async fn query_events(
 ) -> Result<Vec<Event>> {
     let mut sql = format!("SELECT {EVENT_COLUMNS} FROM axon_events WHERE user_id = ?1");
     let mut param_idx = 2usize;
-    let mut params_vec: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(user_id)];
+    let mut params_vec: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Integer(user_id)];
 
     if let Some(c) = channel {
         sql.push_str(&format!(" AND channel = ?{}", param_idx));

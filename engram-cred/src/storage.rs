@@ -76,7 +76,17 @@ pub async fn get_secret(
     let name = name.to_string();
     let category_name = format!("{}/{}", category, name);
 
-    type RawRow = (i64, i64, String, String, String, Vec<u8>, Vec<u8>, String, String);
+    type RawRow = (
+        i64,
+        i64,
+        String,
+        String,
+        String,
+        Vec<u8>,
+        Vec<u8>,
+        String,
+        String,
+    );
 
     let raw: Option<RawRow> = db
         .read(move |conn| {
@@ -171,7 +181,12 @@ pub async fn list_secrets(
             let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
 
             #[allow(clippy::type_complexity)]
-            fn map_row(row: &rusqlite::Row<'_>) -> std::result::Result<(i64, i64, String, String, String, String, String), rusqlite::Error> {
+            fn map_row(
+                row: &rusqlite::Row<'_>,
+            ) -> std::result::Result<
+                (i64, i64, String, String, String, String, String),
+                rusqlite::Error,
+            > {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,

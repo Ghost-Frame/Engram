@@ -41,7 +41,8 @@ pub async fn compact(db: &Database) -> Result<CompactResult> {
         .await?;
 
     db.write(|conn| {
-        conn.execute_batch("VACUUM; ANALYZE").map_err(rusqlite_to_eng_error)
+        conn.execute_batch("VACUUM; ANALYZE")
+            .map_err(rusqlite_to_eng_error)
     })
     .await?;
 
@@ -406,11 +407,8 @@ pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
         )
         .map_err(rusqlite_to_eng_error)?;
         // Delete spaces
-        conn.execute(
-            "DELETE FROM spaces WHERE user_id = ?1",
-            params![user_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        conn.execute("DELETE FROM spaces WHERE user_id = ?1", params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
         // Soft-delete memories (mark forgotten)
         conn.execute(
             "UPDATE memories SET is_forgotten = 1 WHERE user_id = ?1",

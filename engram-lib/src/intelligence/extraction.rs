@@ -32,7 +32,10 @@ fn spent_regex() -> &'static Regex {
 fn have_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(?:I\s+)?(?:have|has|own|got)\s+(\d+)\s+(.+?)(?:\.|,|\s+(?:and|but|so|now))").unwrap()
+        Regex::new(
+            r"(?i)\b(?:I\s+)?(?:have|has|own|got)\s+(\d+)\s+(.+?)(?:\.|,|\s+(?:and|but|so|now))",
+        )
+        .unwrap()
     })
 }
 
@@ -67,7 +70,8 @@ fn like_regex() -> &'static Regex {
 fn dislike_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(?:I\s+)?(hate|dislike|can't stand|don't like)\s+(.+?)(?:\.|,|$)").unwrap()
+        Regex::new(r"(?i)\b(?:I\s+)?(hate|dislike|can't stand|don't like)\s+(.+?)(?:\.|,|$)")
+            .unwrap()
     })
 }
 
@@ -148,7 +152,12 @@ pub async fn fast_extract_facts(
         facts.push(FactInsert {
             subject: "user".to_string(),
             verb: "spent".to_string(),
-            object: format_fact_object(object, Some(amount as i64), Some("dollars"), date_ref.as_deref()),
+            object: format_fact_object(
+                object,
+                Some(amount as i64),
+                Some("dollars"),
+                date_ref.as_deref(),
+            ),
         });
     }
 
@@ -193,7 +202,12 @@ pub async fn fast_extract_facts(
         facts.push(FactInsert {
             subject: "user".to_string(),
             verb: "earned".to_string(),
-            object: format_fact_object(object, Some(amount as i64), Some("dollars"), date_ref.as_deref()),
+            object: format_fact_object(
+                object,
+                Some(amount as i64),
+                Some("dollars"),
+                date_ref.as_deref(),
+            ),
         });
     }
 
@@ -341,9 +355,13 @@ fn format_fact_object(
     format!(
         "{}{}{}{}",
         object,
-        quantity.map(|q| format!(" [qty:{}]", q)).unwrap_or_default(),
+        quantity
+            .map(|q| format!(" [qty:{}]", q))
+            .unwrap_or_default(),
         unit.map(|u| format!(" [unit:{}]", u)).unwrap_or_default(),
-        date_ref.map(|d| format!(" [date:{}]", d)).unwrap_or_default(),
+        date_ref
+            .map(|d| format!(" [date:{}]", d))
+            .unwrap_or_default(),
     )
 }
 
@@ -360,21 +378,42 @@ fn extract_date_ref(content: &str) -> Option<String> {
 
 fn infer_domain(object: &str) -> String {
     let lower = object.to_lowercase();
-    if lower.contains("food") || lower.contains("eat") || lower.contains("cook") || lower.contains("drink")
-        || lower.contains("pizza") || lower.contains("coffee") || lower.contains("breakfast")
-        || lower.contains("lunch") || lower.contains("dinner") || lower.contains("snack")
-        || lower.contains("restaurant") || lower.contains("recipe") || lower.contains("grocer")
+    if lower.contains("food")
+        || lower.contains("eat")
+        || lower.contains("cook")
+        || lower.contains("drink")
+        || lower.contains("pizza")
+        || lower.contains("coffee")
+        || lower.contains("breakfast")
+        || lower.contains("lunch")
+        || lower.contains("dinner")
+        || lower.contains("snack")
+        || lower.contains("restaurant")
+        || lower.contains("recipe")
+        || lower.contains("grocer")
     {
         "food".to_string()
-    } else if lower.contains("movie") || lower.contains("show") || lower.contains("series") || lower.contains("watch") {
+    } else if lower.contains("movie")
+        || lower.contains("show")
+        || lower.contains("series")
+        || lower.contains("watch")
+    {
         "entertainment".to_string()
     } else if lower.contains("book") || lower.contains("read") || lower.contains("author") {
         "reading".to_string()
-    } else if lower.contains("music") || lower.contains("song") || lower.contains("band") || lower.contains("listen") {
+    } else if lower.contains("music")
+        || lower.contains("song")
+        || lower.contains("band")
+        || lower.contains("listen")
+    {
         "music".to_string()
     } else if lower.contains("game") || lower.contains("play") {
         "gaming".to_string()
-    } else if lower.contains("sport") || lower.contains("exercise") || lower.contains("run") || lower.contains("gym") {
+    } else if lower.contains("sport")
+        || lower.contains("exercise")
+        || lower.contains("run")
+        || lower.contains("gym")
+    {
         "fitness".to_string()
     } else if lower.contains("travel") || lower.contains("visit") || lower.contains("trip") {
         "travel".to_string()

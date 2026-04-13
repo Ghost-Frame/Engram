@@ -116,7 +116,14 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
                 capabilities = excluded.capabilities,
                 config = excluded.config,
                 updated_at = datetime('now')",
-            rusqlite::params![name, type_, description, capabilities_str, config_str, user_id],
+            rusqlite::params![
+                name,
+                type_,
+                description,
+                capabilities_str,
+                config_str,
+                user_id
+            ],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
