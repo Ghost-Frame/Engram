@@ -10,6 +10,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
+use std::error::Error as StdError;
+
 use crate::{EngError, Result};
 
 // ============================================================================
@@ -315,12 +317,21 @@ impl LocalModelClient {
             "stream": false,
         });
 
+        let body_str = body.to_string();
+        tracing::debug!(
+            url = %self.config.url,
+            model = %model,
+            body_bytes = body_str.len(),
+            timeout_ms = timeout_ms,
+            "ollama request starting"
+        );
+
         let result = self
             .http
             .post(&self.config.url)
             .header("Content-Type", "application/json")
             .timeout(Duration::from_millis(timeout_ms))
-            .json(&body)
+            .body(body_str)
             .send()
             .await;
 
@@ -359,6 +370,16 @@ impl LocalModelClient {
                 Ok(text)
             }
             Err(e) => {
+                tracing::error!(
+                    url = %self.config.url,
+                    is_connect = e.is_connect(),
+                    is_timeout = e.is_timeout(),
+                    is_request = e.is_request(),
+                    is_body = e.is_body(),
+                    error = %e,
+                    source = ?e.source(),
+                    "ollama request failed"
+                );
                 self.circuit_breaker.record_failure();
                 Err(EngError::Internal(format!("ollama request failed: {}", e)))
             }

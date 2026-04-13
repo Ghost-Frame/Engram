@@ -1,6 +1,7 @@
 mod auth;
 mod routes;
 mod session;
+mod watcher;
 
 use clap::Parser;
 use engram_lib::llm::local::{LocalModelClient, OllamaConfig};
@@ -40,6 +41,15 @@ struct Cli {
     /// API key for authenticating with the Engram server.
     #[arg(long, env = "ENGRAM_API_KEY")]
     engram_api_key: Option<String>,
+
+    /// Enable file watcher for Claude Code session JSONL files.
+    /// Watches ~/.claude/projects/ (or CLAUDE_SESSIONS_DIR) for changes.
+    #[arg(long, env = "ENGRAM_SIDECAR_WATCH")]
+    watch: bool,
+
+    /// Directory to watch for session files (default: ~/.claude/projects).
+    #[arg(long, env = "CLAUDE_SESSIONS_DIR")]
+    watch_dir: Option<String>,
 }
 
 #[derive(Clone)]
@@ -47,7 +57,7 @@ pub struct SidecarState {
     pub client: reqwest::Client,
     pub engram_url: String,
     pub engram_api_key: Option<String>,
-    pub llm: Option<Arc<LocalModelClient>>,
+    pub llm: Arc<LocalModelClient>,
     pub session: Arc<RwLock<session::Session>>,
     pub source: String,
     pub user_id: i64,
@@ -71,19 +81,19 @@ async fn main() {
         .build()
         .expect("failed to create HTTP client");
 
-    // Probe LLM quickly (non-blocking network check).
-    let llm: Option<Arc<LocalModelClient>> = {
+    // Create LLM client and probe once. Even if probe fails, we keep the
+    // client so it can be re-probed later when Ollama becomes available.
+    let llm: Arc<LocalModelClient> = {
         let llm_config = OllamaConfig::from_env();
         let client = LocalModelClient::new(llm_config);
         if client.probe().await {
             tracing::info!("local LLM client ready for sidecar");
-            Some(Arc::new(client))
         } else {
             tracing::warn!(
-                "local LLM unavailable for sidecar. Observations stored without enrichment."
+                "local LLM unavailable at startup -- will re-probe on first compress request"
             );
-            None
         }
+        Arc::new(client)
     };
 
     let session_id = cli
@@ -118,6 +128,11 @@ async fn main() {
     };
     if token.is_some() {
         tracing::info!("sidecar shared-secret auth enabled");
+    } else {
+        tracing::info!(
+            host = %cli.host,
+            "no ENGRAM_SIDECAR_TOKEN set; running without auth (localhost-only)"
+        );
     }
 
     let state = SidecarState {
@@ -130,6 +145,14 @@ async fn main() {
         user_id: cli.user_id,
         token,
     };
+
+    // Start file watcher in background (if enabled)
+    if cli.watch {
+        if let Some(ref dir) = cli.watch_dir {
+            std::env::set_var("CLAUDE_SESSIONS_DIR", dir);
+        }
+        let _watcher_handle = watcher::start(state.clone());
+    }
 
     let app = routes::router(state);
     let addr = format!("{}:{}", cli.host, cli.port);

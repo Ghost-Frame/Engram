@@ -17,6 +17,9 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 subtle = { workspace = true }
 rand = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+dirs = { workspace = true }
 
 # Windows needs bundled SQLCipher since there's no system sqlite3.lib
 [target.'cfg(windows)'.dependencies]
