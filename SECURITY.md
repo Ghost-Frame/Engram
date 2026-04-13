@@ -105,14 +105,21 @@ For production deployments:
 
 These are transitive dependencies that cannot be upgraded without upstream releases.
 
-| Advisory | Crate | Root cause | Status |
-|----------|-------|------------|--------|
-| RUSTSEC-2026-0049 | rustls-webpki 0.102.8 | libsql 0.6.0 pins rustls 0.22.4 | Blocked until libsql upgrades to rustls 0.23+ |
-| RUSTSEC-2025-0141 | bincode 1.3.3 | libsql 0.6.0 depends on bincode 1.x | Blocked until libsql drops bincode or moves to 2.x |
-| RUSTSEC-2025-0134 | rustls-pemfile 2.2.0 | libsql 0.6.0 via hyper-rustls 0.25 | Blocked until libsql upgrades rustls ecosystem |
-| RUSTSEC-2026-0002 | lru 0.12.5 | tantivy 0.24.2 (via lancedb) | tantivy 0.26 exists but lancedb 0.23 pins 0.24 |
-| RUSTSEC-2026-0097 | rand 0.8.5 | libsql (tower 0.4), tantivy (rand_distr) | Affects `rand::rng()` only (0.9+ API); low exploitability in 0.8 |
-| RUSTSEC-2024-0436 | paste 1.0.15 | tokenizers, parquet, datafusion, lance | Unmaintained but no known vulnerability; no drop-in replacement |
+**engram-migrate only** (via libsql 0.6.0 -- does not affect server, CLI, or credd):
+
+| Advisory | Crate | Status |
+|----------|-------|--------|
+| RUSTSEC-2026-0049 | rustls-webpki 0.102.8 | libsql pins rustls 0.22.4; needs rustls 0.23+ |
+| RUSTSEC-2025-0141 | bincode 1.3.3 | libsql depends on bincode 1.x |
+| RUSTSEC-2025-0134 | rustls-pemfile 2.2.0 | libsql via hyper-rustls 0.25 |
+
+**engram-lib** (via lancedb -> tantivy 0.24.2, tokenizers):
+
+| Advisory | Crate | Status |
+|----------|-------|--------|
+| RUSTSEC-2026-0002 | lru 0.12.5 | lancedb 0.27 still pins tantivy 0.24; tantivy 0.26 exists |
+| RUSTSEC-2026-0097 | rand 0.8.5 | tantivy (rand_distr), libsql (tower 0.4). Advisory targets `rand::rng()` which is 0.9+ only; not callable in 0.8 |
+| RUSTSEC-2024-0436 | paste 1.0.15 | tokenizers, lance-bitpacking. Unmaintained but no known vulnerability |
 
 None of these advisories are exploitable in engram's usage patterns.
 
