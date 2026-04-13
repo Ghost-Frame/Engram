@@ -107,8 +107,6 @@ pub async fn deduplicate(
             (pair.id_b, pair.id_a)
         };
 
-        let keep_id = keep_id;
-        let supersede_id = supersede_id;
         let similarity = pair.similarity;
 
         let affected = db

@@ -54,6 +54,7 @@ pub struct AppState {
     /// be notified when approvals are created or decided.
     pub approval_notify: Option<watch::Sender<()>>,
     /// Pending tool approvals waiting for a human decision via the respond endpoint.
+    #[allow(clippy::type_complexity)]
     pub pending_approvals: Arc<Mutex<HashMap<i64, (PendingApproval, tokio::sync::oneshot::Sender<bool>)>>>,
     /// When true, write operations return 503 to prevent data corruption during crash loops.
     pub safe_mode: Arc<AtomicBool>,

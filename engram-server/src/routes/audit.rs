@@ -26,7 +26,7 @@ async fn get_audit(
     Auth(auth): Auth,
     Query(params): Query<AuditQueryParams>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(50).min(500).max(1);
+    let limit = params.limit.unwrap_or(50).clamp(1, 500);
     let offset = params.offset.unwrap_or(0).max(0);
 
     let entries = list_audit_entries(&state.db, auth.user_id, limit, offset).await?;

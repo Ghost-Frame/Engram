@@ -645,6 +645,7 @@ pub fn filter_cached_rules(
 /// attractor landscape, then finds non-activated patterns that are both
 /// semantically similar to the completed query AND structurally similar
 /// (same edge-type / degree fingerprint) to the activated subgraph.
+#[allow(clippy::too_many_arguments)]
 pub fn analogical_reason(
     edges: &[BrainEdge],
     network: &HopfieldNetwork,

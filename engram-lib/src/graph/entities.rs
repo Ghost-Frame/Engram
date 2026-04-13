@@ -49,7 +49,7 @@ pub async fn create_entity(db: &Database, req: CreateEntityRequest) -> Result<En
     let name_clone = req.name.clone();
     let entity_type_clone = entity_type.clone();
     let description = req.description.clone();
-    let space_id = req.space_id.clone();
+    let space_id = req.space_id;
 
     db.write(move |conn| {
         conn.execute(

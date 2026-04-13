@@ -576,7 +576,7 @@ pub async fn update_workflow(
     let steps_json = req
         .steps
         .as_ref()
-        .map(|s| serde_json::to_string(s))
+        .map(serde_json::to_string)
         .transpose()?;
 
     let name = req.name.clone();

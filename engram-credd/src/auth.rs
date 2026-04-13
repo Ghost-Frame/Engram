@@ -135,7 +135,7 @@ pub async fn auth_middleware(
 
     // SECURITY (SEC-INFO-10): constant-time comparison to prevent timing
     // oracle on the master key hash.
-    let auth = if master_hash.as_bytes().len() == token_hash.as_bytes().len()
+    let auth = if master_hash.len() == token_hash.len()
         && master_hash
             .as_bytes()
             .ct_eq(token_hash.as_bytes())

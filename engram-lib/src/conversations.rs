@@ -233,7 +233,7 @@ pub async fn get_conversation_for_user(
         CONVERSATION_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![id, user_id], |row| row_to_conversation(row))
+        conn.query_row(&sql, params![id, user_id], row_to_conversation)
             .optional()
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
             .ok_or_else(|| EngError::NotFound(format!("conversation {} not found", id)))
@@ -410,7 +410,7 @@ pub async fn add_message(
         qualified_cols
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![new_id, user_id], |row| row_to_message(row))
+        conn.query_row(&sql, params![new_id, user_id], row_to_message)
             .optional()
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
             .ok_or_else(|| EngError::Internal("failed to fetch newly created message".into()))
@@ -445,7 +445,7 @@ pub async fn list_messages(
         let rows = stmt
             .query_map(
                 params![conversation_id, user_id, limit as i64, offset as i64],
-                |row| row_to_message(row),
+                row_to_message,
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let mut msgs = Vec::new();

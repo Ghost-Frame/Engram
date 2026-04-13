@@ -69,7 +69,7 @@ pub async fn get_preference(db: &Database, user_id: i64, key: &str) -> Result<Us
         PREF_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![user_id, key], |row| row_to_preference(row))
+        conn.query_row(&sql, params![user_id, key], row_to_preference)
             .optional()
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
             .ok_or_else(|| {
@@ -90,7 +90,7 @@ pub async fn list_preferences(db: &Database, user_id: i64) -> Result<Vec<UserPre
             .prepare(&sql)
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let rows = stmt
-            .query_map(params![user_id], |row| row_to_preference(row))
+            .query_map(params![user_id], row_to_preference)
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let mut prefs = Vec::new();
         for row in rows {
