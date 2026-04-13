@@ -8,11 +8,17 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use engram_cred::crypto::{derive_key_legacy, KEY_SIZE};
+use engram_cred::crypto::{derive_key_legacy, encrypt_recovery, decrypt_recovery, generate_hmac_secret, KEY_SIZE};
 use engram_cred::yubikey;
 use engram_cred::types::SecretData;
 use engram_cred::storage;
 use engram_lib::db::Database;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::ExecutableCommand;
+use ratatui::prelude::*;
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
+use zeroize::Zeroize;
 
 /// YubiKey-encrypted credential manager.
 #[derive(Parser)]
@@ -79,6 +85,35 @@ enum Commands {
     },
     /// Export all secrets as JSON (for backup/migration)
     Export,
+    /// Manage agent keys for service authentication
+    AgentKey {
+        #[command(subcommand)]
+        action: AgentKeyAction,
+    },
+    /// Interactive TUI for browsing and managing secrets
+    Tui,
+}
+
+#[derive(Subcommand)]
+enum AgentKeyAction {
+    /// Generate a new agent key
+    Generate {
+        /// Agent name/identifier
+        name: String,
+        /// Description of what this key is for
+        #[arg(short, long, default_value = "")]
+        description: String,
+    },
+    /// List all agent keys
+    List,
+    /// Revoke an agent key
+    Revoke {
+        /// Agent name to revoke
+        name: String,
+        /// Skip confirmation
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 fn config_dir() -> PathBuf {
@@ -145,6 +180,12 @@ async fn main() -> Result<()> {
                 Commands::Export => {
                     cmd_export(&db, &key).await
                 }
+                Commands::AgentKey { action } => {
+                    cmd_agent_key(&db, action).await
+                }
+                Commands::Tui => {
+                    cmd_tui(&db, &key).await
+                }
                 Commands::Init | Commands::Recover { .. } => unreachable!(),
             }
         }
@@ -177,9 +218,8 @@ async fn cmd_init() -> Result<()> {
 
     // Generate HMAC secret
     eprintln!("generating 20-byte HMAC-SHA1 secret...");
-    let mut secret = [0u8; 20];
-    rand::rngs::OsRng.fill_bytes(&mut secret);
-    let secret_hex = hex::encode(&secret);
+    let secret = generate_hmac_secret();
+    let secret_hex = hex::encode(secret);
 
     eprintln!();
     eprintln!("HMAC secret (save this in Bitwarden NOW):");
@@ -206,7 +246,7 @@ async fn cmd_init() -> Result<()> {
     // Generate challenge file
     eprintln!();
     eprintln!("generating challenge file...");
-    let challenge = yubikey::get_or_create_challenge()?;
+    let _challenge = yubikey::get_or_create_challenge()?;
     eprintln!("challenge file created: {}", challenge_path.display());
 
     // Create recovery file
@@ -414,21 +454,68 @@ async fn cmd_delete(
 }
 
 async fn cmd_import(db: &Database, master_key: &[u8; KEY_SIZE], dry_run: bool) -> Result<()> {
-    eprintln!("reading secrets from stdin (one per line)");
-    eprintln!("format: service<TAB>key<TAB>value");
-    eprintln!("lines starting with # are ignored");
+    eprintln!("reading secrets from stdin");
+    eprintln!("accepts JSON (from 'cred export') or TSV (service<TAB>key<TAB>value)");
     eprintln!("press Ctrl-D when done");
     if dry_run {
         eprintln!("(dry run -- nothing will be stored)");
     }
     eprintln!();
 
-    let stdin = io::stdin();
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+    let input = input.trim();
+
+    if input.is_empty() {
+        eprintln!("no input");
+        return Ok(());
+    }
+
+    // Detect JSON vs TSV
+    if input.starts_with('[') {
+        cmd_import_json(db, master_key, input, dry_run).await
+    } else {
+        cmd_import_tsv(db, master_key, input, dry_run).await
+    }
+}
+
+async fn cmd_import_json(db: &Database, master_key: &[u8; KEY_SIZE], input: &str, dry_run: bool) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    struct ImportEntry {
+        service: String,
+        key: String,
+        value: SecretData,
+    }
+
+    let entries: Vec<ImportEntry> = serde_json::from_str(input)
+        .context("failed to parse JSON import")?;
+
+    let mut imported = 0u32;
+
+    for entry in &entries {
+        if dry_run {
+            eprintln!("  [dry run] would store: {}/{} ({})", entry.service, entry.key, entry.value.type_name());
+        } else {
+            storage::store_secret(db, 0, &entry.service, &entry.key, &entry.value, master_key).await?;
+            eprintln!("  stored: {}/{}", entry.service, entry.key);
+        }
+        imported += 1;
+    }
+
+    eprintln!();
+    if dry_run {
+        eprintln!("dry run complete: {} would be imported", imported);
+    } else {
+        eprintln!("import complete: {} stored", imported);
+    }
+    Ok(())
+}
+
+async fn cmd_import_tsv(db: &Database, master_key: &[u8; KEY_SIZE], input: &str, dry_run: bool) -> Result<()> {
     let mut imported = 0u32;
     let mut skipped = 0u32;
 
-    for (lineno, line) in stdin.lock().lines().enumerate() {
-        let line = line?;
+    for (lineno, line) in input.lines().enumerate() {
         let line = line.trim();
 
         if line.is_empty() || line.starts_with('#') {
@@ -470,7 +557,6 @@ async fn cmd_import(db: &Database, master_key: &[u8; KEY_SIZE], dry_run: bool) -
     } else {
         eprintln!("import complete: {} stored, {} skipped", imported, skipped);
     }
-
     Ok(())
 }
 
@@ -554,8 +640,69 @@ fn prompt_secret_data(secret_type: &str) -> Result<SecretData> {
                 username: username.trim().to_string(),
                 password,
                 url: Some(url.trim().to_string()),
+                totp_seed: None,
                 notes: None,
             })
+        }
+        "oauth-app" => {
+            print!("client id: ");
+            io::stdout().flush()?;
+            let mut client_id = String::new();
+            io::stdin().read_line(&mut client_id)?;
+
+            let client_secret = rpassword::prompt_password("client secret: ")?;
+
+            print!("redirect uri (optional): ");
+            io::stdout().flush()?;
+            let mut redirect_uri = String::new();
+            io::stdin().read_line(&mut redirect_uri)?;
+            let redirect_uri = redirect_uri.trim();
+
+            print!("scopes (comma-separated, optional): ");
+            io::stdout().flush()?;
+            let mut scopes_str = String::new();
+            io::stdin().read_line(&mut scopes_str)?;
+            let scopes_str = scopes_str.trim();
+
+            Ok(SecretData::OAuthApp {
+                client_id: client_id.trim().to_string(),
+                client_secret,
+                redirect_uri: if redirect_uri.is_empty() { None } else { Some(redirect_uri.to_string()) },
+                scopes: if scopes_str.is_empty() { None } else { Some(scopes_str.split(',').map(|s| s.trim().to_string()).collect()) },
+            })
+        }
+        "ssh-key" => {
+            eprintln!("enter private key (paste, then Ctrl-D):");
+            let mut private_key = String::new();
+            io::stdin().read_to_string(&mut private_key)?;
+
+            print!("passphrase (optional, press enter to skip): ");
+            io::stdout().flush()?;
+            let passphrase = rpassword::prompt_password("")?;
+
+            Ok(SecretData::SshKey {
+                private_key,
+                public_key: None,
+                passphrase: if passphrase.is_empty() { None } else { Some(passphrase) },
+            })
+        }
+        "environment" | "env" => {
+            eprintln!("enter variables (KEY=VALUE per line, Ctrl-D to finish):");
+            let mut variables = std::collections::HashMap::new();
+            let stdin = io::stdin();
+            for line in stdin.lock().lines() {
+                let line = line?;
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((k, v)) = line.split_once('=') {
+                    variables.insert(k.trim().to_string(), v.trim().to_string());
+                } else {
+                    eprintln!("  skipping invalid line: {}", line);
+                }
+            }
+            Ok(SecretData::Environment { variables })
         }
         _ => {
             // Default to api-key for unknown types
@@ -589,70 +736,6 @@ fn program_yubikey_slot2(secret_hex: &str) -> Result<()> {
     Ok(())
 }
 
-fn encrypt_recovery(passphrase: &str, secret: &[u8]) -> Result<Vec<u8>> {
-    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
-    use argon2::{Algorithm, Argon2, Params, Version};
-
-    // Generate random salt
-    let mut salt = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut salt);
-
-    // Derive key from passphrase -- use the same strong params as the main vault
-    // (64 MiB memory, 3 iterations) to resist offline brute-force.
-    let params = Params::new(65536, 3, 1, Some(32))
-        .map_err(|e| anyhow::anyhow!("argon2 params error: {}", e))?;
-    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let mut key = [0u8; 32];
-    argon2.hash_password_into(passphrase.as_bytes(), &salt, &mut key)
-        .map_err(|e| anyhow::anyhow!("key derivation failed: {}", e))?;
-
-    // Encrypt
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| anyhow::anyhow!("cipher init failed: {}", e))?;
-    let mut nonce_bytes = [0u8; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-
-    let ciphertext = cipher.encrypt(nonce, secret)
-        .map_err(|e| anyhow::anyhow!("encryption failed: {}", e))?;
-
-    // Format: salt (16) || nonce (12) || ciphertext
-    let mut output = Vec::with_capacity(16 + 12 + ciphertext.len());
-    output.extend_from_slice(&salt);
-    output.extend_from_slice(&nonce_bytes);
-    output.extend_from_slice(&ciphertext);
-
-    Ok(output)
-}
-
-fn decrypt_recovery(passphrase: &str, data: &[u8]) -> Result<Vec<u8>> {
-    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
-    use argon2::{Algorithm, Argon2, Params, Version};
-
-    if data.len() < 28 {
-        anyhow::bail!("recovery file too short");
-    }
-
-    let salt = &data[..16];
-    let nonce_bytes = &data[16..28];
-    let ciphertext = &data[28..];
-
-    // Derive key from passphrase
-    let params = Params::new(65536, 3, 1, Some(32))
-        .map_err(|e| anyhow::anyhow!("argon2 params error: {}", e))?;
-    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let mut key = [0u8; 32];
-    argon2.hash_password_into(passphrase.as_bytes(), salt, &mut key)
-        .map_err(|e| anyhow::anyhow!("key derivation failed: {}", e))?;
-
-    // Decrypt
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| anyhow::anyhow!("cipher init failed: {}", e))?;
-    let nonce = Nonce::from_slice(nonce_bytes);
-
-    cipher.decrypt(nonce, ciphertext)
-        .map_err(|e| anyhow::anyhow!("decryption failed: {}", e))
-}
 
 async fn init_schema(db: &Database) -> Result<()> {
     db.write(|conn| {
@@ -678,4 +761,609 @@ async fn init_schema(db: &Database) -> Result<()> {
     .map_err(|e| anyhow::anyhow!("failed to init schema: {}", e))
 }
 
-use rand::RngCore;
+async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
+    use engram_cred::agent_keys;
+
+    match action {
+        AgentKeyAction::Generate { name, description } => {
+            let perms = engram_cred::AgentKeyPermissions::default();
+            let (key_str, agent_key) = agent_keys::create_agent_key(db, 0, &name, &perms).await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            eprintln!("generated agent key for '{}'", name);
+            if !description.is_empty() {
+                eprintln!("description: {}", description);
+            }
+            eprintln!();
+            eprintln!("key (save this now -- it cannot be retrieved later):");
+            println!("{}", key_str);
+            eprintln!();
+            eprintln!("key id: {}", agent_key.id);
+            Ok(())
+        }
+        AgentKeyAction::List => {
+            let keys = agent_keys::list_agent_keys(db, 0).await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            if keys.is_empty() {
+                println!("no agent keys");
+                return Ok(());
+            }
+
+            println!("{:<20} {:<10} {:<20} HASH PREFIX", "NAME", "STATUS", "CREATED");
+            println!("{:-<20} {:-<10} {:-<20} {:-<16}", "", "", "", "");
+
+            for k in &keys {
+                let status = if k.is_valid() { "active" } else { "revoked" };
+                let hash_prefix = &k.key_hash[..16.min(k.key_hash.len())];
+                println!("{:<20} {:<10} {:<20} {}", k.name, status, k.created_at, hash_prefix);
+            }
+            println!("\n{} key(s)", keys.len());
+            Ok(())
+        }
+        AgentKeyAction::Revoke { name, yes } => {
+            if !yes {
+                print!("revoke agent key '{}'? [y/N] ", name);
+                io::stdout().flush()?;
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    eprintln!("aborted.");
+                    return Ok(());
+                }
+            }
+            agent_keys::revoke_agent_key(db, 0, &name).await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            eprintln!("revoked agent key: {}", name);
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TUI
+// ---------------------------------------------------------------------------
+
+/// A secret loaded for TUI display (decrypted).
+struct TuiSecret {
+    id: i64,
+    service: String,
+    key: String,
+    data: SecretData,
+}
+
+struct TuiApp<'a> {
+    db: &'a Database,
+    master_key: [u8; 32],
+    secrets: Vec<TuiSecret>,
+    table_state: TableState,
+    mode: TuiMode,
+    input_buf: String,
+    input_field: InputField,
+    status_msg: String,
+    show_values: bool,
+    filter: String,
+}
+
+#[derive(PartialEq)]
+enum TuiMode {
+    Normal,
+    Adding,
+    Filtering,
+    Confirm,
+    Detail,
+}
+
+#[derive(PartialEq)]
+enum InputField {
+    Service,
+    Key,
+    Value,
+}
+
+impl<'a> TuiApp<'a> {
+    fn new(db: &'a Database, master_key: [u8; 32]) -> Self {
+        Self {
+            db,
+            master_key,
+            secrets: Vec::new(),
+            table_state: TableState::default(),
+            mode: TuiMode::Normal,
+            input_buf: String::new(),
+            input_field: InputField::Service,
+            status_msg: String::new(),
+            show_values: false,
+            filter: String::new(),
+        }
+    }
+
+    async fn refresh(&mut self) {
+        match storage::list_secrets(self.db, 0, None).await {
+            Ok(rows) => {
+                let mut secrets = Vec::new();
+                for row in rows {
+                    match storage::get_secret(
+                        self.db, 0, &row.category, &row.name, &self.master_key,
+                    ).await {
+                        Ok((_r, data)) => {
+                            secrets.push(TuiSecret {
+                                id: row.id,
+                                service: row.category,
+                                key: row.name,
+                                data,
+                            });
+                        }
+                        Err(e) => {
+                            self.status_msg = format!("decrypt error: {}", e);
+                        }
+                    }
+                }
+                self.secrets = secrets;
+                if self.secrets.is_empty() {
+                    self.table_state.select(None);
+                } else if self.table_state.selected().is_none() {
+                    self.table_state.select(Some(0));
+                }
+            }
+            Err(e) => {
+                self.status_msg = format!("error: {}", e);
+            }
+        }
+    }
+
+    fn filtered_secrets(&self) -> Vec<&TuiSecret> {
+        if self.filter.is_empty() {
+            self.secrets.iter().collect()
+        } else {
+            let f = self.filter.to_lowercase();
+            self.secrets
+                .iter()
+                .filter(|s| {
+                    s.service.to_lowercase().contains(&f)
+                        || s.key.to_lowercase().contains(&f)
+                })
+                .collect()
+        }
+    }
+
+    fn selected_secret(&self) -> Option<&TuiSecret> {
+        let filtered = self.filtered_secrets();
+        self.table_state
+            .selected()
+            .and_then(|i| filtered.get(i).copied())
+    }
+}
+
+async fn cmd_tui(db: &Database, master_key: &[u8; 32]) -> Result<()> {
+    let mut app = TuiApp::new(db, *master_key);
+    app.refresh().await;
+
+    // Terminal setup
+    enable_raw_mode()?;
+    io::stdout().execute(EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+
+    // Temp buffers for add flow
+    let mut add_service = String::new();
+    let mut add_key = String::new();
+
+    loop {
+        terminal.draw(|f| draw_ui(f, &mut app))?;
+
+        if event::poll(std::time::Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+
+                match app.mode {
+                    TuiMode::Normal => match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => break,
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            break
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            let filtered = app.filtered_secrets();
+                            if !filtered.is_empty() {
+                                let i = app
+                                    .table_state
+                                    .selected()
+                                    .map(|i| (i + 1) % filtered.len())
+                                    .unwrap_or(0);
+                                app.table_state.select(Some(i));
+                            }
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            let filtered = app.filtered_secrets();
+                            if !filtered.is_empty() {
+                                let i = app
+                                    .table_state
+                                    .selected()
+                                    .map(|i| {
+                                        if i == 0 {
+                                            filtered.len() - 1
+                                        } else {
+                                            i - 1
+                                        }
+                                    })
+                                    .unwrap_or(0);
+                                app.table_state.select(Some(i));
+                            }
+                        }
+                        KeyCode::Char('a') => {
+                            app.mode = TuiMode::Adding;
+                            app.input_field = InputField::Service;
+                            app.input_buf.clear();
+                            add_service.clear();
+                            add_key.clear();
+                            app.status_msg = "enter service name".to_string();
+                        }
+                        KeyCode::Char('d') => {
+                            if app.selected_secret().is_some() {
+                                app.mode = TuiMode::Confirm;
+                                app.status_msg = "delete? (y/n)".to_string();
+                            }
+                        }
+                        KeyCode::Char('v') => {
+                            app.show_values = !app.show_values;
+                            app.status_msg = if app.show_values {
+                                "values visible".to_string()
+                            } else {
+                                "values hidden".to_string()
+                            };
+                        }
+                        KeyCode::Char('/') => {
+                            app.mode = TuiMode::Filtering;
+                            app.input_buf = app.filter.clone();
+                            app.status_msg = "filter:".to_string();
+                        }
+                        KeyCode::Enter => {
+                            if app.selected_secret().is_some() {
+                                app.mode = TuiMode::Detail;
+                            }
+                        }
+                        KeyCode::Char('r') => {
+                            app.refresh().await;
+                            app.status_msg = "refreshed".to_string();
+                        }
+                        _ => {}
+                    },
+
+                    TuiMode::Adding => match key.code {
+                        KeyCode::Esc => {
+                            app.input_buf.zeroize();
+                            add_service.zeroize();
+                            add_key.zeroize();
+                            app.mode = TuiMode::Normal;
+                            app.status_msg.clear();
+                        }
+                        KeyCode::Enter => match app.input_field {
+                            InputField::Service => {
+                                if app.input_buf.is_empty() {
+                                    app.status_msg = "service name cannot be empty".to_string();
+                                } else {
+                                    add_service = app.input_buf.clone();
+                                    app.input_buf.clear();
+                                    app.input_field = InputField::Key;
+                                    app.status_msg = "enter key name".to_string();
+                                }
+                            }
+                            InputField::Key => {
+                                if app.input_buf.is_empty() {
+                                    app.status_msg = "key name cannot be empty".to_string();
+                                } else {
+                                    add_key = app.input_buf.clone();
+                                    app.input_buf.clear();
+                                    app.input_field = InputField::Value;
+                                    app.status_msg = "enter api-key value".to_string();
+                                }
+                            }
+                            InputField::Value => {
+                                if app.input_buf.is_empty() {
+                                    app.status_msg = "value cannot be empty".to_string();
+                                } else {
+                                    let data = SecretData::ApiKey {
+                                        key: app.input_buf.clone(),
+                                        endpoint: None,
+                                        notes: None,
+                                    };
+                                    app.input_buf.zeroize();
+                                    match storage::store_secret(
+                                        app.db, 0, &add_service, &add_key, &data, &app.master_key,
+                                    ).await {
+                                        Ok(id) => {
+                                            app.status_msg = format!(
+                                                "stored {}/{} (id={})",
+                                                add_service, add_key, id
+                                            );
+                                            app.refresh().await;
+                                        }
+                                        Err(e) => {
+                                            app.status_msg = format!("error: {}", e);
+                                        }
+                                    }
+                                    add_service.zeroize();
+                                    add_key.zeroize();
+                                    app.mode = TuiMode::Normal;
+                                }
+                            }
+                        },
+                        KeyCode::Backspace => {
+                            app.input_buf.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            app.input_buf.push(c);
+                        }
+                        _ => {}
+                    },
+
+                    TuiMode::Filtering => match key.code {
+                        KeyCode::Esc => {
+                            app.filter.clear();
+                            app.mode = TuiMode::Normal;
+                            app.status_msg.clear();
+                            app.table_state.select(if app.secrets.is_empty() {
+                                None
+                            } else {
+                                Some(0)
+                            });
+                        }
+                        KeyCode::Enter => {
+                            app.filter = app.input_buf.clone();
+                            app.mode = TuiMode::Normal;
+                            app.status_msg = if app.filter.is_empty() {
+                                String::new()
+                            } else {
+                                format!("filter: {}", app.filter)
+                            };
+                            app.table_state.select(if app.filtered_secrets().is_empty() {
+                                None
+                            } else {
+                                Some(0)
+                            });
+                        }
+                        KeyCode::Backspace => {
+                            app.input_buf.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            app.input_buf.push(c);
+                        }
+                        _ => {}
+                    },
+
+                    TuiMode::Confirm => match key.code {
+                        KeyCode::Char('y') => {
+                            if let Some(secret) = app.selected_secret() {
+                                let svc = secret.service.clone();
+                                let k = secret.key.clone();
+                                match storage::delete_secret(app.db, 0, &svc, &k).await {
+                                    Ok(()) => {
+                                        app.status_msg = format!("deleted {}/{}", svc, k);
+                                        app.refresh().await;
+                                    }
+                                    Err(e) => {
+                                        app.status_msg = format!("error: {}", e);
+                                    }
+                                }
+                            }
+                            app.mode = TuiMode::Normal;
+                        }
+                        _ => {
+                            app.mode = TuiMode::Normal;
+                            app.status_msg = "cancelled".to_string();
+                        }
+                    },
+
+                    TuiMode::Detail => match key.code {
+                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                            app.mode = TuiMode::Normal;
+                        }
+                        _ => {}
+                    },
+                }
+            }
+        }
+    }
+
+    // Restore terminal
+    disable_raw_mode()?;
+    io::stdout().execute(LeaveAlternateScreen)?;
+    Ok(())
+}
+
+fn draw_ui(f: &mut Frame, app: &mut TuiApp) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // header
+            Constraint::Min(5),   // table
+            Constraint::Length(3), // status / input
+        ])
+        .split(f.area());
+
+    draw_header(f, chunks[0]);
+    draw_table(f, app, chunks[1]);
+    draw_status(f, app, chunks[2]);
+
+    // Modal overlay for detail view
+    if app.mode == TuiMode::Detail {
+        if let Some(secret) = app.selected_secret() {
+            draw_detail_modal(f, secret, app.show_values);
+        }
+    }
+}
+
+fn draw_header(f: &mut Frame, area: Rect) {
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("cred", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw(" | "),
+        Span::styled("a", Style::default().fg(Color::Yellow)),
+        Span::raw("dd "),
+        Span::styled("d", Style::default().fg(Color::Yellow)),
+        Span::raw("elete "),
+        Span::styled("v", Style::default().fg(Color::Yellow)),
+        Span::raw("alues "),
+        Span::styled("/", Style::default().fg(Color::Yellow)),
+        Span::raw("filter "),
+        Span::styled("r", Style::default().fg(Color::Yellow)),
+        Span::raw("efresh "),
+        Span::styled("q", Style::default().fg(Color::Yellow)),
+        Span::raw("uit"),
+    ]))
+    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)));
+
+    f.render_widget(header, area);
+}
+
+fn draw_table(f: &mut Frame, app: &mut TuiApp, area: Rect) {
+    let filtered = app.filtered_secrets();
+
+    let header = Row::new(vec![
+        Cell::from("SERVICE").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Cell::from("KEY").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Cell::from("TYPE").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Cell::from("PREVIEW").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    ])
+    .height(1);
+
+    let rows: Vec<Row> = filtered
+        .iter()
+        .map(|secret| {
+            let preview = if app.show_values {
+                secret.data.redacted_preview()
+            } else {
+                secret.data.type_name().to_string()
+            };
+            Row::new(vec![
+                Cell::from(secret.service.clone()).style(Style::default().fg(Color::Green)),
+                Cell::from(secret.key.clone()),
+                Cell::from(secret.data.type_name()).style(Style::default().fg(Color::Yellow)),
+                Cell::from(preview).style(Style::default().fg(Color::DarkGray)),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(15),
+        Constraint::Percentage(35),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(if app.filter.is_empty() {
+                    format!(" secrets ({}) ", app.secrets.len())
+                } else {
+                    format!(
+                        " secrets ({}/{}) [{}] ",
+                        filtered.len(),
+                        app.secrets.len(),
+                        app.filter
+                    )
+                }),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    f.render_stateful_widget(table, area, &mut app.table_state);
+}
+
+fn draw_status(f: &mut Frame, app: &TuiApp, area: Rect) {
+    let content = match app.mode {
+        TuiMode::Adding => {
+            let field_name = match app.input_field {
+                InputField::Service => "service",
+                InputField::Key => "key",
+                InputField::Value => "value",
+            };
+            let display = if app.input_field == InputField::Value {
+                "*".repeat(app.input_buf.len())
+            } else {
+                app.input_buf.clone()
+            };
+            format!("[add] {}: {}|", field_name, display)
+        }
+        TuiMode::Filtering => {
+            format!("/{}", app.input_buf)
+        }
+        _ => app.status_msg.clone(),
+    };
+
+    let status = Paragraph::new(content).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(status, area);
+}
+
+fn draw_detail_modal(f: &mut Frame, secret: &TuiSecret, show_value: bool) {
+    let area = f.area();
+    let modal_width = 60.min(area.width - 4);
+    let modal_height = 10.min(area.height - 4);
+    let modal_area = Rect::new(
+        (area.width - modal_width) / 2,
+        (area.height - modal_height) / 2,
+        modal_width,
+        modal_height,
+    );
+
+    f.render_widget(Clear, modal_area);
+
+    let preview = if show_value {
+        secret.data.redacted_preview()
+    } else {
+        "[hidden -- press v to show]".to_string()
+    };
+
+    let fields_str = secret.data.field_names().join(", ");
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Service: ", Style::default().fg(Color::Cyan)),
+            Span::raw(&secret.service),
+        ]),
+        Line::from(vec![
+            Span::styled("Key:     ", Style::default().fg(Color::Cyan)),
+            Span::raw(&secret.key),
+        ]),
+        Line::from(vec![
+            Span::styled("Type:    ", Style::default().fg(Color::Cyan)),
+            Span::raw(secret.data.type_name()),
+        ]),
+        Line::from(vec![
+            Span::styled("Fields:  ", Style::default().fg(Color::Cyan)),
+            Span::raw(&fields_str),
+        ]),
+        Line::from(vec![
+            Span::styled("Preview: ", Style::default().fg(Color::Cyan)),
+            Span::raw(preview),
+        ]),
+        Line::from(vec![
+            Span::styled("ID:      ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!("#{}", secret.id)),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "press ESC to close, v to toggle values",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let detail = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(" detail "),
+    );
+    f.render_widget(detail, modal_area);
+}
+
