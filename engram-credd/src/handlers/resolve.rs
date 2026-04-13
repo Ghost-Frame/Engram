@@ -191,9 +191,7 @@ pub async fn proxy_handler(
     // exfiltrate credentials to internal services.
     engram_lib::webhooks::resolve_and_validate_url(&req.url)
         .await
-        .map_err(|e| {
-            CredError::InvalidInput(format!("proxy target URL rejected: {}", e))
-        })?;
+        .map_err(|e| CredError::InvalidInput(format!("proxy target URL rejected: {}", e)))?;
 
     if !auth.can_access_category(&req.secret_category) {
         log_audit(

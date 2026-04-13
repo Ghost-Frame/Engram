@@ -64,9 +64,7 @@ impl EmbeddingProvider for OpenAiProvider {
 
             let embedding: Vec<f32> = body["data"][0]["embedding"]
                 .as_array()
-                .ok_or_else(|| {
-                    EngError::Internal("openai: missing embedding array".to_string())
-                })?
+                .ok_or_else(|| EngError::Internal("openai: missing embedding array".to_string()))?
                 .iter()
                 .filter_map(|v| v.as_f64().map(|f| f as f32))
                 .collect();
@@ -116,9 +114,9 @@ impl EmbeddingProvider for OpenAiProvider {
                 .await
                 .map_err(|e| EngError::Internal(format!("openai batch parse: {}", e)))?;
 
-            let data = body["data"]
-                .as_array()
-                .ok_or_else(|| EngError::Internal("openai batch: missing data array".to_string()))?;
+            let data = body["data"].as_array().ok_or_else(|| {
+                EngError::Internal("openai batch: missing data array".to_string())
+            })?;
 
             let mut results = Vec::with_capacity(data.len());
             for item in data {

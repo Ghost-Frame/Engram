@@ -197,7 +197,11 @@ async fn import_json(
         let session_id = m.session_id.clone();
         let importance = m.importance.unwrap_or(5);
         let confidence = m.confidence.unwrap_or(1.0);
-        let is_static = if m.is_static.unwrap_or(false) { 1i32 } else { 0i32 };
+        let is_static = if m.is_static.unwrap_or(false) {
+            1i32
+        } else {
+            0i32
+        };
         let user_id = auth.user_id;
         match state.db.write(move |conn| {
             conn.execute(

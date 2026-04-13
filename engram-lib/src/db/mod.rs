@@ -98,9 +98,7 @@ impl Database {
         writer
             .interact(|conn| migrations::run_migrations(conn))
             .await
-            .map_err(|e| {
-                EngError::DatabaseMessage(format!("migration failed: {e}"))
-            })??;
+            .map_err(|e| EngError::DatabaseMessage(format!("migration failed: {e}")))??;
 
         Ok(Self {
             db_path: ":memory:".to_string(),
@@ -184,10 +182,7 @@ async fn open_vector_index(config: &Config) -> Option<Arc<dyn VectorIndex>> {
             Some(Arc::new(index) as Arc<dyn VectorIndex>)
         }
         Err(e) => {
-            warn!(
-                "LanceDB vector index unavailable: {}",
-                e
-            );
+            warn!("LanceDB vector index unavailable: {}", e);
             None
         }
     }

@@ -742,8 +742,7 @@ impl HopfieldBrainManager {
             patterns_loaded = pattern_count
         );
 
-        let evolution =
-            crate::brain::evolution::EvolutionState::load_state(&db).await;
+        let evolution = crate::brain::evolution::EvolutionState::load_state(&db).await;
 
         Ok(Self {
             network: Mutex::new(network),

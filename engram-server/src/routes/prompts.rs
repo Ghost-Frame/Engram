@@ -10,7 +10,9 @@ use engram_lib::context::budget::estimate_tokens;
 use engram_lib::intelligence::growth::list_observations;
 use engram_lib::memory::search::hybrid_search;
 use engram_lib::memory::types::SearchRequest;
-use engram_lib::prompts::{build_living_prompt, scrub_credentials, ContradictionInfo, MemorySummary};
+use engram_lib::prompts::{
+    build_living_prompt, scrub_credentials, ContradictionInfo, MemorySummary,
+};
 use engram_lib::services::brain::BrainQueryOptions;
 use engram_lib::EngError;
 
@@ -238,8 +240,7 @@ async fn post_prompt_generate(
                         .unwrap_or_default();
 
                     // Query 3: past failures related to this task
-                    let failure_query =
-                        format!("failure problem error blocked mistake {}", task);
+                    let failure_query = format!("failure problem error blocked mistake {}", task);
                     let failure_opts = BrainQueryOptions {
                         query: failure_query.clone(),
                         top_k: Some(6),
@@ -290,14 +291,10 @@ async fn post_prompt_generate(
                         .contradictions
                         .iter()
                         .filter_map(|c| {
-                            let winner = task_result
-                                .activated
-                                .iter()
-                                .find(|m| m.id == c.winner_id)?;
-                            let loser = task_result
-                                .activated
-                                .iter()
-                                .find(|m| m.id == c.loser_id)?;
+                            let winner =
+                                task_result.activated.iter().find(|m| m.id == c.winner_id)?;
+                            let loser =
+                                task_result.activated.iter().find(|m| m.id == c.loser_id)?;
                             Some(ContradictionInfo {
                                 winner_content: scrub_credentials(&winner.content),
                                 loser_content: scrub_credentials(&loser.content),

@@ -223,8 +223,13 @@ pub fn hash_key(key: &[u8]) -> String {
 /// Uses the modern Argon2id parameters (64 MiB, 3 iterations).
 /// The salt must be stored alongside the ciphertext.
 pub fn derive_key_from_passphrase(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_SIZE]> {
-    let params = Params::new(ARGON2_MEMORY_KIB, ARGON2_ITERATIONS, ARGON2_PARALLELISM, Some(KEY_SIZE))
-        .expect("argon2 params within library bounds");
+    let params = Params::new(
+        ARGON2_MEMORY_KIB,
+        ARGON2_ITERATIONS,
+        ARGON2_PARALLELISM,
+        Some(KEY_SIZE),
+    )
+    .expect("argon2 params within library bounds");
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     let mut key = [0u8; KEY_SIZE];
@@ -256,7 +261,9 @@ pub fn encrypt_recovery(passphrase: &str, hmac_secret: &[u8]) -> Result<Vec<u8>>
 /// Input format: salt (16 bytes) || nonce (12 bytes) || ciphertext+tag.
 pub fn decrypt_recovery(passphrase: &str, data: &[u8]) -> Result<Vec<u8>> {
     if data.len() < SALT_SIZE + NONCE_SIZE + 16 {
-        return Err(CredError::Decryption("recovery file too short or corrupted".into()));
+        return Err(CredError::Decryption(
+            "recovery file too short or corrupted".into(),
+        ));
     }
 
     let salt = &data[..SALT_SIZE];

@@ -17,7 +17,10 @@ const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/artifacts/stats", get(get_stats))
-        .route("/artifacts/{memory_id}", get(list_for_memory).post(upload_artifact))
+        .route(
+            "/artifacts/{memory_id}",
+            get(list_for_memory).post(upload_artifact),
+        )
         .route("/artifact/{id}", get(download_artifact))
 }
 
@@ -113,52 +116,40 @@ async fn upload_artifact(
                 file_data = Some(bytes.to_vec());
             }
             "name" => {
-                name = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
-                );
+                name =
+                    Some(field.text().await.map_err(|e| {
+                        AppError(engram_lib::EngError::InvalidInput(e.to_string()))
+                    })?);
             }
             "artifact_type" => {
-                artifact_type = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
-                );
+                artifact_type =
+                    Some(field.text().await.map_err(|e| {
+                        AppError(engram_lib::EngError::InvalidInput(e.to_string()))
+                    })?);
             }
             "source_url" => {
-                source_url = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
-                );
+                source_url =
+                    Some(field.text().await.map_err(|e| {
+                        AppError(engram_lib::EngError::InvalidInput(e.to_string()))
+                    })?);
             }
             "agent" => {
-                agent = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
-                );
+                agent =
+                    Some(field.text().await.map_err(|e| {
+                        AppError(engram_lib::EngError::InvalidInput(e.to_string()))
+                    })?);
             }
             "session_id" => {
-                session_id = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
-                );
+                session_id =
+                    Some(field.text().await.map_err(|e| {
+                        AppError(engram_lib::EngError::InvalidInput(e.to_string()))
+                    })?);
             }
             "metadata" => {
-                metadata = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
-                );
+                metadata =
+                    Some(field.text().await.map_err(|e| {
+                        AppError(engram_lib::EngError::InvalidInput(e.to_string()))
+                    })?);
             }
             _ => {
                 // skip unknown fields

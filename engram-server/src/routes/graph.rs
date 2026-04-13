@@ -514,7 +514,11 @@ async fn create_relationship_handler(
         )));
     }
 
-    let rel_type = req.relationship_type.as_deref().unwrap_or("related").to_string();
+    let rel_type = req
+        .relationship_type
+        .as_deref()
+        .unwrap_or("related")
+        .to_string();
     let strength = req.strength.unwrap_or(1.0);
 
     // INSERT ... RETURNING avoids the cross-connection last_insert_rowid()

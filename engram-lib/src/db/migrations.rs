@@ -588,10 +588,8 @@ fn run_migration_api_key_hash_unique(conn: &rusqlite::Connection) -> Result<()> 
 /// - v1 (default): legacy SHA-256(raw_key)
 /// - v2: SHA-256(pepper || raw_key) when ENGRAM_API_KEY_PEPPER is set
 fn run_migration_api_key_hash_version(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch(
-        "ALTER TABLE api_keys ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("ALTER TABLE api_keys ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
 }
 
@@ -695,10 +693,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_migrations_idempotent() -> Result<()> {
-        let db_path = std::env::temp_dir().join(format!(
-            "engram-migrations-{}.db",
-            uuid::Uuid::new_v4()
-        ));
+        let db_path =
+            std::env::temp_dir().join(format!("engram-migrations-{}.db", uuid::Uuid::new_v4()));
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
 

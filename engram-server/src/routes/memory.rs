@@ -4,13 +4,13 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use rusqlite::params;
 use engram_lib::intelligence::extraction::fast_extract_facts;
 use engram_lib::memory::{
     self,
     search::hybrid_search,
     types::{ListOptions, SearchRequest, StoreRequest, UpdateRequest},
 };
+use rusqlite::params;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;

@@ -218,9 +218,7 @@ pub async fn update_task(
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    EngError::NotFound(format!("task {}", id))
-                }
+                rusqlite::Error::QueryReturnedNoRows => EngError::NotFound(format!("task {}", id)),
                 other => rusqlite_to_eng_error(other),
             })?;
 
@@ -255,8 +253,7 @@ pub async fn update_task(
         );
         params_dyn.push(Box::new(id));
         params_dyn.push(Box::new(user_id));
-        let refs: Vec<&dyn rusqlite::ToSql> =
-            params_dyn.iter().map(|b| b.as_ref()).collect();
+        let refs: Vec<&dyn rusqlite::ToSql> = params_dyn.iter().map(|b| b.as_ref()).collect();
         tx.execute(&sql, refs.as_slice())
             .map_err(rusqlite_to_eng_error)?;
 
@@ -340,9 +337,7 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<ChiasmStat
             }
         } else {
             let mut stmt = conn
-                .prepare(
-                    "SELECT status, COUNT(*) FROM chiasm_tasks GROUP BY status",
-                )
+                .prepare("SELECT status, COUNT(*) FROM chiasm_tasks GROUP BY status")
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {

@@ -111,7 +111,8 @@ pub async fn query_actions(
 ) -> Result<Vec<ActionEntry>> {
     let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE user_id = ?1");
     let mut param_idx = 2usize;
-    let mut params_vec: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(user_id)];
+    let mut params_vec: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Integer(user_id)];
 
     if let Some(a) = agent {
         sql.push_str(&format!(" AND agent = ?{}", param_idx));

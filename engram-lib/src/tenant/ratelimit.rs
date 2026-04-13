@@ -114,9 +114,7 @@ pub async fn check_rate_limit(
     let row = db
         .read(move |conn| {
             let mut stmt = conn
-                .prepare(
-                    "SELECT count, window_start FROM rate_limits WHERE key = ?1",
-                )
+                .prepare("SELECT count, window_start FROM rate_limits WHERE key = ?1")
                 .map_err(rusqlite_to_eng_error)?;
 
             let mut rows = stmt

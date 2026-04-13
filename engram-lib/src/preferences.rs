@@ -72,9 +72,7 @@ pub async fn get_preference(db: &Database, user_id: i64, key: &str) -> Result<Us
         conn.query_row(&sql, params![user_id, key], row_to_preference)
             .optional()
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .ok_or_else(|| {
-                EngError::NotFound(format!("preference not found for user {}", user_id))
-            })
+            .ok_or_else(|| EngError::NotFound(format!("preference not found for user {}", user_id)))
     })
     .await
 }

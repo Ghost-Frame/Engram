@@ -201,10 +201,7 @@ async fn fanout_chiasm(db: &Database, report: &ActivityReport, user_id: i64) {
                         )
                         .await
                         {
-                            tracing::warn!(
-                                "activity: chiasm auto-create update failed: {}",
-                                e
-                            );
+                            tracing::warn!("activity: chiasm auto-create update failed: {}", e);
                         }
                     }
                 }

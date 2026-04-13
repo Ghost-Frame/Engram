@@ -573,11 +573,7 @@ pub async fn update_workflow(
     );
 
     // Serialize steps if present
-    let steps_json = req
-        .steps
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
+    let steps_json = req.steps.as_ref().map(serde_json::to_string).transpose()?;
 
     let name = req.name.clone();
     let description = req.description.clone();

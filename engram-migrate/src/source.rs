@@ -22,9 +22,10 @@ pub async fn analyze(db: &SourceDb) -> Result<HashMap<String, i64>> {
     let mut tables = HashMap::new();
 
     // Get all table names
-    let mut stmt = db.conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    ).await?;
+    let mut stmt = db
+        .conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .await?;
 
     let mut rows = stmt.query(()).await?;
     let mut table_names = Vec::new();
@@ -111,7 +112,8 @@ pub async fn get_tables(db: &SourceDb) -> Result<Vec<String>> {
         let name: String = row.get(0)?;
 
         // Skip internal libsql tables
-        if name.contains("_shadow") || name.contains("_idx") || name == "libsql_vector_meta_shadow" {
+        if name.contains("_shadow") || name.contains("_idx") || name == "libsql_vector_meta_shadow"
+        {
             continue;
         }
 

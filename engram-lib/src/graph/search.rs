@@ -54,24 +54,50 @@ pub async fn graph_search(
                     |row| {
                         let id: i64 = row.get(0)?;
                         let content: String = row.get(1)?;
-                        let category: String = row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
+                        let category: String =
+                            row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
                         let importance: i64 = row.get(3)?;
                         let pagerank: f64 = row.get::<_, Option<f64>>(4)?.unwrap_or(0.0);
-                        let source: String = row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
+                        let source: String =
+                            row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
                         let created_at: String = row.get::<_, String>(6).unwrap_or_default();
                         let is_static: bool = row.get::<_, bool>(7).unwrap_or(false);
                         let source_count: i64 = row.get::<_, i64>(8).unwrap_or(1);
                         let decay_score: Option<f64> = row.get::<_, f64>(9).ok();
-                        let community_id: Option<u32> = row.get::<_, i64>(10).ok().map(|v| v as u32);
-                        Ok((id, content, category, importance, pagerank, source, created_at, is_static, source_count, decay_score, community_id))
+                        let community_id: Option<u32> =
+                            row.get::<_, i64>(10).ok().map(|v| v as u32);
+                        Ok((
+                            id,
+                            content,
+                            category,
+                            importance,
+                            pagerank,
+                            source,
+                            created_at,
+                            is_static,
+                            source_count,
+                            decay_score,
+                            community_id,
+                        ))
                     },
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let mut nodes = Vec::new();
             for row in rows {
-                let (id, content, category, importance, pagerank, source, created_at, is_static, source_count, decay_score, community_id) =
-                    row.map_err(rusqlite_to_eng_error)?;
+                let (
+                    id,
+                    content,
+                    category,
+                    importance,
+                    pagerank,
+                    source,
+                    created_at,
+                    is_static,
+                    source_count,
+                    decay_score,
+                    community_id,
+                ) = row.map_err(rusqlite_to_eng_error)?;
 
                 let label = if content.len() > 60 {
                     format!(
@@ -304,8 +330,31 @@ pub async fn neighborhood(
             .await?;
 
         if let Some(r) = result {
-            let (mem_id, content, category, importance, pagerank, source, created_at, is_static, source_count, decay_score, community_id)
-                = (r.id, r.content, r.category, r.importance, r.pagerank, r.source, r.created_at, r.is_static, r.source_count, r.decay_score, r.community_id);
+            let (
+                mem_id,
+                content,
+                category,
+                importance,
+                pagerank,
+                source,
+                created_at,
+                is_static,
+                source_count,
+                decay_score,
+                community_id,
+            ) = (
+                r.id,
+                r.content,
+                r.category,
+                r.importance,
+                r.pagerank,
+                r.source,
+                r.created_at,
+                r.is_static,
+                r.source_count,
+                r.decay_score,
+                r.community_id,
+            );
             let label = if content.len() > 60 {
                 format!(
                     "{}...",

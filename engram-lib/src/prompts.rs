@@ -268,14 +268,10 @@ pub fn scrub_credentials(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     for line in text.lines() {
         let line_lower = line.to_lowercase();
-        let is_cred = SCRUB_PATTERNS
-            .iter()
-            .any(|pat| line_lower.contains(pat));
+        let is_cred = SCRUB_PATTERNS.iter().any(|pat| line_lower.contains(pat));
         if is_cred
             && (line.contains('=')
-                || (line.contains(':')
-                    && !line.contains("://")
-                    && !line.contains("path")))
+                || (line.contains(':') && !line.contains("://") && !line.contains("path")))
         {
             result.push_str("[CREDENTIAL REDACTED - use credential manager]\n");
             continue;
@@ -329,8 +325,7 @@ fn format_contradictions(contradictions: &[ContradictionInfo]) -> String {
     if contradictions.is_empty() {
         return String::new();
     }
-    let mut out =
-        String::from("\n## Resolved Contradictions (brain settled these conflicts)\n");
+    let mut out = String::from("\n## Resolved Contradictions (brain settled these conflicts)\n");
     for c in contradictions.iter().take(5) {
         out.push_str(&format!(
             "- **Current truth:** {}\n  ~~Superseded:~~ {}\n  Reason: {}\n",
