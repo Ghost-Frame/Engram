@@ -12,6 +12,10 @@ path = "src/bin/cred.rs"
 name = "derive-db-key"
 path = "src/bin/derive-db-key.rs"
 
+[[bin]]
+name = "migrate-cred"
+path = "src/bin/migrate-cred.rs"
+
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive"] }
