@@ -4,11 +4,14 @@
 //! - Agent keys: scoped access based on permissions
 
 use axum::{
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::StatusCode,
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
+    Json,
 };
+use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
 
 use kleos_cred::agent_keys::{parse_agent_key, validate_agent_key, AgentKey};
 use kleos_cred::crypto::hash_key;
@@ -16,6 +19,49 @@ use hex;
 use subtle::ConstantTimeEq;
 
 use crate::state::AppState;
+
+/// Pre-auth rate limit: 10 failed attempts per 60-second window.
+const PREAUTH_LIMIT: u32 = 10;
+
+/// Hash a socket address IP to an i64 key for the in-memory rate limiter.
+fn ip_to_key(addr: &std::net::IpAddr) -> i64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    addr.hash(&mut hasher);
+    hasher.finish() as i64
+}
+
+/// Pre-authentication rate-limiting middleware.
+///
+/// Uses the real TCP peer address (ConnectInfo) to prevent brute-force
+/// token guessing. Runs BEFORE auth_middleware in the layer stack.
+pub async fn preauth_rate_limit(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    // Skip rate limiting for health check
+    if request.uri().path() == "/health" {
+        return next.run(request).await;
+    }
+
+    let key = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ip_to_key(&ci.0.ip()))
+        .unwrap_or(0);
+
+    match state.rate_limiter.check(key, PREAUTH_LIMIT) {
+        Ok(_count) => next.run(request).await,
+        Err(retry_after) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": "rate limit exceeded",
+                "retry_after": retry_after
+            })),
+        )
+            .into_response(),
+    }
+}
 
 /// Authentication result passed to handlers.
 #[derive(Debug, Clone)]

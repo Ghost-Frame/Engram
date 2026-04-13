@@ -5,12 +5,14 @@ use std::sync::Arc;
 
 use kleos_cred::crypto::KEY_SIZE;
 use kleos_lib::db::Database;
+use kleos_lib::ratelimit::RateLimiter;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Database>,
     pub master_key: Arc<[u8; KEY_SIZE]>,
+    pub rate_limiter: Arc<RateLimiter>,
 }
 
 impl AppState {
@@ -18,6 +20,7 @@ impl AppState {
         Self {
             db: Arc::new(db),
             master_key: Arc::new(master_key),
+            rate_limiter: Arc::new(RateLimiter::new()),
         }
     }
 }

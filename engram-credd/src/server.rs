@@ -15,7 +15,7 @@ use kleos_cred::crypto::derive_key;
 use kleos_lib::db::migrations::run_migrations;
 use kleos_lib::db::Database;
 
-use crate::auth::auth_middleware;
+use crate::auth::{auth_middleware, preauth_rate_limit};
 use crate::handlers::{agents, resolve, secrets};
 use crate::state::AppState;
 
@@ -67,10 +67,14 @@ pub async fn run(
         .route("/agents/{name}/revoke", post(agents::revoke_handler))
         // Health check (no auth)
         .route("/health", get(health_handler))
-        // Apply middleware
+        // Apply middleware (outermost layer executes first)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            preauth_rate_limit,
         ))
         // SECURITY: request hardening layers. DefaultBodyLimit prevents
         // memory exhaustion, TimeoutLayer prevents slow-loris / hung proxy.
