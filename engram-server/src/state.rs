@@ -41,8 +41,8 @@ pub struct AppState {
     pub db: Arc<Database>,
     pub config: Arc<Config>,
     pub credd: Arc<CreddClient>,
-    pub embedder: Option<Arc<dyn EmbeddingProvider>>,
-    pub reranker: Option<Arc<Reranker>>,
+    pub embedder: Arc<RwLock<Option<Arc<dyn EmbeddingProvider>>>>,
+    pub reranker: Arc<RwLock<Option<Arc<Reranker>>>>,
     pub brain: Option<Arc<dyn BrainBackend>>,
     #[allow(dead_code)]
     pub llm: Option<Arc<LocalModelClient>>,

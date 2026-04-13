@@ -484,7 +484,7 @@ async fn embedding_info(
     Ok(Json(json!({
         "model": state.config.embedding_model,
         "dimensions": state.config.embedding_dim,
-        "ready": state.embedder.is_some(),
+        "ready": state.embedder.read().await.is_some(),
     })))
 }
 
@@ -535,11 +535,11 @@ async fn admin_providers(
     require_admin(&auth)?;
     Ok(Json(json!({
         "embedding": {
-            "ready": state.embedder.is_some(),
+            "ready": state.embedder.read().await.is_some(),
             "model": state.config.embedding_model,
         },
         "reranker": {
-            "ready": state.reranker.is_some(),
+            "ready": state.reranker.read().await.is_some(),
         },
         "llm": {
             "ready": state.llm.is_some(),

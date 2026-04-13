@@ -89,7 +89,8 @@ async fn store_memory(
 
     req.user_id = Some(auth.user_id);
     if req.embedding.is_none() {
-        if let Some(ref embedder) = state.embedder {
+        let embedder_guard = state.embedder.read().await;
+        if let Some(ref embedder) = *embedder_guard {
             match embedder.embed(&req.content).await {
                 Ok(emb) => req.embedding = Some(emb),
                 Err(e) => tracing::warn!("embedding failed for store: {}", e),
@@ -144,16 +145,19 @@ async fn search_memories(
     Auth(auth): Auth,
     Json(body): Json<SearchBody>,
 ) -> Result<Json<Value>, AppError> {
-    let embedding = if let Some(ref embedder) = state.embedder {
-        match embedder.embed(&body.query).await {
-            Ok(emb) => Some(emb),
-            Err(e) => {
-                tracing::warn!("embedding failed for search: {}", e);
-                None
+    let embedding = {
+        let embedder_guard = state.embedder.read().await;
+        if let Some(ref embedder) = *embedder_guard {
+            match embedder.embed(&body.query).await {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    tracing::warn!("embedding failed for search: {}", e);
+                    None
+                }
             }
+        } else {
+            None
         }
-    } else {
-        None
     };
 
     let body_query = body.query.clone();
@@ -182,9 +186,12 @@ async fn search_memories(
 
     let mut results = hybrid_search(&state.db, req).await?;
 
-    if let Some(ref reranker) = state.reranker {
-        if let Err(e) = reranker.rerank_results(&body_query, &mut results).await {
-            tracing::warn!("reranker failed, using original order: {}", e);
+    {
+        let reranker_guard = state.reranker.read().await;
+        if let Some(ref reranker) = *reranker_guard {
+            if let Err(e) = reranker.rerank_results(&body_query, &mut results).await {
+                tracing::warn!("reranker failed, using original order: {}", e);
+            }
         }
     }
 
@@ -259,16 +266,19 @@ async fn recall(
     let all_list = memory::list(&state.db, static_opts).await?;
     let static_memories: Vec<_> = all_list.into_iter().filter(|m| m.is_static).collect();
 
-    let query_embedding = if let Some(ref embedder) = state.embedder {
-        match embedder.embed(&query).await {
-            Ok(emb) => Some(emb),
-            Err(e) => {
-                tracing::warn!("embedding failed for recall: {}", e);
-                None
+    let query_embedding = {
+        let embedder_guard = state.embedder.read().await;
+        if let Some(ref embedder) = *embedder_guard {
+            match embedder.embed(&query).await {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    tracing::warn!("embedding failed for recall: {}", e);
+                    None
+                }
             }
+        } else {
+            None
         }
-    } else {
-        None
     };
 
     let semantic_req = SearchRequest {

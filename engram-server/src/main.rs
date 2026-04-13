@@ -57,38 +57,55 @@ async fn main() {
         .await
         .expect("failed to connect to database");
 
-    // Initialize embedding provider (graceful degradation if unavailable)
-    let embedder: Option<Arc<dyn EmbeddingProvider>> = match OnnxProvider::new(&config).await {
-        Ok(provider) => {
-            tracing::info!("ONNX embedding provider ready");
-            Some(Arc::new(provider))
-        }
-        Err(e) => {
-            tracing::warn!(
-                "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
-                e
-            );
-            None
-        }
-    };
+    // Deferred embedder/reranker initialization -- server starts immediately, models load in background
+    let embedder: Arc<tokio::sync::RwLock<Option<Arc<dyn EmbeddingProvider>>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
+    let reranker: Arc<tokio::sync::RwLock<Option<Arc<Reranker>>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
 
-    let reranker: Option<Arc<Reranker>> = if config.reranker_enabled {
-        match Reranker::new(&config).await {
-            Ok(r) => {
-                tracing::info!("cross-encoder reranker ready");
-                Some(Arc::new(r))
+    // Spawn background task to load embedding model
+    {
+        let embedder = Arc::clone(&embedder);
+        let config = config.clone();
+        tokio::spawn(async move {
+            tracing::info!("loading ONNX embedding model in background...");
+            match OnnxProvider::new(&config).await {
+                Ok(provider) => {
+                    let mut guard = embedder.write().await;
+                    *guard = Some(Arc::new(provider));
+                    tracing::info!("ONNX embedding provider ready");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
+                        e
+                    );
+                }
             }
-            Err(e) => {
-                tracing::warn!(
-                    "reranker failed to initialize: {}. Results will not be reranked.",
-                    e
-                );
-                None
+        });
+    }
+
+    // Spawn background task to load reranker model
+    if config.reranker_enabled {
+        let reranker = Arc::clone(&reranker);
+        let config = config.clone();
+        tokio::spawn(async move {
+            tracing::info!("loading cross-encoder reranker in background...");
+            match Reranker::new(&config).await {
+                Ok(r) => {
+                    let mut guard = reranker.write().await;
+                    *guard = Some(Arc::new(r));
+                    tracing::info!("cross-encoder reranker ready");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "reranker failed to initialize: {}. Results will not be reranked.",
+                        e
+                    );
+                }
             }
-        }
-    } else {
-        None
-    };
+        });
+    }
 
     // Initialize local LLM client (graceful degradation if unavailable)
     let llm: Option<Arc<LocalModelClient>> = {
