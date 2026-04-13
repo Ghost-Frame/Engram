@@ -29,11 +29,99 @@ pub fn router() -> Router<AppState> {
         .layer(DefaultBodyLimit::max(1024))
 }
 
-async fn get_health() -> Json<Value> {
+async fn get_health(State(state): State<AppState>) -> Json<Value> {
+    // Query counts for the GUI dashboard. These are cheap index scans.
+    let memories: i64 = state
+        .db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0 AND is_archived = 0",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .unwrap_or(0);
+
+    let entities: i64 = state
+        .db
+        .read(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .unwrap_or(0);
+
+    let episodes: i64 = state
+        .db
+        .read(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM episodes", [], |row| row.get(0))
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .unwrap_or(0);
+
+    let pending: i64 = state
+        .db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .unwrap_or(0);
+
+    let static_count: i64 = state
+        .db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE is_static = 1 AND is_forgotten = 0",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .unwrap_or(0);
+
+    let versioned: i64 = state
+        .db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE version > 1 AND is_forgotten = 0",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .unwrap_or(0);
+
+    let llm_configured = state.brain.is_some();
+    let embedding_model = state
+        .config
+        .embedding_model_dir
+        .as_deref()
+        .and_then(|p| std::path::Path::new(p).file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
     Json(json!({
         "status": "ok",
         "service": "kleos",
-        "version": "0.1.0"
+        "version": "0.1.0",
+        "memories": memories,
+        "entities": entities,
+        "episodes": episodes,
+        "pending": pending,
+        "static": static_count,
+        "versioned": versioned,
+        "llm_configured": llm_configured,
+        "embedding_model": embedding_model,
     }))
 }
 
