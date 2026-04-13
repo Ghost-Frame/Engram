@@ -2,7 +2,7 @@
 # Shared Eidolon helper for all hooks.
 # Source this file: . "$HOME/.claude/hooks/lib-eidolon.sh"
 
-_EIDOLON_URL="${EIDOLON_URL:-http://100.64.0.13:7700}"
+_EIDOLON_URL="${EIDOLON_URL:-http://localhost:7700}"
 _EIDOLON_KEY=""
 
 # Lazy-resolve Eidolon key (only calls cred once per hook invocation)

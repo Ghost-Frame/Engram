@@ -23,9 +23,9 @@ Engram started as a Node.js server. It worked. But a memory system that injects 
 This repo is the ground-up Rust port. Same cognitive model, same API, same data format. Different runtime.
 
 - **Single static binary.** `cargo build --release` gives you one file. No Node, no `node_modules`, no flags.
-- **Tokio + Axum.** Async from the socket down to libsql. Thousands of concurrent agent requests on a small VPS.
+- **Tokio + Axum.** Async from the socket down to SQLite. Thousands of concurrent agent requests on a small VPS.
 - **In-process ONNX.** `ort` runs embeddings and the cross-encoder reranker inside the server process. No Python, no worker threads, no sidecar model server.
-- **libsql + LanceDB.** libsql holds relational memory and FTS5. LanceDB holds the vector index once the corpus outgrows memory.
+- **SQLite + LanceDB.** rusqlite (with optional SQLCipher) holds relational memory and FTS5. LanceDB holds the vector index once the corpus outgrows memory.
 - **One workspace.** Library, server, CLI, and sidecar build from one `cargo` command.
 
 One binary. One SQLite database. Local embeddings. No OpenAI key. Your hardware, your data.
@@ -78,7 +78,8 @@ MCP stdio entrypoint: `ENGRAM_MCP_BEARER_TOKEN=engram_... cargo run -p engram-mc
 - **4-Channel Hybrid Search.** Vector similarity, FTS5 full-text, personality signals, and graph traversal fused via Reciprocal Rank Fusion.
 - **Knowledge Graph.** Auto-linking, Louvain community detection, weighted PageRank, cooccurrence, structural analysis.
 - **Personality Engine.** Preferences, values, motivations, identity. Every recall shapes around who the agent is talking to.
-- **Self-Hosted.** One Rust binary. One libsql database. Local ONNX embeddings. No cloud keys.
+- **Self-Hosted.** One Rust binary. One SQLite database. Local ONNX embeddings. No cloud keys.
+- **Encryption at Rest.** SQLCipher database encryption with keyfile, environment variable, or YubiKey HMAC-SHA1 challenge-response.
 - **Atomic Fact Decomposition.** Long memories split into self-contained facts. Each fact links back to its parent via `has_fact`.
 - **Contradiction Detection.** When agents learn conflicting information, Engram surfaces the conflict.
 - **Guardrails.** Agents check before they act. Stored rules return allow/warn/block on proposed actions.
@@ -114,7 +115,7 @@ MCP stdio entrypoint: `ENGRAM_MCP_BEARER_TOKEN=engram_... cargo run -p engram-mc
 - **Audit Trail**: every mutation logged with who, what, when, from where
 - **Scratchpad**: ephemeral working memory with TTL auto-purge
 
-### Cognithor Services
+### Coordination Services
 Engram bundles a set of coordination services behind the same auth and database:
 
 - **Axon**: event bus with channels, subscriptions, SSE streaming, cursor polling
@@ -145,7 +146,7 @@ Ten Cargo crates:
 | `engram-lib` | Core library. Memory, search, embeddings, graph, intelligence, services, auth, jobs. |
 | `engram-server` | Axum HTTP server. Binds routes to library functions. Handles middleware, auth, rate limiting, GUI. |
 | `engram-cli` | Command-line client over the HTTP API. |
-| `engram-sidecar` | Session-scoped memory companion for individual agent runs. Embeds `engram-lib`. |
+| `engram-sidecar` | Session-scoped memory proxy with file watcher and local caching. Talks to `engram-server`. |
 | `engram-mcp` | MCP (Model Context Protocol) stdio and HTTP entrypoint for LLM tool integration. |
 | `engram-cred` | Credential management CLI with encrypted vault and YubiKey support. |
 | `engram-credd` | Credential management daemon. Serves credentials over local HTTP with session auth. |
@@ -168,7 +169,7 @@ cargo clippy --workspace             # lint
 ### Runtime Stack
 
 - Server: Axum 0.8 on Tokio, `tower-http` for tracing and CORS
-- Database: libsql with FTS5, behind an async connection pool
+- Database: rusqlite with FTS5 and optional SQLCipher encryption, behind an async connection pool
 - Vector index: LanceDB (optional, toggled via `use_lance_index`)
 - Embeddings: BAAI/bge-m3, 1024-dim, ONNX via `ort` with the `tokenizers` crate
 - Reranker: IBM granite-embedding-reranker-english-r2 INT8 cross-encoder (optional)
@@ -188,7 +189,7 @@ Question-type detection (fact recall, preference, reasoning, generalization, tim
 
 ### Memory Lifecycle
 
-1. **Store**: SimHash checks for near-duplicates. Unique memories get embedded by `ort` and written to libsql with FTS5 indexing and an optional LanceDB insert.
+1. **Store**: SimHash checks for near-duplicates. Unique memories get embedded by `ort` and written to SQLite with FTS5 indexing and an optional LanceDB insert.
 2. **Auto-link**: the new memory gets compared against existing ones via cosine similarity. Typed edges form: similarity, updates, extends, contradicts, caused_by, prerequisite_for.
 3. **FSRS-6 init**: each memory receives starting stability, difficulty, storage strength, retrieval strength.
 4. **Fact extraction**: when an LLM is configured, structured facts get pulled with temporal validity windows.
@@ -222,7 +223,7 @@ The Rust port closes boundaries the TypeScript version left open:
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘            │
 │       │             │             │                  │
 │  ┌────┴─────────────┴─────────────┴────┐             │
-│  │  libsql (SQLite + FTS5)             │             │
+│  │  SQLite/SQLCipher + FTS5            │             │
 │  │  + LanceDB (vector ANN, optional)   │             │
 │  └─────────────────────────────────────┘             │
 │                                                      │
@@ -241,7 +242,7 @@ The Rust port closes boundaries the TypeScript version left open:
 │  │  Decomp  │  │ Job Pool │  │  tion    │            │
 │  └──────────┘  └──────────┘  └──────────┘            │
 │                                                      │
-│  Cognithor: axon · brain · broca · chiasm ·          │
+│  Services: axon · brain · broca · chiasm ·           │
 │  loom · soma · thymus                                │
 └──────────────────────────────────────────────────────┘
 ```
@@ -307,7 +308,7 @@ Every endpoint needs `Authorization: Bearer eg_...` unless the server runs in op
 | `POST` | `/entities` | Create entity |
 | `POST` | `/projects` | Create project |
 
-### Cognithor Services
+### Coordination Services
 
 | Prefix | Service | Highlights |
 |--------|---------|------------|
@@ -377,20 +378,20 @@ Every command takes `--server` and `--key` overrides, or reads `ENGRAM_URL` / `E
 <details>
 <summary><strong>Sidecar</strong></summary>
 
-`engram-sidecar` runs next to a single agent session. It embeds `engram-lib` and binds to a private port so:
+`engram-sidecar` runs next to a single agent session. It proxies requests to the main Engram server while providing:
 
-- The main tenant never sees scratch state from in-flight runs
-- Every write carries the session ID
-- The sidecar shares the libsql database and embedding provider with `engram-server`
-- Long workflows get a zero-latency memory cache
+- **Session-scoped context** with local caching for fast recall
+- **File watcher** for Claude Code session JSONL files (auto-extracts memories)
+- **LLM re-probe** for analyzing conversation context
+- **Instant flush** to push memories to the server on demand
 
 ```bash
-ENGRAM_SIDECAR_PORT=7711 \
-ENGRAM_SIDECAR_SOURCE=claude-session \
-cargo run -p engram-sidecar -- --session-id my-session
+ENGRAM_URL=http://localhost:4200 \
+ENGRAM_API_KEY=eg_your_key \
+engram-sidecar --session-id my-session --watch
 ```
 
-Most deployments only need `engram-server`. The sidecar is there when you want it.
+The sidecar is a lightweight HTTP service that talks to `engram-server` for storage and search. It doesn't run embeddings locally.
 
 </details>
 
@@ -406,7 +407,7 @@ Most deployments only need `engram-server`. The sidecar is there when you want i
 |----------|---------|-------------|
 | `ENGRAM_HOST` | `127.0.0.1` | Bind address |
 | `ENGRAM_PORT` | `4200` | Server port |
-| `ENGRAM_DB_PATH` | `engram.db` | libsql database file |
+| `ENGRAM_DB_PATH` | `engram.db` | SQLite database file |
 | `ENGRAM_DATA_DIR` | `./data` | Data directory for models, LanceDB, artifacts |
 | `ENGRAM_API_KEY` | unset | Bootstrap admin key override |
 | `ENGRAM_GUI_PASSWORD` | unset | GUI login password |
@@ -437,6 +438,49 @@ Set `LLM_URL`, `LLM_API_KEY`, and `LLM_MODEL` for any OpenAI-compatible provider
 | `ENGRAM_PAGERANK_REFRESH_INTERVAL_SECS` | `300` | Worker refresh cadence |
 | `ENGRAM_PAGERANK_DIRTY_THRESHOLD` | `100` | Dirty-edge count that forces a refresh |
 | `ENGRAM_PAGERANK_MAX_CONCURRENT` | `2` | Max concurrent PageRank workers |
+
+### Encryption at Rest
+
+Engram supports SQLCipher for database encryption. Set `ENGRAM_ENCRYPTION_MODE` to one of:
+
+| Mode | Description |
+|------|-------------|
+| `none` | No encryption (default). Database opens without `PRAGMA key`. |
+| `keyfile` | Read a 32-byte raw key from `~/.config/engram/dbkey`. File must be `chmod 600` on Unix. |
+| `env` | Read `ENGRAM_DB_KEY` environment variable (64 hex characters = 32 bytes). |
+| `yubikey` | Derive key from YubiKey HMAC-SHA1 challenge-response. Requires `engram-credd`. |
+
+**Keyfile setup:**
+
+```bash
+head -c 32 /dev/urandom > ~/.config/engram/dbkey
+chmod 600 ~/.config/engram/dbkey
+ENGRAM_ENCRYPTION_MODE=keyfile engram-server
+```
+
+**Environment variable setup:**
+
+```bash
+export ENGRAM_DB_KEY=$(head -c 32 /dev/urandom | xxd -p -c 64)
+ENGRAM_ENCRYPTION_MODE=env engram-server
+```
+
+**YubiKey setup:**
+
+YubiKey mode uses HMAC-SHA1 challenge-response (slot 2) to derive the encryption key via Argon2id. The YubiKey must be present to unlock the database. This is the strongest option for single-user deployments.
+
+```bash
+# Program YubiKey slot 2 with a secret (one-time setup)
+ykman otp chalresp --generate 2
+
+# Start the credential daemon (unlocks on first use)
+engram-credd --encryption-mode yubikey
+
+# Server connects to credd for key material
+ENGRAM_ENCRYPTION_MODE=yubikey engram-server
+```
+
+The key derivation uses Argon2id (64 MiB memory, 3 iterations) so cold starts take ~1 second. Once unlocked, the key stays in memory until the process exits.
 
 See `engram-lib/src/config.rs` for the full set, including decomposition tunables, search floors, and Eidolon integration flags.
 
