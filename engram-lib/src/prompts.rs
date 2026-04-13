@@ -2,6 +2,7 @@
 //!
 //! Ports: prompts/routes.ts (logic)
 
+use crate::config::ServerEntry;
 use crate::db::Database;
 use crate::{EngError, Result};
 use rusqlite::params;
@@ -241,4 +242,199 @@ pub async fn generate_header(
         actor_model: actor_model_owned,
         prior_models: prior_list,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Living prompt -- Eidolon-style context block with brain recall
+// ---------------------------------------------------------------------------
+
+/// Credential scrubbing patterns. Lines matching any of these patterns AND
+/// containing "=" or ":" (but not "://" or "path") are redacted.
+const SCRUB_PATTERNS: &[&str] = &[
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "private_key",
+    "bearer",
+    "authorization",
+    "credential",
+];
+
+/// Remove credential values from arbitrary text before inserting into prompts.
+pub fn scrub_credentials(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    for line in text.lines() {
+        let line_lower = line.to_lowercase();
+        let is_cred = SCRUB_PATTERNS
+            .iter()
+            .any(|pat| line_lower.contains(pat));
+        if is_cred
+            && (line.contains('=')
+                || (line.contains(':')
+                    && !line.contains("://")
+                    && !line.contains("path")))
+        {
+            result.push_str("[CREDENTIAL REDACTED - use credential manager]\n");
+            continue;
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
+}
+
+/// A single activated memory returned from a brain query, ready for prompt
+/// injection. Credentials are already scrubbed at construction time.
+#[derive(Debug, Clone)]
+pub struct MemorySummary {
+    pub id: i64,
+    pub content: String,
+    pub category: String,
+    pub activation: f64,
+}
+
+/// A resolved contradiction pair from the brain.
+#[derive(Debug, Clone)]
+pub struct ContradictionInfo {
+    pub winner_content: String,
+    pub loser_content: String,
+    pub reason: String,
+}
+
+fn format_memories_as_bullets(memories: &[MemorySummary]) -> String {
+    if memories.is_empty() {
+        return "No relevant patterns activated.".to_string();
+    }
+    memories
+        .iter()
+        .take(10)
+        .map(|m| {
+            let strength = if m.activation > 0.8 {
+                "HIGH"
+            } else if m.activation > 0.5 {
+                "MED"
+            } else {
+                "LOW"
+            };
+            format!("- [{}|{}] {}", m.category, strength, m.content.trim())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_contradictions(contradictions: &[ContradictionInfo]) -> String {
+    if contradictions.is_empty() {
+        return String::new();
+    }
+    let mut out =
+        String::from("\n## Resolved Contradictions (brain settled these conflicts)\n");
+    for c in contradictions.iter().take(5) {
+        out.push_str(&format!(
+            "- **Current truth:** {}\n  ~~Superseded:~~ {}\n  Reason: {}\n",
+            c.winner_content.trim(),
+            c.loser_content.trim(),
+            c.reason,
+        ));
+    }
+    out
+}
+
+/// Build the full living-context prompt block.
+///
+/// All memory lists are optional -- callers pass what they have from brain
+/// queries. The engram_url is embedded in the Syntheos tools table.
+pub fn build_living_prompt(
+    task: &str,
+    task_memories: &[MemorySummary],
+    task_contradictions: &[ContradictionInfo],
+    infra_memories: &[MemorySummary],
+    failure_memories: &[MemorySummary],
+    engram_url: &str,
+    servers: &[ServerEntry],
+    safety_rules: &[String],
+) -> String {
+    let task_context = format_memories_as_bullets(task_memories);
+    let infra_context = format_memories_as_bullets(infra_memories);
+    let failure_context = format_memories_as_bullets(failure_memories);
+    let contradiction_section = format_contradictions(task_contradictions);
+
+    let server_table = if servers.is_empty() {
+        "No server reference configured.".to_string()
+    } else {
+        let mut table =
+            "| Server | Role | SSH User | Notes |\n|--------|------|----------|-------|\n"
+                .to_string();
+        for s in servers {
+            table.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                s.name, s.role, s.ssh_user, s.notes
+            ));
+        }
+        table
+    };
+
+    let safety_section = if safety_rules.is_empty() {
+        String::new()
+    } else {
+        let rules = safety_rules
+            .iter()
+            .map(|r| format!("- {}", r))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("\n## Safety Constraints\n{}\n", rules)
+    };
+
+    format!(
+        r#"=== EIDOLON LIVING CONTEXT ===
+# Eidolon Session Context
+
+This context was generated through neural pattern completion, not keyword search.
+Contradiction resolution has already been applied -- what you see below reflects
+the brain's current understanding.
+
+## Your Task
+{task}
+
+## What the Brain Knows About This Task
+{task_context}
+{contradiction_section}
+## Infrastructure Understanding
+{infra_context}
+{safety_section}
+## Server Reference
+{server_table}
+
+## Past Failures and Issues Related to This Task
+{failure_context}
+
+---
+
+## Syntheos Tools
+
+All services at **{engram_url}**. Use these throughout your session.
+
+| Service | Key Endpoints | When to Use |
+|---------|--------------|-------------|
+| Engram | POST /search, POST /store, POST /context | Search before guessing. Store after completing work. |
+| Chiasm | POST /tasks, PATCH /tasks/:id | Create task on start. Update during. Complete on end. |
+| Broca | POST /broca/actions, POST /broca/ask | Log significant actions. Ask infrastructure questions. |
+| Axon | POST /axon/publish | Publish events on major milestones. |
+| Soma | POST /soma/agents, POST /soma/agents/:id/heartbeat | Register on start. Heartbeat during. |
+
+**MANDATORY:** Search Engram BEFORE asking the user ANY question about servers, credentials, architecture, or past decisions.
+
+=== END LIVING CONTEXT ===
+"#,
+        task = task,
+        task_context = task_context,
+        contradiction_section = contradiction_section,
+        infra_context = infra_context,
+        safety_section = safety_section,
+        failure_context = failure_context,
+        engram_url = engram_url,
+        server_table = server_table,
+    )
 }

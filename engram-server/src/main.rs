@@ -154,6 +154,7 @@ async fn main() {
         sessions: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         eidolon_config: None,
         approval_notify: Some(approval_tx),
+        pending_approvals: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         safe_mode: Arc::new(AtomicBool::new(safe_mode_active)),
     };
 

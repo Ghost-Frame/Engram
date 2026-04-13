@@ -10,6 +10,7 @@ use engram_lib::context::budget::estimate_tokens;
 use engram_lib::intelligence::growth::list_observations;
 use engram_lib::memory::search::hybrid_search;
 use engram_lib::memory::types::SearchRequest;
+use engram_lib::prompts::{build_living_prompt, scrub_credentials, ContradictionInfo, MemorySummary};
 use engram_lib::services::brain::BrainQueryOptions;
 use engram_lib::EngError;
 
@@ -208,31 +209,131 @@ async fn post_prompt_generate(
             if brain.is_ready() {
                 let embedder_guard = state.embedder.read().await;
                 if let Some(ref embedder) = *embedder_guard {
-                    let opts = BrainQueryOptions {
+                    // Query 1: task-specific recall
+                    let task_opts = BrainQueryOptions {
                         query: task.to_string(),
-                        top_k: Some(brain_limit),
+                        top_k: Some(brain_limit.max(12)),
                         beta: None,
                         spread_hops: None,
                     };
-                    if let Ok(result) = brain.query(embedder.as_ref(), task, &opts).await {
-                        if !result.activated.is_empty() {
-                            let mut buf = String::from("## Brain Patterns\n");
-                            for m in &result.activated {
-                                buf.push_str(&format!(
-                                    "- [act:{:.2}] {}\n",
-                                    m.activation,
-                                    m.content.trim()
-                                ));
-                                sources.push(json!({
-                                    "id": m.id,
-                                    "kind": "brain",
-                                    "activation": m.activation,
-                                    "category": m.category,
-                                }));
-                            }
-                            sections.push(buf);
-                        }
+                    let task_result = brain
+                        .query(embedder.as_ref(), task, &task_opts)
+                        .await
+                        .unwrap_or_default();
+
+                    // Query 2: infrastructure context
+                    let infra_opts = BrainQueryOptions {
+                        query: "server infrastructure deployment SSH configuration".to_string(),
+                        top_k: Some(8),
+                        beta: None,
+                        spread_hops: None,
+                    };
+                    let infra_result = brain
+                        .query(
+                            embedder.as_ref(),
+                            "server infrastructure deployment SSH configuration",
+                            &infra_opts,
+                        )
+                        .await
+                        .unwrap_or_default();
+
+                    // Query 3: past failures related to this task
+                    let failure_query =
+                        format!("failure problem error blocked mistake {}", task);
+                    let failure_opts = BrainQueryOptions {
+                        query: failure_query.clone(),
+                        top_k: Some(6),
+                        beta: None,
+                        spread_hops: None,
+                    };
+                    let failure_result = brain
+                        .query(embedder.as_ref(), &failure_query, &failure_opts)
+                        .await
+                        .unwrap_or_default();
+
+                    // Convert brain results into MemorySummary lists
+                    let task_memories: Vec<MemorySummary> = task_result
+                        .activated
+                        .iter()
+                        .map(|m| MemorySummary {
+                            id: m.id,
+                            content: scrub_credentials(&m.content),
+                            category: m.category.clone(),
+                            activation: m.activation,
+                        })
+                        .collect();
+
+                    let infra_memories: Vec<MemorySummary> = infra_result
+                        .activated
+                        .iter()
+                        .map(|m| MemorySummary {
+                            id: m.id,
+                            content: scrub_credentials(&m.content),
+                            category: m.category.clone(),
+                            activation: m.activation,
+                        })
+                        .collect();
+
+                    let failure_memories: Vec<MemorySummary> = failure_result
+                        .activated
+                        .iter()
+                        .map(|m| MemorySummary {
+                            id: m.id,
+                            content: scrub_credentials(&m.content),
+                            category: m.category.clone(),
+                            activation: m.activation,
+                        })
+                        .collect();
+
+                    // Build contradiction pairs from task result
+                    let task_contradictions: Vec<ContradictionInfo> = task_result
+                        .contradictions
+                        .iter()
+                        .filter_map(|c| {
+                            let winner = task_result
+                                .activated
+                                .iter()
+                                .find(|m| m.id == c.winner_id)?;
+                            let loser = task_result
+                                .activated
+                                .iter()
+                                .find(|m| m.id == c.loser_id)?;
+                            Some(ContradictionInfo {
+                                winner_content: scrub_credentials(&winner.content),
+                                loser_content: scrub_credentials(&loser.content),
+                                reason: c.reason.clone(),
+                            })
+                        })
+                        .collect();
+
+                    // Record source metadata
+                    for m in &task_memories {
+                        sources.push(json!({
+                            "id": m.id,
+                            "kind": "brain",
+                            "activation": m.activation,
+                            "category": m.category,
+                        }));
                     }
+
+                    let engram_url = state
+                        .config
+                        .eidolon
+                        .url
+                        .as_deref()
+                        .unwrap_or("http://127.0.0.1:4200");
+
+                    let living = build_living_prompt(
+                        task,
+                        &task_memories,
+                        &task_contradictions,
+                        &infra_memories,
+                        &failure_memories,
+                        engram_url,
+                        &state.config.servers,
+                        &state.config.safety.rules,
+                    );
+                    sections.push(living);
                 }
             }
         }

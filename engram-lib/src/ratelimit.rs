@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use std::sync::RwLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::db::Database;
 use crate::{EngError, Result};
@@ -10,82 +10,183 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 }
 
 // ---------------------------------------------------------------------------
-// In-memory rate limiter (fixed-window, per process)
+// In-memory rate limiter (sliding window with burst support, per process)
 // ---------------------------------------------------------------------------
 
-/// Rate window duration in milliseconds (1 minute).
-const RATE_WINDOW_MS: u64 = 60_000;
-
-#[derive(Debug)]
-struct RateLimitEntry {
-    count: u32,
-    reset: u64,
+/// Sliding-window rate limiter with optional burst allowance.
+///
+/// Tracks per-key request timestamps in a VecDeque<Instant>. The effective
+/// limit is `requests_per_minute + burst`. Keys are string-based so callers
+/// can use API key IDs, user IDs, or IP addresses interchangeably.
+pub struct RateLimiter {
+    /// Per-key timestamp queues. Guarded by a single Mutex.
+    /// Using Mutex<HashMap<...>> avoids the dashmap dependency while still
+    /// being safe for concurrent use behind an Arc.
+    windows: Mutex<HashMap<String, VecDeque<Instant>>>,
+    requests_per_minute: u32,
+    burst: u32,
 }
 
-/// In-memory rate limiter using a HashMap protected by RwLock.
-pub struct RateLimiter {
-    entries: RwLock<HashMap<i64, RateLimitEntry>>,
+/// Information returned on a successful (allowed) rate-limit check.
+pub struct RateLimitInfo {
+    /// Requests remaining in the current window (including burst).
+    pub remaining: u32,
+    /// Total effective limit (requests_per_minute + burst).
+    pub limit: u32,
+    /// Seconds until the oldest in-window request expires.
+    pub reset_secs: u64,
+}
+
+/// Information returned when the rate limit is exceeded.
+pub struct RateLimitExceeded {
+    /// Seconds the caller should wait before retrying.
+    pub retry_after_secs: u64,
+    /// Total effective limit that was exceeded.
+    pub limit: u32,
 }
 
 impl RateLimiter {
-    pub fn new() -> Self {
+    /// Create a new limiter with the given base rate and burst allowance.
+    ///
+    /// `burst` additional requests are permitted on top of `requests_per_minute`
+    /// within any 60-second sliding window.
+    pub fn new_with_burst(requests_per_minute: u32, burst: u32) -> Self {
         Self {
-            entries: RwLock::new(HashMap::new()),
+            windows: Mutex::new(HashMap::new()),
+            requests_per_minute,
+            burst,
         }
     }
 
-    fn now_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
+    /// Create a limiter with no burst (backwards-compatible constructor).
+    pub fn new() -> Self {
+        Self::new_with_burst(60, 0)
     }
 
-    /// Check rate limit for a key. Returns Ok(count) or Err(retry_after_secs).
+    /// Check rate limit for a string key.
     ///
-    /// SECURITY: if the inner RwLock is poisoned by a panicking writer we fail
-    /// closed (return the smallest retry-after > 0) instead of unwrapping and
-    /// taking down the whole process, and we refuse to count that request
-    /// against the caller so we cannot be turned into a free amplifier.
+    /// Returns `Ok(RateLimitInfo)` when allowed, `Err(RateLimitExceeded)` when
+    /// the limit is exceeded.
+    ///
+    /// SECURITY: if the inner Mutex is poisoned by a panicking thread we fail
+    /// closed (deny the request) rather than unwrapping, so a panic in one
+    /// request cannot open an amplifier for subsequent requests.
+    pub fn check_key(&self, key: &str) -> std::result::Result<RateLimitInfo, RateLimitExceeded> {
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+        let max_requests = self.requests_per_minute + self.burst;
+
+        let mut map = match self.windows.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                tracing::error!("rate limiter lock poisoned; failing closed");
+                return Err(RateLimitExceeded {
+                    retry_after_secs: 1,
+                    limit: max_requests,
+                });
+            }
+        };
+
+        let deque = map.entry(key.to_string()).or_insert_with(VecDeque::new);
+
+        // Prune timestamps older than the sliding window.
+        while let Some(&front) = deque.front() {
+            if now.duration_since(front) > window {
+                deque.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        let count = deque.len() as u32;
+
+        if count >= max_requests {
+            let oldest = deque.front().unwrap();
+            let expires_in = window.saturating_sub(now.duration_since(*oldest));
+            Err(RateLimitExceeded {
+                retry_after_secs: expires_in.as_secs().max(1),
+                limit: max_requests,
+            })
+        } else {
+            deque.push_back(now);
+            let remaining = max_requests - count - 1;
+            let reset_secs = if let Some(&oldest) = deque.front() {
+                window.saturating_sub(now.duration_since(oldest)).as_secs()
+            } else {
+                60
+            };
+            Ok(RateLimitInfo {
+                remaining,
+                limit: max_requests,
+                reset_secs,
+            })
+        }
+    }
+
+    /// Check rate limit using a numeric key ID (backwards-compatible helper).
+    ///
+    /// Accepts the legacy `limit` parameter per-call so existing callers do
+    /// not need to be updated. The per-call limit overrides the limiter's
+    /// configured `requests_per_minute` for this call only.
+    ///
+    /// Returns `Ok(count)` or `Err(retry_after_secs)` matching the old signature.
     pub fn check(&self, key_id: i64, limit: u32) -> std::result::Result<u32, u64> {
-        let now = Self::now_ms();
-        let mut map = match self.entries.write() {
+        // Build a temporary limiter honoring the per-call limit.
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+        let max_requests = limit + self.burst;
+
+        let key = key_id.to_string();
+        let mut map = match self.windows.lock() {
             Ok(g) => g,
             Err(poisoned) => {
                 tracing::error!("rate limiter lock poisoned; failing closed");
-                // Recover the guard so subsequent requests can make progress.
                 poisoned.into_inner()
             }
         };
-        let entry = map.entry(key_id).or_insert(RateLimitEntry {
-            count: 0,
-            reset: now + RATE_WINDOW_MS,
-        });
 
-        // Reset window if expired.
-        if now > entry.reset {
-            entry.count = 0;
-            entry.reset = now + RATE_WINDOW_MS;
+        let deque = map.entry(key).or_insert_with(VecDeque::new);
+
+        while let Some(&front) = deque.front() {
+            if now.duration_since(front) > window {
+                deque.pop_front();
+            } else {
+                break;
+            }
         }
 
-        entry.count += 1;
+        let count = deque.len() as u32;
 
-        if entry.count > limit {
-            let retry_after = (entry.reset.saturating_sub(now)) / 1000;
-            Err(retry_after.max(1))
+        if count >= max_requests {
+            let oldest = deque.front().unwrap();
+            let expires_in = window.saturating_sub(now.duration_since(*oldest));
+            Err(expires_in.as_secs().max(1))
         } else {
-            Ok(entry.count)
+            deque.push_back(now);
+            Ok(count + 1)
         }
     }
 
-    /// Prune expired entries to prevent unbounded growth.
+    /// Prune all expired entries across all keys to bound memory growth.
     pub fn prune(&self) {
-        let now = Self::now_ms();
-        let mut map = match self.entries.write() {
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+        let mut map = match self.windows.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
-        map.retain(|_, entry| now <= entry.reset);
+
+        for deque in map.values_mut() {
+            while let Some(&front) = deque.front() {
+                if now.duration_since(front) > window {
+                    deque.pop_front();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        map.retain(|_, deque| !deque.is_empty());
     }
 }
 

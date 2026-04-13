@@ -50,6 +50,8 @@ pub trait BrainBackend: Send + Sync {
         edge_pairs: Vec<(i64, i64)>,
         useful: bool,
     ) -> Result<BrainResponse>;
+    async fn evolution_train(&self) -> Result<BrainResponse>;
+    async fn evolution_stats(&self) -> Result<BrainResponse>;
 }
 // ---------------------------------------------------------------------------
 // Types (from types.ts)
@@ -78,7 +80,7 @@ pub struct BrainContradiction {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BrainQueryResult {
     pub activated: Vec<BrainMemory>,
     pub contradictions: Vec<BrainContradiction>,
@@ -156,6 +158,10 @@ pub enum BrainCommand {
         seq: Option<i64>,
     },
     EvolutionTrain {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<i64>,
+    },
+    EvolutionStats {
         #[serde(skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
     },
@@ -314,6 +320,7 @@ impl BrainManager {
             BrainCommand::DreamCycle { seq, .. } => *seq = Some(this_seq),
             BrainCommand::FeedbackSignal { seq, .. } => *seq = Some(this_seq),
             BrainCommand::EvolutionTrain { seq, .. } => *seq = Some(this_seq),
+            BrainCommand::EvolutionStats { seq, .. } => *seq = Some(this_seq),
         }
 
         let payload = serde_json::to_string(&cmd)
@@ -632,6 +639,11 @@ impl BrainManager {
         self.send_command(BrainCommand::EvolutionTrain { seq: None })
             .await
     }
+
+    pub async fn evolution_stats(&self) -> Result<BrainResponse> {
+        self.send_command(BrainCommand::EvolutionStats { seq: None })
+            .await
+    }
 }
 
 #[async_trait]
@@ -681,6 +693,14 @@ impl BrainBackend for BrainManager {
     ) -> Result<BrainResponse> {
         self.feedback_signal(memory_ids, edge_pairs, useful).await
     }
+
+    async fn evolution_train(&self) -> Result<BrainResponse> {
+        self.evolution_train().await
+    }
+
+    async fn evolution_stats(&self) -> Result<BrainResponse> {
+        self.evolution_stats().await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -694,6 +714,7 @@ pub struct HopfieldBrainManager {
     user_id: AtomicI64,
     ready: std::sync::atomic::AtomicBool,
     pub query_state: BrainQueryState,
+    evolution: Mutex<crate::brain::evolution::EvolutionState>,
 }
 
 #[cfg(feature = "brain_hopfield")]
@@ -721,12 +742,16 @@ impl HopfieldBrainManager {
             patterns_loaded = pattern_count
         );
 
+        let evolution =
+            crate::brain::evolution::EvolutionState::load_state(&db).await;
+
         Ok(Self {
             network: Mutex::new(network),
             db,
             user_id: AtomicI64::new(user_id),
             ready: std::sync::atomic::AtomicBool::new(true),
             query_state: BrainQueryState::new(),
+            evolution: Mutex::new(evolution),
         })
     }
 
@@ -805,6 +830,7 @@ impl BrainBackend for HopfieldBrainManager {
         memory: AbsorbMemoryData,
     ) -> Result<()> {
         use crate::brain::hopfield::recall;
+        use crate::brain::instincts;
 
         if !self.is_ready() {
             return Ok(());
@@ -815,7 +841,9 @@ impl BrainBackend for HopfieldBrainManager {
         let importance = memory.importance.round() as i32;
 
         let mut network = self.network.lock().await;
-        recall::store_pattern(
+
+        // Store pattern and create causal edges to temporal neighbours.
+        recall::store_pattern_with_causal_edges(
             &self.db,
             &mut network,
             memory.id,
@@ -823,8 +851,24 @@ impl BrainBackend for HopfieldBrainManager {
             user_id,
             importance,
             1.0, // Initial strength
+            &memory.content,
+            &memory.created_at,
         )
         .await?;
+
+        // Remove any ghost patterns superseded by this real memory.
+        let ghosts_removed =
+            instincts::check_ghost_replacement(&self.db, &mut network, &embedding, user_id)
+                .await
+                .unwrap_or(0);
+
+        if ghosts_removed > 0 {
+            info!(
+                msg = "hopfield_ghost_replaced",
+                id = memory.id,
+                ghosts_removed = ghosts_removed
+            );
+        }
 
         info!(msg = "hopfield_absorbed", id = memory.id);
         Ok(())
@@ -906,9 +950,10 @@ impl BrainBackend for HopfieldBrainManager {
     async fn feedback_signal(
         &self,
         memory_ids: Vec<i64>,
-        _edge_pairs: Vec<(i64, i64)>,
+        edge_pairs: Vec<(i64, i64)>,
         useful: bool,
     ) -> Result<BrainResponse> {
+        use crate::brain::evolution::FeedbackSignal;
         use crate::brain::hopfield::recall;
 
         let user_id = self.current_user_id();
@@ -917,7 +962,7 @@ impl BrainBackend for HopfieldBrainManager {
         let mut reinforced = Vec::new();
         for id in &memory_ids {
             if useful {
-                // Reinforce useful patterns
+                // Reinforce useful patterns in the Hopfield network
                 match recall::reinforce(&self.db, &mut network, *id, user_id).await {
                     Ok(new_strength) => {
                         reinforced.push(serde_json::json!({
@@ -930,8 +975,21 @@ impl BrainBackend for HopfieldBrainManager {
                     }
                 }
             }
-            // For non-useful patterns, we let natural decay handle weakening
+            // For non-useful patterns, natural decay handles weakening
         }
+
+        // Record into evolution buffer
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let signal = FeedbackSignal {
+            memory_ids,
+            edge_pairs,
+            useful,
+            timestamp,
+        };
+        self.evolution.lock().await.record_feedback(signal);
 
         Ok(BrainResponse {
             seq: None,
@@ -941,6 +999,43 @@ impl BrainBackend for HopfieldBrainManager {
                 "reinforced": reinforced,
                 "useful": useful,
             })),
+        })
+    }
+
+    async fn evolution_train(&self) -> Result<BrainResponse> {
+        let mut evo = self.evolution.lock().await;
+        let before = evo.generation;
+        evo.train_step();
+        let after = evo.generation;
+        evo.save_state(&self.db).await?;
+
+        Ok(BrainResponse {
+            seq: None,
+            ok: true,
+            error: None,
+            data: Some(serde_json::json!({
+                "generation_before": before,
+                "generation_after": after,
+                "num_node_weights": evo.node_weights.len(),
+                "num_edge_weights": evo.edge_weights.len(),
+            })),
+        })
+    }
+
+    async fn evolution_stats(&self) -> Result<BrainResponse> {
+        use crate::brain::evolution::EvolutionStatsResult;
+
+        let evo = self.evolution.lock().await;
+        let stats = EvolutionStatsResult::from(&*evo);
+
+        Ok(BrainResponse {
+            seq: None,
+            ok: true,
+            error: None,
+            data: Some(
+                serde_json::to_value(&stats)
+                    .map_err(|e| EngError::Internal(format!("evolution_stats serialize: {}", e)))?,
+            ),
         })
     }
 }

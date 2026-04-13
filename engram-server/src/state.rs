@@ -2,13 +2,14 @@ use engram_lib::config::{Config, EidolonConfig};
 use engram_lib::cred::CreddClient;
 use engram_lib::db::Database;
 use engram_lib::embeddings::EmbeddingProvider;
+use engram_lib::gate::PendingApproval;
 use engram_lib::llm::local::LocalModelClient;
 use engram_lib::reranker::Reranker;
 use engram_lib::services::brain::BrainBackend;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tokio::sync::{broadcast, watch, RwLock};
+use tokio::sync::{broadcast, watch, Mutex, RwLock};
 
 pub struct SessionBroadcast {
     pub buffer: VecDeque<String>,
@@ -52,6 +53,8 @@ pub struct AppState {
     /// Notification channel for approval events. TUI clients can subscribe to
     /// be notified when approvals are created or decided.
     pub approval_notify: Option<watch::Sender<()>>,
+    /// Pending tool approvals waiting for a human decision via the respond endpoint.
+    pub pending_approvals: Arc<Mutex<HashMap<i64, (PendingApproval, tokio::sync::oneshot::Sender<bool>)>>>,
     /// When true, write operations return 503 to prevent data corruption during crash loops.
     pub safe_mode: Arc<AtomicBool>,
 }

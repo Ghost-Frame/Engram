@@ -7,7 +7,8 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::gate::{
-    check_command_with_context, complete_gate, respond_to_gate, GateCheckRequest,
+    check_command_with_context, cleanup_expired_approvals, complete_gate, respond_to_gate,
+    GateCheckRequest, PendingApproval, APPROVAL_TIMEOUT_SECS, TOOLS_REQUIRING_APPROVAL,
 };
 
 pub fn router() -> Router<AppState> {
@@ -43,8 +44,87 @@ async fn check_handler(
         auth.user_id,
         Some(&resolved_command),
         &resolved_patterns,
+        &state.config,
     )
     .await?;
+
+    // If the command was allowed (not blocked, not pending secrets), and the tool
+    // requires human approval, pause here and wait for a decision via /gate/respond.
+    if result.allowed && !result.requires_approval {
+        let tool_name = body.tool_name.as_deref().unwrap_or("");
+        if TOOLS_REQUIRING_APPROVAL.contains(&tool_name) {
+            let gate_id = result.gate_id;
+            let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+
+            {
+                let mut approvals = state.pending_approvals.lock().await;
+                // Prune stale entries while we have the lock.
+                cleanup_expired_approvals(&mut approvals);
+                approvals.insert(
+                    gate_id,
+                    (
+                        PendingApproval {
+                            gate_id,
+                            agent: body.agent.clone(),
+                            tool_name: tool_name.to_string(),
+                            command: body.command.clone(),
+                            created_at: std::time::Instant::now(),
+                        },
+                        tx,
+                    ),
+                );
+            }
+
+            // Notify any watchers (e.g. TUI) that a new approval is pending.
+            if let Some(ref notify) = state.approval_notify {
+                let _ = notify.send(());
+            }
+
+            let approved = match tokio::time::timeout(
+                std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS),
+                rx,
+            )
+            .await
+            {
+                Ok(Ok(decision)) => decision,
+                _ => {
+                    // Timeout or channel dropped -- clean up and deny.
+                    let mut approvals = state.pending_approvals.lock().await;
+                    approvals.remove(&gate_id);
+                    false
+                }
+            };
+
+            // Ensure the entry is removed after a decision.
+            {
+                let mut approvals = state.pending_approvals.lock().await;
+                approvals.remove(&gate_id);
+            }
+
+            if approved {
+                tracing::info!(
+                    "gate: APPROVED by user gate_id={} tool={} agent={}",
+                    gate_id, tool_name, body.agent
+                );
+                return Ok((StatusCode::CREATED, Json(json!(result))));
+            } else {
+                tracing::warn!(
+                    "gate: DENIED/TIMEOUT gate_id={} tool={} agent={}",
+                    gate_id, tool_name, body.agent
+                );
+                let denied_result = engram_lib::gate::GateCheckResult {
+                    allowed: false,
+                    reason: Some(format!("{} denied -- approval timed out or rejected", tool_name)),
+                    resolved_command: result.resolved_command.clone(),
+                    gate_id,
+                    requires_approval: false,
+                    enrichment: None,
+                };
+                return Ok((StatusCode::CREATED, Json(json!(denied_result))));
+            }
+        }
+    }
+
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
@@ -60,6 +140,14 @@ async fn respond_handler(
     Auth(auth): Auth,
     Json(body): Json<RespondBody>,
 ) -> Result<Json<Value>, AppError> {
+    // Signal the waiting check_handler (if still waiting) through the oneshot channel.
+    {
+        let mut approvals = state.pending_approvals.lock().await;
+        if let Some((_, tx)) = approvals.remove(&body.gate_id) {
+            let _ = tx.send(body.approved);
+        }
+    }
+
     let result = respond_to_gate(
         &state.db,
         body.gate_id,

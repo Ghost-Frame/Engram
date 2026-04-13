@@ -19,6 +19,9 @@ pub fn router() -> Router<AppState> {
         .route("/brain/dream", post(dream_handler))
         .route("/brain/feedback", post(feedback_handler))
         .route("/brain/decay", post(decay_handler))
+        .route("/brain/evolution/feedback", post(evolution_feedback_handler))
+        .route("/brain/evolution/train", post(evolution_train_handler))
+        .route("/brain/evolution/stats", get(evolution_stats_handler))
 }
 
 async fn require_brain(state: &AppState) -> Result<(), AppError> {
@@ -142,4 +145,57 @@ async fn decay_handler(
     })?;
     brain.decay_tick(body.ticks).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn evolution_feedback_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<FeedbackRequest>,
+) -> Result<Json<Value>, AppError> {
+    require_brain(&state).await?;
+
+    let owned = verify_memory_ownership(&state.db, &body.memory_ids, auth.user_id).await?;
+    if !owned {
+        return Err(AppError(engram_lib::EngError::Auth(
+            "One or more memory_ids not found or not owned by you".into(),
+        )));
+    }
+
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        AppError(engram_lib::EngError::Internal(
+            "brain not configured".into(),
+        ))
+    })?;
+    let result = brain
+        .feedback_signal(body.memory_ids, body.edge_pairs, body.useful)
+        .await?;
+    Ok(Json(json!({ "ok": true, "result": result })))
+}
+
+async fn evolution_train_handler(
+    State(state): State<AppState>,
+    Auth(_auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_brain(&state).await?;
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        AppError(engram_lib::EngError::Internal(
+            "brain not configured".into(),
+        ))
+    })?;
+    let result = brain.evolution_train().await?;
+    Ok(Json(json!({ "ok": true, "result": result })))
+}
+
+async fn evolution_stats_handler(
+    State(state): State<AppState>,
+    Auth(_auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_brain(&state).await?;
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        AppError(engram_lib::EngError::Internal(
+            "brain not configured".into(),
+        ))
+    })?;
+    let result = brain.evolution_stats().await?;
+    Ok(Json(json!({ "ok": true, "result": result })))
 }
