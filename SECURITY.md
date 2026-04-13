@@ -90,6 +90,36 @@ For production deployments:
 - Session tokens in URLs may appear in server logs
 - No built-in TLS -- use a reverse proxy
 
+## Audit Log (April 2026)
+
+### Fixed findings
+
+| Finding | Severity | Commit | Description |
+|---------|----------|--------|-------------|
+| SSRF in POST /fetch | HIGH | aa61cd8 | Replaced IP blocklist with DNS-rebind-safe URL validation + 10 MiB stream limit |
+| Passport verify timing attack | LOW | d06444c | Switched `==` to `subtle::ConstantTimeEq` in `verify_signed_value()` |
+| MCP HTTP rate limit spoofing | LOW | 63a4c00 | Rate limit now uses `ConnectInfo<SocketAddr>` instead of `x-forwarded-for` |
+| credd lacks pre-auth throttle | LOW | 0f3d685 | Added per-IP rate limiter (10 req/60s) before auth middleware |
+
+### Dependency advisories (blocked on upstream)
+
+These are transitive dependencies that cannot be upgraded without upstream releases.
+
+| Advisory | Crate | Root cause | Status |
+|----------|-------|------------|--------|
+| RUSTSEC-2026-0049 | rustls-webpki 0.102.8 | libsql 0.6.0 pins rustls 0.22.4 | Blocked until libsql upgrades to rustls 0.23+ |
+| RUSTSEC-2025-0141 | bincode 1.3.3 | libsql 0.6.0 depends on bincode 1.x | Blocked until libsql drops bincode or moves to 2.x |
+| RUSTSEC-2025-0134 | rustls-pemfile 2.2.0 | libsql 0.6.0 via hyper-rustls 0.25 | Blocked until libsql upgrades rustls ecosystem |
+| RUSTSEC-2026-0002 | lru 0.12.5 | tantivy 0.24.2 (via lancedb) | tantivy 0.26 exists but lancedb 0.23 pins 0.24 |
+| RUSTSEC-2026-0097 | rand 0.8.5 | libsql (tower 0.4), tantivy (rand_distr) | Affects `rand::rng()` only (0.9+ API); low exploitability in 0.8 |
+| RUSTSEC-2024-0436 | paste 1.0.15 | tokenizers, parquet, datafusion, lance | Unmaintained but no known vulnerability; no drop-in replacement |
+
+None of these advisories are exploitable in kleos's usage patterns.
+
+### Build issue: kleos-migrate
+
+`kleos-migrate` has a linker conflict between libsqlite3-sys (SQLCipher) and libsql-ffi (bundled sqlite3). Both define the same sqlite3 symbols. This is a one-shot ETL utility and does not affect the server, CLI, or credential daemon.
+
 ## Acknowledgments
 
 We appreciate responsible disclosure. Contributors who report valid security issues will be acknowledged here (with permission).
