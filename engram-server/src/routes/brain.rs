@@ -57,9 +57,10 @@ async fn query_handler(
             "brain not configured".into(),
         ))
     })?;
-    let embedder = state.embedder.as_ref().ok_or_else(|| {
+    let embedder_guard = state.embedder.read().await;
+    let embedder = embedder_guard.as_ref().ok_or_else(|| {
         AppError(engram_lib::EngError::Internal(
-            "no embedder configured".into(),
+            "embedder not ready (still loading)".into(),
         ))
     })?;
     let result = brain.query(embedder.as_ref(), &body.query, &body).await?;
@@ -77,9 +78,10 @@ async fn absorb_handler(
             "brain not configured".into(),
         ))
     })?;
-    let embedder = state.embedder.as_ref().ok_or_else(|| {
+    let embedder_guard = state.embedder.read().await;
+    let embedder = embedder_guard.as_ref().ok_or_else(|| {
         AppError(engram_lib::EngError::Internal(
-            "no embedder configured".into(),
+            "embedder not ready (still loading)".into(),
         ))
     })?;
     let memory = get_memory_for_absorb(&state.db, body.id, auth.user_id).await?;

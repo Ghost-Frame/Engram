@@ -206,7 +206,8 @@ async fn post_prompt_generate(
     if include_brain {
         if let Some(ref brain) = state.brain {
             if brain.is_ready() {
-                if let Some(ref embedder) = state.embedder {
+                let embedder_guard = state.embedder.read().await;
+                if let Some(ref embedder) = *embedder_guard {
                     let opts = BrainQueryOptions {
                         query: task.to_string(),
                         top_k: Some(brain_limit),

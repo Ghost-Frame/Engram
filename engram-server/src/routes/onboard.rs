@@ -59,10 +59,13 @@ async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json
 
     // Test search
     if test_id.is_some() {
-        let embedding = if let Some(ref embedder) = state.embedder {
-            embedder.embed("onboarding test").await.ok()
-        } else {
-            None
+        let embedding = {
+            let embedder_guard = state.embedder.read().await;
+            if let Some(ref embedder) = *embedder_guard {
+                embedder.embed("onboarding test").await.ok()
+            } else {
+                None
+            }
         };
         let search_result = hybrid_search(
             &state.db,
@@ -109,13 +112,14 @@ async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json
     }
 
     // Check embedding
+    let embedder_ready = state.embedder.read().await.is_some();
     checks.push((
         "embedding",
-        state.embedder.is_some(),
-        if state.embedder.is_some() {
+        embedder_ready,
+        if embedder_ready {
             "Embedding provider ready"
         } else {
-            "No embedding provider configured"
+            "Embedding provider loading or unavailable"
         }
         .into(),
     ));
@@ -300,12 +304,15 @@ async fn fetch_url(
             parent_memory_id: None,
         };
 
-        if let Some(ref embedder) = state.embedder {
-            if let Ok(emb) = embedder
-                .embed(&store_content[..store_content.len().min(8000)])
-                .await
-            {
-                req.embedding = Some(emb);
+        {
+            let embedder_guard = state.embedder.read().await;
+            if let Some(ref embedder) = *embedder_guard {
+                if let Ok(emb) = embedder
+                    .embed(&store_content[..store_content.len().min(8000)])
+                    .await
+                {
+                    req.embedding = Some(emb);
+                }
             }
         }
 
