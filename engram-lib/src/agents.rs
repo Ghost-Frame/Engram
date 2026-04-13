@@ -99,7 +99,7 @@ pub async fn get_agent_by_id(db: &Database, id: i64, user_id: i64) -> Result<Opt
         conn.query_row(
             "SELECT id, user_id, name, category, description, code_hash, trust_score, total_ops, successful_ops, failed_ops, guard_allows, guard_warns, guard_blocks, is_active, last_seen_at, revoked_at, revoke_reason, created_at FROM agents WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
-            |row| row_to_agent(row),
+            row_to_agent,
         )
         .optional()
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))
@@ -113,7 +113,7 @@ pub async fn get_agent_by_name(db: &Database, name: &str, user_id: i64) -> Resul
         conn.query_row(
             "SELECT id, user_id, name, category, description, code_hash, trust_score, total_ops, successful_ops, failed_ops, guard_allows, guard_warns, guard_blocks, is_active, last_seen_at, revoked_at, revoke_reason, created_at FROM agents WHERE name = ?1 AND user_id = ?2",
             params![name, user_id],
-            |row| row_to_agent(row),
+            row_to_agent,
         )
         .optional()
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))
@@ -127,7 +127,7 @@ pub async fn list_agents(db: &Database, user_id: i64) -> Result<Vec<AgentRow>> {
             "SELECT id, user_id, name, category, description, code_hash, trust_score, total_ops, successful_ops, failed_ops, guard_allows, guard_warns, guard_blocks, is_active, last_seen_at, revoked_at, revoke_reason, created_at FROM agents WHERE user_id = ?1 ORDER BY created_at DESC"
         ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-        let rows = stmt.query_map(params![user_id], |row| row_to_agent(row))
+        let rows = stmt.query_map(params![user_id], row_to_agent)
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
         rows.collect::<std::result::Result<Vec<_>, _>>()

@@ -35,8 +35,8 @@ pub async fn process(db: &Database, chunks: &[Chunk], options: &ProcessOptions) 
         let category = options.category.clone();
         let source = options.source.clone();
         let user_id = options.user_id;
-        let space_id = options.space_id.clone();
-        let episode_id = options.episode_id.clone();
+        let space_id = options.space_id;
+        let episode_id = options.episode_id;
         let chunk_index = chunk.index;
 
         match db

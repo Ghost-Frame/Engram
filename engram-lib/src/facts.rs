@@ -133,7 +133,7 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
         FACT_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![new_id, user_id], |row| row_to_fact(row))
+        conn.query_row(&sql, params![new_id, user_id], row_to_fact)
             .optional()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::Internal("failed to fetch newly created fact".to_string()))
@@ -172,7 +172,7 @@ pub async fn list_facts(
             .prepare(&sql)
             .map_err(rusqlite_to_eng_error)?;
         let rows = stmt
-            .query_map(params![user_id], |row| row_to_fact(row))
+            .query_map(params![user_id], row_to_fact)
             .map_err(rusqlite_to_eng_error)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -250,7 +250,7 @@ pub async fn get_state(
         STATE_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![agent, key, user_id], |row| row_to_state(row))
+        conn.query_row(&sql, params![agent, key, user_id], row_to_state)
             .optional()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| {
@@ -272,7 +272,7 @@ pub async fn list_state(db: &Database, agent: &str, user_id: i64) -> Result<Vec<
             .prepare(&sql)
             .map_err(rusqlite_to_eng_error)?;
         let rows = stmt
-            .query_map(params![agent, user_id], |row| row_to_state(row))
+            .query_map(params![agent, user_id], row_to_state)
             .map_err(rusqlite_to_eng_error)?;
         let mut entries = Vec::new();
         for row in rows {

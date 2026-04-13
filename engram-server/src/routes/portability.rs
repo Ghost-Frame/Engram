@@ -359,7 +359,7 @@ async fn delete_state_handler(
             .map_err(|e| engram_lib::EngError::Internal(e.to_string()))
         })
         .await
-        .map_err(|e| AppError(e))? as i64;
+        .map_err(AppError)? as i64;
     Ok(Json(json!({ "deleted": affected })))
 }
 

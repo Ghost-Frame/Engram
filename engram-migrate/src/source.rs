@@ -51,10 +51,7 @@ pub async fn analyze(db: &SourceDb) -> Result<HashMap<String, i64>> {
             Ok(c) => c,
             Err(_) => {
                 // Table might be WITHOUT ROWID or a virtual table, try COUNT(*)
-                match try_count(db, &name).await {
-                    Ok(c) => c,
-                    Err(_) => 0, // Skip tables we can't count
-                }
+                try_count(db, &name).await.unwrap_or(0)
             }
         };
 

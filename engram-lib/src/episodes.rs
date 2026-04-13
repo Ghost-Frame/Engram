@@ -96,7 +96,7 @@ pub async fn list_episodes(db: &Database, user_id: i64, limit: usize) -> Result<
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Null,
-                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+                        Box::new(std::io::Error::other(e.to_string())),
                     )
                 })
             })
@@ -134,7 +134,7 @@ pub async fn list_episodes_by_time_range(
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Null,
-                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+                        Box::new(std::io::Error::other(e.to_string())),
                     )
                 })
             })
@@ -170,7 +170,7 @@ pub async fn search_episodes_fts(
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Null,
-                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+                        Box::new(std::io::Error::other(e.to_string())),
                     )
                 })
             })

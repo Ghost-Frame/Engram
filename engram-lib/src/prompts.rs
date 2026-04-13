@@ -346,6 +346,7 @@ fn format_contradictions(contradictions: &[ContradictionInfo]) -> String {
 ///
 /// All memory lists are optional -- callers pass what they have from brain
 /// queries. The engram_url is embedded in the Syntheos tools table.
+#[allow(clippy::too_many_arguments)]
 pub fn build_living_prompt(
     task: &str,
     task_memories: &[MemorySummary],

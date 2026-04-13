@@ -112,7 +112,7 @@ pub async fn get_secret(
         .map_err(|e| CredError::Database(e.to_string()))?;
 
     let (id, uid, rname, rcat, secret_type_str, encrypted_data, nonce_vec, created_at, updated_at) =
-        raw.ok_or_else(|| CredError::NotFound(category_name))?;
+        raw.ok_or(CredError::NotFound(category_name))?;
 
     let secret_type = SecretType::parse(&secret_type_str).ok_or_else(|| {
         CredError::InvalidInput(format!("unknown secret type: {}", secret_type_str))
@@ -170,6 +170,7 @@ pub async fn list_secrets(
 
             let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
 
+            #[allow(clippy::type_complexity)]
             fn map_row(row: &rusqlite::Row<'_>) -> std::result::Result<(i64, i64, String, String, String, String, String), rusqlite::Error> {
                 Ok((
                     row.get::<_, i64>(0)?,

@@ -243,7 +243,7 @@ async fn bootstrap(
             .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))
         })
         .await
-        .map_err(|e| AppError(e))?;
+        .map_err(AppError)?;
 
     if changes == 0 {
         return Ok((
@@ -278,7 +278,7 @@ async fn bootstrap(
             .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))
         })
         .await
-        .map_err(|e| AppError(e))?;
+        .map_err(AppError)?;
 
     let scopes = vec![Scope::Read, Scope::Write, Scope::Admin];
     let (key, raw_key) = create_key(&state.db, 1, "admin", scopes, None).await?;

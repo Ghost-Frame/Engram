@@ -42,12 +42,7 @@ pub async fn integrity_check(path: &Path) -> Result<Vec<String>> {
         .query_map([], |row| row.get::<_, String>(0))
         .map_err(|e| EngError::DatabaseMessage(format!("query integrity check: {e}")))?;
 
-    let mut messages = Vec::new();
-    for row in rows {
-        if let Ok(msg) = row {
-            messages.push(msg);
-        }
-    }
+    let messages: Vec<_> = rows.flatten().collect();
 
     if messages.len() == 1 && messages[0] == "ok" {
         Ok(Vec::new())

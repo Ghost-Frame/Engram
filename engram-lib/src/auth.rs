@@ -148,7 +148,7 @@ fn hash_key_v1(raw_key: &str) -> String {
 fn hash_key_v2(raw_key: &str) -> Option<String> {
     get_pepper().map(|pepper| {
         let mut hasher = Sha256::new();
-        hasher.update(&pepper);
+        hasher.update(pepper);
         hasher.update(raw_key.as_bytes());
         format!("{:x}", hasher.finalize())
     })
@@ -312,7 +312,7 @@ pub async fn create_key(
             let key = stmt
                 .query_row(
                     rusqlite::params![key_prefix_for_read, key_hash_for_read],
-                    |row| row_to_api_key_rusqlite(row),
+                    row_to_api_key_rusqlite,
                 )
                 .map_err(|e| match e {
                     rusqlite::Error::QueryReturnedNoRows => {
@@ -382,7 +382,7 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
                 // timing oracle attacks on hash values.
                 let matches = match expected_hash {
                     Some(expected) => {
-                        expected.as_bytes().len() == stored_hash.as_bytes().len()
+                        expected.len() == stored_hash.len()
                             && expected
                                 .as_bytes()
                                 .ct_eq(stored_hash.as_bytes())
@@ -482,7 +482,7 @@ pub async fn get_active_key_by_id(db: &Database, key_id: i64) -> Result<ApiKey> 
                 .map_err(rusqlite_to_eng_error)?;
 
             let key = stmt
-                .query_row(rusqlite::params![key_id], |row| row_to_api_key_rusqlite(row))
+                .query_row(rusqlite::params![key_id], row_to_api_key_rusqlite)
                 .map_err(|e| match e {
                     rusqlite::Error::QueryReturnedNoRows => {
                         crate::EngError::Auth("invalid or revoked key".into())

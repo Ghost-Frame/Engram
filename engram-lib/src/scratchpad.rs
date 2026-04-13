@@ -85,7 +85,7 @@ pub async fn list_entries(
         let rows = stmt
             .query_map(
                 params![user_id, agent.clone(), agent, model.clone(), model, session.clone(), session],
-                |row| row_to_entry_rusqlite(row),
+                row_to_entry_rusqlite,
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut result = Vec::new();
@@ -110,7 +110,7 @@ pub async fn get_session_entries(
             )
             .map_err(rusqlite_to_eng_error)?;
         let rows = stmt
-            .query_map(params![user_id, session], |row| row_to_entry_rusqlite(row))
+            .query_map(params![user_id, session], row_to_entry_rusqlite)
             .map_err(rusqlite_to_eng_error)?;
         let mut result = Vec::new();
         for row in rows {

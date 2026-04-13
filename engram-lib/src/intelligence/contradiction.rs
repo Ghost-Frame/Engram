@@ -151,6 +151,7 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
 ///
 /// Compares all structured_facts with the same subject+predicate to find
 /// conflicting objects. Returns all detected contradictions.
+#[allow(clippy::type_complexity)]
 pub async fn scan_all_contradictions(db: &Database, user_id: i64) -> Result<Vec<Contradiction>> {
     let rows: Vec<(i64, i64, String, String, String, String, f64, f64)> = db
         .read(move |conn| {

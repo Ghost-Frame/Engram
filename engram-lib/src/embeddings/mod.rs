@@ -7,6 +7,7 @@ pub mod openai;
 
 use crate::Result;
 
+#[allow(clippy::type_complexity)]
 pub trait EmbeddingProvider: Send + Sync {
     fn embed<'a>(
         &'a self,

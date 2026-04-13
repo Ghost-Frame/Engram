@@ -82,7 +82,7 @@ pub async fn log_mutation(
              VALUES (?1, ?2, ?3, ?4)
              RETURNING id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at",
             params![operation, target_type, target_id, details],
-            |row| row_to_entry(row),
+            row_to_entry,
         )
         .map_err(rusqlite_to_eng_error)
     })
@@ -150,7 +150,7 @@ pub async fn query_audit_log(
                        ORDER BY id DESC LIMIT ?4".to_string();
                 stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
                 rows = Box::new(
-                    stmt.query_map(params![user_id, rt, tid, limit_i64], |row| row_to_entry(row))
+                    stmt.query_map(params![user_id, rt, tid, limit_i64], row_to_entry)
                         .map_err(rusqlite_to_eng_error)?,
                 );
             }
@@ -160,7 +160,7 @@ pub async fn query_audit_log(
                        ORDER BY id DESC LIMIT ?3".to_string();
                 stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
                 rows = Box::new(
-                    stmt.query_map(params![user_id, rt, limit_i64], |row| row_to_entry(row))
+                    stmt.query_map(params![user_id, rt, limit_i64], row_to_entry)
                         .map_err(rusqlite_to_eng_error)?,
                 );
             }
@@ -169,7 +169,7 @@ pub async fn query_audit_log(
                        FROM audit_log WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2".to_string();
                 stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
                 rows = Box::new(
-                    stmt.query_map(params![user_id, limit_i64], |row| row_to_entry(row))
+                    stmt.query_map(params![user_id, limit_i64], row_to_entry)
                         .map_err(rusqlite_to_eng_error)?,
                 );
             }
@@ -205,7 +205,7 @@ pub async fn list_audit_entries(
             )
             .map_err(rusqlite_to_eng_error)?;
         let rows = stmt
-            .query_map(params![user_id, limit, offset], |row| row_to_entry(row))
+            .query_map(params![user_id, limit, offset], row_to_entry)
             .map_err(rusqlite_to_eng_error)?;
         let mut entries = Vec::new();
         for row in rows {
@@ -256,7 +256,7 @@ pub async fn query_audit_log_admin(
                        ORDER BY id DESC LIMIT ?3".to_string();
                 stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
                 rows = Box::new(
-                    stmt.query_map(params![rt, tid, limit_i64], |row| row_to_entry(row))
+                    stmt.query_map(params![rt, tid, limit_i64], row_to_entry)
                         .map_err(rusqlite_to_eng_error)?,
                 );
             }
@@ -266,7 +266,7 @@ pub async fn query_audit_log_admin(
                        ORDER BY id DESC LIMIT ?2".to_string();
                 stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
                 rows = Box::new(
-                    stmt.query_map(params![rt, limit_i64], |row| row_to_entry(row))
+                    stmt.query_map(params![rt, limit_i64], row_to_entry)
                         .map_err(rusqlite_to_eng_error)?,
                 );
             }
@@ -275,7 +275,7 @@ pub async fn query_audit_log_admin(
                        FROM audit_log ORDER BY id DESC LIMIT ?1".to_string();
                 stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
                 rows = Box::new(
-                    stmt.query_map(params![limit_i64], |row| row_to_entry(row))
+                    stmt.query_map(params![limit_i64], row_to_entry)
                         .map_err(rusqlite_to_eng_error)?,
                 );
             }
