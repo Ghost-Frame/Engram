@@ -38,6 +38,8 @@ async-trait = "0.1"
 arrow-array = "57"
 arrow-schema = "57"
 futures = "0.3"
+notify = "8"
+notify-debouncer-mini = "0.6"
 lancedb = { version = "0.27", default-features = false }
 protoc-bin-vendored-linux-x86_64 = "3"
 flate2 = "1"

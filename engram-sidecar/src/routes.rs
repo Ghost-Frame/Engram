@@ -14,7 +14,7 @@ use crate::auth::require_token;
 use crate::session::Observation;
 use crate::SidecarState;
 
-const FLUSH_THRESHOLD: usize = 5;
+const FLUSH_THRESHOLD: usize = 1;
 
 /// Byte threshold below which /compress passes content through without LLM.
 const COMPRESS_PASSTHROUGH_BYTES: usize = 2000;
@@ -36,7 +36,7 @@ pub fn router(state: SidecarState) -> Router {
 
 async fn health(State(state): State<SidecarState>) -> Json<Value> {
     let session = state.session.read().await;
-    let llm_available = state.llm.as_ref().map(|l| l.is_available()).unwrap_or(false);
+    let llm_available = state.llm.is_available();
     // SECURITY: only expose liveness-level info without auth. Internal state
     // (session_id, counters) is stripped to avoid leaking operational details.
     Json(json!({
@@ -122,7 +122,10 @@ async fn observe(
 
 #[derive(Debug, Deserialize)]
 struct RecallBody {
-    pub query: String,
+    /// Primary field name
+    pub query: Option<String>,
+    /// Legacy mnemonic field name (alias for query)
+    pub message: Option<String>,
     #[serde(default = "default_recall_limit")]
     pub limit: usize,
 }
@@ -176,8 +179,22 @@ async fn recall(
     State(state): State<SidecarState>,
     Json(body): Json<RecallBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // Accept both {query: "..."} (current) and {message: "..."} (legacy mnemonic)
+    let query = body
+        .query
+        .or(body.message)
+        .unwrap_or_default();
+
+    if query.is_empty() {
+        return Ok(Json(json!({
+            "results": [],
+            "count": 0,
+            "context": "",
+        })));
+    }
+
     let search_req = json!({
-        "query": body.query,
+        "query": query,
         "limit": body.limit.min(100),
         "user_id": state.user_id,
         "include_forgotten": false,
@@ -209,9 +226,43 @@ async fn recall(
         session.id.clone()
     };
 
+    // Extract results array
+    let empty_arr = json!([]);
+    let results_arr = results.get("results").unwrap_or(&empty_arr);
+    let count = results_arr.as_array().map(|a| a.len()).unwrap_or(0);
+
+    // Build a "context" string for legacy hook consumers (mnemonic format)
+    let context = if let Some(arr) = results_arr.as_array() {
+        let lines: Vec<String> = arr
+            .iter()
+            .filter_map(|m| {
+                let content = m.get("content")?.as_str()?;
+                let cat = m
+                    .get("category")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("general");
+                let truncated = if content.len() > 180 {
+                    format!("{}...", &content[..177])
+                } else {
+                    content.to_string()
+                };
+                Some(format!("[{}] {}", cat, truncated))
+            })
+            .take(5)
+            .collect();
+        if lines.is_empty() {
+            String::new()
+        } else {
+            format!("Relevant memories:\n{}", lines.join("\n"))
+        }
+    } else {
+        String::new()
+    };
+
     Ok(Json(json!({
-        "results": results.get("results").unwrap_or(&json!([])),
-        "count": results.get("results").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0),
+        "results": results_arr,
+        "count": count,
+        "context": context,
         "session_id": session_id,
     })))
 }
@@ -264,18 +315,22 @@ async fn compress(
         }));
     }
 
-    // No LLM available: fail open
-    let Some(ref llm) = state.llm else {
-        tracing::debug!(
-            file = %file_path,
-            "compress: no LLM available, fail-open"
-        );
-        return Json(json!({
-            "compressed_output": null,
-            "passthrough": true,
-            "reason": "no_llm",
-        }));
-    };
+    // No LLM available: try re-probing once (Ollama may have started after sidecar)
+    if !state.llm.is_available() {
+        tracing::debug!(file = %file_path, "compress: LLM not available, re-probing");
+        if !state.llm.probe().await {
+            tracing::debug!(
+                file = %file_path,
+                "compress: LLM still unavailable after re-probe, fail-open"
+            );
+            return Json(json!({
+                "compressed_output": null,
+                "passthrough": true,
+                "reason": "no_llm",
+            }));
+        }
+        tracing::info!("compress: LLM now available after re-probe");
+    }
 
     // Truncate input if enormous
     let input_for_llm = if output.len() > COMPRESS_MAX_INPUT_BYTES {
@@ -297,7 +352,7 @@ async fn compress(
         ..Default::default()
     };
 
-    match llm.call(COMPRESS_SYSTEM_PROMPT, &user_prompt, Some(opts)).await {
+    match state.llm.call(COMPRESS_SYSTEM_PROMPT, &user_prompt, Some(opts)).await {
         Ok(summary) => {
             tracing::info!(
                 file = %file_path,
@@ -319,11 +374,21 @@ async fn compress(
                 session.add_observation(obs);
             }
 
+            let input_bytes = output.len();
+            let output_bytes = summary.len();
+            let savings_pct = if input_bytes > 0 {
+                100.0 * (1.0 - (output_bytes as f32 / input_bytes as f32))
+            } else {
+                0.0
+            };
+
             Json(json!({
                 "compressed_output": summary,
                 "passthrough": false,
-                "input_bytes": output.len(),
-                "output_bytes": summary.len(),
+                "strategy": "llm_summary",
+                "savings_pct": savings_pct,
+                "input_bytes": input_bytes,
+                "output_bytes": output_bytes,
             }))
         }
         Err(e) => {
