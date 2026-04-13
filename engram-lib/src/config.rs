@@ -48,7 +48,7 @@ impl Default for GateConfig {
                 "> /dev/sda".to_string(),
                 "chmod -R 777 /".to_string(),
             ],
-            reserved_targets: vec!["ovh".to_string(), "hetzner-prod".to_string()],
+            reserved_targets: Vec::new(),
             approval_timeout_secs: 300,
         }
     }

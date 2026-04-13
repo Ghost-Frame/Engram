@@ -5,7 +5,7 @@ Thanks for your interest in contributing to Engram.
 ## Getting Started
 
 ```bash
-git clone https://codeberg.org/GhostFrame/engram-rust.git
+git clone https://github.com/Ghost-Frame/Engram-rust.git
 cd engram-rust
 cargo build --workspace
 cargo test --workspace

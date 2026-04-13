@@ -2,7 +2,7 @@
 //!
 //! Verifies that the Rust engram-server produces response shapes consistent
 //! with the TypeScript engram reference implementation.
-//! Reference: C:\Users\Zan\Projects\engram\tests\api.test.mjs (33 tests, 14 suites)
+//! Reference: engram (TypeScript) tests/api.test.mjs (33 tests, 14 suites)
 //!
 //! Where the Rust implementation diverges from the TS spec, the expected TS
 //! shape is documented in a comment above the assertion.

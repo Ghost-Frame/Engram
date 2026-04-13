@@ -105,13 +105,13 @@ fn get_prompt_for_service(service: &str, prompt_override: Option<&str>) -> Strin
             - What categories are growing fastest?\n\
             - Are memory quality patterns improving or degrading?".to_string(),
 
-        "claude-code" => "You are the self-reflection process for Claude Code sessions with Master (Zan).\n\
+        "claude-code" => "You are the self-reflection process for Claude Code agent sessions.\n\
             Examine the session activity and ask yourself:\n\
             - Did a particular approach to a task work well or poorly?\n\
-            - Did Master correct a pattern that should be remembered?\n\
+            - Did the user correct a pattern that should be remembered?\n\
             - Was there drift from expected behavior? Why?\n\
             - Was something learned about the codebase or infrastructure?\n\
-            - Was there a communication style Master preferred?".to_string(),
+            - Was there a communication style the user preferred?".to_string(),
 
         "eidolon" => "You are Eidolon's self-reflection process. Eidolon is the daemon that orchestrates the neurosymbolic brain.\n\
             Examine the dream cycle results and ask yourself:\n\
