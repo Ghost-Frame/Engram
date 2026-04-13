@@ -71,3 +71,59 @@ jobs:
             ghost-frame/kleos:${{ steps.tag.outputs.TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  publish-crates:
+    runs-on: ubuntu-latest
+    needs: build-and-release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target dir
+        uses: Swatinem/rust-cache@v2
+
+      - name: Publish to crates.io (dependency order)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          # kleos-lib first (no internal deps)
+          cargo publish -p kleos-lib --no-verify || echo "kleos-lib already published"
+          sleep 30
+
+          # kleos-cred (no internal deps)
+          cargo publish -p kleos-cred --no-verify || echo "kleos-cred already published"
+          sleep 30
+
+          # These depend on kleos-lib and/or kleos-cred
+          cargo publish -p kleos-server --no-verify || echo "kleos-server already published"
+          sleep 15
+          cargo publish -p kleos-cli --no-verify || echo "kleos-cli already published"
+          sleep 15
+          cargo publish -p kleos-mcp --no-verify || echo "kleos-mcp already published"
+
+  publish-npm:
+    runs-on: ubuntu-latest
+    needs: build-and-release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Build and publish TypeScript SDK
+        working-directory: sdk/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm ci
+          npm run build
+          npm publish --access public

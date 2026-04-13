@@ -2,7 +2,10 @@
 name = "kleos-cred"
 version = "0.1.0"
 edition = "2021"
-description = "Credential management for Kleos with YubiKey support"
+description = "Credential management CLI with encrypted vault and YubiKey support"
+license-file = "../LICENSE"
+repository = "https://github.com/Ghost-Frame/Kleos-rust"
+homepage = "https://kleos.lol"
 
 [[bin]]
 name = "cred"
