@@ -28,3 +28,8 @@ clippy_output.txt
 migration-data/
 data/
 migration-test/
+
+# Dev utility stubs
+test.py
+write_files.py
+_gen_memory.py

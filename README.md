@@ -441,7 +441,7 @@ Set `LLM_URL`, `LLM_API_KEY`, and `LLM_MODEL` for any OpenAI-compatible provider
 
 ### Encryption at Rest
 
-Engram supports SQLCipher for database encryption. Set `ENGRAM_ENCRYPTION_MODE` to one of:
+Encryption is **off by default**. Engram runs with a plain SQLite database out of the box. To enable SQLCipher encryption, set `ENGRAM_ENCRYPTION_MODE` to one of:
 
 | Mode | Description |
 |------|-------------|
