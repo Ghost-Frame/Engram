@@ -6,12 +6,11 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
+  packages: write
 
 jobs:
   build-and-release:
-    permissions:
-      contents: write
     runs-on: ubuntu-latest
 
     steps:
