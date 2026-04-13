@@ -15,7 +15,7 @@
 </div>
 
 ---
-
+GUI DEMO: [Demo](demo-gui.syntheos.dev)
 ## Why Rust?
 
 Engram started as a Node.js server. It worked. But a memory system that injects into every agent turn has to stay fast under load, and Node made that harder than it should have been.
