@@ -8,6 +8,10 @@ description = "Credential management for Kleos with YubiKey support"
 name = "cred"
 path = "src/bin/cred.rs"
 
+[[bin]]
+name = "derive-db-key"
+path = "src/bin/derive-db-key.rs"
+
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive"] }
