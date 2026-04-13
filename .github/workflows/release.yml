@@ -49,6 +49,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-latest
     needs: build-and-release
 
@@ -81,6 +84,8 @@ jobs:
           cache-to: type=gha,mode=max
 
   publish-crates:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs: build-and-release
 
@@ -114,6 +119,8 @@ jobs:
           cargo publish -p kleos-mcp --no-verify || echo "kleos-mcp already published"
 
   publish-npm:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs: build-and-release
 
