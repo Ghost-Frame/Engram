@@ -510,7 +510,7 @@ This repo is the Rust port of the TypeScript kleos. API shapes, database schemas
 
 <div align="center">
 
-[kleos.lol](https://kleos.lol) · [Reference implementation (GitHub)](https://github.com/Ghost-Frame/kleos)
+[kleos.lol](https://kleos.lol) · [Reference implementation (GitHub)](https://github.com/Ghost-Frame/kleos-ts)
 
 Elastic License 2.0
 
