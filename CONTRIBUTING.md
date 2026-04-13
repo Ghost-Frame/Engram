@@ -5,7 +5,7 @@ Thanks for your interest in contributing to Kleos.
 ## Getting Started
 
 ```bash
-git clone https://codeberg.org/Ghost-Frame/kleos.git
+git clone https://github.com/Ghost-Frame/Kleos-rust.git
 cd kleos
 cargo build --workspace
 cargo test --workspace

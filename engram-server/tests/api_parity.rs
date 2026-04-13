@@ -2,7 +2,7 @@
 //!
 //! Verifies that the Rust kleos-server produces response shapes consistent
 //! with the TypeScript kleos reference implementation.
-//! Reference: C:\Users\Zan\Projects\kleos\tests\api.test.mjs (33 tests, 14 suites)
+//! Reference: kleos (TypeScript) tests/api.test.mjs (33 tests, 14 suites)
 //!
 //! Where the Rust implementation diverges from the TS spec, the expected TS
 //! shape is documented in a comment above the assertion.

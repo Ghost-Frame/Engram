@@ -43,7 +43,7 @@ impl Default for OllamaConfig {
     fn default() -> Self {
         Self {
             url: "http://127.0.0.1:11434/v1/chat/completions".into(),
-            model: "qwen2.5:14b".into(),
+            model: "llama3.2:3b".into(),
             timeout_bg_ms: 60_000,
             timeout_hot_ms: 5_000,
             concurrency: 1,
@@ -424,7 +424,7 @@ mod tests {
     fn test_config_defaults() {
         let c = OllamaConfig::default();
         assert_eq!(c.url, "http://127.0.0.1:11434/v1/chat/completions");
-        assert_eq!(c.model, "qwen2.5:14b");
+        assert_eq!(c.model, "llama3.2:3b");
         assert_eq!(c.timeout_bg_ms, 60_000);
         assert_eq!(c.timeout_hot_ms, 5_000);
         assert_eq!(c.concurrency, 1);
@@ -494,6 +494,6 @@ mod tests {
         assert_eq!(s.failures, 0);
         assert_eq!(s.semaphore_running, 0);
         assert_eq!(s.semaphore_queued, 0);
-        assert_eq!(s.model, "qwen2.5:14b");
+        assert_eq!(s.model, "llama3.2:3b");
     }
 }

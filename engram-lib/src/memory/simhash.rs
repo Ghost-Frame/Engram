@@ -129,12 +129,12 @@ mod tests {
     #[test]
     fn near_duplicate_detection_works() {
         let _ = is_near_duplicate(
-            "Zan prefers dark roast coffee every morning",
-            "Zan prefers dark roast coffee each morning",
+            "Alice prefers dark roast coffee every morning",
+            "Alice prefers dark roast coffee each morning",
         );
 
         assert!(!is_near_duplicate(
-            "Zan prefers dark roast coffee",
+            "Alice prefers dark roast coffee",
             "The weather in Tokyo is sunny today"
         ));
     }

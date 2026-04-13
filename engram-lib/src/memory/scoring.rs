@@ -838,7 +838,7 @@ mod tests {
             "coffee",
             Some("loves dark roast"),
             None,
-            "Zan prefers dark roast coffee",
+            "Alice prefers dark roast coffee",
             0.8,
         );
         assert!(s1 > 0.3, "got {}", s1);
