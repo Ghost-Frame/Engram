@@ -37,7 +37,7 @@ The TypeScript kleos remains the reference design. This is the runtime.
 ## Quick Start
 
 ```bash
-git clone https://github.com/Ghost-Frame/Kleos-rust.git && cd kleos
+git clone https://github.com/Ghost-Frame/Kleos.git && cd kleos
 cargo build --release
 ./target/release/kleos-server
 ```
