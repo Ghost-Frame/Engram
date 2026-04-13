@@ -2,7 +2,10 @@
 name = "engram-cred"
 version = "0.1.0"
 edition = "2021"
-description = "Credential management for Engram with YubiKey support"
+description = "Credential management CLI with encrypted vault and YubiKey support"
+license-file = "../LICENSE"
+repository = "https://github.com/Ghost-Frame/Engram-rust"
+homepage = "https://engram.lol"
 
 [[bin]]
 name = "cred"
