@@ -3,6 +3,21 @@ use crate::db::Database;
 use crate::{EngError, Result};
 use std::collections::{HashSet, VecDeque};
 
+/// Row data for a memory node with all GUI-required fields.
+struct MemoryNodeRow {
+    id: i64,
+    content: String,
+    category: String,
+    importance: i64,
+    pagerank: f64,
+    source: String,
+    created_at: String,
+    is_static: bool,
+    source_count: i64,
+    decay_score: Option<f64>,
+    community_id: Option<u32>,
+}
+
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
@@ -22,7 +37,9 @@ pub async fn graph_search(
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, content, category, importance, pagerank_score \
+                    "SELECT id, content, category, importance, pagerank_score, \
+                            source, created_at, is_static, source_count, \
+                            decay_score, community_id \
                      FROM memories \
                      WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                        AND content LIKE ?2 \
@@ -37,16 +54,23 @@ pub async fn graph_search(
                     |row| {
                         let id: i64 = row.get(0)?;
                         let content: String = row.get(1)?;
+                        let category: String = row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
                         let importance: i64 = row.get(3)?;
                         let pagerank: f64 = row.get::<_, Option<f64>>(4)?.unwrap_or(0.0);
-                        Ok((id, content, importance, pagerank))
+                        let source: String = row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
+                        let created_at: String = row.get::<_, String>(6).unwrap_or_default();
+                        let is_static: bool = row.get::<_, bool>(7).unwrap_or(false);
+                        let source_count: i64 = row.get::<_, i64>(8).unwrap_or(1);
+                        let decay_score: Option<f64> = row.get::<_, f64>(9).ok();
+                        let community_id: Option<u32> = row.get::<_, i64>(10).ok().map(|v| v as u32);
+                        Ok((id, content, category, importance, pagerank, source, created_at, is_static, source_count, decay_score, community_id))
                     },
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let mut nodes = Vec::new();
             for row in rows {
-                let (id, content, importance, pagerank) =
+                let (id, content, category, importance, pagerank, source, created_at, is_static, source_count, decay_score, community_id) =
                     row.map_err(rusqlite_to_eng_error)?;
 
                 let label = if content.len() > 60 {
@@ -58,16 +82,30 @@ pub async fn graph_search(
                             .map_or(content.len(), |(i, _)| i)]
                     )
                 } else {
-                    content
+                    content.clone()
                 };
+
+                let size = importance as f32 * 1.5 + pagerank as f32 * 5.0;
 
                 nodes.push(GraphNode {
                     id: format!("m{}", id),
                     label,
-                    weight: importance as f32 * 1.5 + pagerank as f32 * 5.0,
+                    weight: size,
                     pagerank: Some(pagerank as f32),
-                    community: None,
+                    community: community_id,
                     metadata: None,
+                    node_type: "memory".into(),
+                    category: category.clone(),
+                    importance,
+                    group: category,
+                    size,
+                    source,
+                    created_at,
+                    is_static,
+                    content,
+                    source_count,
+                    community_id,
+                    decay_score,
                 });
             }
             Ok(nodes)
@@ -103,11 +141,23 @@ pub async fn graph_search(
                 let (id, name) = row.map_err(rusqlite_to_eng_error)?;
                 nodes.push(GraphNode {
                     id: format!("e{}", id),
-                    label: name,
+                    label: name.clone(),
                     weight: 8.0,
                     pagerank: None,
                     community: None,
                     metadata: None,
+                    node_type: "entity".into(),
+                    category: "entity".into(),
+                    importance: 5,
+                    group: "entity".into(),
+                    size: 8.0,
+                    source: "graph".into(),
+                    created_at: String::new(),
+                    is_static: false,
+                    content: name,
+                    source_count: 1,
+                    community_id: None,
+                    decay_score: None,
                 });
             }
             Ok(nodes)
@@ -217,24 +267,32 @@ pub async fn neighborhood(
     // Fetch node details for all collected IDs
     let mut nodes = Vec::new();
     for &id in &all_node_ids {
-        let result: Option<(i64, String, i64, f64)> = db
+        let result: Option<MemoryNodeRow> = db
             .read(move |conn| {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT id, content, importance, pagerank_score \
+                        "SELECT id, content, category, importance, pagerank_score, \
+                                source, created_at, is_static, source_count, \
+                                decay_score, community_id \
                          FROM memories WHERE id = ?1 AND user_id = ?2",
                     )
                     .map_err(rusqlite_to_eng_error)?;
 
                 let mut rows = stmt
                     .query_map(rusqlite::params![id, user_id], |row| {
-                        let mem_id: i64 = row.get(0)?;
-                        let content: String = row.get(1)?;
-                        let importance: i64 = row.get(2)?;
-                        let pagerank: f64 = row
-                            .get::<_, Option<f64>>(3)?
-                            .unwrap_or(0.0);
-                        Ok((mem_id, content, importance, pagerank))
+                        Ok(MemoryNodeRow {
+                            id: row.get(0)?,
+                            content: row.get(1)?,
+                            category: row.get::<_, String>(2).unwrap_or_else(|_| "general".into()),
+                            importance: row.get(3)?,
+                            pagerank: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+                            source: row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into()),
+                            created_at: row.get::<_, String>(6).unwrap_or_default(),
+                            is_static: row.get::<_, bool>(7).unwrap_or(false),
+                            source_count: row.get::<_, i64>(8).unwrap_or(1),
+                            decay_score: row.get::<_, f64>(9).ok(),
+                            community_id: row.get::<_, i64>(10).ok().map(|v| v as u32),
+                        })
                     })
                     .map_err(rusqlite_to_eng_error)?;
 
@@ -245,7 +303,9 @@ pub async fn neighborhood(
             })
             .await?;
 
-        if let Some((mem_id, content, importance, pagerank)) = result {
+        if let Some(r) = result {
+            let (mem_id, content, category, importance, pagerank, source, created_at, is_static, source_count, decay_score, community_id)
+                = (r.id, r.content, r.category, r.importance, r.pagerank, r.source, r.created_at, r.is_static, r.source_count, r.decay_score, r.community_id);
             let label = if content.len() > 60 {
                 format!(
                     "{}...",
@@ -255,16 +315,30 @@ pub async fn neighborhood(
                         .map_or(content.len(), |(i, _)| i)]
                 )
             } else {
-                content
+                content.clone()
             };
+
+            let size = importance as f32 * 1.5 + pagerank as f32 * 5.0;
 
             nodes.push(GraphNode {
                 id: format!("m{}", mem_id),
                 label,
-                weight: importance as f32 * 1.5 + pagerank as f32 * 5.0,
+                weight: size,
                 pagerank: Some(pagerank as f32),
-                community: None,
+                community: community_id,
                 metadata: None,
+                node_type: "memory".into(),
+                category: category.clone(),
+                importance,
+                group: category,
+                size,
+                source,
+                created_at,
+                is_static,
+                content,
+                source_count,
+                community_id,
+                decay_score,
             });
         }
     }

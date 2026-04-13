@@ -616,8 +616,8 @@ fn route_specs() -> &'static [(
         ("/artifacts/stats", &["get"], "Artifact stats", "Artifacts"),
         (
             "/artifacts/{memory_id}",
-            &["get"],
-            "List memory artifacts",
+            &["get", "post"],
+            "List or upload memory artifacts",
             "Artifacts",
         ),
         ("/artifact/{id}", &["get"], "Download artifact", "Artifacts"),
