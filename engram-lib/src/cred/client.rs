@@ -430,6 +430,71 @@ impl CreddClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Environment export block extraction and trust evaluation
+// (ported from eidolon-daemon/src/secrets.rs)
+// ---------------------------------------------------------------------------
+
+/// For an Environment-type secret, build a shell export block from all
+/// key-value pairs in the secret value object.
+///
+/// Returns a string of the form `export K1='v1'; export K2='v2'; ` that
+/// can be prepended to a shell command so the variables are available.
+///
+/// Returns an error if the secret is not of type `"Environment"`, or if
+/// the value object is empty.
+pub fn extract_env_export_block(secret: &Value) -> crate::Result<String> {
+    let secret_type = secret
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if secret_type != "Environment" {
+        return Err(crate::EngError::InvalidInput(format!(
+            "env export block only valid for Environment type, got '{}'",
+            secret_type
+        )));
+    }
+
+    let val = secret
+        .get("value")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            crate::EngError::InvalidInput(
+                "Environment secret has no value object".to_string(),
+            )
+        })?;
+
+    // Filter out the serde tag field "type" from the export block.
+    let exports: Vec<String> = val
+        .iter()
+        .filter(|(k, _)| k.as_str() != "type")
+        .filter_map(|(k, v)| {
+            v.as_str().map(|val_str| {
+                // Shell-escape the value using single-quote wrapping.
+                let escaped = val_str.replace('\'', "'\\''");
+                format!("export {}='{}'", k, escaped)
+            })
+        })
+        .collect();
+
+    if exports.is_empty() {
+        return Err(crate::EngError::InvalidInput(
+            "Environment secret has no key-value pairs".to_string(),
+        ));
+    }
+
+    Ok(format!("{}; ", exports.join("; ")))
+}
+
+/// Trust evaluation seam. Currently returns 0 (deny-by-default).
+/// Phase 2 will track session age, tool call count, and gate block count
+/// to produce a decaying score.
+#[allow(unused_variables)]
+pub fn evaluate_trust(session_id: &str) -> u8 {
+    0
+}
+
 /// Build the reqwest client used for every credd call.
 ///
 /// SECURITY / ROBUSTNESS: every HTTP call to credd must time out. Without

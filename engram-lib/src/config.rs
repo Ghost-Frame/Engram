@@ -26,11 +26,49 @@ pub struct EncryptionConfig {
     pub mode: EncryptionMode,
 }
 
+/// A server entry used for SSH validation and reboot protection.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ServerEntry {
+    /// Canonical name used to identify this server.
+    pub name: String,
+    /// Alternate hostnames / aliases for this server.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// Human-readable role description.
+    #[serde(default)]
+    pub role: String,
+    /// SSH user to use when connecting.
+    #[serde(default)]
+    pub ssh_user: String,
+    /// SSH port (default 22).
+    #[serde(default = "default_ssh_port")]
+    pub ssh_port: u16,
+    /// When true, a non-default port is required.
+    #[serde(default)]
+    pub custom_port_required: bool,
+    /// When true, reboot/shutdown commands targeting this server are blocked.
+    #[serde(default)]
+    pub no_reboot: bool,
+    /// Operational notes shown to the agent on SSH enrichment.
+    #[serde(default)]
+    pub notes: String,
+}
+
+fn default_ssh_port() -> u16 {
+    22
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateConfig {
     pub blocked_patterns: Vec<String>,
     pub reserved_targets: Vec<String>,
     pub approval_timeout_secs: u64,
+    /// Services that must not be stopped or restarted without explicit confirmation.
+    #[serde(default)]
+    pub protected_services: Vec<String>,
+    /// Known server inventory used for SSH validation and reboot protection.
+    #[serde(default)]
+    pub servers: Vec<ServerEntry>,
 }
 
 impl Default for GateConfig {
@@ -50,6 +88,8 @@ impl Default for GateConfig {
             ],
             reserved_targets: Vec::new(),
             approval_timeout_secs: 300,
+            protected_services: Vec::new(),
+            servers: Vec::new(),
         }
     }
 }
@@ -241,6 +281,13 @@ impl EidolonConfig {
     }
 }
 
+/// Safety constraints injected into living prompts as mandatory rules.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SafetyConfig {
+    #[serde(default)]
+    pub rules: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub db_path: String,
@@ -285,6 +332,12 @@ pub struct Config {
     /// the TCP peer address is always used.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// Optional server reference table shown in living prompts.
+    #[serde(default)]
+    pub servers: Vec<ServerEntry>,
+    /// Safety rules injected into living prompts as mandatory constraints.
+    #[serde(default)]
+    pub safety: SafetyConfig,
 }
 
 impl Default for Config {
@@ -319,6 +372,8 @@ impl Default for Config {
             encryption: EncryptionConfig::default(),
             eidolon: EidolonConfig::default(),
             trusted_proxies: Vec::new(),
+            servers: Vec::new(),
+            safety: SafetyConfig::default(),
         }
     }
 }

@@ -187,6 +187,51 @@ pub async fn query_audit_log(
     .await
 }
 
+/// List audit log entries for a specific user with limit and offset for pagination.
+///
+/// SECURITY: the `user_id` argument is ALWAYS applied as a WHERE clause so a
+/// non-admin caller can only see their own entries.
+pub async fn list_audit_entries(
+    db: &Database,
+    user_id: i64,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<AuditEntry>> {
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
+                 FROM audit_log WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt
+            .query_map(params![user_id, limit, offset], |row| row_to_entry(row))
+            .map_err(rusqlite_to_eng_error)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            match row {
+                Ok(entry) => entries.push(entry),
+                Err(e) => tracing::warn!("audit row parse error: {}", e),
+            }
+        }
+        Ok(entries)
+    })
+    .await
+}
+
+/// Count audit log entries for a specific user.
+pub async fn count_audit_entries(db: &Database, user_id: i64) -> Result<i64> {
+    db.read(move |conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE user_id = ?1",
+            params![user_id],
+            |row| row.get(0),
+        )
+        .map_err(rusqlite_to_eng_error)
+    })
+    .await
+}
+
 /// Admin-wide audit query (no user_id filter). Callers MUST verify that the
 /// requester carries `Scope::Admin` before invoking this function.
 pub async fn query_audit_log_admin(
