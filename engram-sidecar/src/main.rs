@@ -122,7 +122,10 @@ async fn main() {
             // log line; the full value is on a separate machine-parseable line.
             // Ensure stderr is NOT forwarded to persistent log files.
             eprintln!("SIDECAR_TOKEN={}", generated);
-            tracing::debug!(token_prefix = &generated[..8.min(generated.len())], "sidecar token generated (see stderr for full value)");
+            tracing::debug!(
+                token_prefix = &generated[..8.min(generated.len())],
+                "sidecar token generated (see stderr for full value)"
+            );
             Some(generated)
         }
     };
