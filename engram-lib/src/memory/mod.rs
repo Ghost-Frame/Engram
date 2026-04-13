@@ -84,19 +84,22 @@ async fn record_vector_sync_failure(
     }
 }
 
-fn embedding_to_json(embedding: &[f32]) -> String {
-    use std::fmt::Write as _;
-    // Pre-allocate: each f32 is at most ~12 chars + comma, plus 2 for brackets.
-    let mut out = String::with_capacity(embedding.len() * 12 + 2);
-    out.push('[');
-    for (i, f) in embedding.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        let _ = write!(out, "{}", f);
+/// Serialize an embedding as raw IEEE 754 little-endian bytes for BLOB storage.
+/// This is the same wire format that libsql's `vector()` function produces,
+/// so existing FLOAT32(1024) columns can be read by either backend.
+fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(embedding.len() * 4);
+    for &f in embedding {
+        buf.extend_from_slice(&f.to_le_bytes());
     }
-    out.push(']');
-    out
+    buf
+}
+
+/// Deserialize a BLOB (IEEE 754 LE f32 bytes) back into a Vec<f32>.
+fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
+    blob.chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
 }
 
 /// Map a rusqlite Row to a Memory struct.
@@ -351,10 +354,10 @@ fn store_transactional_rusqlite(
     let new_id = tx.last_insert_rowid();
 
     if let Some(ref emb) = req.embedding {
-        let emb_json = embedding_to_json(emb);
+        let emb_blob = embedding_to_blob(emb);
         tx.execute(
-            "UPDATE memories SET embedding_vec_1024 = vector(?1) WHERE id = ?2",
-            rusqlite::params![emb_json, new_id],
+            "UPDATE memories SET embedding_vec_1024 = ?1 WHERE id = ?2",
+            rusqlite::params![emb_blob, new_id],
         )
         .map_err(rusqlite_to_eng_error)?;
     }
@@ -730,10 +733,10 @@ fn update_transactional_rusqlite(
     let new_id = tx.last_insert_rowid();
 
     if let Some(emb) = embedding {
-        let emb_json = embedding_to_json(emb);
+        let emb_blob = embedding_to_blob(emb);
         tx.execute(
-            "UPDATE memories SET embedding_vec_1024 = vector(?1) WHERE id = ?2",
-            rusqlite::params![emb_json, new_id],
+            "UPDATE memories SET embedding_vec_1024 = ?1 WHERE id = ?2",
+            rusqlite::params![emb_blob, new_id],
         )
         .map_err(rusqlite_to_eng_error)?;
     }
@@ -921,11 +924,11 @@ pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
         return Ok(0);
     };
 
-    let rows: Vec<(i64, i64, String)> = db
+    let rows: Vec<(i64, i64, Vec<u8>)> = db
         .read(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, user_id, vector_extract(embedding_vec_1024)
+                    "SELECT id, user_id, embedding_vec_1024
                      FROM memories
                      WHERE embedding_vec_1024 IS NOT NULL
                        AND is_forgotten = 0
@@ -937,7 +940,7 @@ pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
+                        row.get::<_, Vec<u8>>(2)?,
                     ))
                 })
                 .map_err(rusqlite_to_eng_error)?
@@ -948,8 +951,8 @@ pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
         .await?;
 
     let mut count = 0usize;
-    for (memory_id, user_id, embedding_json) in rows {
-        let embedding: Vec<f32> = serde_json::from_str(&embedding_json)?;
+    for (memory_id, user_id, emb_blob) in rows {
+        let embedding = blob_to_embedding(&emb_blob);
         index.insert(memory_id, user_id, &embedding).await?;
         count += 1;
         if count.is_multiple_of(1000) {
@@ -1010,13 +1013,13 @@ pub async fn replay_vector_sync_pending(
         let outcome: std::result::Result<(), String> = match op.as_str() {
             "delete" => index.delete(memory_id).await.map_err(|e| e.to_string()),
             "insert" => {
-                let emb_row: Option<Option<String>> = db
+                let emb_row: Option<Option<Vec<u8>>> = db
                     .read(move |conn| {
                         let result = conn.query_row(
-                            "SELECT vector_extract(embedding_vec_1024) \
+                            "SELECT embedding_vec_1024 \
                              FROM memories WHERE id = ?1 AND user_id = ?2",
                             rusqlite::params![memory_id, user_id],
-                            |row| row.get::<_, Option<String>>(0),
+                            |row| row.get::<_, Option<Vec<u8>>>(0),
                         );
                         match result {
                             Ok(v) => Ok(Some(v)),
@@ -1026,20 +1029,13 @@ pub async fn replay_vector_sync_pending(
                     })
                     .await?;
                 match emb_row {
-                    Some(Some(json)) => match serde_json::from_str::<Vec<f32>>(&json) {
-                        Ok(embedding) => index
+                    Some(Some(blob)) => {
+                        let embedding = blob_to_embedding(&blob);
+                        index
                             .insert(memory_id, user_id, &embedding)
                             .await
-                            .map_err(|e| e.to_string()),
-                        Err(e) => {
-                            report.skipped += 1;
-                            warn!(
-                                "replay skipped memory {}: embedding decode failed: {}",
-                                memory_id, e
-                            );
-                            Ok(())
-                        }
-                    },
+                            .map_err(|e| e.to_string())
+                    }
                     _ => {
                         report.skipped += 1;
                         Ok(())
@@ -1149,13 +1145,13 @@ pub async fn replay_vector_sync_pending_for_user(
         let outcome: std::result::Result<(), String> = match op.as_str() {
             "delete" => index.delete(memory_id).await.map_err(|e| e.to_string()),
             "insert" => {
-                let emb_row: Option<Option<String>> = db
+                let emb_row: Option<Option<Vec<u8>>> = db
                     .read(move |conn| {
                         let result = conn.query_row(
-                            "SELECT vector_extract(embedding_vec_1024) \
+                            "SELECT embedding_vec_1024 \
                              FROM memories WHERE id = ?1 AND user_id = ?2",
                             rusqlite::params![memory_id, uid],
-                            |row| row.get::<_, Option<String>>(0),
+                            |row| row.get::<_, Option<Vec<u8>>>(0),
                         );
                         match result {
                             Ok(v) => Ok(Some(v)),
@@ -1165,20 +1161,13 @@ pub async fn replay_vector_sync_pending_for_user(
                     })
                     .await?;
                 match emb_row {
-                    Some(Some(json)) => match serde_json::from_str::<Vec<f32>>(&json) {
-                        Ok(embedding) => index
+                    Some(Some(blob)) => {
+                        let embedding = blob_to_embedding(&blob);
+                        index
                             .insert(memory_id, uid, &embedding)
                             .await
-                            .map_err(|e| e.to_string()),
-                        Err(e) => {
-                            report.skipped += 1;
-                            warn!(
-                                "replay skipped memory {}: embedding decode failed: {}",
-                                memory_id, e
-                            );
-                            Ok(())
-                        }
-                    },
+                            .map_err(|e| e.to_string())
+                    }
                     _ => {
                         report.skipped += 1;
                         Ok(())
