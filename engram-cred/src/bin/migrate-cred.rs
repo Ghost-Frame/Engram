@@ -65,6 +65,7 @@ impl BackupEntry {
                 username: self.value.username.clone().unwrap_or_default(),
                 password: self.value.password.clone().unwrap_or_default(),
                 url: self.value.url.clone(),
+                totp_seed: None,
                 notes: self.value.notes.clone(),
             }),
             "api_key" => Some(SecretData::ApiKey {
