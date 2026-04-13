@@ -1,0 +1,17 @@
+# CodeQL configuration
+# Suppress false positives for Rust's standard "init then fill" pattern
+
+queries:
+  - uses: security-and-quality
+
+query-filters:
+  # These are false positives: CodeQL flags [0u8; N] initialization
+  # but doesn't track that the buffer is immediately filled with
+  # random bytes (OsRng.fill_bytes) or KDF output (Argon2).
+  - exclude:
+      id: rust/hard-coded-cryptographic-value
+      paths:
+        - engram-cred/src/crypto.rs
+        - engram-cred/src/recovery.rs
+        - engram-cred/src/agent_keys.rs
+        - engram-lib/src/encryption.rs
