@@ -123,7 +123,7 @@ print(round(max(0.0, min(1.0, score)), 3))
 
 # Route through Eidolon (fans out to Thymus)
 EIDOLON_KEY_END="$(cred get eidolon hetzner --raw 2>/dev/null || echo '')"
-EIDOLON_URL_END="${EIDOLON_URL:-http://100.64.0.13:7700}"
+EIDOLON_URL_END="${EIDOLON_URL:-http://localhost:7700}"
 if [ -n "$EIDOLON_KEY_END" ]; then
   curl -sf --max-time 3 "$EIDOLON_URL_END/activity" \
     -X POST \

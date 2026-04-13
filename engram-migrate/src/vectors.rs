@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arrow_array::types::Float32Type;
-use arrow_array::{FixedSizeListArray, Int64Array, RecordBatch, RecordBatchIterator};
+use arrow_array::{FixedSizeListArray, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{DataType, Field, Schema};
 use lancedb::index::Index;
 use std::path::Path;
@@ -113,16 +113,18 @@ pub async fn extract_and_insert(source: &SourceDb, lance: &LanceDb) -> Result<()
         // Drop and recreate
         lance.db.drop_table(TABLE_NAME, &[]).await?;
         let batches = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+        let batches: Box<dyn RecordBatchReader + Send> = Box::new(batches);
         lance
             .db
-            .create_table(TABLE_NAME, Box::new(batches))
+            .create_table(TABLE_NAME, batches)
             .execute()
             .await?
     } else {
         let batches = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+        let batches: Box<dyn RecordBatchReader + Send> = Box::new(batches);
         lance
             .db
-            .create_table(TABLE_NAME, Box::new(batches))
+            .create_table(TABLE_NAME, batches)
             .execute()
             .await?
     };

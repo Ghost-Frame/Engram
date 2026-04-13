@@ -56,7 +56,7 @@ log "SessionStart fired. HOME_DIR=$HOME_DIR"
 if ! curl -sf --max-time 1 "http://localhost:7711/health" > /dev/null 2>&1; then
   MNEMONIC_BIN="$HOME_DIR/.local/lib/mnemonic/index.ts"
   if [ -f "$MNEMONIC_BIN" ]; then
-    KLEOS_URL="${KLEOS_URL:-http://100.64.0.13:4200}" KLEOS_API_KEY="${KLEOS_API_KEY:-}" nohup node --experimental-strip-types "$MNEMONIC_BIN" >> "$LOG_DIR/mnemonic.log" 2>&1 &
+    KLEOS_URL="${KLEOS_URL:-http://localhost:4200}" KLEOS_API_KEY="${KLEOS_API_KEY:-}" nohup node --experimental-strip-types "$MNEMONIC_BIN" >> "$LOG_DIR/mnemonic.log" 2>&1 &
     disown
     log "Started Mnemonic sidecar (pid=$!)"
     # Give it a moment to bind
