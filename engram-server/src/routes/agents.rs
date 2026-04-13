@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
 use std::{fs, path::PathBuf, sync::OnceLock};
+use subtle::ConstantTimeEq;
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
@@ -320,5 +321,6 @@ fn verify_signed_value(value: &Value) -> Result<bool, AppError> {
     if let Some(obj) = unsigned.as_object_mut() {
         obj.remove("signature");
     }
-    Ok(sign_value(&unsigned)? == signature)
+    let computed = sign_value(&unsigned)?;
+    Ok(computed.as_bytes().ct_eq(signature.as_bytes()).into())
 }
