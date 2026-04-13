@@ -84,23 +84,8 @@ pub async fn auth_middleware(
         return next.run(request).await;
     }
 
-    // Check KLEOS_OPEN_ACCESS env var (refuses release builds without escape hatch).
-    if open_access_allowed() {
-        tracing::warn!(
-            path = %path,
-            "KLEOS_OPEN_ACCESS bypassing authentication for request"
-        );
-        let method = request.method().clone();
-        // Even with the escape hatch, never let writes slip through without
-        // a real API key. open_access_context() grants only Scope::Read.
-        if requires_write_scope(&method) {
-            return forbid("KLEOS_OPEN_ACCESS is read-only; writes require an API key");
-        }
-        request.extensions_mut().insert(open_access_context());
-        return next.run(request).await;
-    }
-
-    // Extract Bearer token
+    // Extract Bearer token first -- a valid API key always takes precedence
+    // over open-access mode.
     let token = request
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -109,9 +94,26 @@ pub async fn auth_middleware(
         .map(|s| s.to_string());
 
     let method = request.method().clone();
+
+    // If a token is provided, validate it regardless of open-access mode.
+    // Open-access only applies when NO token is provided.
     match token {
         None => {
-            let body = serde_json::json!({ "error": "Authentication required. Provide Bearer kleos_* token." });
+            // No token -- check if open-access mode allows this request
+            if open_access_allowed() {
+                // Open-access grants read-only; writes still need a real key
+                if requires_write_scope(&method) {
+                    return forbid("KLEOS_OPEN_ACCESS is read-only; writes require an API key");
+                }
+                tracing::warn!(
+                    path = %path,
+                    "KLEOS_OPEN_ACCESS bypassing authentication for request"
+                );
+                request.extensions_mut().insert(open_access_context());
+                return next.run(request).await;
+            }
+            // No token and no open-access -- reject
+            let body = serde_json::json!({ "error": "Authentication required. Provide Bearer eg_* token." });
             axum::response::Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
                 .header("Content-Type", "application/json")

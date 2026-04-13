@@ -178,7 +178,9 @@ fn normalize_key(raw_key: &str) -> Option<String> {
         return None;
     };
 
-    if hex_portion.len() != 32 || !hex_portion.chars().all(|c| c.is_ascii_hexdigit()) {
+    // Accept both 32-char (new format) and 64-char (legacy TS format) keys
+    let valid_len = hex_portion.len() == 32 || hex_portion.len() == 64;
+    if !valid_len || !hex_portion.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
 
