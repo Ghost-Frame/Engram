@@ -539,20 +539,38 @@ async fn create_relationship_handler(
 }
 
 // ---------------------------------------------------------------------------
-// GET /graph
+// GET /graph  (accepts ?limit=N or ?max=N for GUI compat, ?depth= is accepted but unused)
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct GraphQuery {
+    pub limit: Option<i64>,
+    pub max: Option<i64>,
+    #[allow(dead_code)]
+    pub depth: Option<i64>,
+    #[allow(dead_code)]
+    pub offset: Option<i64>,
+}
 
 async fn graph_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
-    Query(params): Query<ListQuery>,
+    Query(params): Query<GraphQuery>,
 ) -> Result<Json<Value>, AppError> {
+    let cap = params.max.or(params.limit).unwrap_or(500).min(5000) as usize;
     let opts = GraphBuildOptions {
         user_id: auth.user_id,
-        limit: Some(params.limit.unwrap_or(500).min(5000) as usize),
+        limit: Some(cap),
     };
     let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
-    Ok(Json(json!(result)))
+    let node_count = result.nodes.len();
+    let edge_count = result.edges.len();
+    Ok(Json(json!({
+        "nodes": result.nodes,
+        "edges": result.edges,
+        "node_count": node_count,
+        "edge_count": edge_count,
+    })))
 }
 
 // ---------------------------------------------------------------------------
@@ -726,10 +744,49 @@ async fn communities_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_community_stats(&state.db, auth.user_id)
+    let user_id = auth.user_id;
+
+    // Fetch community -> memory_id mapping for the GUI graph visualization.
+    // The GUI needs {id, top_memories: [memId, ...]} to map graph nodes to communities.
+    let communities: Vec<Value> = state
+        .db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT community_id, id FROM memories \
+                     WHERE user_id = ?1 AND community_id IS NOT NULL \
+                       AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                     ORDER BY community_id, importance DESC",
+                )
+                .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(rusqlite::params![user_id], |row| {
+                    let cid: i64 = row.get(0)?;
+                    let mid: i64 = row.get(1)?;
+                    Ok((cid, mid))
+                })
+                .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))?;
+
+            let mut comm_map: std::collections::BTreeMap<i64, Vec<i64>> =
+                std::collections::BTreeMap::new();
+            for row in rows {
+                let (cid, mid) =
+                    row.map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))?;
+                comm_map.entry(cid).or_default().push(mid);
+            }
+
+            let result: Vec<Value> = comm_map
+                .into_iter()
+                .map(|(cid, mids)| json!({"id": cid, "top_memories": mids}))
+                .collect();
+            Ok(result)
+        })
         .await
         .map_err(AppError)?;
-    Ok(Json(json!({ "communities": stats })))
+
+    let count = communities.len();
+    Ok(Json(json!({ "communities": communities, "count": count })))
 }
 
 // ---------------------------------------------------------------------------

@@ -1,20 +1,23 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Multipart, Path, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
-use engram_lib::artifacts;
+use engram_lib::artifacts::{self, StoreArtifactOpts};
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
+/// Max upload size: 50 MB
+const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/artifacts/stats", get(get_stats))
-        .route("/artifacts/{memory_id}", get(list_for_memory))
+        .route("/artifacts/{memory_id}", get(list_for_memory).post(upload_artifact))
         .route("/artifact/{id}", get(download_artifact))
 }
 
@@ -58,6 +61,167 @@ async fn list_for_memory(
     Ok(Json(
         json!({ "artifacts": artifacts, "memory_id": memory_id }),
     ))
+}
+
+/// Upload an artifact attached to a memory.
+///
+/// Accepts multipart/form-data with:
+///   - `file` (required): the file data
+///   - `name` (optional): display name, defaults to filename
+///   - `artifact_type` (optional): defaults to "file"
+///   - `source_url` (optional)
+///   - `agent` (optional)
+///   - `session_id` (optional)
+///   - `metadata` (optional): JSON string
+async fn upload_artifact(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(memory_id): Path<i64>,
+    mut multipart: Multipart,
+) -> Result<Json<Value>, AppError> {
+    let mut file_data: Option<Vec<u8>> = None;
+    let mut file_name: Option<String> = None;
+    let mut file_mime: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut artifact_type: Option<String> = None;
+    let mut source_url: Option<String> = None;
+    let mut agent: Option<String> = None;
+    let mut session_id: Option<String> = None;
+    let mut metadata: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?
+    {
+        let field_name = field.name().unwrap_or("").to_string();
+        match field_name.as_str() {
+            "file" => {
+                file_mime = field.content_type().map(|s| s.to_string());
+                file_name = field.file_name().map(|s| s.to_string());
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?;
+                if bytes.len() > MAX_UPLOAD_BYTES {
+                    return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+                        "File too large: {} bytes (max {})",
+                        bytes.len(),
+                        MAX_UPLOAD_BYTES
+                    ))));
+                }
+                file_data = Some(bytes.to_vec());
+            }
+            "name" => {
+                name = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
+                );
+            }
+            "artifact_type" => {
+                artifact_type = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
+                );
+            }
+            "source_url" => {
+                source_url = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
+                );
+            }
+            "agent" => {
+                agent = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
+                );
+            }
+            "session_id" => {
+                session_id = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
+                );
+            }
+            "metadata" => {
+                metadata = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(engram_lib::EngError::InvalidInput(e.to_string())))?,
+                );
+            }
+            _ => {
+                // skip unknown fields
+            }
+        }
+    }
+
+    let data = file_data.ok_or_else(|| {
+        AppError(engram_lib::EngError::InvalidInput(
+            "missing required 'file' field".into(),
+        ))
+    })?;
+
+    let filename = file_name.unwrap_or_else(|| "unnamed".to_string());
+    let mime_type = file_mime.unwrap_or_else(|| "application/octet-stream".to_string());
+    let display_name = name.unwrap_or_else(|| filename.clone());
+    let size_bytes = data.len() as i64;
+    let sha256 = artifacts::sha256_hex(&data);
+
+    // Extract text content for indexable types
+    let content = if artifacts::is_indexable_mime_type(&mime_type) {
+        std::str::from_utf8(&data).ok().map(|s| s.to_string())
+    } else {
+        None
+    };
+
+    let opts = StoreArtifactOpts {
+        artifact_type,
+        content,
+        source_url,
+        agent,
+        session_id,
+        metadata,
+    };
+
+    let artifact_id = artifacts::store_artifact(
+        &state.db,
+        auth.user_id,
+        memory_id,
+        &display_name,
+        &filename,
+        &mime_type,
+        size_bytes,
+        &sha256,
+        "inline",
+        Some(data.clone()),
+        None,
+        false,
+        &opts,
+    )
+    .await?;
+
+    // Index for FTS if applicable
+    artifacts::index_artifact(&state.db, artifact_id, auth.user_id, &mime_type, &data).await;
+
+    Ok(Json(json!({
+        "id": artifact_id,
+        "memory_id": memory_id,
+        "filename": filename,
+        "mime_type": mime_type,
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+    })))
 }
 
 async fn download_artifact(

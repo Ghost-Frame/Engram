@@ -37,7 +37,9 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, content, category, importance, pagerank_score \
+                    "SELECT id, content, category, importance, pagerank_score, \
+                            source, created_at, is_static, source_count, \
+                            decay_score, community_id \
                      FROM memories \
                      WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                      ORDER BY COALESCE(decay_score, importance) DESC \
@@ -49,9 +51,16 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                 .query_map(rusqlite::params![user_id, limit], |row| {
                     let id: i64 = row.get(0)?;
                     let content: String = row.get(1)?;
+                    let category: String = row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
                     let importance: i64 = row.get(3)?;
                     let pagerank: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
-                    Ok((id, content, importance, pagerank))
+                    let source: String = row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
+                    let created_at: String = row.get::<_, String>(6).unwrap_or_default();
+                    let is_static: bool = row.get::<_, bool>(7).unwrap_or(false);
+                    let source_count: i64 = row.get::<_, i64>(8).unwrap_or(1);
+                    let decay_score: Option<f64> = row.get::<_, f64>(9).ok();
+                    let community_id: Option<u32> = row.get::<_, i64>(10).ok().map(|v| v as u32);
+                    Ok((id, content, category, importance, pagerank, source, created_at, is_static, source_count, decay_score, community_id))
                 })
                 .map_err(rusqlite_to_eng_error)?;
 
@@ -59,7 +68,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
             let mut memory_ids: Vec<i64> = Vec::new();
 
             for row in rows {
-                let (id, content, importance, pagerank) =
+                let (id, content, category, importance, pagerank, source, created_at, is_static, source_count, decay_score, community_id) =
                     row.map_err(rusqlite_to_eng_error)?;
 
                 let label = if content.len() > 60 {
@@ -71,16 +80,30 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                             .map_or(content.len(), |(i, _)| i)]
                     )
                 } else {
-                    content
+                    content.clone()
                 };
+
+                let size = importance as f32 * 1.5 + pagerank as f32 * 5.0;
 
                 nodes.push(GraphNode {
                     id: format!("m{}", id),
                     label,
-                    weight: importance as f32 * 1.5 + pagerank as f32 * 5.0,
+                    weight: size,
                     pagerank: Some(pagerank as f32),
-                    community: None,
+                    community: community_id,
                     metadata: None,
+                    node_type: "memory".into(),
+                    category: category.clone(),
+                    importance,
+                    group: category,
+                    size,
+                    source,
+                    created_at,
+                    is_static,
+                    content,
+                    source_count,
+                    community_id,
+                    decay_score,
                 });
                 memory_ids.push(id);
             }
@@ -212,6 +235,18 @@ mod tests {
                 pagerank: Some(0.5),
                 community: None,
                 metadata: None,
+                node_type: "memory".into(),
+                category: "general".into(),
+                importance: 5,
+                group: "general".into(),
+                size: 7.5,
+                source: "test".into(),
+                created_at: "2026-01-01".into(),
+                is_static: false,
+                content: "test memory".into(),
+                source_count: 1,
+                community_id: None,
+                decay_score: None,
             }],
             edges: vec![GraphEdge {
                 source: "m1".to_string(),
