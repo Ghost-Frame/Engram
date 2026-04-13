@@ -20,7 +20,7 @@ use axum::Router;
 use engram_lib::config::Config;
 use engram_lib::db::Database;
 use serde_json::{json, Value};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tower::ServiceExt;
 
 use engram_lib::cred::CreddClient;
@@ -65,13 +65,14 @@ impl TestApp {
             db: Arc::clone(&db),
             config: Arc::new(config),
             credd,
-            embedder: None,
-            reranker: None,
+            embedder: Arc::new(RwLock::new(None)),
+            reranker: Arc::new(RwLock::new(None)),
             brain: None,
             llm: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             eidolon_config: None,
             approval_notify: None,
+            pending_approvals: Arc::new(Mutex::new(HashMap::new())),
             safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let router = build_router(state);
@@ -321,13 +322,14 @@ async fn bootstrap_returns_api_key() {
         db: Arc::new(db),
         config: Arc::new(config),
         credd,
-        embedder: None,
-        reranker: None,
+        embedder: Arc::new(RwLock::new(None)),
+        reranker: Arc::new(RwLock::new(None)),
         brain: None,
         llm: None,
         sessions: Arc::new(RwLock::new(HashMap::new())),
         eidolon_config: None,
         approval_notify: None,
+        pending_approvals: Arc::new(Mutex::new(HashMap::new())),
         safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let router = build_router(state);
