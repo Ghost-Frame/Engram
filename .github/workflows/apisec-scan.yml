@@ -1,0 +1,40 @@
+# APIsec API Security Scanner
+# Requires secrets: APISEC_USERNAME, APISEC_PASSWORD
+# Configure project at https://cloud.apisec.ai
+
+name: APIsec
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: ‘40 4 * * 4’
+  workflow_dispatch:
+
+
+permissions:
+  contents: read
+
+jobs:
+  apisec-scan:
+    if: ${{ secrets.APISEC_USERNAME != '' }}
+    permissions:
+      security-events: write
+      actions: read
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: APIsec scan
+        uses: apisec-inc/apisec-run-scan@025432089674a28ba8fb55f8ab06c10215e772ea
+        with:
+          apisec-username: ${{ secrets.APISEC_USERNAME }}
+          apisec-password: ${{ secrets.APISEC_PASSWORD }}
+          apisec-project: "engram-rust"
+          sarif-result-file: "apisec-results.sarif"
+
+      - name: Upload results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ./apisec-results.sarif
