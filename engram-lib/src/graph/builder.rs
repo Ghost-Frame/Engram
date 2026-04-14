@@ -2,7 +2,7 @@ use super::types::{GraphBuildOptions, GraphEdge, GraphNode, LinkType};
 use crate::db::Database;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::info;
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
@@ -229,14 +229,53 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
         }
     }
 
-    // -- Phase 3: Prune orphan memory nodes (no edges) ----------------------------
-    let connected_ids: HashSet<String> = edges
-        .iter()
-        .flat_map(|e| [e.source.clone(), e.target.clone()])
-        .collect();
+    // -- Phase 3: Keep only large connected components -----------------------------
+    // Small disconnected clusters (< 10 nodes) scatter the force layout since
+    // nothing links them to the main graph. BFS to find components, keep the big ones.
+    let adj: HashMap<&str, Vec<&str>> = {
+        let mut m: HashMap<&str, Vec<&str>> = HashMap::new();
+        for e in &edges {
+            m.entry(e.source.as_str()).or_default().push(e.target.as_str());
+            m.entry(e.target.as_str()).or_default().push(e.source.as_str());
+        }
+        m
+    };
+
+    let node_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut keep_ids: HashSet<String> = HashSet::new();
+    const MIN_COMPONENT_SIZE: usize = 10;
+
+    for nid in &node_ids {
+        if visited.contains(nid) {
+            continue;
+        }
+        let mut component: Vec<&str> = Vec::new();
+        let mut queue: VecDeque<&str> = VecDeque::new();
+        queue.push_back(nid);
+        while let Some(cur) = queue.pop_front() {
+            if !visited.insert(cur) {
+                continue;
+            }
+            component.push(cur);
+            if let Some(neighbors) = adj.get(cur) {
+                for nb in neighbors {
+                    if node_ids.contains(nb) && !visited.contains(nb) {
+                        queue.push_back(nb);
+                    }
+                }
+            }
+        }
+        if component.len() >= MIN_COMPONENT_SIZE {
+            for id in component {
+                keep_ids.insert(id.to_string());
+            }
+        }
+    }
 
     let mut nodes = nodes;
-    nodes.retain(|n| connected_ids.contains(&n.id));
+    nodes.retain(|n| keep_ids.contains(&n.id));
+    edges.retain(|e| keep_ids.contains(&e.source) && keep_ids.contains(&e.target));
 
     info!(
         nodes = nodes.len(),
