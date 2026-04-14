@@ -521,11 +521,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // -- Summary --
     println!("=== Summary ===");
-    println!(
-        "  dataset: {} memories, {} edges",
-        ids.len(),
-        edge_count
-    );
+    println!("  dataset: {} memories, {} edges", ids.len(), edge_count);
     print_throughput("store throughput", ids.len(), store_elapsed);
     print_throughput("link throughput", edge_count, link_elapsed);
     println!(

@@ -197,9 +197,9 @@ fn normalize_key(raw_key: &str) -> Option<String> {
 /// Returns `(full_key, key_prefix, key_hash, hash_version)`.
 /// Uses v2 (peppered) hashing if KLEOS_API_KEY_PEPPER is set, otherwise v1.
 fn generate_key() -> (String, String, String, i32) {
-    use rand::RngCore;
+    use rand::Rng;
     let mut raw = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut raw);
+    rand::rng().fill(&mut raw);
     let mut raw_hex = String::with_capacity(32);
     for byte in raw {
         use std::fmt::Write;

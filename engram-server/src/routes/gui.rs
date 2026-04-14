@@ -110,9 +110,9 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
 
     // Generate new secret: 32 bytes from OsRng, hex encoded.
     let secret = {
-        use rand::RngCore;
+        use rand::Rng;
         let mut raw = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut raw);
+        rand::rng().fill(&mut raw);
         let mut out = String::with_capacity(64);
         for byte in raw {
             use std::fmt::Write;

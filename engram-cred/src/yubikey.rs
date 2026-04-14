@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use rand::RngCore;
+use rand::Rng;
 use tracing::{debug, info};
 
 use crate::{CredError, Result};
@@ -218,7 +218,7 @@ pub fn get_or_create_challenge() -> Result<[u8; CHALLENGE_SIZE]> {
     }
 
     let mut challenge = [0u8; CHALLENGE_SIZE];
-    rand::rngs::OsRng.fill_bytes(&mut challenge);
+    rand::rng().fill(&mut challenge);
 
     std::fs::create_dir_all(&dir)
         .map_err(|e| CredError::YubiKey(format!("mkdir {}: {}", dir.display(), e)))?;

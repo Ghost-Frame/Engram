@@ -5,7 +5,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use argon2::{Algorithm, Argon2, Params, Version};
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
@@ -136,7 +136,7 @@ pub fn encrypt_secret(
 
     // Generate random nonce
     let mut nonce_bytes = [0u8; NONCE_SIZE];
-    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    rand::rng().fill(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
@@ -154,7 +154,7 @@ pub fn encrypt(key: &[u8; KEY_SIZE], plaintext: &[u8]) -> Result<Vec<u8>> {
         .map_err(|e| CredError::Encryption(format!("invalid key: {}", e)))?;
 
     let mut nonce_bytes = [0u8; NONCE_SIZE];
-    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    rand::rng().fill(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
@@ -207,7 +207,7 @@ pub fn decrypt_secret(
 /// Generate a random 256-bit key.
 pub fn generate_random_key() -> [u8; KEY_SIZE] {
     let mut key = [0u8; KEY_SIZE];
-    rand::rngs::OsRng.fill_bytes(&mut key);
+    rand::rng().fill(&mut key);
     key
 }
 
@@ -245,7 +245,7 @@ pub fn derive_key_from_passphrase(passphrase: &str, salt: &[u8]) -> Result<[u8; 
 /// Format: salt (16 bytes) || nonce (12 bytes) || ciphertext+tag.
 pub fn encrypt_recovery(passphrase: &str, hmac_secret: &[u8]) -> Result<Vec<u8>> {
     let mut salt = [0u8; SALT_SIZE];
-    rand::rngs::OsRng.fill_bytes(&mut salt);
+    rand::rng().fill(&mut salt);
 
     let key = derive_key_from_passphrase(passphrase, &salt)?;
     let encrypted = encrypt(&key, hmac_secret)?;
@@ -276,7 +276,7 @@ pub fn decrypt_recovery(passphrase: &str, data: &[u8]) -> Result<Vec<u8>> {
 /// Generate a random 20-byte HMAC-SHA1 secret for YubiKey programming.
 pub fn generate_hmac_secret() -> [u8; 20] {
     let mut secret = [0u8; 20];
-    rand::rngs::OsRng.fill_bytes(&mut secret);
+    rand::rng().fill(&mut secret);
     secret
 }
 

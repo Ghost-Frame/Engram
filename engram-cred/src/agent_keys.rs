@@ -2,7 +2,7 @@
 
 use kleos_lib::db::Database;
 use kleos_lib::EngError;
-use rand::RngCore;
+use rand::Rng;
 use rusqlite::params;
 
 use crate::crypto::hash_key;
@@ -101,7 +101,7 @@ impl AgentKeyPermissions {
 /// Returns (raw_key_bytes, key_hash).
 pub fn generate_agent_key() -> ([u8; 32], String) {
     let mut key = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut key);
+    rand::rng().fill(&mut key);
     let hash = hash_key(&key);
     (key, hash)
 }

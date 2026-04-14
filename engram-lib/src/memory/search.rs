@@ -97,12 +97,14 @@ async fn hydrate_candidates(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
 
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(ids_owned.len() + 1);
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(ids_owned.len() + 1);
         for id in &ids_owned {
             params.push(Box::new(*id));
         }
         params.push(Box::new(user_id));
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
 
         let mut rows = stmt
             .query(param_refs.as_slice())
@@ -231,12 +233,14 @@ async fn fetch_memories_batch(
         let mut stmt = conn.prepare(&fetch_sql).map_err(rusqlite_to_eng_error)?;
 
         // Build dynamic params: all IDs followed by user_id
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(ids_owned.len() + 1);
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(ids_owned.len() + 1);
         for id in &ids_owned {
             params.push(Box::new(*id));
         }
         params.push(Box::new(user_id));
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
 
         let mut rows = stmt
             .query(param_refs.as_slice())
@@ -334,7 +338,8 @@ async fn fetch_links_batch(
             params.push(Box::new(*id));
         }
         params.push(Box::new(user_id));
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
 
         let mut rows = stmt
             .query(param_refs.as_slice())
@@ -424,7 +429,8 @@ async fn fetch_version_chains_batch(
             params.push(Box::new(*id));
         }
         params.push(Box::new(user_id));
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
 
         let mut rows = stmt
             .query(param_refs.as_slice())

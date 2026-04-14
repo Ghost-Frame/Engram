@@ -295,9 +295,7 @@ async fn recall(
     // Resolve session_id for the response
     let session_id = {
         let sessions = state.sessions.read().await;
-        sessions
-            .resolve_id(body.session_id.as_deref())
-            .to_string()
+        sessions.resolve_id(body.session_id.as_deref()).to_string()
     };
 
     // Extract results array
@@ -457,9 +455,7 @@ async fn compress(
             // Add observation to the target session
             {
                 let mut sessions = state.sessions.write().await;
-                let sid = sessions
-                    .resolve_id(body.session_id.as_deref())
-                    .to_string();
+                let sid = sessions.resolve_id(body.session_id.as_deref()).to_string();
                 let session = sessions.get_or_create(&sid);
                 session.add_observation(obs);
             }
