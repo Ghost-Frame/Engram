@@ -235,8 +235,12 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
     let adj: HashMap<&str, Vec<&str>> = {
         let mut m: HashMap<&str, Vec<&str>> = HashMap::new();
         for e in &edges {
-            m.entry(e.source.as_str()).or_default().push(e.target.as_str());
-            m.entry(e.target.as_str()).or_default().push(e.source.as_str());
+            m.entry(e.source.as_str())
+                .or_default()
+                .push(e.target.as_str());
+            m.entry(e.target.as_str())
+                .or_default()
+                .push(e.source.as_str());
         }
         m
     };
