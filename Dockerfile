@@ -6,7 +6,7 @@
 # SQLCipher is vendored at compile time via the "sqlcipher" feature so no
 # system libsqlcipher is needed at runtime.
 # =============================================================================
-FROM rust:1.80-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 
 WORKDIR /build
 
