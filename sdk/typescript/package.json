@@ -1,5 +1,5 @@
 {
-  "name": "@engram/sdk",
+  "name": "@ghost_frame/engram",
   "version": "0.1.0",
   "description": "TypeScript SDK for Engram memory server",
   "main": "dist/index.js",
