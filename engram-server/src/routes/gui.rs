@@ -441,11 +441,12 @@ async fn serve_static_file(build_dir: &std::path::Path, file_path: &str) -> Opti
     let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("");
     let mime = mime_for_extension(ext);
 
-    // Cache headers: immutable for _app/immutable/, no-cache for everything else
+    // Cache headers: immutable for _app/immutable/ (hashed filenames),
+    // no-store for everything else so reverse proxies (Pangolin) don't cache stale HTML
     let cache = if file_path.contains("/immutable/") {
         "public, max-age=31536000, immutable"
     } else {
-        "no-cache"
+        "no-store, no-cache, must-revalidate"
     };
 
     Some(
