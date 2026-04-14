@@ -22,6 +22,7 @@ const MIGRATION_BRAIN_DREAM_RUNS: i64 = 16;
 const MIGRATION_CRED_TABLES: i64 = 17;
 const MIGRATION_API_KEY_HASH_UNIQUE: i64 = 18;
 const MIGRATION_API_KEY_HASH_VERSION: i64 = 19;
+const MIGRATION_LINK_COVERING_INDEXES: i64 = 20;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
@@ -160,6 +161,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 19: api_key_hash_version");
         run_migration_api_key_hash_version(conn)?;
         record_migration(conn, MIGRATION_API_KEY_HASH_VERSION, "api_key_hash_version")?;
+    }
+
+    if current_version < MIGRATION_LINK_COVERING_INDEXES {
+        info!("Running migration 20: link_covering_indexes");
+        run_migration_link_covering_indexes(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_LINK_COVERING_INDEXES,
+            "link_covering_indexes",
+        )?;
     }
 
     Ok(())
@@ -590,6 +601,22 @@ fn run_migration_api_key_hash_unique(conn: &rusqlite::Connection) -> Result<()> 
 fn run_migration_api_key_hash_version(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("ALTER TABLE api_keys ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1;")
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+/// Migration 20: covering indexes on memory_links for graph neighbor and
+/// link-fetch queries. Both source_id and target_id get a covering index
+/// that includes the join columns (similarity, type) so the query planner
+/// can satisfy the common UNION query from the index alone without touching
+/// the main table.
+fn run_migration_link_covering_indexes(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_links_source_covering \
+             ON memory_links(source_id, target_id, similarity, type);
+         CREATE INDEX IF NOT EXISTS idx_links_target_covering \
+             ON memory_links(target_id, source_id, similarity, type);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
 }
 

@@ -236,6 +236,11 @@ fn apply_pragmas(
     conn.pragma_update(None, "cache_size", -65_536_i64)?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
 
+    // Let SQLite refresh query planner statistics for tables that need it.
+    // This is a no-op when stats are already fresh, so safe on every new
+    // pooled connection.
+    conn.execute_batch("PRAGMA optimize;")?;
+
     Ok(())
 }
 

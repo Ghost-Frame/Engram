@@ -84,23 +84,28 @@ async fn hydrate_candidates(
         return Ok(Vec::new());
     }
 
-    let placeholders = ids
-        .iter()
-        .map(|id| id.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
+    let ids_owned: Vec<i64> = ids.to_vec();
+    let placeholders = ids_owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
         "SELECT id, created_at, importance, is_static, source_count, \
          version, is_latest, source, model, access_count, pagerank_score, \
          content, category \
-         FROM memories WHERE id IN ({}) AND user_id = ?1",
+         FROM memories WHERE id IN ({}) AND user_id = ?",
         placeholders
     );
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(ids_owned.len() + 1);
+        for id in &ids_owned {
+            params.push(Box::new(*id));
+        }
+        params.push(Box::new(user_id));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
         let mut rows = stmt
-            .query(rusqlite::params![user_id])
+            .query(param_refs.as_slice())
             .map_err(rusqlite_to_eng_error)?;
         let mut hydrated = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -202,6 +207,51 @@ async fn fetch_memory_for_search(
     .await
 }
 
+/// Batch-fetch multiple memories by ID in a single query. Returns a HashMap
+/// keyed by memory ID for O(1) lookup during result assembly.
+async fn fetch_memories_batch(
+    db: &Database,
+    ids: &[i64],
+    user_id: i64,
+) -> Result<HashMap<i64, crate::memory::types::Memory>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let ids_owned: Vec<i64> = ids.to_vec();
+    let placeholders = ids_owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let fetch_sql = format!(
+        "SELECT {} FROM memories \
+         WHERE id IN ({}) AND user_id = ? AND is_forgotten = 0 AND is_latest = 1 \
+           AND is_consolidated = 0",
+        MEMORY_COLUMNS, placeholders
+    );
+
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&fetch_sql).map_err(rusqlite_to_eng_error)?;
+
+        // Build dynamic params: all IDs followed by user_id
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(ids_owned.len() + 1);
+        for id in &ids_owned {
+            params.push(Box::new(*id));
+        }
+        params.push(Box::new(user_id));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        let mut rows = stmt
+            .query(param_refs.as_slice())
+            .map_err(rusqlite_to_eng_error)?;
+
+        let mut map = HashMap::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let mem = row_to_memory(row)?;
+            map.insert(mem.id, mem);
+        }
+        Ok(map)
+    })
+    .await
+}
+
 async fn fetch_links_for_search(
     db: &Database,
     memory_id: i64,
@@ -242,6 +292,77 @@ async fn fetch_links_for_search(
     .await
 }
 
+/// Batch-fetch links for multiple memory IDs in a single query. Returns a
+/// HashMap keyed by the source memory ID.
+async fn fetch_links_batch(
+    db: &Database,
+    memory_ids: &[i64],
+    user_id: i64,
+) -> Result<HashMap<i64, Vec<LinkedMemory>>> {
+    if memory_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let ids_owned: Vec<i64> = memory_ids.to_vec();
+    let placeholders = ids_owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+    // For each memory_id we need both directions. We tag each row with the
+    // "owner" memory ID so we can group results into the right bucket.
+    let link_sql = format!(
+        "SELECT ml.source_id AS owner, ml.target_id, ml.similarity, ml.type, \
+             m.content, m.category, m.is_forgotten \
+         FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
+         WHERE ml.source_id IN ({placeholders}) AND m.user_id = ? \
+         UNION ALL \
+         SELECT ml.target_id AS owner, ml.source_id, ml.similarity, ml.type, \
+             m.content, m.category, m.is_forgotten \
+         FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
+         WHERE ml.target_id IN ({placeholders}) AND m.user_id = ?"
+    );
+
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&link_sql).map_err(rusqlite_to_eng_error)?;
+
+        // Params: [ids..., user_id, ids..., user_id]
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(ids_owned.len() * 2 + 2);
+        for id in &ids_owned {
+            params.push(Box::new(*id));
+        }
+        params.push(Box::new(user_id));
+        for id in &ids_owned {
+            params.push(Box::new(*id));
+        }
+        params.push(Box::new(user_id));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        let mut rows = stmt
+            .query(param_refs.as_slice())
+            .map_err(rusqlite_to_eng_error)?;
+
+        let mut map: HashMap<i64, Vec<LinkedMemory>> = HashMap::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            // Skip forgotten memories
+            if row.get::<_, i32>(6).map_err(rusqlite_to_eng_error)? != 0 {
+                continue;
+            }
+            let owner: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+            let link = LinkedMemory {
+                id: row.get(1).map_err(rusqlite_to_eng_error)?,
+                similarity: ((row.get::<_, f64>(2).map_err(rusqlite_to_eng_error)? * 1000.0)
+                    .round())
+                    / 1000.0,
+                link_type: row.get(3).map_err(rusqlite_to_eng_error)?,
+                content: row.get(4).map_err(rusqlite_to_eng_error)?,
+                category: row.get(5).map_err(rusqlite_to_eng_error)?,
+            };
+            map.entry(owner).or_default().push(link);
+        }
+        Ok(map)
+    })
+    .await
+}
+
 async fn fetch_version_chain_for_search(
     db: &Database,
     root_id: i64,
@@ -266,6 +387,61 @@ async fn fetch_version_chain_for_search(
             });
         }
         Ok(chain)
+    })
+    .await
+}
+
+/// Batch-fetch version chains for multiple root IDs in a single query.
+/// Returns a HashMap keyed by root_memory_id.
+async fn fetch_version_chains_batch(
+    db: &Database,
+    root_ids: &[i64],
+    user_id: i64,
+) -> Result<HashMap<i64, Vec<VersionChainEntry>>> {
+    if root_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let ids_owned: Vec<i64> = root_ids.to_vec();
+    let placeholders = ids_owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let chain_sql = format!(
+        "SELECT COALESCE(root_memory_id, id) AS root, id, content, version, is_latest \
+         FROM memories \
+         WHERE (root_memory_id IN ({placeholders}) OR id IN ({placeholders})) AND user_id = ? \
+         ORDER BY root, version ASC"
+    );
+
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&chain_sql).map_err(rusqlite_to_eng_error)?;
+
+        // Params: [ids..., ids..., user_id]
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(ids_owned.len() * 2 + 1);
+        for id in &ids_owned {
+            params.push(Box::new(*id));
+        }
+        for id in &ids_owned {
+            params.push(Box::new(*id));
+        }
+        params.push(Box::new(user_id));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        let mut rows = stmt
+            .query(param_refs.as_slice())
+            .map_err(rusqlite_to_eng_error)?;
+
+        let mut map: HashMap<i64, Vec<VersionChainEntry>> = HashMap::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let root: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+            let entry = VersionChainEntry {
+                id: row.get(1).map_err(rusqlite_to_eng_error)?,
+                content: row.get(2).map_err(rusqlite_to_eng_error)?,
+                version: row.get(3).map_err(rusqlite_to_eng_error)?,
+                is_latest: row.get::<_, i32>(4).map_err(rusqlite_to_eng_error)? != 0,
+            };
+            map.entry(root).or_default().push(entry);
+        }
+        Ok(map)
     })
     .await
 }
@@ -615,7 +791,11 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     let candidate_count = sorted.len();
     sorted.truncate(limit);
 
-    // Build final SearchResult vec
+    // Build final SearchResult vec -- batch-fetch all memories in one query
+    // instead of N separate round-trips.
+    let candidate_ids: Vec<i64> = sorted.iter().map(|c| c.id).collect();
+    let memory_map = fetch_memories_batch(db, &candidate_ids, user_id).await?;
+
     let mut final_results: Vec<SearchResult> = Vec::with_capacity(sorted.len());
 
     for c in &sorted {
@@ -631,14 +811,10 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
             channels.push("graph".to_string());
         }
 
-        // Fetch full memory if needed
-        let memory = match fetch_memory_for_search(db, c.id, user_id).await {
-            Ok(Some(memory)) => memory,
-            Ok(None) => continue,
-            Err(e) => {
-                warn!("fetch memory {} failed: {}", c.id, e);
-                continue;
-            }
+        // Look up from pre-fetched batch
+        let memory = match memory_map.get(&c.id) {
+            Some(mem) => mem.clone(),
+            None => continue,
         };
 
         let fts_s = fts_score_map
@@ -669,19 +845,28 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
         });
     }
 
-    // Include linked memories + version chain if requested
+    // Include linked memories + version chain if requested -- batch queries
     if req.include_links {
+        let result_ids: Vec<i64> = final_results.iter().map(|r| r.memory.id).collect();
+        let root_ids: Vec<i64> = final_results
+            .iter()
+            .map(|r| r.memory.root_memory_id.unwrap_or(r.memory.id))
+            .collect();
+
+        let links_map = fetch_links_batch(db, &result_ids, user_id).await?;
+        let chains_map = fetch_version_chains_batch(db, &root_ids, user_id).await?;
+
         for result in &mut final_results {
-            if let Ok(links) = fetch_links_for_search(db, result.memory.id, user_id).await {
+            if let Some(links) = links_map.get(&result.memory.id) {
                 if !links.is_empty() {
-                    result.linked = Some(links);
+                    result.linked = Some(links.clone());
                 }
             }
 
             let root_id = result.memory.root_memory_id.unwrap_or(result.memory.id);
-            if let Ok(chain) = fetch_version_chain_for_search(db, root_id, user_id).await {
+            if let Some(chain) = chains_map.get(&root_id) {
                 if chain.len() > 1 {
-                    result.version_chain = Some(chain);
+                    result.version_chain = Some(chain.clone());
                 }
             }
         }
