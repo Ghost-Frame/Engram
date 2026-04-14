@@ -30,22 +30,82 @@ pub fn router(state: SidecarState) -> Router {
         .route("/recall", post(recall))
         .route("/compress", post(compress))
         .route("/end", post(end_session))
+        .route("/session/start", post(start_session))
+        .route("/sessions", get(list_sessions))
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state)
 }
 
 async fn health(State(state): State<SidecarState>) -> Json<Value> {
-    let session = state.session.read().await;
+    let sessions = state.sessions.read().await;
     let llm_available = state.llm.is_available();
-    // SECURITY: only expose liveness-level info without auth. Internal state
-    // (session_id, counters) is stripped to avoid leaking operational details.
     Json(json!({
         "status": "ok",
-        "ended": session.ended,
+        "active_sessions": sessions.active_count(),
+        "total_sessions": sessions.total_count(),
+        "default_session_id": sessions.default_session_id,
         "llm_available": llm_available,
         "engram_url": state.engram_url,
     }))
 }
+
+// ---------------------------------------------------------------------------
+// POST /session/start -- explicitly create a new session
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct StartSessionBody {
+    /// Session ID. If omitted, a new UUID is generated.
+    pub session_id: Option<String>,
+}
+
+async fn start_session(
+    State(state): State<SidecarState>,
+    Json(body): Json<StartSessionBody>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    let session_id = body
+        .session_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let mut sessions = state.sessions.write().await;
+    match sessions.start_session(session_id.clone()) {
+        Ok(session) => {
+            info!(session_id = %session.id, "session started");
+            Ok((
+                StatusCode::CREATED,
+                Json(json!({
+                    "session_id": session.id,
+                    "started_at": session.started_at,
+                })),
+            ))
+        }
+        Err(e) => Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GET /sessions -- list all sessions
+// ---------------------------------------------------------------------------
+
+async fn list_sessions(State(state): State<SidecarState>) -> Json<Value> {
+    let sessions = state.sessions.read().await;
+    let all = sessions.list();
+    let active = sessions.active_count();
+
+    Json(json!({
+        "sessions": all,
+        "active_count": active,
+        "total_count": all.len(),
+        "default_session_id": sessions.default_session_id,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// POST /observe
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct ObserveBody {
@@ -61,6 +121,8 @@ struct ObserveBody {
     pub importance: i32,
     #[serde(default = "default_category")]
     pub category: String,
+    /// Target session. If omitted, uses default session.
+    pub session_id: Option<String>,
 }
 
 fn default_importance() -> i32 {
@@ -90,19 +152,27 @@ async fn observe(
         timestamp: chrono::Utc::now(),
     };
 
-    let pending_count = {
-        let mut session = state.session.write().await;
+    // Resolve session_id and add observation (auto-creates session if needed)
+    let (pending_count, session_id) = {
+        let mut sessions = state.sessions.write().await;
+        let sid = sessions.resolve_id(body.session_id.as_deref()).to_string();
+        let session = sessions.get_or_create(&sid);
+
         if session.ended {
             return Err((
                 StatusCode::GONE,
-                Json(json!({ "error": "session has ended" })),
+                Json(json!({
+                    "error": "session has ended",
+                    "session_id": sid,
+                })),
             ));
         }
-        session.add_observation(obs)
+        let count = session.add_observation(obs);
+        (count, sid)
     };
 
     let flushed = if pending_count >= FLUSH_THRESHOLD {
-        flush_pending(&state).await
+        flush_pending(&state, &session_id).await
     } else {
         0
     };
@@ -111,11 +181,16 @@ async fn observe(
         StatusCode::ACCEPTED,
         Json(json!({
             "accepted": true,
+            "session_id": session_id,
             "pending": pending_count.saturating_sub(flushed),
             "flushed": flushed,
         })),
     ))
 }
+
+// ---------------------------------------------------------------------------
+// POST /recall
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct RecallBody {
@@ -125,6 +200,8 @@ struct RecallBody {
     pub message: Option<String>,
     #[serde(default = "default_recall_limit")]
     pub limit: usize,
+    /// Optional session_id for response tagging (does not filter results).
+    pub session_id: Option<String>,
 }
 
 fn default_recall_limit() -> usize {
@@ -215,9 +292,12 @@ async fn recall(
         )
     })?;
 
+    // Resolve session_id for the response
     let session_id = {
-        let session = state.session.read().await;
-        session.id.clone()
+        let sessions = state.sessions.read().await;
+        sessions
+            .resolve_id(body.session_id.as_deref())
+            .to_string()
     };
 
     // Extract results array
@@ -270,6 +350,8 @@ struct CompressBody {
     pub tool_name: String,
     pub tool_input: Option<Value>,
     pub tool_output: String,
+    /// Target session. If omitted, uses default session.
+    pub session_id: Option<String>,
 }
 
 const COMPRESS_SYSTEM_PROMPT: &str = "\
@@ -371,8 +453,14 @@ async fn compress(
                 category: "discovery".to_string(),
                 timestamp: chrono::Utc::now(),
             };
+
+            // Add observation to the target session
             {
-                let mut session = state.session.write().await;
+                let mut sessions = state.sessions.write().await;
+                let sid = sessions
+                    .resolve_id(body.session_id.as_deref())
+                    .to_string();
+                let session = sessions.get_or_create(&sid);
                 session.add_observation(obs);
             }
 
@@ -409,54 +497,83 @@ async fn compress(
 }
 
 // ---------------------------------------------------------------------------
-// POST /end -- finalize session
+// POST /end -- finalize a session
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct EndSessionBody {
+    /// Session to end. If omitted, ends the default session.
+    pub session_id: Option<String>,
+}
 
 async fn end_session(
     State(state): State<SidecarState>,
+    Json(body): Json<EndSessionBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let flushed = flush_pending(&state).await;
+    // Resolve session_id
+    let session_id = {
+        let sessions = state.sessions.read().await;
+        sessions.resolve_id(body.session_id.as_deref()).to_string()
+    };
 
-    let mut session = state.session.write().await;
-    session.end();
+    // Flush pending observations for this session
+    let flushed = flush_pending(&state, &session_id).await;
 
-    let duration = chrono::Utc::now()
-        .signed_duration_since(session.started_at)
-        .num_seconds();
+    // End the session
+    let mut sessions = state.sessions.write().await;
+    match sessions.end_session(&session_id) {
+        Ok(session_info) => {
+            let duration = chrono::Utc::now()
+                .signed_duration_since(session_info.started_at)
+                .num_seconds();
 
-    info!(
-        session_id = %session.id,
-        user_id = state.user_id,
-        observations = session.observation_count,
-        stored = session.stored_count,
-        duration_secs = duration,
-        "session ended"
-    );
+            info!(
+                session_id = %session_info.id,
+                user_id = state.user_id,
+                observations = session_info.observation_count,
+                stored = session_info.stored_count,
+                duration_secs = duration,
+                active_remaining = sessions.active_count(),
+                "session ended"
+            );
 
-    Ok(Json(json!({
-        "ended": true,
-        "session_id": session.id,
-        "flushed": flushed,
-        "observation_count": session.observation_count,
-        "stored_count": session.stored_count,
-        "duration_secs": duration,
-    })))
+            Ok(Json(json!({
+                "ended": true,
+                "session_id": session_info.id,
+                "flushed": flushed,
+                "observation_count": session_info.observation_count,
+                "stored_count": session_info.stored_count,
+                "duration_secs": duration,
+                "active_sessions_remaining": sessions.active_count(),
+            })))
+        }
+        Err(e) => {
+            let status = match &e {
+                crate::session::SessionError::NotFound(_) => StatusCode::NOT_FOUND,
+                crate::session::SessionError::AlreadyEnded(_) => StatusCode::GONE,
+                crate::session::SessionError::AlreadyExists(_) => StatusCode::CONFLICT,
+            };
+            Err((status, Json(json!({ "error": e.to_string() }))))
+        }
+    }
 }
 
-async fn flush_pending(state: &SidecarState) -> usize {
+// ---------------------------------------------------------------------------
+// flush_pending -- drain and store observations for a specific session
+// ---------------------------------------------------------------------------
+
+async fn flush_pending(state: &SidecarState, session_id: &str) -> usize {
     let observations = {
-        let mut session = state.session.write().await;
-        session.drain_pending()
+        let mut sessions = state.sessions.write().await;
+        match sessions.get_mut(session_id) {
+            Some(session) => session.drain_pending(),
+            None => return 0,
+        }
     };
 
     if observations.is_empty() {
         return 0;
     }
-
-    let session_id = {
-        let session = state.session.read().await;
-        session.id.clone()
-    };
 
     let mut stored = 0usize;
 
@@ -475,11 +592,16 @@ async fn flush_pending(state: &SidecarState) -> usize {
         match post_with_fallback(state, "/store", "/memory/store", &req).await {
             Ok(response) if response.status().is_success() => {
                 stored += 1;
-                tracing::debug!(tool = %obs.tool_name, "observation stored via engram server");
+                tracing::debug!(
+                    tool = %obs.tool_name,
+                    session_id = %session_id,
+                    "observation stored via engram server"
+                );
             }
             Ok(response) => {
                 tracing::error!(
                     tool = %obs.tool_name,
+                    session_id = %session_id,
                     status = %response.status(),
                     "engram server rejected observation"
                 );
@@ -487,6 +609,7 @@ async fn flush_pending(state: &SidecarState) -> usize {
             Err(_) => {
                 tracing::error!(
                     tool = %obs.tool_name,
+                    session_id = %session_id,
                     user_id = state.user_id,
                     "failed to send observation to engram server"
                 );

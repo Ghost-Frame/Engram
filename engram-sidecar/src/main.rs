@@ -8,6 +8,8 @@ use engram_lib::llm::local::{LocalModelClient, OllamaConfig};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use session::SessionManager;
+
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "engram-sidecar",
@@ -58,7 +60,7 @@ pub struct SidecarState {
     pub engram_url: String,
     pub engram_api_key: Option<String>,
     pub llm: Arc<LocalModelClient>,
-    pub session: Arc<RwLock<session::Session>>,
+    pub sessions: Arc<RwLock<SessionManager>>,
     pub source: String,
     pub user_id: i64,
     pub token: Option<String>,
@@ -100,7 +102,7 @@ async fn main() {
         .session_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    tracing::info!(session_id = %session_id, "starting sidecar session");
+    tracing::info!(default_session_id = %session_id, "starting sidecar (multi-session enabled)");
 
     let token = match cli
         .token
@@ -143,7 +145,7 @@ async fn main() {
         engram_url: cli.engram_url,
         engram_api_key: cli.engram_api_key,
         llm,
-        session: Arc::new(RwLock::new(session::Session::new(session_id))),
+        sessions: Arc::new(RwLock::new(SessionManager::new(session_id))),
         source: cli.source,
         user_id: cli.user_id,
         token,
