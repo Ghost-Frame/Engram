@@ -3,8 +3,8 @@ name = "engram-cred"
 version = "0.1.0"
 edition = "2021"
 description = "Credential management CLI with encrypted vault and YubiKey support"
-license-file = "../LICENSE"
-repository = "https://github.com/Ghost-Frame/Engram-rust"
+license = "Elastic-2.0"
+repository = "https://github.com/Ghost-Frame/Engram"
 homepage = "https://engram.lol"
 
 [[bin]]
@@ -31,7 +31,7 @@ rpassword = "7"
 anyhow = "1"
 shellexpand = "3"
 directories = "6"
-engram-lib = { path = "../engram-lib" }
+engram-lib = { path = "../engram-lib", version = "0.1" }
 
 # Crypto
 aes-gcm = "0.10"
