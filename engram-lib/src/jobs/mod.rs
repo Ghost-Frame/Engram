@@ -197,13 +197,13 @@ pub async fn fail_job(db: &Database, id: i64, err_msg: &str) -> Result<()> {
 
 pub async fn retry_job(db: &Database, id: i64, err_msg: &str, delay_sec: i64) -> Result<()> {
     let err_msg = err_msg.to_string();
-    let sql = format!(
-        "UPDATE jobs SET status = 'pending', error = ?1, next_retry_at = datetime('now', '+{} seconds') WHERE id = ?2",
-        delay_sec
-    );
+    let modifier = format!("+{} seconds", delay_sec);
     db.write(move |conn| {
-        conn.execute(&sql, params![err_msg, id])
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute(
+            "UPDATE jobs SET status = 'pending', error = ?1, next_retry_at = datetime('now', ?3) WHERE id = ?2",
+            params![err_msg, id, modifier],
+        )
+        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         Ok(())
     })
     .await?;
@@ -553,10 +553,19 @@ pub async fn acquire_lease(
 ) -> Result<bool> {
     let job_name = job_name.to_string();
     let holder_id = holder_id.to_string();
-    let sql = format!("INSERT INTO scheduler_leases (job_name, holder_id, expires_at) VALUES (?1, ?2, datetime('now', '+{0} seconds')) ON CONFLICT(job_name) DO UPDATE SET holder_id = ?2, acquired_at = datetime('now'), expires_at = datetime('now', '+{0} seconds') WHERE expires_at < datetime('now') OR holder_id = ?2", ttl_sec);
+    let modifier = format!("+{} seconds", ttl_sec);
     db.write(move |conn| {
         let n = conn
-            .execute(&sql, params![job_name, holder_id])
+            .execute(
+                "INSERT INTO scheduler_leases (job_name, holder_id, expires_at) \
+                 VALUES (?1, ?2, datetime('now', ?3)) \
+                 ON CONFLICT(job_name) DO UPDATE SET \
+                   holder_id = ?2, \
+                   acquired_at = datetime('now'), \
+                   expires_at = datetime('now', ?3) \
+                 WHERE expires_at < datetime('now') OR holder_id = ?2",
+                params![job_name, holder_id, modifier],
+            )
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         Ok(n > 0)
     })
@@ -585,13 +594,13 @@ pub async fn touch_lease(
 ) -> Result<bool> {
     let job_name = job_name.to_string();
     let holder_id = holder_id.to_string();
-    let sql = format!(
-        "UPDATE scheduler_leases SET expires_at = datetime('now', '+{} seconds'), last_run_at = datetime('now') WHERE job_name = ?1 AND holder_id = ?2",
-        ttl_sec
-    );
+    let modifier = format!("+{} seconds", ttl_sec);
     db.write(move |conn| {
         let n = conn
-            .execute(&sql, params![job_name, holder_id])
+            .execute(
+                "UPDATE scheduler_leases SET expires_at = datetime('now', ?3), last_run_at = datetime('now') WHERE job_name = ?1 AND holder_id = ?2",
+                params![job_name, holder_id, modifier],
+            )
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         Ok(n > 0)
     })

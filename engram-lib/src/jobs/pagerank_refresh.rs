@@ -129,12 +129,15 @@ async fn run_once(
 /// MT-F16: per-user exponential backoff on persistent failure. A user that
 /// fails N consecutive times is skipped for `2^min(N,6)` minutes before the
 /// next attempt.
-pub fn start_pagerank_refresh_job(db: Arc<Database>, config: Arc<Config>) -> CancellationToken {
+pub fn start_pagerank_refresh_job(
+    db: Arc<Database>,
+    config: Arc<Config>,
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let token = CancellationToken::new();
     let cancel = token.clone();
     let interval = Duration::from_secs(config.pagerank_refresh_interval_secs.max(10));
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         info!(
             interval_secs = config.pagerank_refresh_interval_secs,
             "pagerank refresh job started"
@@ -183,7 +186,7 @@ pub fn start_pagerank_refresh_job(db: Arc<Database>, config: Arc<Config>) -> Can
         }
     });
 
-    token
+    (token, handle)
 }
 
 #[cfg(test)]

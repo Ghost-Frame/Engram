@@ -46,16 +46,9 @@ async fn register_agent(
         )));
     }
 
-    // Check for duplicate
-    let existing = agents::get_agent_by_name(&state.db, &body.name, auth.user_id).await?;
-    if existing.is_some() {
-        return Err(AppError(engram_lib::EngError::InvalidInput(format!(
-            "Agent '{}' already registered",
-            body.name
-        ))));
-    }
-
-    let result = agents::insert_agent(
+    // Rely on UNIQUE(user_id, name) constraint to prevent duplicates
+    // atomically instead of a check-then-insert race (TOCTOU).
+    let result = match agents::insert_agent(
         &state.db,
         auth.user_id,
         &body.name,
@@ -63,7 +56,19 @@ async fn register_agent(
         body.description.as_deref(),
         body.code_hash.as_deref(),
     )
-    .await?;
+    .await
+    {
+        Ok(r) => r,
+        Err(engram_lib::EngError::DatabaseMessage(msg))
+            if msg.contains("UNIQUE constraint failed") =>
+        {
+            return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+                "Agent '{}' already registered",
+                body.name
+            ))));
+        }
+        Err(e) => return Err(AppError(e)),
+    };
 
     Ok((
         StatusCode::CREATED,

@@ -14,11 +14,13 @@ const MAX_BACKOFF: Duration = Duration::from_secs(300);
 /// Uses PASSIVE mode so readers are never blocked.
 /// TRUNCATE mode is used once at startup to shrink any large WAL leftover from
 /// a previous run.
-pub fn start_auto_checkpoint_task(db: Arc<Database>) -> CancellationToken {
+pub fn start_auto_checkpoint_task(
+    db: Arc<Database>,
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let token = CancellationToken::new();
     let cancel = token.clone();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         // Startup TRUNCATE: flush any WAL accumulated before this process started.
         match engram_lib::db::backup::wal_checkpoint(
             &db,
@@ -54,16 +56,18 @@ pub fn start_auto_checkpoint_task(db: Arc<Database>) -> CancellationToken {
         }
     });
 
-    token
+    (token, handle)
 }
 
 /// Deletes completed jobs older than 1 hour on an hourly interval.
 /// RB-L5: failures back off exponentially (doubling each time, capped at 5 min).
-pub fn start_job_cleanup_task(db: Arc<Database>) -> CancellationToken {
+pub fn start_job_cleanup_task(
+    db: Arc<Database>,
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let token = CancellationToken::new();
     let cancel = token.clone();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let base_interval = Duration::from_secs(3600);
         let mut consecutive_failures: u32 = 0;
         loop {
@@ -109,7 +113,7 @@ pub fn start_job_cleanup_task(db: Arc<Database>) -> CancellationToken {
         }
     });
 
-    token
+    (token, handle)
 }
 
 /// Replays failed LanceDB vector sync operations on a 10-minute interval.
@@ -119,11 +123,13 @@ pub fn start_job_cleanup_task(db: Arc<Database>) -> CancellationToken {
 /// pending rows from starving other users. A monotonic sequence counter tracks
 /// when each user was last served; the user with the lowest counter (i.e. served
 /// least recently, or never) is chosen each tick.
-pub fn start_vector_sync_replay_task(db: Arc<Database>) -> CancellationToken {
+pub fn start_vector_sync_replay_task(
+    db: Arc<Database>,
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let token = CancellationToken::new();
     let cancel = token.clone();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let base_interval = Duration::from_secs(600);
         let mut consecutive_failures: u32 = 0;
         // MT-F17: last-served sequence number per user (lower = served longer ago).
@@ -201,5 +207,5 @@ pub fn start_vector_sync_replay_task(db: Arc<Database>) -> CancellationToken {
         }
     });
 
-    token
+    (token, handle)
 }

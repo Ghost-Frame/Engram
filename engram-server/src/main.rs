@@ -157,24 +157,68 @@ async fn main() {
     };
 
     // Start background PageRank refresh job if enabled.
-    let _pagerank_token = if state.config.pagerank_enabled {
-        let token = start_pagerank_refresh_job(Arc::clone(&state.db), Arc::clone(&state.config));
+    let pagerank_handles = if state.config.pagerank_enabled {
+        let (token, handle) =
+            start_pagerank_refresh_job(Arc::clone(&state.db), Arc::clone(&state.config));
         tracing::info!("background pagerank refresh job started");
-        Some(token)
+        Some((token, handle))
     } else {
         tracing::info!("pagerank disabled -- skipping refresh job");
         None
     };
 
     // Start infrastructure background tasks.
-    let _checkpoint_token = start_auto_checkpoint_task(Arc::clone(&state.db));
+    let (checkpoint_token, checkpoint_handle) =
+        start_auto_checkpoint_task(Arc::clone(&state.db));
     tracing::info!("auto-checkpoint background task started");
 
-    let _job_cleanup_token = start_job_cleanup_task(Arc::clone(&state.db));
+    let (job_cleanup_token, job_cleanup_handle) =
+        start_job_cleanup_task(Arc::clone(&state.db));
     tracing::info!("job-cleanup background task started");
 
-    let _vector_sync_token = start_vector_sync_replay_task(Arc::clone(&state.db));
+    let (vector_sync_token, vector_sync_handle) =
+        start_vector_sync_replay_task(Arc::clone(&state.db));
     tracing::info!("vector-sync-replay background task started");
+
+    // Monitor background tasks -- log if any exit unexpectedly (panic/abort).
+    tokio::spawn(async move {
+        // Keep tokens alive so tasks aren't cancelled.
+        let _checkpoint_token = checkpoint_token;
+        let _job_cleanup_token = job_cleanup_token;
+        let _vector_sync_token = vector_sync_token;
+        let _pagerank_token = pagerank_handles.as_ref().map(|(t, _)| t);
+
+        let mut tasks: Vec<(&str, tokio::task::JoinHandle<()>)> = vec![
+            ("auto-checkpoint", checkpoint_handle),
+            ("job-cleanup", job_cleanup_handle),
+            ("vector-sync-replay", vector_sync_handle),
+        ];
+        if let Some((_, handle)) = pagerank_handles {
+            tasks.push(("pagerank-refresh", handle));
+        }
+
+        // Wait for ANY task to exit -- they should all run forever.
+        loop {
+            if tasks.is_empty() {
+                break;
+            }
+            let (idx, result) = {
+                let mut futs: Vec<_> = tasks.iter_mut().map(|(_, h)| h).collect();
+                // Select the first task that completes.
+                let (result, index, _) = futures::future::select_all(&mut futs).await;
+                (index, result)
+            };
+            let (name, _) = tasks.remove(idx);
+            match result {
+                Ok(()) => {
+                    tracing::error!(task = name, "background task exited unexpectedly");
+                }
+                Err(e) => {
+                    tracing::error!(task = name, error = %e, "background task panicked");
+                }
+            }
+        }
+    });
 
     if let Err(e) = engram_server::server::run(state).await {
         tracing::error!("server error: {}", e);

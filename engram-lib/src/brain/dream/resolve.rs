@@ -5,6 +5,7 @@ use crate::brain::hopfield::network::HopfieldNetwork;
 use crate::brain::hopfield::pattern;
 use crate::db::Database;
 use crate::{EngError, Result};
+use tracing::warn;
 
 use super::StageReport;
 
@@ -83,16 +84,23 @@ pub async fn resolve(
         let new_winner_strength =
             (winner_strength + WINNER_BOOST * (1.0 - winner_strength)).min(1.0);
         network.update_strength(winner, new_winner_strength);
-        let _ = pattern::update_strength(db, winner, user_id, new_winner_strength).await;
+        if let Err(e) = pattern::update_strength(db, winner, user_id, new_winner_strength).await {
+            warn!(pattern_id = winner, user_id, error = %e, "resolve: failed to persist winner strength");
+        }
 
         // Penalise loser
         let new_loser_strength = (loser_strength - LOSER_PENALTY).max(0.0);
         network.update_strength(loser, new_loser_strength);
-        let _ = pattern::update_strength(db, loser, user_id, new_loser_strength).await;
+        if let Err(e) = pattern::update_strength(db, loser, user_id, new_loser_strength).await {
+            warn!(pattern_id = loser, user_id, error = %e, "resolve: failed to persist loser strength");
+        }
 
         // Strengthen the contradiction edge itself -- it becomes more certain
-        let _ =
-            edges::strengthen_edge(db, winner, loser, EdgeType::Contradiction, 0.02, user_id).await;
+        if let Err(e) =
+            edges::strengthen_edge(db, winner, loser, EdgeType::Contradiction, 0.02, user_id).await
+        {
+            warn!(winner, loser, user_id, error = %e, "resolve: failed to strengthen contradiction edge");
+        }
 
         items_changed += 1;
     }

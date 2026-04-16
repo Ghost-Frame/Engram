@@ -12,6 +12,30 @@ impl From<EngError> for AppError {
     }
 }
 
+/// Classify a rusqlite error for HTTP status code selection.
+fn classify_db_error_message(msg: &str) -> Option<(StatusCode, String)> {
+    if msg.contains("UNIQUE constraint failed") {
+        Some((StatusCode::CONFLICT, "Resource already exists".to_string()))
+    } else if msg.contains("NOT NULL constraint failed") {
+        Some((
+            StatusCode::BAD_REQUEST,
+            "Required field is missing".to_string(),
+        ))
+    } else if msg.contains("FOREIGN KEY constraint failed") {
+        Some((
+            StatusCode::BAD_REQUEST,
+            "Referenced resource does not exist".to_string(),
+        ))
+    } else if msg.contains("CHECK constraint failed") {
+        Some((
+            StatusCode::BAD_REQUEST,
+            "Value violates constraint".to_string(),
+        ))
+    } else {
+        None
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self.0 {
@@ -20,20 +44,31 @@ impl IntoResponse for AppError {
             EngError::Auth(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             EngError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             EngError::NotImplemented(msg) => (StatusCode::NOT_IMPLEMENTED, msg.clone()),
-            // Don't leak internal DB/serialization details to clients
+            // Classify DB errors: constraint violations get 4xx, others get 500.
             EngError::Database(e) => {
-                tracing::error!("Database error: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Database error".to_string(),
-                )
+                let msg = e.to_string();
+                if let Some(classified) = classify_db_error_message(&msg) {
+                    tracing::warn!("Database constraint error: {}", msg);
+                    classified
+                } else {
+                    tracing::error!("Database error: {}", msg);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Database error".to_string(),
+                    )
+                }
             }
             EngError::DatabaseMessage(msg) => {
-                tracing::error!("Database error: {}", msg);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Database error".to_string(),
-                )
+                if let Some(classified) = classify_db_error_message(msg) {
+                    tracing::warn!("Database constraint error: {}", msg);
+                    classified
+                } else {
+                    tracing::error!("Database error: {}", msg);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Database error".to_string(),
+                    )
+                }
             }
             EngError::Serialization(e) => {
                 tracing::error!("Serialization error: {}", e);
