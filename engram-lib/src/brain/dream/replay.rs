@@ -4,6 +4,7 @@ use crate::brain::hopfield::network::HopfieldNetwork;
 use crate::brain::hopfield::pattern;
 use crate::db::Database;
 use crate::Result;
+use tracing::warn;
 
 use super::StageReport;
 
@@ -46,7 +47,9 @@ pub async fn replay(
 
         if (new_strength - current_strength).abs() > 1e-6 {
             network.update_strength(bp.id, new_strength);
-            let _ = pattern::update_strength(db, bp.id, user_id, new_strength).await;
+            if let Err(e) = pattern::update_strength(db, bp.id, user_id, new_strength).await {
+                warn!(pattern_id = bp.id, user_id, error = %e, "replay: failed to persist strength update");
+            }
             items_changed += 1;
         }
     }
