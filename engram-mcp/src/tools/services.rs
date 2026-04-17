@@ -32,6 +32,7 @@ pub fn register(out: &mut Vec<ToolDef>) {
     ]);
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "services.axon_publish"))]
 pub async fn axon_publish(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     Ok(json!(
@@ -65,6 +66,7 @@ pub async fn axon_publish(app: &App, args: Value) -> Result<Value> {
     ))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "services.axon_consume"))]
 pub async fn axon_consume(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     Ok(json!({
@@ -80,6 +82,7 @@ pub async fn axon_consume(app: &App, args: Value) -> Result<Value> {
     }))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "services.broca_log"))]
 pub async fn broca_log(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     Ok(json!(
@@ -113,6 +116,7 @@ pub async fn broca_log(app: &App, args: Value) -> Result<Value> {
     ))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "services.chiasm_create_task"))]
 pub async fn chiasm_create_task(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     Ok(json!(
@@ -149,6 +153,7 @@ pub async fn chiasm_create_task(app: &App, args: Value) -> Result<Value> {
     ))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "services.chiasm_update_task"))]
 pub async fn chiasm_update_task(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let id = args
@@ -183,6 +188,7 @@ pub async fn chiasm_update_task(app: &App, args: Value) -> Result<Value> {
     ))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "services.soma_register"))]
 pub async fn soma_register(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     Ok(json!(
@@ -212,6 +218,7 @@ pub async fn soma_register(app: &App, args: Value) -> Result<Value> {
     ))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "services.soma_heartbeat"))]
 pub async fn soma_heartbeat(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let id = args
@@ -222,6 +229,7 @@ pub async fn soma_heartbeat(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"ok": true, "id": id}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "services.thymus_review"))]
 pub async fn thymus_review(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     Ok(json!(

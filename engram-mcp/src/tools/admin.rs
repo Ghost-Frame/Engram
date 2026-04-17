@@ -35,6 +35,7 @@ pub fn register(out: &mut Vec<ToolDef>) {
     ]);
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "admin.reembed"))]
 pub async fn reembed(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     require_admin(&auth)?;
@@ -43,12 +44,14 @@ pub async fn reembed(app: &App, args: Value) -> Result<Value> {
     )
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "admin.rebuild_fts"))]
 pub async fn rebuild_fts(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     require_admin(&auth)?;
     Ok(json!({"rows": admin::rebuild_fts(&app.db).await?}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "admin.vector_sync_replay"))]
 pub async fn vector_sync_replay(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     require_admin(&auth)?;
