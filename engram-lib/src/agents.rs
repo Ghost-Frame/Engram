@@ -64,6 +64,7 @@ pub struct AgentPassport {
     pub signature: String,
 }
 
+#[tracing::instrument(skip(db, name, category, description, code_hash), fields(name = %name))]
 pub async fn insert_agent(
     db: &Database,
     user_id: i64,
@@ -94,6 +95,7 @@ pub async fn insert_agent(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_agent_by_id(db: &Database, id: i64, user_id: i64) -> Result<Option<AgentRow>> {
     db.read(move |conn| {
         conn.query_row(
@@ -107,6 +109,7 @@ pub async fn get_agent_by_id(db: &Database, id: i64, user_id: i64) -> Result<Opt
     .await
 }
 
+#[tracing::instrument(skip(db, name), fields(name = %name))]
 pub async fn get_agent_by_name(
     db: &Database,
     name: &str,
@@ -125,6 +128,7 @@ pub async fn get_agent_by_name(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_agents(db: &Database, user_id: i64) -> Result<Vec<AgentRow>> {
     db.read(move |conn| {
         let mut stmt = conn.prepare(
@@ -140,6 +144,7 @@ pub async fn list_agents(db: &Database, user_id: i64) -> Result<Vec<AgentRow>> {
     .await
 }
 
+#[tracing::instrument(skip(db, reason), fields(reason = %reason))]
 pub async fn revoke_agent(db: &Database, id: i64, user_id: i64, reason: &str) -> Result<()> {
     let reason = reason.to_string();
     db.write(move |conn| {
@@ -152,6 +157,7 @@ pub async fn revoke_agent(db: &Database, id: i64, user_id: i64, reason: &str) ->
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn link_key_to_agent(
     db: &Database,
     agent_id: i64,
@@ -169,6 +175,7 @@ pub async fn link_key_to_agent(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_agent_executions(
     db: &Database,
     agent_id: i64,
