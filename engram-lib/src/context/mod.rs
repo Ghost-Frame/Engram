@@ -21,7 +21,7 @@ use crate::memory::types::SearchRequest;
 use crate::Result;
 use crate::{personality, scratchpad};
 
-use budget::{estimate_tokens, truncate_to_token_budget};
+use budget::{estimate_tokens, resolve_budget, truncate_to_token_budget};
 use deps::*;
 use modes::*;
 use scoring::cosine_similarity;
@@ -342,12 +342,15 @@ pub async fn assemble_context(
     apply_context_mode(&mut opts);
 
     // --- Resolve parameters ---
-    let raw_budget = opts
+    let explicit_budget = opts
         .max_tokens
         .or(opts.token_budget)
-        .or(opts.budget)
-        .unwrap_or(DEFAULT_TOKEN_BUDGET);
-    let token_budget = raw_budget.min(MAX_TOKEN_BUDGET);
+        .or(opts.budget);
+    let (token_budget, _budget_note) = resolve_budget(
+        explicit_budget,
+        opts.model_id.as_deref(),
+        DEFAULT_TOKEN_BUDGET,
+    );
     let context_strategy = opts.strategy.unwrap_or(ContextStrategy::Balanced);
     let depth = opts.depth.unwrap_or(3).clamp(1, 3);
 

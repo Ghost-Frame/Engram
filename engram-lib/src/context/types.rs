@@ -136,6 +136,10 @@ pub struct ContextOptions {
     pub max_tokens: Option<usize>,
     pub token_budget: Option<usize>,
     pub budget: Option<usize>,
+    /// Model identifier (e.g. "claude-3.5-sonnet", "gpt-4o"). When set and no
+    /// explicit budget is provided, the budget is auto-derived as 80% of the
+    /// model's context window (capped at MAX_TOKEN_BUDGET).
+    pub model_id: Option<String>,
     pub strategy: Option<ContextStrategy>,
     pub depth: Option<u8>,
     pub mode: Option<ContextMode>,
