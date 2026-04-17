@@ -18,6 +18,7 @@ pub struct CompressedEpisode {
 
 /// Compress memories from a weekly period into summary memories.
 /// Groups memories by week, scores sentences heuristically, creates summaries.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn compress_weekly(db: &Database, user_id: i64) -> Result<Vec<CompressedEpisode>> {
     let mut compressed = Vec::new();
 

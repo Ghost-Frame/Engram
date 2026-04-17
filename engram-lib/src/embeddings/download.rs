@@ -85,6 +85,7 @@ async fn ensure_file(path: &Path, url: &str, offline_only: bool) -> Result<()> {
 
 /// Ensure all bge-m3 embedding model files are present in `model_dir`.
 /// Downloads from HuggingFace if missing and `offline_only` is false.
+#[tracing::instrument(skip(model_dir), fields(model_dir = %model_dir.display(), onnx_file = %onnx_file, offline_only))]
 pub async fn ensure_embedding_model(
     model_dir: &Path,
     onnx_file: &str,
@@ -106,6 +107,7 @@ pub async fn ensure_embedding_model(
 }
 
 /// Ensure all granite reranker model files are present in `model_dir`.
+#[tracing::instrument(skip(model_dir), fields(model_dir = %model_dir.display(), offline_only))]
 pub async fn ensure_reranker_model(
     model_dir: &Path,
     offline_only: bool,

@@ -48,6 +48,7 @@ pub fn find_secret_patterns(input: &str) -> Vec<SecretPattern> {
         .collect()
 }
 
+#[tracing::instrument(skip_all, fields(input_len = input.len()))]
 pub async fn resolve_patterns<F, Fut>(input: &str, mut resolver: F) -> Result<String>
 where
     F: FnMut(SecretPattern) -> Fut,

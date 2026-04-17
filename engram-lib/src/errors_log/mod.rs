@@ -35,6 +35,7 @@ pub struct ListErrorsRequest {
 }
 
 /// Log an error event to the database. Returns the new row id.
+#[tracing::instrument(skip(db, req), fields(source = %req.source, level = %req.level, message_len = req.message.len(), user_id = ?user_id))]
 pub async fn log_error(db: &Database, req: LogErrorRequest, user_id: Option<&str>) -> Result<i64> {
     let user_id_owned = user_id.map(|s| s.to_string());
 

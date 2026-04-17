@@ -157,6 +157,7 @@ impl CircuitBreaker {
 /// Run `op` up to `max_attempts` times. On each error wait
 /// `base_delay * 2^(attempt - 1)` then retry. Returns the last error if
 /// all attempts fail.
+#[tracing::instrument(skip_all, fields(max_attempts, base_delay_ms = base_delay.as_millis() as u64))]
 pub async fn retry_with_backoff<F, Fut, T, E>(
     max_attempts: usize,
     base_delay: Duration,

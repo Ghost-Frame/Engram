@@ -26,6 +26,7 @@ pub struct GrowthObservation {
     pub created_at: String,
 }
 
+#[tracing::instrument(skip(db), fields(user_id, limit))]
 pub async fn list_observations(
     db: &Database,
     user_id: i64,
@@ -157,6 +158,7 @@ async fn resolve_growth_observation(
 }
 
 /// Perform a growth reflection -- observe recent activity and generate an observation.
+#[tracing::instrument(skip(db, req), fields(service = %req.service, context_len = req.context.len(), user_id))]
 pub async fn reflect(
     db: &Database,
     req: &GrowthReflectRequest,

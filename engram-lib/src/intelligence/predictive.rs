@@ -297,6 +297,7 @@ pub const SEQUENCE_MIN_SUPPORT: i64 = 2;
 ///
 /// Results are sorted by `support` descending, then `confidence`
 /// descending, so the strongest patterns surface first.
+#[tracing::instrument(skip(db), fields(user_id, window_mins))]
 pub async fn detect_sequence_patterns(
     db: &Database,
     user_id: i64,

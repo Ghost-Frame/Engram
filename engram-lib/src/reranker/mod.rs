@@ -395,6 +395,7 @@ impl Reranker for HttpReranker {
 /// - `KLEOS_RERANKER_HTTP_ENDPOINT` (required, e.g. https://api.cohere.ai/v1/rerank)
 /// - `KLEOS_RERANKER_HTTP_API_KEY` (optional, for authenticated APIs)
 /// - `KLEOS_RERANKER_HTTP_MODEL` (default: "rerank-v3.5")
+#[tracing::instrument(skip(config), fields(enabled = config.reranker_enabled))]
 pub async fn create_reranker(config: &Config) -> Result<Option<Arc<dyn Reranker>>> {
     if !config.reranker_enabled {
         return Ok(None);

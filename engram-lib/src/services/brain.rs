@@ -1090,6 +1090,7 @@ async fn load_brain_memory(db: &Database, memory_id: i64, user_id: i64) -> Resul
 /// - `"subprocess"`: External eidolon binary via stdin/stdout JSON
 /// - `"none"`: No brain backend
 #[cfg(feature = "brain_hopfield")]
+#[tracing::instrument(skip(db), fields(data_dir = %data_dir, user_id))]
 pub async fn create_brain_backend(
     db: Arc<Database>,
     data_dir: &str,
@@ -1145,6 +1146,7 @@ pub async fn create_brain_backend(
 
 /// Non-feature-gated factory -- returns subprocess or None.
 #[cfg(not(feature = "brain_hopfield"))]
+#[tracing::instrument(skip(_db), fields(data_dir = %data_dir, user_id = _user_id))]
 pub async fn create_brain_backend(
     _db: Arc<Database>,
     data_dir: &str,
