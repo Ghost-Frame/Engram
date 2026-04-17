@@ -20,7 +20,7 @@ impl Default for DbPoolConfig {
             max_readers: cpu_count * 2,
             writer_count: 1,
             busy_timeout_ms: 5_000,
-            wal_autocheckpoint: 1_000,
+            wal_autocheckpoint: 10_000,
         }
     }
 }
@@ -229,6 +229,10 @@ fn apply_pragmas(
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "wal_autocheckpoint", config.wal_autocheckpoint)?;
         conn.pragma_update(None, "mmap_size", 268_435_456_i64)?;
+        // Cap WAL file size at 256 MiB. SQLite truncates after a checkpoint
+        // that brings the WAL below this limit. Prevents unbounded WAL growth
+        // during bursty write workloads (e.g. bulk ingest, PageRank refresh).
+        conn.pragma_update(None, "journal_size_limit", 268_435_456_i64)?;
     }
 
     conn.busy_timeout(Duration::from_millis(config.busy_timeout_ms))?;

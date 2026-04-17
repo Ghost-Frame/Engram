@@ -29,7 +29,7 @@ impl Default for TenantPoolConfig {
             max_readers: 4,
             writer_count: 1,
             busy_timeout_ms: 5_000,
-            wal_autocheckpoint: 1_000,
+            wal_autocheckpoint: 10_000,
         }
     }
 }
@@ -227,6 +227,7 @@ fn apply_pragmas(
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "wal_autocheckpoint", config.wal_autocheckpoint)?;
         conn.pragma_update(None, "mmap_size", 67_108_864_i64)?; // 64MB per tenant
+        conn.pragma_update(None, "journal_size_limit", 67_108_864_i64)?; // cap WAL at 64MB
     }
 
     conn.busy_timeout(Duration::from_millis(config.busy_timeout_ms))?;

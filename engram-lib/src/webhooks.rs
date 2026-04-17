@@ -12,6 +12,16 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Shared HTTP client for webhook delivery -- no-redirect policy prevents
+/// signature header leakage via open redirect chains (SEC-H2).
+static WEBHOOK_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .pool_max_idle_per_host(4)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+});
+
 const WEBHOOK_FAILURE_THRESHOLD: i64 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -402,14 +412,7 @@ pub async fn emit_webhook_event(
         let url = hook.url.clone();
         let hook_id = hook.id;
         tokio::spawn(async move {
-            // SECURITY (SEC-H2): disable redirect following to prevent
-            // X-Engram-Signature header leakage to attacker-controlled hosts
-            // via open redirect chains.
-            let client = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new());
-            let mut req = client
+            let mut req = WEBHOOK_CLIENT
                 .post(&url)
                 .body(body_str)
                 .timeout(std::time::Duration::from_secs(10));

@@ -14,6 +14,9 @@ use engram_server::state::AppState;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()

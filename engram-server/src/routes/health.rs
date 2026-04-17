@@ -30,76 +30,37 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn get_health(State(state): State<AppState>) -> Json<Value> {
-    // Query counts for the GUI dashboard. These are cheap index scans.
-    let memories: i64 = state
+    // Single query to get all dashboard counts. Avoids 6 serial DB round-trips.
+    let counts = state
         .db
         .read(|conn| {
             conn.query_row(
-                "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0 AND is_archived = 0",
+                "SELECT
+                    SUM(CASE WHEN is_forgotten = 0 AND is_archived = 0 THEN 1 ELSE 0 END),
+                    (SELECT COUNT(*) FROM entities),
+                    (SELECT COUNT(*) FROM episodes),
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN is_static = 1 AND is_forgotten = 0 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN version > 1 AND is_forgotten = 0 THEN 1 ELSE 0 END)
+                 FROM memories",
                 [],
-                |row| row.get(0),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                },
             )
             .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))
         })
         .await
-        .unwrap_or(0);
+        .unwrap_or((0, 0, 0, 0, 0, 0));
 
-    let entities: i64 = state
-        .db
-        .read(|conn| {
-            conn.query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
-                .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))
-        })
-        .await
-        .unwrap_or(0);
-
-    let episodes: i64 = state
-        .db
-        .read(|conn| {
-            conn.query_row("SELECT COUNT(*) FROM episodes", [], |row| row.get(0))
-                .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))
-        })
-        .await
-        .unwrap_or(0);
-
-    let pending: i64 = state
-        .db
-        .read(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM memories WHERE status = 'pending'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))
-        })
-        .await
-        .unwrap_or(0);
-
-    let static_count: i64 = state
-        .db
-        .read(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM memories WHERE is_static = 1 AND is_forgotten = 0",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))
-        })
-        .await
-        .unwrap_or(0);
-
-    let versioned: i64 = state
-        .db
-        .read(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM memories WHERE version > 1 AND is_forgotten = 0",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))
-        })
-        .await
-        .unwrap_or(0);
+    let (memories, entities, episodes, pending, static_count, versioned) = counts;
 
     let llm_configured = state.brain.is_some();
     let embedding_model = state
@@ -133,12 +94,54 @@ async fn get_live() -> Json<Value> {
     }))
 }
 
-async fn get_ready() -> Json<Value> {
-    Json(json!({
-        "status": "ok",
-        "service": "engram",
-        "version": "0.1.0"
-    }))
+async fn get_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    let mut checks: Vec<(&str, bool)> = Vec::new();
+
+    // DB ping: run a trivial query to verify the connection pool is alive.
+    let db_ok = state
+        .db
+        .read(|conn| {
+            conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .is_ok();
+    checks.push(("database", db_ok));
+
+    // Embedder loaded
+    let embedder_ok = state.embedder.read().await.is_some();
+    checks.push(("embedder", embedder_ok));
+
+    // Reranker loaded
+    let reranker_ok = state.reranker.read().await.is_some();
+    checks.push(("reranker", reranker_ok));
+
+    let all_ok = checks.iter().all(|(_, ok)| *ok);
+    let status = if all_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    let details: serde_json::Map<String, Value> = checks
+        .iter()
+        .map(|(name, ok)| {
+            (
+                name.to_string(),
+                json!(if *ok { "ok" } else { "unavailable" }),
+            )
+        })
+        .collect();
+
+    (
+        status,
+        Json(json!({
+            "status": if all_ok { "ready" } else { "not_ready" },
+            "service": "engram",
+            "version": "0.1.0",
+            "checks": details,
+        })),
+    )
 }
 
 async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Response<Body> {
