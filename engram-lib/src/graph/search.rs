@@ -1,7 +1,7 @@
 use super::types::{GraphEdge, GraphNode, LinkType};
 use crate::db::Database;
 use crate::{EngError, Result};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 /// Row data for a memory node with all GUI-required fields.
 struct MemoryNodeRow {
@@ -194,203 +194,169 @@ pub async fn graph_search(
     Ok(nodes)
 }
 
-/// BFS neighborhood traversal from a start node.
+/// BFS neighborhood traversal from a start node (3.12 enhanced).
+///
 /// Expands outward through memory_links up to `depth` hops.
-/// Returns the subgraph of visited nodes and traversed edges.
+/// Batches DB queries per hop level (not per node) to avoid N+1.
+/// Optional `link_types` filter restricts traversal to specific edge types.
+/// Returns the subgraph of visited nodes and traversed edges, plus
+/// a per-node hop distance map in the response.
 pub async fn neighborhood(
     db: &Database,
     node_id: &str,
     depth: u32,
     user_id: i64,
 ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
+    let (nodes, edges, _hops) = neighborhood_filtered(db, node_id, depth, user_id, None).await?;
+    Ok((nodes, edges))
+}
+
+/// BFS neighborhood with optional link_type filter.
+pub async fn neighborhood_filtered(
+    db: &Database,
+    node_id: &str,
+    depth: u32,
+    user_id: i64,
+    link_types: Option<&[String]>,
+) -> Result<(Vec<GraphNode>, Vec<GraphEdge>, HashMap<String, u32>)> {
     // Parse node_id: "m123" -> memory id 123, "e456" -> entity id 456
     let (node_type, raw_id) = if let Some(stripped) = node_id.strip_prefix('m') {
         ("memory", stripped.parse::<i64>().unwrap_or(0))
     } else if let Some(stripped) = node_id.strip_prefix('e') {
         ("entity", stripped.parse::<i64>().unwrap_or(0))
     } else {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), HashMap::new()));
     };
 
     if raw_id == 0 {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), HashMap::new()));
+    }
+
+    // Only memory traversal supported for now
+    if node_type != "memory" {
+        return Ok((Vec::new(), Vec::new(), HashMap::new()));
     }
 
     let mut visited: HashSet<i64> = HashSet::new();
-    let mut frontier: VecDeque<i64> = VecDeque::new();
+    let mut frontier: Vec<i64> = Vec::new();
     let mut all_edges: Vec<GraphEdge> = Vec::new();
     let mut all_node_ids: Vec<i64> = Vec::new();
+    let mut hop_map: HashMap<i64, u32> = HashMap::new();
 
-    if node_type == "memory" {
-        visited.insert(raw_id);
-        frontier.push_back(raw_id);
-        all_node_ids.push(raw_id);
+    visited.insert(raw_id);
+    frontier.push(raw_id);
+    all_node_ids.push(raw_id);
+    hop_map.insert(raw_id, 0);
 
-        for _d in 0..depth {
-            if frontier.is_empty() {
-                break;
-            }
+    // Pre-compute link type filter for SQL
+    let type_filter: Option<Vec<String>> = link_types.map(|lt| lt.to_vec());
 
-            let current_frontier: Vec<i64> = frontier.drain(..).collect();
+    for current_depth in 0..depth {
+        if frontier.is_empty() {
+            break;
+        }
 
-            for &node in &current_frontier {
-                let edges: Vec<(i64, i64, f64, String)> = db
-                    .read(move |conn| {
-                        let mut stmt = conn
-                            .prepare(
-                                "SELECT source_id, target_id, similarity, type \
-                                 FROM memory_links \
-                                 WHERE (source_id = ?1 OR target_id = ?1) \
-                                   AND EXISTS (SELECT 1 FROM memories WHERE id = source_id AND user_id = ?2) \
-                                   AND EXISTS (SELECT 1 FROM memories WHERE id = target_id AND user_id = ?2)",
-                            )
-                            .map_err(rusqlite_to_eng_error)?;
+        // Batch fetch all edges for the entire frontier in one query
+        let frontier_clone = frontier.clone();
+        let type_filter_clone = type_filter.clone();
+        let edges: Vec<(i64, i64, f64, String)> = db
+            .read(move |conn| {
+                // Build IN clause placeholders
+                let placeholders: String = frontier_clone
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join(",");
 
-                        let rows = stmt
-                            .query_map(rusqlite::params![node, user_id], |row| {
-                                let source_id: i64 = row.get(0)?;
-                                let target_id: i64 = row.get(1)?;
-                                let similarity: f64 = row.get(2)?;
-                                let link_type_str: String = row
-                                    .get::<_, Option<String>>(3)?
-                                    .unwrap_or_else(|| "cite".to_string());
-                                Ok((source_id, target_id, similarity, link_type_str))
-                            })
-                            .map_err(rusqlite_to_eng_error)?;
+                let type_clause = if let Some(ref types) = type_filter_clone {
+                    let type_placeholders: String = types
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| format!("?{}", frontier_clone.len() + 2 + i))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    format!(" AND ml.type IN ({})", type_placeholders)
+                } else {
+                    String::new()
+                };
 
-                        let mut result = Vec::new();
-                        for row in rows {
-                            result.push(row.map_err(rusqlite_to_eng_error)?);
-                        }
-                        Ok(result)
-                    })
-                    .await?;
+                let sql = format!(
+                    "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
+                     FROM memory_links ml \
+                     WHERE (ml.source_id IN ({placeholders}) OR ml.target_id IN ({placeholders})) \
+                       AND EXISTS (SELECT 1 FROM memories WHERE id = ml.source_id AND user_id = ?{uid_param}) \
+                       AND EXISTS (SELECT 1 FROM memories WHERE id = ml.target_id AND user_id = ?{uid_param}){type_clause}",
+                    placeholders = placeholders,
+                    uid_param = frontier_clone.len() + 1,
+                    type_clause = type_clause,
+                );
 
-                for (source_id, target_id, similarity, link_type_str) in edges {
-                    let neighbor = if source_id == node {
-                        target_id
-                    } else {
-                        source_id
-                    };
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(rusqlite_to_eng_error)?;
 
-                    all_edges.push(GraphEdge {
-                        source: format!("m{}", source_id),
-                        target: format!("m{}", target_id),
-                        link_type: parse_link_type(&link_type_str),
-                        weight: similarity as f32,
-                    });
-
-                    if !visited.contains(&neighbor) {
-                        visited.insert(neighbor);
-                        frontier.push_back(neighbor);
-                        all_node_ids.push(neighbor);
+                // Build params: frontier IDs + user_id + optional type filters
+                let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+                for &id in &frontier_clone {
+                    params.push(Box::new(id));
+                }
+                params.push(Box::new(user_id));
+                if let Some(ref types) = type_filter_clone {
+                    for t in types {
+                        params.push(Box::new(t.clone()));
                     }
                 }
-            }
-        }
-    }
 
-    // Fetch node details for all collected IDs
-    let mut nodes = Vec::new();
-    for &id in &all_node_ids {
-        let result: Option<MemoryNodeRow> = db
-            .read(move |conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT id, content, category, importance, pagerank_score, \
-                                source, created_at, is_static, source_count, \
-                                decay_score, community_id \
-                         FROM memories WHERE id = ?1 AND user_id = ?2",
-                    )
-                    .map_err(rusqlite_to_eng_error)?;
+                let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                    params.iter().map(|p| p.as_ref()).collect();
 
-                let mut rows = stmt
-                    .query_map(rusqlite::params![id, user_id], |row| {
-                        Ok(MemoryNodeRow {
-                            id: row.get(0)?,
-                            content: row.get(1)?,
-                            category: row.get::<_, String>(2).unwrap_or_else(|_| "general".into()),
-                            importance: row.get(3)?,
-                            pagerank: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
-                            source: row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into()),
-                            created_at: row.get::<_, String>(6).unwrap_or_default(),
-                            is_static: row.get::<_, bool>(7).unwrap_or(false),
-                            source_count: row.get::<_, i64>(8).unwrap_or(1),
-                            decay_score: row.get::<_, f64>(9).ok(),
-                            community_id: row.get::<_, i64>(10).ok().map(|v| v as u32),
-                        })
+                let rows = stmt
+                    .query_map(param_refs.as_slice(), |row: &rusqlite::Row| {
+                        let source_id: i64 = row.get(0)?;
+                        let target_id: i64 = row.get(1)?;
+                        let similarity: f64 = row.get(2)?;
+                        let link_type_str: String = row
+                            .get::<_, Option<String>>(3)?
+                            .unwrap_or_else(|| "cite".to_string());
+                        Ok((source_id, target_id, similarity, link_type_str))
                     })
                     .map_err(rusqlite_to_eng_error)?;
 
-                match rows.next() {
-                    Some(row) => Ok(Some(row.map_err(rusqlite_to_eng_error)?)),
-                    None => Ok(None),
+                let mut result: Vec<(i64, i64, f64, String)> = Vec::new();
+                for row in rows {
+                    result.push(row.map_err(rusqlite_to_eng_error)?);
                 }
+                Ok(result)
             })
             .await?;
 
-        if let Some(r) = result {
-            let (
-                mem_id,
-                content,
-                category,
-                importance,
-                pagerank,
-                source,
-                created_at,
-                is_static,
-                source_count,
-                decay_score,
-                community_id,
-            ) = (
-                r.id,
-                r.content,
-                r.category,
-                r.importance,
-                r.pagerank,
-                r.source,
-                r.created_at,
-                r.is_static,
-                r.source_count,
-                r.decay_score,
-                r.community_id,
-            );
-            let label = if content.len() > 60 {
-                format!(
-                    "{}...",
-                    &content[..content
-                        .char_indices()
-                        .nth(60)
-                        .map_or(content.len(), |(i, _)| i)]
-                )
-            } else {
-                content.clone()
-            };
+        // Process edges and build next frontier
+        let mut next_frontier: Vec<i64> = Vec::new();
 
-            let size = importance as f32 * 1.5 + pagerank as f32 * 5.0;
-
-            nodes.push(GraphNode {
-                id: format!("m{}", mem_id),
-                label,
-                weight: size,
-                pagerank: Some(pagerank as f32),
-                community: community_id,
-                metadata: None,
-                node_type: "memory".into(),
-                category: category.clone(),
-                importance,
-                group: category,
-                size,
-                source,
-                created_at,
-                is_static,
-                content,
-                source_count,
-                community_id,
-                decay_score,
+        for (source_id, target_id, similarity, link_type_str) in edges {
+            all_edges.push(GraphEdge {
+                source: format!("m{}", source_id),
+                target: format!("m{}", target_id),
+                link_type: parse_link_type(&link_type_str),
+                weight: similarity as f32,
             });
+
+            for &neighbor in &[source_id, target_id] {
+                if !visited.contains(&neighbor) {
+                    visited.insert(neighbor);
+                    next_frontier.push(neighbor);
+                    all_node_ids.push(neighbor);
+                    hop_map.insert(neighbor, current_depth + 1);
+                }
+            }
         }
+
+        frontier = next_frontier;
     }
+
+    // Batch fetch node details for all collected IDs in one query
+    let nodes = batch_fetch_memory_nodes(db, &all_node_ids, user_id).await?;
 
     // Deduplicate edges
     let mut seen_edges: HashSet<(String, String, String)> = HashSet::new();
@@ -403,7 +369,121 @@ pub async fn neighborhood(
         seen_edges.insert(key)
     });
 
-    Ok((nodes, all_edges))
+    // Build string-keyed hop map for response
+    let string_hop_map: HashMap<String, u32> = hop_map
+        .into_iter()
+        .map(|(id, hop)| (format!("m{}", id), hop))
+        .collect();
+
+    Ok((nodes, all_edges, string_hop_map))
+}
+
+/// Batch fetch memory node details for a list of IDs in a single query.
+async fn batch_fetch_memory_nodes(
+    db: &Database,
+    ids: &[i64],
+    user_id: i64,
+) -> Result<Vec<GraphNode>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids_owned: Vec<i64> = ids.to_vec();
+    let rows: Vec<MemoryNodeRow> = db
+        .read(move |conn| {
+            let placeholders: String = ids_owned
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(",");
+
+            let sql = format!(
+                "SELECT id, content, category, importance, pagerank_score, \
+                        source, created_at, is_static, source_count, \
+                        decay_score, community_id \
+                 FROM memories WHERE id IN ({}) AND user_id = ?{}",
+                placeholders,
+                ids_owned.len() + 1
+            );
+
+            let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            for &id in &ids_owned {
+                params.push(Box::new(id));
+            }
+            params.push(Box::new(user_id));
+
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+
+            let mapped = stmt
+                .query_map(param_refs.as_slice(), |row: &rusqlite::Row| {
+                    Ok(MemoryNodeRow {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get::<_, String>(2).unwrap_or_else(|_| "general".into()),
+                        importance: row.get(3)?,
+                        pagerank: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+                        source: row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into()),
+                        created_at: row.get::<_, String>(6).unwrap_or_default(),
+                        is_static: row.get::<_, bool>(7).unwrap_or(false),
+                        source_count: row.get::<_, i64>(8).unwrap_or(1),
+                        decay_score: row.get::<_, f64>(9).ok(),
+                        community_id: row.get::<_, i64>(10).ok().map(|v| v as u32),
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?;
+
+            let mut result: Vec<MemoryNodeRow> = Vec::new();
+            for row in mapped {
+                result.push(row.map_err(rusqlite_to_eng_error)?);
+            }
+            Ok(result)
+        })
+        .await?;
+
+    let mut nodes = Vec::with_capacity(rows.len());
+    for r in rows {
+        let label = if r.content.len() > 60 {
+            format!(
+                "{}...",
+                &r.content[..r
+                    .content
+                    .char_indices()
+                    .nth(60)
+                    .map_or(r.content.len(), |(i, _)| i)]
+            )
+        } else {
+            r.content.clone()
+        };
+
+        let size = r.importance as f32 * 1.5 + r.pagerank as f32 * 5.0;
+
+        nodes.push(GraphNode {
+            id: format!("m{}", r.id),
+            label,
+            weight: size,
+            pagerank: Some(r.pagerank as f32),
+            community: r.community_id,
+            metadata: None,
+            node_type: "memory".into(),
+            category: r.category.clone(),
+            importance: r.importance,
+            group: r.category,
+            size,
+            source: r.source,
+            created_at: r.created_at,
+            is_static: r.is_static,
+            content: r.content,
+            source_count: r.source_count,
+            community_id: r.community_id,
+            decay_score: r.decay_score,
+        });
+    }
+
+    Ok(nodes)
 }
 
 fn parse_link_type(s: &str) -> LinkType {

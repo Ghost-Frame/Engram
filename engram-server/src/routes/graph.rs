@@ -14,7 +14,7 @@ use engram_lib::graph::{
         update_entity,
     },
     pagerank::update_pagerank_scores,
-    search::{graph_search, neighborhood},
+    search::{graph_search, neighborhood_filtered},
     types::{CreateEntityRequest, CreateRelationshipRequest, GraphBuildOptions},
 };
 use rusqlite::{params, OptionalExtension};
@@ -672,6 +672,9 @@ async fn graph_search_handler(
 #[derive(Debug, Deserialize)]
 struct NeighborhoodQuery {
     pub depth: Option<u32>,
+    /// Comma-separated link types to filter traversal (e.g. "similarity,cite").
+    /// If omitted, all link types are traversed.
+    pub link_types: Option<String>,
 }
 
 async fn neighborhood_handler(
@@ -685,8 +688,23 @@ async fn neighborhood_handler(
     // graph traversal.
     const MAX_NEIGHBORHOOD_DEPTH: u32 = 5;
     let depth = params.depth.unwrap_or(2).clamp(1, MAX_NEIGHBORHOOD_DEPTH);
-    let (nodes, edges) = neighborhood(&state.db, &id, depth, auth.user_id).await?;
-    Ok(Json(json!({ "nodes": nodes, "edges": edges })))
+
+    let link_types: Option<Vec<String>> = params.link_types.map(|lt| {
+        lt.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    });
+
+    let (nodes, edges, hops) = neighborhood_filtered(
+        &state.db,
+        &id,
+        depth,
+        auth.user_id,
+        link_types.as_deref(),
+    )
+    .await?;
+    Ok(Json(json!({ "nodes": nodes, "edges": edges, "hops": hops })))
 }
 
 // ---------------------------------------------------------------------------
