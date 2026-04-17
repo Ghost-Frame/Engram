@@ -226,6 +226,7 @@ pub async fn create_conversation(
     get_conversation_for_user(db, new_id, user_id).await
 }
 
+#[tracing::instrument(skip(db), fields(conversation_id = id, user_id))]
 pub async fn get_conversation_for_user(
     db: &Database,
     id: i64,
@@ -244,6 +245,7 @@ pub async fn get_conversation_for_user(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent = %agent, session_id = %session_id, user_id))]
 pub async fn get_conversation_by_session(
     db: &Database,
     agent: &str,
@@ -266,6 +268,7 @@ pub async fn get_conversation_by_session(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id, limit))]
 pub async fn list_conversations(
     db: &Database,
     user_id: i64,
@@ -293,6 +296,7 @@ pub async fn list_conversations(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id, agent = %agent, limit))]
 pub async fn list_conversations_by_agent(
     db: &Database,
     user_id: i64,
@@ -322,6 +326,7 @@ pub async fn list_conversations_by_agent(
     .await
 }
 
+#[tracing::instrument(skip(db, req), fields(conversation_id = id, user_id))]
 pub async fn update_conversation(
     db: &Database,
     id: i64,
@@ -343,6 +348,7 @@ pub async fn update_conversation(
     get_conversation_for_user(db, id, user_id).await
 }
 
+#[tracing::instrument(skip(db), fields(conversation_id = id, user_id))]
 pub async fn delete_conversation(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
@@ -359,6 +365,7 @@ pub async fn delete_conversation(db: &Database, id: i64, user_id: i64) -> Result
     Ok(())
 }
 
+#[tracing::instrument(skip(db), fields(conversation_id = id, user_id))]
 pub async fn touch_conversation(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -375,6 +382,7 @@ pub async fn touch_conversation(db: &Database, id: i64, user_id: i64) -> Result<
 // Message operations
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db, credd, req), fields(conversation_id, user_id, role = %req.role))]
 pub async fn add_message(
     db: &Database,
     credd: &crate::cred::CreddClient,
@@ -421,6 +429,7 @@ pub async fn add_message(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(conversation_id, user_id, limit, offset))]
 pub async fn list_messages(
     db: &Database,
     conversation_id: i64,
@@ -460,6 +469,7 @@ pub async fn list_messages(
     .await
 }
 
+#[tracing::instrument(skip(db, req), fields(user_id, limit = ?req.limit))]
 pub async fn search_messages(
     db: &Database,
     req: SearchMessagesRequest,
@@ -508,6 +518,7 @@ pub async fn search_messages(
 // Bulk and Upsert
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db, credd, req), fields(agent = %req.agent, message_count = req.messages.len(), user_id))]
 pub async fn bulk_insert_conversation(
     db: &Database,
     credd: &crate::cred::CreddClient,
@@ -547,6 +558,7 @@ pub async fn bulk_insert_conversation(
     get_conversation_for_user(db, conv_id, user_id).await
 }
 
+#[tracing::instrument(skip(db, credd, req), fields(agent = %req.agent, session_id = %req.session_id, user_id))]
 pub async fn upsert_conversation(
     db: &Database,
     credd: &crate::cred::CreddClient,
