@@ -204,6 +204,7 @@ impl Default for RateLimiter {
 ///
 /// Uses a fixed-window strategy: counts requests recorded in [window_start, now).
 /// Returns true if the request is allowed, false if the limit is exceeded.
+#[tracing::instrument(skip(db), fields(key = %key, max_requests, window_seconds))]
 pub async fn check_rate_limit(
     db: &Database,
     key: &str,
@@ -250,6 +251,7 @@ pub async fn check_rate_limit(
 /// Increment the request counter for a key.
 ///
 /// Creates the row if it does not exist. Resets the window when expired.
+#[tracing::instrument(skip(db), fields(key = %key))]
 pub async fn increment_counter(db: &Database, key: &str) -> Result<()> {
     let key_owned = key.to_string();
 
@@ -277,6 +279,7 @@ pub async fn increment_counter(db: &Database, key: &str) -> Result<()> {
 /// the limit. This collapses the check and the increment into one SQL
 /// statement so the atomicity of a single UPDATE under SQLite's writer lock
 /// provides the needed serialization.
+#[tracing::instrument(skip(db), fields(key = %key, max_requests, window_seconds))]
 pub async fn check_and_increment(
     db: &Database,
     key: &str,
@@ -315,6 +318,7 @@ pub async fn check_and_increment(
 /// Like `check_and_increment` but increments by `cost` instead of 1.
 /// Used for per-endpoint weighted rate limiting where expensive operations
 /// consume more tokens from the user's budget.
+#[tracing::instrument(skip(db), fields(key = %key, max_requests, window_seconds, cost))]
 pub async fn check_and_increment_by(
     db: &Database,
     key: &str,

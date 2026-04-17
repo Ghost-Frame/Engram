@@ -79,6 +79,7 @@ fn row_to_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<CurrentState> {
 // -- Structured facts CRUD ---
 
 /// Create a new structured fact.
+#[tracing::instrument(skip(db, req), fields(user_id = ?req.user_id, subject = %req.subject, predicate = %req.predicate, memory_id = ?req.memory_id))]
 pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<StructuredFact> {
     let user_id = req
         .user_id
@@ -142,6 +143,7 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
 }
 
 /// List structured facts for a user, optionally filtered by memory_id.
+#[tracing::instrument(skip(db), fields(user_id, memory_id_filter = ?memory_id_filter, limit))]
 pub async fn list_facts(
     db: &Database,
     user_id: i64,
@@ -182,6 +184,7 @@ pub async fn list_facts(
 }
 
 /// Hard-delete a structured fact by id (tenant-scoped).
+#[tracing::instrument(skip(db), fields(fact_id = id, user_id))]
 pub async fn delete_fact(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
@@ -205,6 +208,7 @@ pub async fn delete_fact(db: &Database, id: i64, user_id: i64) -> Result<()> {
 // -- Current state (per-agent key-value) ---
 
 /// Upsert a state entry for the given agent/key/user combination.
+#[tracing::instrument(skip(db, value), fields(agent = %agent, key = %key, user_id))]
 pub async fn set_state(
     db: &Database,
     agent: &str,
@@ -235,6 +239,7 @@ pub async fn set_state(
 }
 
 /// Fetch a single state entry for the given agent/key/user.
+#[tracing::instrument(skip(db), fields(agent = %agent, key = %key, user_id))]
 pub async fn get_state(
     db: &Database,
     agent: &str,
@@ -257,6 +262,7 @@ pub async fn get_state(
 }
 
 /// List all state entries for the given agent and user.
+#[tracing::instrument(skip(db), fields(agent = %agent, user_id))]
 pub async fn list_state(db: &Database, agent: &str, user_id: i64) -> Result<Vec<CurrentState>> {
     let agent = agent.to_string();
     let sql = format!(
