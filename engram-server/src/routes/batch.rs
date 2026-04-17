@@ -9,6 +9,8 @@ use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
+use engram_lib::validation::MAX_BATCH_OPS;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -66,8 +68,6 @@ pub struct BatchResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
-
-const MAX_BATCH_OPS: usize = 100;
 
 // ---------------------------------------------------------------------------
 // Router

@@ -19,7 +19,7 @@ use types::{
 
 // -- Constants ---
 
-const MAX_CONTENT_SIZE: usize = 102400; // 100KB
+use crate::validation::MAX_CONTENT_SIZE;
 
 // -- Helpers ---
 

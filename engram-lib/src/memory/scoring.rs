@@ -2,7 +2,7 @@ use crate::memory::types::{QuestionType, SearchStrategy};
 use chrono::Utc;
 use std::collections::HashMap;
 
-pub const RERANKER_TOP_K: usize = 12;
+pub use crate::validation::RERANKER_TOP_K;
 pub const AUTO_LINK_THRESHOLD: f64 = 0.55;
 pub const AUTO_LINK_MAX: usize = 6;
 pub const SEARCH_FACT_VECTOR_FLOOR: f64 = 0.22;

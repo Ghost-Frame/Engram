@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 pub const VALID_FEEDBACK_SIGNALS: &[&str] =
     &["used", "ignored", "corrected", "irrelevant", "helpful"];
 pub const DEFAULT_IMPORTANCE: i32 = 5;
-pub const MAX_CONTENT_SIZE: usize = 102_400;
+pub use crate::validation::MAX_CONTENT_SIZE;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -149,9 +149,13 @@ pub fn build_router(state: AppState) -> Router {
     // GUI routes handle their own cookie-based auth
     let gui_routes = routes::gui::router();
 
+    // Metrics endpoint is unauthenticated (for Prometheus scraping)
+    let metrics_routes = crate::middleware::metrics::router();
+
     Router::new()
         .merge(api_routes)
         .merge(gui_routes)
+        .merge(metrics_routes)
         // GUI SPA middleware intercepts HTML requests to SPA routes before API handlers
         .layer(axum_mw::from_fn_with_state(
             state.clone(),
@@ -190,6 +194,9 @@ pub fn build_router(state: AppState) -> Router {
         ))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
+        .layer(axum_mw::from_fn(
+            crate::middleware::metrics::metrics_middleware,
+        ))
         .with_state(state)
 }
 
