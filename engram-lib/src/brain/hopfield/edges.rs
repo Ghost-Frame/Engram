@@ -65,6 +65,7 @@ pub struct BrainEdge {
 
 /// Insert a new edge. If the (source, target, type) triple already exists,
 /// update the weight to the max of old and new.
+#[tracing::instrument(skip(db), fields(source_id, target_id, weight, edge_type = ?edge_type, user_id))]
 pub async fn store_edge(
     db: &Database,
     source_id: i64,
@@ -89,6 +90,7 @@ pub async fn store_edge(
 }
 
 /// Get all edges originating from a given pattern.
+#[tracing::instrument(skip(db), fields(source_id, user_id))]
 pub async fn get_edges_from(db: &Database, source_id: i64, user_id: i64) -> Result<Vec<BrainEdge>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -112,6 +114,7 @@ pub async fn get_edges_from(db: &Database, source_id: i64, user_id: i64) -> Resu
 }
 
 /// Get all edges connected to a pattern (either direction).
+#[tracing::instrument(skip(db), fields(pattern_id, user_id))]
 pub async fn get_edges_for(db: &Database, pattern_id: i64, user_id: i64) -> Result<Vec<BrainEdge>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -137,6 +140,7 @@ pub async fn get_edges_for(db: &Database, pattern_id: i64, user_id: i64) -> Resu
 
 /// Strengthen an edge by adding a Hebbian boost. The weight is clamped
 /// to [0, 1].
+#[tracing::instrument(skip(db), fields(source_id, target_id, edge_type = ?edge_type, boost, user_id))]
 pub async fn strengthen_edge(
     db: &Database,
     source_id: i64,
@@ -170,6 +174,7 @@ pub async fn strengthen_edge(
 
 /// Decay all edge weights for a user by multiplying with the given rate.
 /// Returns the number of affected edges.
+#[tracing::instrument(skip(db), fields(user_id, rate))]
 pub async fn decay_edges(db: &Database, user_id: i64, rate: f32) -> Result<usize> {
     db.write(move |conn| {
         let n = conn
@@ -185,6 +190,7 @@ pub async fn decay_edges(db: &Database, user_id: i64, rate: f32) -> Result<usize
 
 /// Remove edges whose weight has fallen below the threshold.
 /// Returns the number of pruned edges.
+#[tracing::instrument(skip(db), fields(user_id, threshold))]
 pub async fn prune_edges(db: &Database, user_id: i64, threshold: f32) -> Result<usize> {
     db.write(move |conn| {
         let n = conn
@@ -199,6 +205,7 @@ pub async fn prune_edges(db: &Database, user_id: i64, threshold: f32) -> Result<
 }
 
 /// Count edges for a user.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn count_edges(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
         let count: i64 = conn
@@ -215,6 +222,7 @@ pub async fn count_edges(db: &Database, user_id: i64) -> Result<i64> {
 
 /// Delete a specific edge.
 #[allow(dead_code)]
+#[tracing::instrument(skip(db), fields(source_id, target_id, edge_type = ?edge_type, user_id))]
 pub async fn delete_edge(
     db: &Database,
     source_id: i64,

@@ -46,6 +46,7 @@ pub fn blob_to_pattern(blob: &[u8]) -> Vec<f32> {
 
 /// Insert or replace a pattern row. Uses INSERT OR REPLACE so calling
 /// with an existing id updates in place.
+#[tracing::instrument(skip(db, pattern), fields(pattern_id = pattern.id, user_id = pattern.user_id, strength = pattern.strength, importance = pattern.importance))]
 pub async fn store_pattern(db: &Database, pattern: &BrainPattern) -> Result<()> {
     let blob = pattern_to_blob(&pattern.pattern);
     let id = pattern.id;
@@ -80,6 +81,7 @@ pub async fn store_pattern(db: &Database, pattern: &BrainPattern) -> Result<()> 
 }
 
 /// Load a single pattern by id and user_id.
+#[tracing::instrument(skip(db), fields(pattern_id = id, user_id))]
 pub async fn get_pattern(db: &Database, id: i64, user_id: i64) -> Result<BrainPattern> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -106,6 +108,7 @@ pub async fn get_pattern(db: &Database, id: i64, user_id: i64) -> Result<BrainPa
 
 /// Load all patterns for a user. Used to populate the in-memory network
 /// at startup.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn list_patterns(db: &Database, user_id: i64) -> Result<Vec<BrainPattern>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -129,6 +132,7 @@ pub async fn list_patterns(db: &Database, user_id: i64) -> Result<Vec<BrainPatte
 }
 
 /// Update the strength (decay_factor) of a pattern.
+#[tracing::instrument(skip(db), fields(pattern_id = id, user_id, strength))]
 pub async fn update_strength(db: &Database, id: i64, user_id: i64, strength: f32) -> Result<()> {
     db.write(move |conn| {
         let affected = conn
@@ -147,6 +151,7 @@ pub async fn update_strength(db: &Database, id: i64, user_id: i64, strength: f32
 }
 
 /// Increment access_count and set last_activated_at to now.
+#[tracing::instrument(skip(db), fields(pattern_id = id, user_id))]
 pub async fn touch_pattern(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
