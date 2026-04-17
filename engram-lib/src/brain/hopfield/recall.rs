@@ -98,6 +98,7 @@ pub struct DecayStats {
 // ---------------------------------------------------------------------------
 
 /// Store a new pattern in both the in-memory network and the database.
+#[tracing::instrument(skip(db, network, embedding), fields(pattern_id = id, user_id, importance, strength, embedding_len = embedding.len()))]
 pub async fn store_pattern(
     db: &Database,
     network: &mut HopfieldNetwork,
@@ -137,6 +138,7 @@ pub async fn store_pattern(
 /// category fields needed for causal keyword matching, and `created_at`
 /// for the temporal window check.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip(db, network, embedding, content), fields(pattern_id = id, user_id, importance, strength, embedding_len = embedding.len(), content_len = content.len(), created_at = %created_at))]
 pub async fn store_pattern_with_causal_edges(
     db: &Database,
     network: &mut HopfieldNetwork,
@@ -389,6 +391,7 @@ fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
 /// modern Hopfield softmax attention to find the best-matching stored
 /// patterns, then optionally runs iterative completion to refine the
 /// query into a full pattern.
+#[tracing::instrument(skip(db, network, query_embedding), fields(user_id, top_k, beta, embedding_len = query_embedding.len()))]
 pub async fn recall_pattern(
     db: &Database,
     network: &HopfieldNetwork,
@@ -419,6 +422,7 @@ pub async fn recall_pattern(
 /// Formula: new = old + RECALL_BOOST * (1 - old)
 /// This rapidly rescues fading patterns: 0.1 -> 0.37, 0.5 -> 0.65,
 /// 0.9 -> 0.93.
+#[tracing::instrument(skip(db, network), fields(pattern_id = id, user_id))]
 pub async fn reinforce(
     db: &Database,
     network: &mut HopfieldNetwork,
@@ -446,6 +450,7 @@ pub async fn reinforce(
 /// Dead patterns (strength < DEATH_THRESHOLD) are removed.
 ///
 /// Returns statistics about what was decayed and removed.
+#[tracing::instrument(skip(db, network), fields(user_id, ticks))]
 pub async fn decay_tick(
     db: &Database,
     network: &mut HopfieldNetwork,
@@ -508,6 +513,7 @@ pub async fn decay_tick(
 
 /// Prune patterns whose strength has fallen below a threshold.
 /// Returns the count of removed patterns.
+#[tracing::instrument(skip(db, network), fields(user_id, threshold))]
 pub async fn prune_weak(
     db: &Database,
     network: &mut HopfieldNetwork,
@@ -538,6 +544,7 @@ pub async fn prune_weak(
 /// removed from both the network and the database.
 ///
 /// Returns (winner_id, loser_id) pairs that were merged.
+#[tracing::instrument(skip(db, network), fields(user_id, threshold))]
 pub async fn merge_similar(
     db: &Database,
     network: &mut HopfieldNetwork,
