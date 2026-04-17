@@ -24,6 +24,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 
 /// Search graph nodes by name/content pattern.
 /// Returns nodes whose content matches the query (LIKE search).
+#[tracing::instrument(skip(db, query), fields(query_len = query.len()))]
 pub async fn graph_search(
     db: &Database,
     query: &str,
@@ -201,6 +202,7 @@ pub async fn graph_search(
 /// Optional `link_types` filter restricts traversal to specific edge types.
 /// Returns the subgraph of visited nodes and traversed edges, plus
 /// a per-node hop distance map in the response.
+#[tracing::instrument(skip(db, node_id))]
 pub async fn neighborhood(
     db: &Database,
     node_id: &str,
@@ -212,6 +214,8 @@ pub async fn neighborhood(
 }
 
 /// BFS neighborhood with optional link_type filter.
+#[allow(clippy::type_complexity)]
+#[tracing::instrument(skip(db, node_id, link_types))]
 pub async fn neighborhood_filtered(
     db: &Database,
     node_id: &str,

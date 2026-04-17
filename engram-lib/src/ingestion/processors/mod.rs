@@ -9,6 +9,7 @@ use crate::db::Database;
 use crate::ingestion::types::{Chunk, IngestMode, ProcessOptions, ProcessResult};
 
 /// Process chunks using the specified mode.
+#[tracing::instrument(skip(db, chunks, options), fields(chunk_count = chunks.len()))]
 pub async fn process_chunks(
     db: &Database,
     mode: IngestMode,

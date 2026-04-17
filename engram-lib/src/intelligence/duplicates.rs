@@ -27,6 +27,7 @@ pub struct DeduplicateResult {
 }
 
 /// Find duplicate memory pairs based on similarity links.
+#[tracing::instrument(skip(db))]
 pub async fn find_duplicates(
     db: &Database,
     user_id: i64,
@@ -74,6 +75,7 @@ pub async fn find_duplicates(
 
 /// Deduplicate memories by marking lower-importance duplicates as superseded.
 /// If `dry_run` is true, returns stats without modifying data.
+#[tracing::instrument(skip(db))]
 pub async fn deduplicate(
     db: &Database,
     user_id: i64,

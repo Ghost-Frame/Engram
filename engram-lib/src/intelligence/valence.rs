@@ -235,6 +235,7 @@ pub async fn query_by_emotion(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_emotional_profile(db: &Database, user_id: i64) -> Result<EmotionalProfile> {
     let emotions = db
         .read(move |conn| {

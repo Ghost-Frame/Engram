@@ -43,6 +43,7 @@ pub async fn store_pattern(_db: &Database, _pattern: &TemporalPattern) -> Result
 
 /// Set valid_at on a newly inserted structured_fact (tenant-scoped).
 /// Priority: date_approx > date_ref resolved > created_at of memory
+#[tracing::instrument(skip(db, memory_created_at))]
 pub async fn set_fact_validity(
     db: &Database,
     fact_id: i64,
@@ -259,6 +260,7 @@ const STATE_VERBS: &[&str] = &[
 /// Two facts contradict when: same subject + same verb + different object (for state verbs),
 /// or same subject + verb + different quantity.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip(db, subject, verb, object))]
 pub async fn detect_fact_contradictions(
     db: &Database,
     new_fact_id: i64,
@@ -358,6 +360,7 @@ pub async fn detect_fact_contradictions(
 }
 
 /// Invalidate old facts that have been contradicted by a newer fact (tenant-scoped).
+#[tracing::instrument(skip(db, contradictions))]
 pub async fn invalidate_contradicted_facts(
     db: &Database,
     contradictions: &[FactContradiction],
@@ -410,6 +413,7 @@ pub async fn invalidate_contradicted_facts(
 /// Post-process newly inserted facts for a memory:
 /// 1. Set valid_at based on date info
 /// 2. Detect and invalidate contradictions
+#[tracing::instrument(skip(db))]
 pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64) -> Result<()> {
     // Get the memory created_at for date resolution (tenant-scoped)
     let created_at = db
@@ -493,6 +497,7 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
 /// Backfill valid_at for existing facts that do not have it yet.
 /// SECURITY: user_id is required so writes stay tenant-scoped. Admin-level
 /// backfill should iterate users rather than passing a wildcard.
+#[tracing::instrument(skip(db))]
 pub async fn backfill_fact_validity(db: &Database, user_id: i64) -> Result<i32> {
     let pending = db
         .read(move |conn| {
@@ -573,6 +578,7 @@ pub struct TimeTravelResult {
 
 /// Retrieve memories as they existed at or before a given timestamp.
 /// Optionally filter by content substring.
+#[tracing::instrument(skip(db, query, timestamp))]
 pub async fn time_travel(
     db: &Database,
     user_id: i64,

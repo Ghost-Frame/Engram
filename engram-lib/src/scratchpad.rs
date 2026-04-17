@@ -39,6 +39,7 @@ pub struct ScratchKV {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip(db, session, agent, model, key, value))]
 pub async fn upsert_entry(
     db: &Database,
     user_id: i64,
@@ -66,6 +67,7 @@ pub async fn upsert_entry(
     .await
 }
 
+#[tracing::instrument(skip(db, agent, model, session))]
 pub async fn list_entries(
     db: &Database,
     user_id: i64,
@@ -97,6 +99,7 @@ pub async fn list_entries(
     .await
 }
 
+#[tracing::instrument(skip(db, session))]
 pub async fn get_session_entries(
     db: &Database,
     user_id: i64,
@@ -121,6 +124,7 @@ pub async fn get_session_entries(
     .await
 }
 
+#[tracing::instrument(skip(db, session))]
 pub async fn delete_session(db: &Database, user_id: i64, session: &str) -> Result<()> {
     let session = session.to_string();
     db.write(move |conn| {
@@ -134,6 +138,7 @@ pub async fn delete_session(db: &Database, user_id: i64, session: &str) -> Resul
     .await
 }
 
+#[tracing::instrument(skip(db, session, key))]
 pub async fn delete_session_key(
     db: &Database,
     user_id: i64,
@@ -153,6 +158,7 @@ pub async fn delete_session_key(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn purge_expired(db: &Database) -> Result<i64> {
     db.write(move |conn| {
         let changes = conn
@@ -168,6 +174,7 @@ pub async fn purge_expired(db: &Database) -> Result<i64> {
 
 /// Promote session entries to permanent memories.
 /// Returns list of created memory IDs.
+#[tracing::instrument(skip(db, session, keys, category))]
 pub async fn promote_entries(
     db: &Database,
     user_id: i64,

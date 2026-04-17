@@ -13,6 +13,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 /// For each window of `window_size` memories, extract entity mentions and
 /// create edges between entities that appear in the same window. Weight by
 /// co-occurrence frequency.
+#[tracing::instrument(skip(db))]
 pub async fn build_cooccurrence_edges(
     db: &Database,
     window_size: usize,
@@ -126,6 +127,7 @@ pub async fn build_cooccurrence_edges(
 /// Record a pairwise co-occurrence between two entities.
 /// The pair is stored in canonical order (smaller id first) so that
 /// (A, B) and (B, A) map to the same row.
+#[tracing::instrument(skip(db))]
 pub async fn record_cooccurrence(
     db: &Database,
     entity_a: i64,
@@ -156,6 +158,7 @@ pub async fn record_cooccurrence(
 
 /// Full rebuild of co-occurrence table for a user.
 /// Clears existing co-occurrences and recomputes from all memory-entity links.
+#[tracing::instrument(skip(db))]
 pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
     // Clear existing co-occurrences for entities owned by this user
     db.write(move |conn| {
@@ -224,6 +227,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
 }
 
 /// Get entities that co-occur with the given entity.
+#[tracing::instrument(skip(db))]
 pub async fn get_cooccurring_entities(
     db: &Database,
     entity_id: i64,

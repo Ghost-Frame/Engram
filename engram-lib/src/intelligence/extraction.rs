@@ -114,6 +114,7 @@ struct StateUpsert {
 }
 
 /// Extract structured facts, preferences, and state updates from memory content.
+#[tracing::instrument(skip(db, content), fields(content_len = content.len()))]
 pub async fn fast_extract_facts(
     db: &Database,
     content: &str,

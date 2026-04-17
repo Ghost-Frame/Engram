@@ -290,6 +290,7 @@ pub struct SweepResult {
 
 /// Run an automatic consolidation sweep: find candidate groups above the
 /// given similarity threshold and consolidate each group.
+#[tracing::instrument(skip(db))]
 pub async fn sweep(db: &Database, user_id: i64, threshold: f64) -> Result<SweepResult> {
     let groups = find_consolidation_candidates(db, threshold as f32, user_id).await?;
     let pairs_found = groups.len() as i64;

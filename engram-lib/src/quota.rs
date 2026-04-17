@@ -59,6 +59,7 @@ pub struct QuotaStatus {
 // Admin CRUD -- tenant_quotas table
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn get_quota(db: &Database, user_id: i64) -> Result<Option<TenantQuota>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -89,6 +90,7 @@ pub async fn get_quota(db: &Database, user_id: i64) -> Result<Option<TenantQuota
     .await
 }
 
+#[tracing::instrument(skip(db, quota), fields(user_id = quota.user_id))]
 pub async fn upsert_quota(db: &Database, quota: &TenantQuota) -> Result<()> {
     let user_id = quota.user_id;
     let max_memories = quota.max_memories;
@@ -127,6 +129,7 @@ pub async fn upsert_quota(db: &Database, quota: &TenantQuota) -> Result<()> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_quotas(db: &Database) -> Result<Vec<(TenantQuota, String)>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -169,6 +172,7 @@ pub async fn list_quotas(db: &Database) -> Result<Vec<(TenantQuota, String)>> {
 ///
 /// If no quota row exists for the user, a default quota is synthesised
 /// (100 000 memories, 10 spaces) without writing to the DB.
+#[tracing::instrument(skip(db))]
 pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
     db.read(move |conn| {
         // Fetch quota limits (or use defaults).
@@ -231,6 +235,7 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
 /// with a `quota_exceeded` marker when the tenant is already at or above
 /// their limit, so callers can surface a 429/403 without leaking the
 /// underlying numbers.
+#[tracing::instrument(skip(db))]
 pub async fn enforce_memory_quota(db: &Database, user_id: i64) -> Result<()> {
     let status = check_quota(db, user_id).await?;
     if !status.within_limits || status.memory_count >= status.memory_limit {
@@ -243,6 +248,7 @@ pub async fn enforce_memory_quota(db: &Database, user_id: i64) -> Result<()> {
 }
 
 /// Record a usage event in the usage_events table.
+#[tracing::instrument(skip(db, event_type))]
 pub async fn record_usage(
     db: &Database,
     user_id: i64,

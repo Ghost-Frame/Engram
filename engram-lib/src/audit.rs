@@ -40,6 +40,7 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEntry> {
 ///
 /// Maps legacy "operation/resource" terminology onto the DB schema columns.
 /// The `before`/`after` snapshots and `actor` are merged into the `details` JSON field.
+#[tracing::instrument(skip(db, before, after), fields(operation = %operation, resource_type = %resource_type, resource_id = %resource_id))]
 pub async fn log_mutation(
     db: &Database,
     operation: &str,
@@ -93,6 +94,7 @@ pub async fn log_mutation(
 ///
 /// Fire-and-forget compatible -- errors are discarded by the caller.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip(db, details), fields(action = %action))]
 pub async fn log_request(
     db: &Database,
     user_id: Option<i64>,
@@ -127,6 +129,7 @@ pub async fn log_request(
 /// SECURITY: the `user_id` argument is ALWAYS applied as a WHERE clause so a
 /// non-admin caller can only see their own entries. Admin-wide access lives in
 /// `query_audit_log_admin`.
+#[tracing::instrument(skip(db))]
 pub async fn query_audit_log(
     db: &Database,
     resource_type: Option<&str>,
@@ -191,6 +194,7 @@ pub async fn query_audit_log(
 ///
 /// SECURITY: the `user_id` argument is ALWAYS applied as a WHERE clause so a
 /// non-admin caller can only see their own entries.
+#[tracing::instrument(skip(db))]
 pub async fn list_audit_entries(
     db: &Database,
     user_id: i64,
@@ -220,6 +224,7 @@ pub async fn list_audit_entries(
 }
 
 /// Count audit log entries for a specific user.
+#[tracing::instrument(skip(db))]
 pub async fn count_audit_entries(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
         conn.query_row(
@@ -234,6 +239,7 @@ pub async fn count_audit_entries(db: &Database, user_id: i64) -> Result<i64> {
 
 /// Admin-wide audit query (no user_id filter). Callers MUST verify that the
 /// requester carries `Scope::Admin` before invoking this function.
+#[tracing::instrument(skip(db))]
 pub async fn query_audit_log_admin(
     db: &Database,
     resource_type: Option<&str>,

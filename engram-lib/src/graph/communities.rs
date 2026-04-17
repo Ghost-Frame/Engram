@@ -44,6 +44,7 @@ pub struct CommunityStats {
     pub categories: String,
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn detect_communities(
     db: &Database,
     user_id: i64,
@@ -279,6 +280,7 @@ pub async fn detect_communities(
     })
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_community_members(
     db: &Database,
     community_id: i64,
@@ -314,6 +316,7 @@ pub async fn get_community_members(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_community_stats(db: &Database, user_id: i64) -> Result<Vec<CommunityStats>> {
     db.read(move |conn| {
         let mut stmt = conn

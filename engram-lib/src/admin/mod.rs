@@ -28,6 +28,7 @@ fn scopes_for_role(role: &str) -> Vec<crate::auth::Scope> {
 // Compact (VACUUM + ANALYZE)
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn compact(db: &Database) -> Result<CompactResult> {
     let size_before: i64 = db
         .read(|conn| {
@@ -68,6 +69,7 @@ pub async fn compact(db: &Database) -> Result<CompactResult> {
 // GC -- garbage collection of forgotten/expired data
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
     let forgotten: i64 = db
         .write(move |conn| {
@@ -137,6 +139,7 @@ pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
 // Schema inspection
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn get_schema(db: &Database) -> Result<SchemaResult> {
     let tables: Vec<SchemaTable> = db
         .read(|conn| {
@@ -180,6 +183,7 @@ pub async fn get_schema(db: &Database) -> Result<SchemaResult> {
 // Maintenance mode
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn get_maintenance(db: &Database) -> Result<MaintenanceStatus> {
     let row_opt: Option<(String, String)> = db
         .read(|conn| {
@@ -231,6 +235,7 @@ pub async fn get_maintenance(db: &Database) -> Result<MaintenanceStatus> {
     }
 }
 
+#[tracing::instrument(skip(db, message))]
 pub async fn set_maintenance(
     db: &Database,
     enabled: bool,
@@ -248,6 +253,7 @@ pub async fn set_maintenance(
 // SLA
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn get_sla(db: &Database) -> Result<SlaResult> {
     let targets = SlaTargets::default();
 
@@ -288,6 +294,7 @@ pub async fn get_sla(db: &Database) -> Result<SlaResult> {
 // Usage / Tenants
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn get_usage(db: &Database) -> Result<Vec<UsageRow>> {
     db.read(|conn| {
         let mut stmt = conn.prepare(
@@ -317,6 +324,7 @@ pub async fn get_usage(db: &Database) -> Result<Vec<UsageRow>> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_tenants(db: &Database) -> Result<Vec<TenantRow>> {
     db.read(|conn| {
         let mut stmt = conn.prepare(
@@ -350,6 +358,7 @@ pub async fn get_tenants(db: &Database) -> Result<Vec<TenantRow>> {
 // Provision / Deprovision
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db, username, email, role), fields(username = %username, role = %role))]
 pub async fn provision_tenant(
     db: &Database,
     username: &str,
@@ -398,6 +407,7 @@ pub async fn provision_tenant(
     })
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
     db.write(move |conn| {
         // Revoke all keys
@@ -428,6 +438,7 @@ pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
 // Checkpoint / Backup
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn checkpoint(db: &Database) -> Result<serde_json::Value> {
     db.write(|conn| {
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -437,6 +448,7 @@ pub async fn checkpoint(db: &Database) -> Result<serde_json::Value> {
     Ok(serde_json::json!({"status": "ok", "mode": "truncate"}))
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn verify_backup(db: &Database) -> Result<BackupVerifyResult> {
     let integrity: String = db
         .read(|conn| {
@@ -453,6 +465,7 @@ pub async fn verify_backup(db: &Database) -> Result<BackupVerifyResult> {
 // State key-value store
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db), fields(key = %key))]
 pub async fn get_state(db: &Database, key: &str) -> Result<Option<StateRow>> {
     let key_owned = key.to_string();
     db.read(move |conn| {
@@ -475,6 +488,7 @@ pub async fn get_state(db: &Database, key: &str) -> Result<Option<StateRow>> {
     .await
 }
 
+#[tracing::instrument(skip(db, value), fields(key = %key, value_len = value.len()))]
 pub async fn upsert_state(db: &Database, key: &str, value: &str) -> Result<()> {
     let key_owned = key.to_string();
     let value_owned = value.to_string();
@@ -490,6 +504,7 @@ pub async fn upsert_state(db: &Database, key: &str, value: &str) -> Result<()> {
     .await
 }
 
+#[tracing::instrument(skip(db), fields(key = %key))]
 pub async fn delete_state(db: &Database, key: &str) -> Result<bool> {
     let key_owned = key.to_string();
     db.write(move |conn| {
@@ -501,6 +516,7 @@ pub async fn delete_state(db: &Database, key: &str) -> Result<bool> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_state(db: &Database) -> Result<Vec<StateRow>> {
     db.read(|conn| {
         let mut stmt = conn
@@ -526,6 +542,7 @@ pub async fn list_state(db: &Database) -> Result<Vec<StateRow>> {
 // Export
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport> {
     let memories = export_table_user(
         db,
@@ -624,6 +641,7 @@ async fn export_table_user(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn export_data(db: &Database) -> Result<ExportData> {
     let users = export_table(db, "SELECT * FROM users").await?;
     let memories = export_table(db, "SELECT id, content, category, source, importance, user_id, space_id, created_at FROM memories WHERE is_forgotten = 0").await?;
@@ -671,6 +689,7 @@ async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>
 /// `embedding_vec_1024` column are cleared; clearing only the legacy
 /// column would leave the live index serving stale vectors and is the
 /// bug pre-round-5 callers hit when swapping models.
+#[tracing::instrument(skip(db))]
 pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
     db.write(move |conn| {
         let n = if let Some(uid) = user_id {
@@ -697,6 +716,8 @@ pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
 // Backfill: fetch memories without structured facts
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::type_complexity)]
+#[tracing::instrument(skip(db))]
 pub async fn get_memories_without_facts(
     db: &Database,
     limit: i64,
@@ -726,6 +747,7 @@ pub async fn get_memories_without_facts(
 // Rebuild FTS index
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn rebuild_fts(db: &Database) -> Result<i64> {
     db.write(|conn| {
         conn.execute(
@@ -748,6 +770,7 @@ pub async fn rebuild_fts(db: &Database) -> Result<i64> {
 // Scale report
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn scale_report(db: &Database) -> Result<serde_json::Value> {
     let tables = &[
         "memories",
@@ -803,6 +826,7 @@ pub async fn scale_report(db: &Database) -> Result<serde_json::Value> {
 // Cold storage stats
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn cold_storage_stats(db: &Database, days: i64) -> Result<serde_json::Value> {
     let threshold = format!("-{} days", days);
     let eligible: i64 = db
@@ -830,6 +854,7 @@ const CRASH_THRESHOLD: usize = 3;
 
 /// Record the current timestamp as a crash/restart event.
 /// Prunes timestamps older than the 5-minute window before saving.
+#[tracing::instrument(skip(db))]
 pub async fn record_crash(db: &Database) -> Result<()> {
     let now = Utc::now();
     let cutoff = now - chrono::Duration::seconds(CRASH_WINDOW_SECONDS);
@@ -858,6 +883,7 @@ pub async fn record_crash(db: &Database) -> Result<()> {
 }
 
 /// Returns true when there have been >= 3 crash/restart events in the last 5 minutes.
+#[tracing::instrument(skip(db))]
 pub async fn should_enter_safe_mode(db: &Database) -> Result<bool> {
     let cutoff = Utc::now() - chrono::Duration::seconds(CRASH_WINDOW_SECONDS);
 
@@ -879,6 +905,7 @@ pub async fn should_enter_safe_mode(db: &Database) -> Result<bool> {
 }
 
 /// Clear the crash window. Called when exiting safe mode manually.
+#[tracing::instrument(skip(db))]
 pub async fn clear_crash_window(db: &Database) -> Result<()> {
     delete_state(db, CRASH_WINDOW_KEY).await?;
     Ok(())
@@ -888,6 +915,7 @@ pub async fn clear_crash_window(db: &Database) -> Result<()> {
 // Stats
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn get_stats(db: &Database) -> Result<serde_json::Value> {
     let memory_count: i64 = db
         .read(|conn| {

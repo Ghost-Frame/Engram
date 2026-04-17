@@ -97,6 +97,7 @@ pub struct DecideRequest {
 }
 
 /// Create a new approval request with a 120s (or custom) window.
+#[tracing::instrument(skip(db, req), fields(action = %req.action))]
 pub async fn create_approval(
     db: &Database,
     req: &CreateApprovalRequest,
@@ -151,6 +152,7 @@ pub async fn create_approval(
 }
 
 /// Get a single approval by ID.
+#[tracing::instrument(skip(db))]
 pub async fn get_approval(db: &Database, id: &str, user_id: i64) -> Result<Option<Approval>> {
     let id = id.to_string();
     db.read(move |conn| {
@@ -175,6 +177,7 @@ pub async fn get_approval(db: &Database, id: &str, user_id: i64) -> Result<Optio
 }
 
 /// List all pending approvals for a user, ordered by expiry (soonest first).
+#[tracing::instrument(skip(db))]
 pub async fn list_pending(db: &Database, user_id: i64) -> Result<Vec<Approval>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -205,6 +208,7 @@ pub async fn list_pending(db: &Database, user_id: i64) -> Result<Vec<Approval>> 
 }
 
 /// Decide on an approval (approve or deny).
+#[tracing::instrument(skip(db, req), fields(decision = ?req.decision))]
 pub async fn decide(
     db: &Database,
     id: &str,
@@ -277,6 +281,7 @@ pub async fn decide(
 }
 
 /// Expire all stale pending approvals. Returns the number of rows updated.
+#[tracing::instrument(skip(db))]
 pub async fn expire_stale(db: &Database) -> Result<u64> {
     let now = Utc::now().to_rfc3339();
     db.write(move |conn| {
@@ -293,6 +298,7 @@ pub async fn expire_stale(db: &Database) -> Result<u64> {
 }
 
 /// Expire stale approvals for a specific user.
+#[tracing::instrument(skip(db))]
 pub async fn expire_stale_for_user(db: &Database, user_id: i64) -> Result<u64> {
     let now = Utc::now().to_rfc3339();
     db.write(move |conn| {

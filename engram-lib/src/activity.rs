@@ -306,6 +306,7 @@ async fn fanout_thymus(db: &Database, report: &ActivityReport, user_id: i64) {
 
 // -- Core function --
 
+#[tracing::instrument(skip(db, report), fields(action = %report.action, project = ?report.project))]
 pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i64) -> Result<i64> {
     validate_activity_report(report)?;
 

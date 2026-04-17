@@ -35,6 +35,7 @@ fn row_to_preference(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserPreference
 // -- Public CRUD functions ---
 
 /// Upsert a preference for the given user/key pair.
+#[tracing::instrument(skip(db, key, value))]
 pub async fn set_preference(
     db: &Database,
     user_id: i64,
@@ -62,6 +63,7 @@ pub async fn set_preference(
 }
 
 /// Fetch a single preference by user/key. Returns NotFound if absent.
+#[tracing::instrument(skip(db, key))]
 pub async fn get_preference(db: &Database, user_id: i64, key: &str) -> Result<UserPreference> {
     let key = key.to_string();
     let sql = format!(
@@ -78,6 +80,7 @@ pub async fn get_preference(db: &Database, user_id: i64, key: &str) -> Result<Us
 }
 
 /// List all preferences for a user, ordered by key.
+#[tracing::instrument(skip(db))]
 pub async fn list_preferences(db: &Database, user_id: i64) -> Result<Vec<UserPreference>> {
     let sql = format!(
         "SELECT {} FROM user_preferences WHERE user_id = ?1 ORDER BY key ASC",
@@ -100,6 +103,7 @@ pub async fn list_preferences(db: &Database, user_id: i64) -> Result<Vec<UserPre
 }
 
 /// Delete all preferences for a user. Returns count deleted.
+#[tracing::instrument(skip(db))]
 pub async fn delete_all_preferences(db: &Database, user_id: i64) -> Result<u64> {
     let affected = db
         .write(move |conn| {
@@ -114,6 +118,7 @@ pub async fn delete_all_preferences(db: &Database, user_id: i64) -> Result<u64> 
 }
 
 /// Delete a preference by user/key. Returns NotFound if it does not exist.
+#[tracing::instrument(skip(db, key))]
 pub async fn delete_preference(db: &Database, user_id: i64, key: &str) -> Result<()> {
     let key = key.to_string();
     let affected = db

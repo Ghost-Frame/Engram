@@ -28,6 +28,7 @@ pub struct HeaderResult {
     pub prior_models: Vec<String>,
 }
 
+#[tracing::instrument(skip(db, _context), fields(format = %format))]
 pub async fn generate_prompt(
     db: &Database,
     format: &str,
@@ -139,6 +140,7 @@ pub async fn generate_prompt(
     })
 }
 
+#[tracing::instrument(skip(db, _context), fields(actor_model = %actor_model, actor_role = %actor_role))]
 pub async fn generate_header(
     db: &Database,
     actor_model: &str,

@@ -16,6 +16,7 @@ pub struct Digest {
 }
 
 /// Generate a digest summarizing recent memory activity.
+#[tracing::instrument(skip(db))]
 pub async fn generate_digest(db: &Database, user_id: i64, period: &str) -> Result<Digest> {
     let interval = match period {
         "daily" => "-1 day",
