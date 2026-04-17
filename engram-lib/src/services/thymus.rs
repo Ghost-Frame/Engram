@@ -290,6 +290,7 @@ fn row_to_drift_event(row: &rusqlite::Row<'_>) -> Result<DriftEvent> {
 // Rubric functions
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db, req))]
 pub async fn create_rubric(db: &Database, req: CreateRubricRequest) -> Result<Rubric> {
     let user_id = req
         .user_id
@@ -311,6 +312,7 @@ pub async fn create_rubric(db: &Database, req: CreateRubricRequest) -> Result<Ru
     get_rubric(db, id, user_id).await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_rubric(db: &Database, id: i64, user_id: i64) -> Result<Rubric> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -331,6 +333,7 @@ pub async fn get_rubric(db: &Database, id: i64, user_id: i64) -> Result<Rubric> 
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_rubrics(db: &Database, user_id: i64) -> Result<Vec<Rubric>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -351,6 +354,7 @@ pub async fn list_rubrics(db: &Database, user_id: i64) -> Result<Vec<Rubric>> {
     .await
 }
 
+#[tracing::instrument(skip(db, req))]
 pub async fn update_rubric(
     db: &Database,
     id: i64,
@@ -406,6 +410,7 @@ pub async fn update_rubric(
     get_rubric(db, id, user_id).await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn delete_rubric(db: &Database, id: i64, user_id: i64) -> Result<bool> {
     db.write(move |conn| {
         conn.execute(
@@ -488,6 +493,7 @@ fn compute_weighted_score(criteria: &serde_json::Value, scores: &serde_json::Val
     Ok(weighted_sum / total_weight)
 }
 
+#[tracing::instrument(skip(db, req), fields(rubric_id = req.rubric_id))]
 pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation> {
     let user_id = req
         .user_id
@@ -535,6 +541,7 @@ pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation>
     get_evaluation(db, id, user_id).await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_evaluation(db: &Database, id: i64, user_id: i64) -> Result<Evaluation> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -556,6 +563,7 @@ pub async fn get_evaluation(db: &Database, id: i64, user_id: i64) -> Result<Eval
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_evaluations(
     db: &Database,
     user_id: i64,
@@ -600,6 +608,7 @@ pub async fn list_evaluations(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_agent_scores(
     db: &Database,
     user_id: i64,
@@ -703,6 +712,7 @@ pub async fn get_agent_scores(
 // Metric functions
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db, req))]
 pub async fn record_metric(db: &Database, req: RecordMetricRequest) -> Result<QualityMetric> {
     let user_id = req
         .user_id
@@ -743,6 +753,7 @@ pub async fn record_metric(db: &Database, req: RecordMetricRequest) -> Result<Qu
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_metrics(
     db: &Database,
     user_id: i64,
@@ -792,6 +803,7 @@ pub async fn get_metrics(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent = %agent, metric = %metric))]
 pub async fn get_metric_summary(
     db: &Database,
     user_id: i64,
@@ -848,6 +860,7 @@ pub async fn get_metric_summary(
 // Session quality functions
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db, req))]
 pub async fn record_session_quality(
     db: &Database,
     req: RecordSessionQualityRequest,
