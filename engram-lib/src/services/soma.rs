@@ -84,6 +84,7 @@ fn row_to_agent(row: &rusqlite::Row<'_>) -> Result<Agent> {
 /// their type/description/capabilities/config overwritten so callers can
 /// evolve an agent's registration without deleting the old row (and losing
 /// the `agents.id` references held by soma_agent_groups / soma_agent_logs).
+#[tracing::instrument(skip(db, req), fields(name = %req.name, type_ = %req.type_))]
 pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<Agent> {
     let user_id = req
         .user_id
@@ -132,6 +133,7 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
     get_agent_by_name(db, user_id, &req.name).await
 }
 
+#[tracing::instrument(skip(db), fields(agent_id, user_id))]
 pub async fn heartbeat(db: &Database, agent_id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(

@@ -630,6 +630,7 @@ pub async fn delete_workflow(db: &Database, id: i64, user_id: i64) -> Result<boo
 // Run management
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db, req), fields(workflow_id = req.workflow_id))]
 pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
     let user_id = req
         .user_id
@@ -746,6 +747,7 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
     Ok(run)
 }
 
+#[tracing::instrument(skip(db), fields(run_id = id, user_id))]
 pub async fn get_run(db: &Database, id: i64, user_id: i64) -> Result<Run> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -769,6 +771,7 @@ pub async fn get_run(db: &Database, id: i64, user_id: i64) -> Result<Run> {
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id, workflow_id = ?workflow_id, status = ?status, limit))]
 pub async fn list_runs(
     db: &Database,
     user_id: i64,
@@ -850,6 +853,7 @@ pub async fn list_runs(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(run_id = id, user_id))]
 pub async fn cancel_run(db: &Database, id: i64, user_id: i64) -> Result<bool> {
     let run = get_run(db, id, user_id).await?;
 
@@ -889,6 +893,7 @@ pub async fn cancel_run(db: &Database, id: i64, user_id: i64) -> Result<bool> {
 // Step management
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db), fields(run_id, user_id))]
 pub async fn get_steps(db: &Database, run_id: i64, user_id: i64) -> Result<Vec<Step>> {
     // Verify run ownership
     get_run(db, run_id, user_id).await?;
@@ -916,6 +921,7 @@ pub async fn get_steps(db: &Database, run_id: i64, user_id: i64) -> Result<Vec<S
     .await
 }
 
+#[tracing::instrument(skip(db), fields(step_id = id))]
 pub async fn get_step(db: &Database, id: i64) -> Result<Step> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -940,6 +946,7 @@ pub async fn get_step(db: &Database, id: i64) -> Result<Step> {
     .await
 }
 
+#[tracing::instrument(skip(db, output), fields(step_id, user_id))]
 pub async fn complete_step(
     db: &Database,
     step_id: i64,
@@ -987,6 +994,7 @@ pub async fn complete_step(
     Ok(())
 }
 
+#[tracing::instrument(skip(db, error), fields(step_id, user_id))]
 pub async fn fail_step(db: &Database, step_id: i64, error: &str, user_id: i64) -> Result<()> {
     let step = get_step(db, step_id).await?;
     // Verify run ownership
@@ -1079,6 +1087,7 @@ pub async fn fail_step(db: &Database, step_id: i64, error: &str, user_id: i64) -
 // Core orchestration
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db), fields(run_id))]
 pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
     // Fetch run without user_id check (internal function)
     let run = db
@@ -1288,6 +1297,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
 // Transform executor
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db, config, input), fields(step_id, user_id))]
 pub async fn execute_transform_step(
     db: &Database,
     step_id: i64,
@@ -1356,6 +1366,7 @@ pub async fn execute_transform_step(
 // Stats
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db), fields(user_id = ?user_id))]
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats> {
     let (workflows, runs, active_runs, steps) = if let Some(uid) = user_id {
         db.read(move |conn| {
