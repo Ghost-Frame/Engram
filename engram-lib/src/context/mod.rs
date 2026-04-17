@@ -83,34 +83,20 @@ pub fn assemble_context_string(
         parts.push(wrapped);
     }
 
-    let static_blocks: Vec<_> = blocks
-        .iter()
-        .filter(|b| b.source == ContextBlockSource::Static)
-        .collect();
-    let semantic_blocks: Vec<_> = blocks
-        .iter()
-        .filter(|b| b.source == ContextBlockSource::Semantic)
-        .collect();
-    let evolution_blocks: Vec<_> = blocks
-        .iter()
-        .filter(|b| b.source == ContextBlockSource::Evolution)
-        .collect();
-    let episode_blocks: Vec<_> = blocks
-        .iter()
-        .filter(|b| b.source == ContextBlockSource::Episode)
-        .collect();
-    let linked_blocks: Vec<_> = blocks
-        .iter()
-        .filter(|b| b.source == ContextBlockSource::Linked)
-        .collect();
-    let recent_blocks: Vec<_> = blocks
-        .iter()
-        .filter(|b| b.source == ContextBlockSource::Recent)
-        .collect();
-    let inference_blocks: Vec<_> = blocks
-        .iter()
-        .filter(|b| b.source == ContextBlockSource::Inference)
-        .collect();
+    // Single-pass partition: bucket blocks by source in one iteration instead
+    // of 7 separate filter+collect passes over the same slice.
+    let mut by_source: HashMap<ContextBlockSource, Vec<&ContextBlock>> = HashMap::new();
+    for b in blocks {
+        by_source.entry(b.source).or_default().push(b);
+    }
+    let empty = Vec::new();
+    let static_blocks = by_source.get(&ContextBlockSource::Static).unwrap_or(&empty);
+    let semantic_blocks = by_source.get(&ContextBlockSource::Semantic).unwrap_or(&empty);
+    let evolution_blocks = by_source.get(&ContextBlockSource::Evolution).unwrap_or(&empty);
+    let episode_blocks = by_source.get(&ContextBlockSource::Episode).unwrap_or(&empty);
+    let linked_blocks = by_source.get(&ContextBlockSource::Linked).unwrap_or(&empty);
+    let recent_blocks = by_source.get(&ContextBlockSource::Recent).unwrap_or(&empty);
+    let inference_blocks = by_source.get(&ContextBlockSource::Inference).unwrap_or(&empty);
 
     if !static_blocks.is_empty() {
         let lines: Vec<String> = static_blocks

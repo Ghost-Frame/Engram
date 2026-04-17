@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_TOKEN_BUDGET: usize = 8000;
 
 /// Absolute cap on token budget.
-pub const MAX_TOKEN_BUDGET: usize = 64000;
+pub use crate::validation::MAX_TOKEN_BUDGET;
 
 /// Default max tokens per individual memory block.
 pub const DEFAULT_MAX_MEMORY_TOKENS: usize = 2500;
@@ -56,7 +56,7 @@ pub enum ContextMode {
 }
 
 /// Source of a context block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextBlockSource {
     Static,

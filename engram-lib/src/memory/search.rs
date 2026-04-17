@@ -4,20 +4,20 @@ use super::{row_to_memory, rusqlite_to_eng_error, MEMORY_COLUMNS};
 use crate::db::Database;
 use crate::memory::scoring::{
     self, blend_strategies, classify_question_mixed, question_strategy, rrf_score, DECAY_FLOOR,
-    RERANKER_TOP_K,
 };
 use crate::memory::types::{
     LinkedMemory, QuestionType, SearchRequest, SearchResult, VersionChainEntry,
 };
+use crate::validation::{DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, RERANKER_TOP_K};
 use crate::Result;
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
-const DEFAULT_LIMIT: usize = 10;
+const DEFAULT_LIMIT: usize = DEFAULT_SEARCH_LIMIT;
 
 /// Hard ceiling on results returned by hybrid_search. Applied at the library
 /// level so all consumers (HTTP routes, MCP, sidecar, CLI) inherit the cap.
-const MAX_LIMIT: usize = 100;
+const MAX_LIMIT: usize = MAX_SEARCH_LIMIT;
 
 /// Internal candidate accumulator used during search pipeline.
 struct Candidate {

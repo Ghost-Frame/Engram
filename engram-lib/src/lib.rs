@@ -43,6 +43,7 @@ pub mod sessions;
 pub mod skills;
 pub mod sync;
 pub mod tenant;
+pub mod validation;
 pub mod vector;
 pub mod webhooks;
 
