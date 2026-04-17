@@ -1357,6 +1357,19 @@ pub const SYNTHEOS_SERVICES_SQL: &str = r#"
         last_run_at TEXT
     );
 
+    -- Webhook dead-letter log -----------------------------------------
+    CREATE TABLE IF NOT EXISTS webhook_dead_letters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        webhook_id INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+        event TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        last_status_code INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_wdl_webhook ON webhook_dead_letters(webhook_id, created_at);
+
     -- Seed default axon channels --------------------------------------
     INSERT OR IGNORE INTO axon_channels (name, description) VALUES
         ('system', 'System-wide events (startup, shutdown, errors)'),

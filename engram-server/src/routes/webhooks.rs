@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::post,
     Json, Router,
@@ -20,6 +20,10 @@ pub fn router() -> Router<AppState> {
             axum::routing::delete(delete_webhook_handler),
         )
         .route("/webhooks/test/{id}", post(test_webhook_handler))
+        .route(
+            "/webhooks/{id}/dead-letters",
+            axum::routing::get(list_dead_letters_handler),
+        )
 }
 
 async fn create_webhook_handler(
@@ -97,4 +101,23 @@ async fn test_webhook_handler(
     let payload = json!({ "webhook_id": id, "test": true });
     engram_lib::webhooks::emit_webhook_event(&state.db, event, &payload, auth.user_id).await;
     Ok(Json(json!({ "dispatched": true, "event": event })))
+}
+
+#[derive(Debug, Deserialize)]
+struct DeadLetterQuery {
+    limit: Option<i64>,
+}
+
+async fn list_dead_letters_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+    Query(query): Query<DeadLetterQuery>,
+) -> Result<Json<Value>, AppError> {
+    let limit = query.limit.unwrap_or(50).min(200);
+    let items =
+        engram_lib::webhooks::list_dead_letters(&state.db, id, auth.user_id, limit).await?;
+    Ok(Json(
+        json!({ "dead_letters": items, "count": items.len(), "webhook_id": id }),
+    ))
 }
