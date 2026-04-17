@@ -23,6 +23,7 @@ pub fn register(out: &mut Vec<ToolDef>) {
     ]);
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "intelligence.consolidate"))]
 pub async fn consolidate(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let ids: Vec<String> = serde_json::from_value::<Vec<i64>>(
@@ -39,6 +40,7 @@ pub async fn consolidate(app: &App, args: Value) -> Result<Value> {
     ))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "intelligence.detect_contradictions"))]
 pub async fn detect_contradictions(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     if let Some(memory_id) = args.get("memory_id").and_then(Value::as_i64) {
@@ -52,6 +54,7 @@ pub async fn detect_contradictions(app: &App, args: Value) -> Result<Value> {
     )
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "intelligence.decompose"))]
 pub async fn decompose(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let memory_id = args
@@ -61,6 +64,7 @@ pub async fn decompose(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"child_ids": decomposition::decompose(&app.db, memory_id, auth.user_id).await?}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "intelligence.temporal_summary"))]
 pub async fn temporal_summary(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     if args.get("detect").and_then(Value::as_bool).unwrap_or(true) {
@@ -76,6 +80,7 @@ pub async fn temporal_summary(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"patterns": patterns, "count": patterns.len()}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "intelligence.reflect"))]
 pub async fn reflect(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let content = args
@@ -110,6 +115,7 @@ pub async fn reflect(app: &App, args: Value) -> Result<Value> {
     ))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "intelligence.extract_facts"))]
 pub async fn extract_facts(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let memory_id = if let Some(id) = args.get("memory_id").and_then(Value::as_i64) {
