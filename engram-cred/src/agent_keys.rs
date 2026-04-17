@@ -117,6 +117,7 @@ pub fn parse_agent_key(encoded: &str) -> Result<Vec<u8>> {
 }
 
 /// Create a new agent key in the database.
+#[tracing::instrument(skip(db, permissions), fields(user_id, name = %name))]
 pub async fn create_agent_key(
     db: &Database,
     user_id: i64,
@@ -158,6 +159,7 @@ pub async fn create_agent_key(
 }
 
 /// Validate an agent key and return its info.
+#[tracing::instrument(skip(db, raw_key))]
 pub async fn validate_agent_key(db: &Database, raw_key: &[u8]) -> Result<AgentKey> {
     let key_hash = hash_key(raw_key);
 
@@ -216,6 +218,7 @@ pub async fn validate_agent_key(db: &Database, raw_key: &[u8]) -> Result<AgentKe
 }
 
 /// List agent keys for a user.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn list_agent_keys(db: &Database, user_id: i64) -> Result<Vec<AgentKey>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -271,6 +274,7 @@ pub async fn list_agent_keys(db: &Database, user_id: i64) -> Result<Vec<AgentKey
 }
 
 /// Revoke an agent key.
+#[tracing::instrument(skip(db), fields(user_id, name = %name))]
 pub async fn revoke_agent_key(db: &Database, user_id: i64, name: &str) -> Result<()> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let name_owned = name.to_string();

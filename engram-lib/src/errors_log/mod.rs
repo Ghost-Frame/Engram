@@ -60,6 +60,7 @@ pub async fn log_error(db: &Database, req: LogErrorRequest, user_id: Option<&str
 }
 
 /// List error events with optional level/source filters.
+#[tracing::instrument(skip(db, req), fields(level = ?req.level, source = ?req.source, limit = ?req.limit, offset = ?req.offset))]
 pub async fn list_errors(db: &Database, req: ListErrorsRequest) -> Result<Vec<ErrorEvent>> {
     let limit = req.limit.unwrap_or(50).clamp(1, 500);
     let offset = req.offset.unwrap_or(0).max(0);
