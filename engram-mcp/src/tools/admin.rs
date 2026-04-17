@@ -68,12 +68,14 @@ async fn memory_replay(app: &App, args: Value) -> Result<Value> {
     ))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "admin.backup"))]
 pub async fn backup(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     require_admin(&auth)?;
     Ok(json!(admin::export_data(&app.db).await?))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "admin.checkpoint"))]
 pub async fn checkpoint(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     require_admin(&auth)?;

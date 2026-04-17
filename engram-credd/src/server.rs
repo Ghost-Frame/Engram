@@ -28,6 +28,7 @@ const CREDD_BODY_LIMIT: usize = 1024 * 1024;
 const CREDD_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Run the credd HTTP server.
+#[tracing::instrument(skip(master_password, encryption_key), fields(listen = %listen, db_path = %db_path))]
 pub async fn run(
     listen: &str,
     db_path: &str,
