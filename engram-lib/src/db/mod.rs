@@ -1,5 +1,6 @@
 pub mod backup;
 pub mod migrations;
+pub mod pitr;
 pub mod pool;
 pub mod schema;
 pub mod schema_sql;
