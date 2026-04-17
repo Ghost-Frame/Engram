@@ -24,6 +24,7 @@ const DISCOVER_EDGE_WEIGHT: f32 = 0.3;
 /// content.
 ///
 /// Budget limits the maximum number of new edges created per cycle.
+#[tracing::instrument(skip(db, network), fields(user_id, budget))]
 pub async fn discover(
     db: &Database,
     network: &mut HopfieldNetwork,

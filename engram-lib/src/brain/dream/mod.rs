@@ -64,6 +64,7 @@ pub struct DreamCycleResult {
 /// decorrelate -> resolve. A run record is inserted into
 /// `brain_dream_runs` before the stages begin and updated with counts
 /// and finish time when all stages complete.
+#[tracing::instrument(skip(db, network), fields(user_id, budget))]
 pub async fn run_dream_cycle(
     db: &Database,
     network: &mut HopfieldNetwork,

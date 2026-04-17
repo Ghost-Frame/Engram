@@ -26,6 +26,7 @@ pub struct CausalLink {
 }
 
 /// Create a causal chain.
+#[tracing::instrument(skip(db, description), fields(root_memory_id = ?root_memory_id, user_id))]
 pub async fn create_chain(
     db: &Database,
     root_memory_id: Option<i64>,
@@ -56,6 +57,18 @@ pub async fn create_chain(
 }
 
 /// Add a causal link to a chain.
+#[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    skip(db),
+    fields(
+        chain_id,
+        cause_memory_id,
+        effect_memory_id,
+        strength,
+        order_index,
+        user_id
+    )
+)]
 pub async fn add_link(
     db: &Database,
     chain_id: i64,
@@ -134,6 +147,7 @@ pub async fn add_link(
 }
 
 /// Get a causal chain with all its links.
+#[tracing::instrument(skip(db), fields(chain_id, user_id))]
 pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<CausalChain> {
     let mut chain = db
         .read(move |conn| {
@@ -195,6 +209,7 @@ pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<Cau
 }
 
 /// List causal chains for a user.
+#[tracing::instrument(skip(db), fields(user_id, limit))]
 pub async fn list_chains(db: &Database, user_id: i64, limit: usize) -> Result<Vec<CausalChain>> {
     let ids = db
         .read(move |conn| {

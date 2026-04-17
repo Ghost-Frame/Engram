@@ -27,6 +27,7 @@ const DECORRELATE_RATE: f32 = 0.10;
 /// informative, lower-similarity connections.
 ///
 /// Budget limits the number of pattern pairs examined.
+#[tracing::instrument(skip(db, network), fields(user_id, budget))]
 pub async fn decorrelate(
     db: &Database,
     network: &mut HopfieldNetwork,

@@ -27,6 +27,7 @@ const LOSER_PENALTY: f32 = 0.05;
 /// by reinforcing the dominant version.
 ///
 /// Budget limits the number of contradiction edges processed per cycle.
+#[tracing::instrument(skip(db, network), fields(user_id, budget))]
 pub async fn resolve(
     db: &Database,
     network: &mut HopfieldNetwork,
