@@ -53,6 +53,7 @@ pub fn register(out: &mut Vec<ToolDef>) {
     ]);
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.store"))]
 pub async fn store(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let req = StoreRequest {
@@ -90,6 +91,7 @@ pub async fn store(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"store_result": stored, "memory": fetched}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.search"))]
 pub async fn search(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let req = SearchRequest {
@@ -145,6 +147,7 @@ pub async fn search(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"results": hybrid_search(&app.db, req).await?}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.get"))]
 pub async fn get(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let id = args
@@ -154,6 +157,7 @@ pub async fn get(app: &App, args: Value) -> Result<Value> {
     Ok(json!(memory::get(&app.db, id, auth.user_id).await?))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.list"))]
 pub async fn list(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let opts = ListOptions {
@@ -181,6 +185,7 @@ pub async fn list(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"memories": memory::list(&app.db, opts).await?}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.update"))]
 pub async fn update(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let id = args
@@ -213,6 +218,7 @@ pub async fn update(app: &App, args: Value) -> Result<Value> {
     Ok(json!(memory::update(&app.db, id, req, auth.user_id).await?))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.delete"))]
 pub async fn delete(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let id = args
@@ -223,6 +229,7 @@ pub async fn delete(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"deleted": true, "id": id}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.mark_forgotten"))]
 pub async fn mark_forgotten(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let id = args
@@ -233,6 +240,7 @@ pub async fn mark_forgotten(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"forgotten": true, "id": id}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.mark_archived"))]
 pub async fn mark_archived(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let id = args
@@ -243,6 +251,7 @@ pub async fn mark_archived(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"archived": true, "id": id}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.mark_unarchived"))]
 pub async fn mark_unarchived(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let id = args
@@ -253,6 +262,7 @@ pub async fn mark_unarchived(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"unarchived": true, "id": id}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.update_forget_reason"))]
 pub async fn update_forget_reason(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let id = args
@@ -267,6 +277,7 @@ pub async fn update_forget_reason(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"updated": true, "id": id, "reason": reason}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.adjust_importance"))]
 pub async fn adjust_importance(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let id = args
@@ -281,6 +292,7 @@ pub async fn adjust_importance(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"updated": true, "id": id, "delta": delta}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.insert_link"))]
 pub async fn insert_link(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let source_id = args
@@ -311,6 +323,7 @@ pub async fn insert_link(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"inserted": true, "source_id": source_id, "target_id": target_id, "type": link_type}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "memory.get_by_content_hash"))]
 pub async fn get_by_content_hash(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let content_hash = args
