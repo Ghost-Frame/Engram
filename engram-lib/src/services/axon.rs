@@ -97,6 +97,7 @@ fn resolve_source(req: &PublishEventRequest) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+#[tracing::instrument(skip(db, req), fields(channel = %req.channel, action = %req.action))]
 pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Event> {
     let payload = req
         .payload
