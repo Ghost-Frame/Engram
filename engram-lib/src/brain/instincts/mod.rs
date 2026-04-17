@@ -118,6 +118,7 @@ pub fn load_instincts_bin(path: &Path) -> Result<InstinctsCorpus> {
 ///
 /// Returns the number of patterns actually seeded (0 if already seeded or
 /// brain already had patterns).
+#[tracing::instrument(skip(db, network), fields(user_id))]
 pub async fn seed_instincts(
     db: &Database,
     network: &mut HopfieldNetwork,
@@ -843,6 +844,7 @@ pub fn save_instincts(corpus: &InstinctsCorpus, path: &Path) -> Result<()> {
 /// has now learned from real experience.
 ///
 /// Returns the number of ghosts removed.
+#[tracing::instrument(skip(db, network, new_embedding), fields(embedding_len = new_embedding.len(), user_id))]
 pub async fn check_ghost_replacement(
     db: &Database,
     network: &mut HopfieldNetwork,

@@ -13,6 +13,7 @@ use super::StageReport;
 /// Dead patterns (strength < DEATH_THRESHOLD) are removed from both the
 /// in-memory network and the database, along with any edges that reference
 /// them.
+#[tracing::instrument(skip(db, network), fields(user_id))]
 pub async fn prune(
     db: &Database,
     network: &mut HopfieldNetwork,

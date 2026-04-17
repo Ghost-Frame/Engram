@@ -13,6 +13,7 @@ use super::StageReport;
 /// Pairs whose cosine similarity exceeds the merge threshold are collapsed --
 /// the weaker pattern is removed and the stronger is boosted to the maximum
 /// strength of the pair.
+#[tracing::instrument(skip(db, network), fields(user_id))]
 pub async fn merge(
     db: &Database,
     network: &mut HopfieldNetwork,

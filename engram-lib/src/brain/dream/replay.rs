@@ -16,6 +16,7 @@ use super::StageReport;
 /// experiences are replayed to drive consolidation into long-term storage.
 ///
 /// Budget controls how many patterns are replayed at most per cycle.
+#[tracing::instrument(skip(db, network), fields(user_id, budget))]
 pub async fn replay(
     db: &Database,
     network: &mut HopfieldNetwork,
