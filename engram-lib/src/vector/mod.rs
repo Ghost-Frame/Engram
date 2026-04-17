@@ -19,4 +19,10 @@ pub trait VectorIndex: Send + Sync {
         -> Result<Vec<VectorHit>>;
     async fn delete(&self, memory_id: i64) -> Result<()>;
     async fn count(&self) -> Result<usize>;
+
+    /// Force a rebuild of the ANN index. `replace=true` drops any existing
+    /// index before rebuilding. Returns `true` if the index was (re)built,
+    /// `false` if the operation was skipped (below row threshold, or an
+    /// existing index satisfied `replace=false`).
+    async fn rebuild_index(&self, replace: bool) -> Result<bool>;
 }

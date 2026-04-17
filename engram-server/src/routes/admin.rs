@@ -90,6 +90,11 @@ pub fn router() -> Router<AppState> {
         .route("/admin/pagerank/rebuild", post(admin_pagerank_rebuild))
         // Vector sync replay
         .route("/admin/vector-sync/replay", post(admin_vector_sync_replay))
+        // ANN index rebuild
+        .route(
+            "/admin/vector/rebuild-index",
+            post(admin_vector_rebuild_index),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -982,6 +987,43 @@ async fn admin_vector_sync_replay(
     let limit = body.and_then(|Json(b)| b.limit).unwrap_or(200).min(5000);
     let report = engram_lib::memory::replay_vector_sync_pending(&state.db, limit).await?;
     to_json(report)
+}
+
+// ---------------------------------------------------------------------------
+// Rebuild ANN index (IVF_HNSW_PQ)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct VectorRebuildIndexBody {
+    /// When true, drop any existing vector index before rebuilding.
+    /// Defaults to false so repeated calls are cheap.
+    replace: Option<bool>,
+}
+
+async fn admin_vector_rebuild_index(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    body: Option<Json<VectorRebuildIndexBody>>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let replace = body.and_then(|Json(b)| b.replace).unwrap_or(false);
+
+    let Some(vector_index) = state.db.vector_index.clone() else {
+        return Ok(Json(json!({
+            "rebuilt": false,
+            "row_count": 0usize,
+            "reason": "vector index not configured",
+        })));
+    };
+
+    let row_count = vector_index.count().await.unwrap_or(0);
+    let rebuilt = vector_index.rebuild_index(replace).await?;
+    Ok(Json(json!({
+        "rebuilt": rebuilt,
+        "row_count": row_count,
+        "min_rows_for_index": engram_lib::vector::lance::MIN_ROWS_FOR_INDEX,
+    })))
 }
 
 // ---------------------------------------------------------------------------

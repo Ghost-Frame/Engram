@@ -5,13 +5,21 @@ use arrow_array::{Array, FixedSizeListArray, Float32Array, Int64Array, RecordBat
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use futures::TryStreamExt;
+use lancedb::index::vector::IvfHnswPqIndexBuilder;
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::DistanceType;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
 
 const TABLE_NAME: &str = "memory_vectors";
+const VECTOR_COLUMN: &str = "vector";
+
+/// Minimum number of rows before an IVF_HNSW_PQ index is built. Below this
+/// threshold LanceDB's IVF clustering does not converge cleanly and a linear
+/// scan over the fixed-size-list is faster anyway, so we skip index creation.
+pub const MIN_ROWS_FOR_INDEX: usize = 256;
 
 fn lance_err(context: &str, err: impl std::fmt::Display) -> EngError {
     EngError::Internal(format!("{}: {}", context, err))
@@ -123,26 +131,55 @@ impl LanceIndex {
     }
 
     async fn ensure_vector_index(&self, table: &lancedb::Table) {
-        if table.count_rows(None).await.unwrap_or(0) == 0 {
+        let row_count = table.count_rows(None).await.unwrap_or(0);
+        if row_count < MIN_ROWS_FOR_INDEX {
             return;
         }
 
-        if table
+        if self.vector_index_exists(table).await {
+            return;
+        }
+
+        if let Err(e) = self.create_hnsw_index(table).await {
+            warn!("LanceDB vector index create skipped: {}", e);
+        }
+    }
+
+    async fn vector_index_exists(&self, table: &lancedb::Table) -> bool {
+        table
             .list_indices()
             .await
             .map(|indices| {
                 indices
                     .iter()
-                    .any(|index| index.columns == vec!["vector".to_string()])
+                    .any(|index| index.columns == vec![VECTOR_COLUMN.to_string()])
             })
             .unwrap_or(false)
-        {
-            return;
-        }
+    }
 
-        if let Err(e) = table.create_index(&["vector"], Index::Auto).execute().await {
-            warn!("LanceDB vector index create skipped: {}", e);
+    async fn create_hnsw_index(&self, table: &lancedb::Table) -> Result<()> {
+        let builder = IvfHnswPqIndexBuilder::default().distance_type(DistanceType::Cosine);
+        table
+            .create_index(&[VECTOR_COLUMN], Index::IvfHnswPq(builder))
+            .execute()
+            .await
+            .map_err(|e| lance_err("create LanceDB IVF_HNSW_PQ index", e))
+    }
+
+    async fn drop_vector_index(&self, table: &lancedb::Table) -> Result<()> {
+        let indices = table
+            .list_indices()
+            .await
+            .map_err(|e| lance_err("list LanceDB indices", e))?;
+        for index in indices {
+            if index.columns == vec![VECTOR_COLUMN.to_string()] {
+                table
+                    .drop_index(&index.name)
+                    .await
+                    .map_err(|e| lance_err("drop LanceDB vector index", e))?;
+            }
         }
+        Ok(())
     }
 }
 
@@ -255,5 +292,96 @@ impl VectorIndex for LanceIndex {
             .count_rows(None)
             .await
             .map_err(|e| lance_err("count LanceDB vector rows", e))
+    }
+
+    async fn rebuild_index(&self, replace: bool) -> Result<bool> {
+        let table = self.ensure_table().await?;
+        let row_count = table
+            .count_rows(None)
+            .await
+            .map_err(|e| lance_err("count LanceDB vector rows", e))?;
+        if row_count < MIN_ROWS_FOR_INDEX {
+            return Ok(false);
+        }
+
+        let exists = self.vector_index_exists(&table).await;
+        if exists && !replace {
+            return Ok(false);
+        }
+        if exists {
+            self.drop_vector_index(&table).await?;
+        }
+
+        self.create_hnsw_index(&table).await?;
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn temp_path() -> String {
+        let dir = std::env::temp_dir().join(format!("engram-lance-{}", Uuid::new_v4()));
+        dir.to_string_lossy().to_string()
+    }
+
+    #[tokio::test]
+    async fn rebuild_index_skipped_below_row_threshold() {
+        let path = temp_path();
+        let index = LanceIndex::open(&path, 4).await.expect("open lance");
+        index
+            .insert(1, 1, &[0.1, 0.2, 0.3, 0.4])
+            .await
+            .expect("insert");
+        index
+            .insert(2, 1, &[0.9, 0.8, 0.7, 0.6])
+            .await
+            .expect("insert");
+        assert_eq!(index.count().await.expect("count"), 2);
+
+        let rebuilt = index.rebuild_index(true).await.expect("rebuild");
+        assert!(
+            !rebuilt,
+            "small table must skip IVF_HNSW_PQ build (row_count < {})",
+            MIN_ROWS_FOR_INDEX
+        );
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[tokio::test]
+    async fn insert_then_search_linear_scan_returns_nearest() {
+        let path = temp_path();
+        let index = LanceIndex::open(&path, 4).await.expect("open lance");
+        index
+            .insert(42, 7, &[1.0, 0.0, 0.0, 0.0])
+            .await
+            .expect("insert");
+        index
+            .insert(43, 7, &[0.0, 1.0, 0.0, 0.0])
+            .await
+            .expect("insert");
+
+        let hits = index
+            .search(&[1.0, 0.0, 0.0, 0.0], 1, 7)
+            .await
+            .expect("search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].memory_id, 42);
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[tokio::test]
+    async fn rebuild_index_noop_when_table_empty() {
+        let path = temp_path();
+        let index = LanceIndex::open(&path, 4).await.expect("open lance");
+        assert_eq!(index.count().await.expect("count"), 0);
+        let rebuilt = index.rebuild_index(false).await.expect("rebuild");
+        assert!(!rebuilt);
+
+        let _ = std::fs::remove_dir_all(&path);
     }
 }
