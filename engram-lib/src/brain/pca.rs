@@ -223,6 +223,7 @@ pub struct PcaModelRow {
 }
 
 /// Store a PCA model to the database.
+#[tracing::instrument(skip(db, transform), fields(source_dim, target_dim))]
 pub async fn store_pca_model(
     db: &Database,
     source_dim: usize,
@@ -246,6 +247,7 @@ pub async fn store_pca_model(
 }
 
 /// Load the most recent PCA model for given dimensions.
+#[tracing::instrument(skip(db), fields(source_dim, target_dim))]
 pub async fn load_pca_model(
     db: &Database,
     source_dim: usize,
@@ -278,6 +280,7 @@ pub async fn load_pca_model(
 }
 
 /// Delete old PCA models, keeping only the most recent per (source_dim, target_dim).
+#[tracing::instrument(skip(db))]
 pub async fn cleanup_old_models(db: &Database) -> Result<usize> {
     db.write(move |conn| {
         let affected = conn

@@ -4,6 +4,7 @@ use crate::{EngError, Result};
 use rusqlite::params;
 
 /// Search skills using FTS.
+#[tracing::instrument(skip(db, query), fields(query_len = query.len(), user_id, limit))]
 pub async fn search_skills(
     db: &Database,
     query: &str,

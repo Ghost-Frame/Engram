@@ -38,6 +38,7 @@ use crate::validation::MAX_FTS_QUERY_LEN;
 
 /// Search memories using FTS5 full-text search with BM25 ranking.
 /// Returns up to `limit` results ordered by relevance (most relevant first).
+#[tracing::instrument(skip(db, query), fields(query_len = query.len(), limit, user_id))]
 pub async fn fts_search(
     db: &Database,
     query: &str,
