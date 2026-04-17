@@ -888,6 +888,7 @@ pub fn synthesize_profile_rule_based(input: &SynthesisInput) -> String {
 // ============================================================================
 
 /// Insert a personality signal into the database.
+#[tracing::instrument(skip(db, signal), fields(memory_id, user_id, signal_type = ?signal.signal_type))]
 pub async fn insert_signal(
     db: &Database,
     memory_id: i64,
@@ -925,6 +926,7 @@ pub async fn insert_signal(
 
 /// Extract personality signals from content and store them.
 /// Uses rule-based extraction (Tier 2) as default fallback.
+#[tracing::instrument(skip(db, content), fields(memory_id, user_id, content_len = content.len()))]
 pub async fn extract_personality_signals(
     db: &Database,
     content: &str,
