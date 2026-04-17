@@ -25,6 +25,52 @@ fn too_many_requests(retry_after: i64) -> Response {
         .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
 }
 
+// -- Per-endpoint cost multipliers (3.16) ------------------------------------
+//
+// Expensive operations consume more rate-limit tokens per request.
+// This prevents a caller from burning all their budget on LLM-heavy
+// endpoints while keeping cheap reads affordable.
+
+/// Return the cost multiplier for a given request path and method.
+/// Default cost is 1 for reads, 2 for writes.
+fn endpoint_cost(path: &str, method: &axum::http::Method) -> i64 {
+    // Context assembly -- involves search + embedding + LLM inference
+    if path.starts_with("/context") {
+        return 5;
+    }
+    // Batch operations -- up to 100 sub-ops
+    if path.starts_with("/batch") {
+        return 10;
+    }
+    // Ingestion -- embedding + chunking
+    if path.starts_with("/ingest") {
+        return 3;
+    }
+    // Search -- embedding + reranking
+    if path.starts_with("/search") || path.starts_with("/memories/search") {
+        return 2;
+    }
+    // Graph pagerank recompute
+    if path.starts_with("/graph/pagerank") && *method == axum::http::Method::POST {
+        return 3;
+    }
+    // Store/update memory -- embedding + indexing
+    if path.starts_with("/memories")
+        && (*method == axum::http::Method::POST || *method == axum::http::Method::PUT)
+    {
+        return 2;
+    }
+    // Prometheus metrics scrape -- cheap but shouldn't be called rapidly
+    if path.starts_with("/metrics") {
+        return 1;
+    }
+    // Default: reads cost 1, writes cost 2
+    match *method {
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS => 1,
+        _ => 2,
+    }
+}
+
 /// SECURITY: extract client IP for rate-limit keying.
 ///
 /// 1. Always read the real TCP peer address from ConnectInfo.
@@ -107,6 +153,9 @@ pub async fn preauth_rate_limit_middleware(
 /// Uses the DB-backed rate limiter from engram-lib. The limit (requests/minute)
 /// is read from the authenticated API key's `rate_limit` field.
 ///
+/// Per-endpoint cost multipliers (3.16) make expensive operations (context,
+/// batch, ingest) consume more rate-limit tokens than cheap reads.
+///
 /// Returns HTTP 429 with a `Retry-After` header when the limit is exceeded.
 /// Open paths and unauthenticated requests bypass the limiter.
 pub async fn rate_limit_middleware(
@@ -133,8 +182,9 @@ pub async fn rate_limit_middleware(
     };
 
     let key = format!("user:{}", user_id);
+    let cost = endpoint_cost(&path, request.method());
 
-    match ratelimit::check_and_increment(&state.db, &key, limit, 60).await {
+    match ratelimit::check_and_increment_by(&state.db, &key, limit, 60, cost).await {
         Ok(true) => next.run(request).await,
         Ok(false) => too_many_requests(60),
         Err(e) => {
