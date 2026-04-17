@@ -42,6 +42,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
+#[tracing::instrument(skip(db, description, metadata), fields(name = %name, status = %status, user_id))]
 pub async fn create_project(
     db: &Database,
     name: &str,
@@ -73,6 +74,7 @@ pub async fn create_project(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(project_id = id, user_id))]
 pub async fn get_project(db: &Database, id: i64, user_id: i64) -> Result<Option<ProjectRow>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -94,6 +96,7 @@ pub async fn get_project(db: &Database, id: i64, user_id: i64) -> Result<Option<
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id, status = ?status))]
 pub async fn list_projects(
     db: &Database,
     user_id: i64,
@@ -141,6 +144,7 @@ pub async fn list_projects(
     .await
 }
 
+#[tracing::instrument(skip(db, name, description, metadata), fields(project_id = id, user_id, status = ?status))]
 pub async fn update_project(
     db: &Database,
     id: i64,
@@ -172,6 +176,7 @@ pub async fn update_project(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(project_id = id, user_id))]
 pub async fn delete_project(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -184,6 +189,7 @@ pub async fn delete_project(db: &Database, id: i64, user_id: i64) -> Result<()> 
     .await
 }
 
+#[tracing::instrument(skip(db), fields(memory_id, project_id, user_id))]
 pub async fn link_memory(
     db: &Database,
     memory_id: i64,
@@ -235,6 +241,7 @@ pub async fn link_memory(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(memory_id, project_id, user_id))]
 pub async fn unlink_memory(
     db: &Database,
     memory_id: i64,
@@ -269,6 +276,7 @@ pub async fn unlink_memory(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(project_id, user_id))]
 pub async fn get_project_memory_ids(
     db: &Database,
     project_id: i64,

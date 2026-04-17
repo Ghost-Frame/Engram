@@ -315,6 +315,7 @@ pub async fn get_artifact_stats(db: &Database, user_id: i64) -> Result<ArtifactS
 
 /// Cluster-wide artifact statistics. Only call from explicitly admin-gated
 /// routes. Never expose to tenant-scoped handlers.
+#[tracing::instrument(skip(db))]
 pub async fn get_artifact_stats_all(db: &Database) -> Result<ArtifactStats> {
     db.read(move |conn| {
         conn.query_row(
@@ -333,6 +334,7 @@ pub async fn get_artifact_stats_all(db: &Database) -> Result<ArtifactStats> {
     .await
 }
 
+#[tracing::instrument(skip(db, memory_ids), fields(memory_count = memory_ids.len(), user_id))]
 pub async fn enrich_with_artifacts(
     db: &Database,
     memory_ids: &[i64],
@@ -357,6 +359,7 @@ pub async fn enrich_with_artifacts(
     Ok(map)
 }
 
+#[tracing::instrument(skip(db), fields(artifact_id, user_id))]
 pub async fn get_artifact_data(
     db: &Database,
     artifact_id: i64,

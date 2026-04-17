@@ -104,6 +104,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> Result<Task> {
     })
 }
 
+#[tracing::instrument(skip(db, req), fields(agent = %req.agent, project = ?req.project, title = %req.title))]
 pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> {
     let status = req.status.clone().unwrap_or_else(|| "active".to_string());
     validate_status(&status)?;
@@ -130,6 +131,7 @@ pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> 
     get_task(db, id, user_id).await
 }
 
+#[tracing::instrument(skip(db), fields(task_id = id, user_id))]
 pub async fn get_task(db: &Database, id: i64, user_id: i64) -> Result<Task> {
     let sql = format!("SELECT {TASK_COLUMNS} FROM chiasm_tasks WHERE id = ?1 AND user_id = ?2");
 
