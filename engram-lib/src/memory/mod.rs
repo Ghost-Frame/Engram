@@ -10,7 +10,7 @@ use crate::personality;
 use crate::EngError;
 use crate::Result;
 use rusqlite::params;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use tracing::warn;
 use types::{
     CategoryCount, LinkedMemory, ListOptions, Memory, StoreRequest, StoreResult, TagCount,
@@ -1347,38 +1347,67 @@ pub async fn search_by_tags(
         return Ok(Vec::new());
     }
 
-    let wanted: HashSet<String> = normalized.iter().cloned().collect();
-    let sql = format!(
-        "SELECT {} FROM memories
-         WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1
-         ORDER BY created_at DESC",
-        MEMORY_COLUMNS
-    );
+    // Use json_each() to push tag filtering to SQL level instead of
+    // scanning every row and deserializing in Rust.
+    let tag_count = normalized.len();
+    let placeholders: Vec<String> = (0..tag_count)
+        .map(|i| format!("?{}", i + 2))
+        .collect();
+
+    let sql = if match_all {
+        // match_all: memory must contain ALL requested tags.
+        // Count distinct matches from json_each; must equal tag_count.
+        format!(
+            "SELECT {} FROM memories m
+             WHERE m.user_id = ?1
+               AND m.is_forgotten = 0
+               AND m.is_latest = 1
+               AND m.tags IS NOT NULL
+               AND (SELECT COUNT(DISTINCT je.value)
+                    FROM json_each(m.tags) je
+                    WHERE je.value IN ({})) = {}
+             ORDER BY m.created_at DESC
+             LIMIT {}",
+            MEMORY_COLUMNS,
+            placeholders.join(", "),
+            tag_count,
+            limit
+        )
+    } else {
+        // match_any: memory must contain at least one requested tag.
+        format!(
+            "SELECT {} FROM memories m
+             WHERE m.user_id = ?1
+               AND m.is_forgotten = 0
+               AND m.is_latest = 1
+               AND m.tags IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM json_each(m.tags) je
+                   WHERE je.value IN ({})
+               )
+             ORDER BY m.created_at DESC
+             LIMIT {}",
+            MEMORY_COLUMNS,
+            placeholders.join(", "),
+            limit
+        )
+    };
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        let mut memories = Vec::new();
-
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let memory = row_to_memory(row)?;
-            let memory_tags: HashSet<String> = parse_tags_json(&memory.tags).into_iter().collect();
-            let matched = if match_all {
-                wanted.iter().all(|tag| memory_tags.contains(tag))
-            } else {
-                wanted.iter().any(|tag| memory_tags.contains(tag))
-            };
-
-            if matched {
-                memories.push(memory);
-                if memories.len() >= limit {
-                    break;
-                }
-            }
+        // Bind user_id at index 1, then each tag at indices 2..N+1.
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(tag_count + 1);
+        params_vec.push(Box::new(user_id));
+        for tag in &normalized {
+            params_vec.push(Box::new(tag.clone()));
         }
-
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|b| b.as_ref()).collect();
+        let mut rows = stmt.query(param_refs.as_slice()).map_err(rusqlite_to_eng_error)?;
+        let mut memories = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            memories.push(row_to_memory(row)?);
+        }
         Ok(memories)
     })
     .await

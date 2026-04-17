@@ -6,7 +6,8 @@ use crate::memory::scoring::{
     self, blend_strategies, classify_question_mixed, question_strategy, rrf_score, DECAY_FLOOR,
 };
 use crate::memory::types::{
-    LinkedMemory, QuestionType, SearchRequest, SearchResult, VersionChainEntry,
+    FacetBucket, FacetedSearchRequest, FacetedSearchResponse, LinkedMemory, QuestionType,
+    SearchRequest, SearchResult, TagCooccurrence, VersionChainEntry,
 };
 use crate::validation::{DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, RERANKER_TOP_K};
 use crate::Result;
@@ -961,6 +962,60 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
         });
     }
 
+    // 3.11: Post-filters -- apply category, source, tags, space_id, threshold
+    // filters that SearchRequest carries but were previously ignored.
+    if req.category.is_some()
+        || req.source.is_some()
+        || req.source_filter.is_some()
+        || req.tags.is_some()
+        || req.space_id.is_some()
+        || req.threshold.is_some()
+    {
+        let filter_category = req.category.as_deref();
+        let filter_source = req.source.as_deref().or(req.source_filter.as_deref());
+        let filter_tags: Option<Vec<String>> = req.tags.as_ref().map(|t| {
+            t.iter()
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect()
+        });
+        let filter_space = req.space_id;
+        let filter_threshold = req.threshold;
+
+        final_results.retain(|r| {
+            let m = &r.memory;
+            if let Some(cat) = filter_category {
+                if !m.category.eq_ignore_ascii_case(cat) {
+                    return false;
+                }
+            }
+            if let Some(src) = filter_source {
+                if !m.source.eq_ignore_ascii_case(src) {
+                    return false;
+                }
+            }
+            if let Some(ref wanted) = filter_tags {
+                let mem_tags: HashSet<String> = super::parse_tags_json(&m.tags)
+                    .into_iter()
+                    .collect();
+                if !wanted.iter().all(|t| mem_tags.contains(t)) {
+                    return false;
+                }
+            }
+            if let Some(sid) = filter_space {
+                if m.space_id != Some(sid) {
+                    return false;
+                }
+            }
+            if let Some(thr) = filter_threshold {
+                if r.score < thr as f64 {
+                    return false;
+                }
+            }
+            true
+        });
+    }
+
     // Include linked memories + version chain if requested -- batch queries
     if req.include_links {
         let result_ids: Vec<i64> = final_results.iter().map(|r| r.memory.id).collect();
@@ -1000,6 +1055,380 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     cache_put(user_id, param_hash, &final_results);
 
     Ok(final_results)
+}
+
+// ---------------------------------------------------------------------------
+// 3.11: Faceted / multi-tag search
+// ---------------------------------------------------------------------------
+
+/// Faceted search: runs hybrid search (if query present) OR direct DB scan,
+/// applies structured tag/category/source/importance/date filters, then
+/// computes requested facet aggregations over the matched set.
+pub async fn faceted_search(
+    db: &Database,
+    req: FacetedSearchRequest,
+) -> Result<FacetedSearchResponse> {
+    let user_id = req
+        .user_id
+        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
+    let limit = req.limit.min(MAX_LIMIT);
+    let facet_limit = req.facet_limit.unwrap_or(20).min(100);
+    let requested_facets: HashSet<String> = req
+        .facets
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.to_lowercase()).collect())
+        .unwrap_or_default();
+
+    // Normalize tag filter sets once.
+    let tags_all: Vec<String> = req
+        .tags_all
+        .as_ref()
+        .map(|t| t.iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    let tags_any: HashSet<String> = req
+        .tags_any
+        .as_ref()
+        .map(|t| t.iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    let tags_none: HashSet<String> = req
+        .tags_none
+        .as_ref()
+        .map(|t| t.iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+
+    // Date bounds parsed once.
+    let date_from = req.date_from.as_deref().and_then(|s| parse_iso_date(s));
+    let date_to = req.date_to.as_deref().and_then(|s| parse_iso_date(s));
+
+    // Predicate closure over a Memory: returns true if it passes all filters.
+    let passes_filters = |m: &super::types::Memory| -> bool {
+        // Category
+        if let Some(ref cat) = req.category {
+            if !m.category.eq_ignore_ascii_case(cat) {
+                return false;
+            }
+        }
+        // Source
+        if let Some(ref src) = req.source {
+            if !m.source.eq_ignore_ascii_case(src) {
+                return false;
+            }
+        }
+        // Space
+        if let Some(sid) = req.space_id {
+            if m.space_id != Some(sid) {
+                return false;
+            }
+        }
+        // Importance range
+        if let Some(imin) = req.importance_min {
+            if m.importance < imin {
+                return false;
+            }
+        }
+        if let Some(imax) = req.importance_max {
+            if m.importance > imax {
+                return false;
+            }
+        }
+        // Date range
+        if let Some(ref dt) = date_from {
+            if m.created_at < *dt {
+                return false;
+            }
+        }
+        if let Some(ref dt) = date_to {
+            if m.created_at > *dt {
+                return false;
+            }
+        }
+        // Tags
+        let mem_tags: HashSet<String> = super::parse_tags_json(&m.tags).into_iter().collect();
+        if !tags_all.is_empty() && !tags_all.iter().all(|t| mem_tags.contains(t)) {
+            return false;
+        }
+        if !tags_any.is_empty() && !tags_any.iter().any(|t| mem_tags.contains(t)) {
+            return false;
+        }
+        if !tags_none.is_empty() && tags_none.iter().any(|t| mem_tags.contains(t)) {
+            return false;
+        }
+        true
+    };
+
+    let results: Vec<SearchResult>;
+
+    if !req.query.is_empty() {
+        // Semantic mode: delegate to hybrid_search with generous limit,
+        // then post-filter. We request more candidates so filtering
+        // doesn't starve the result set.
+        let over_fetch = (limit * 5).min(MAX_LIMIT);
+        let search_req = SearchRequest {
+            query: req.query.clone(),
+            embedding: req.embedding.clone(),
+            limit: Some(over_fetch),
+            category: req.category.clone(),
+            source: req.source.clone(),
+            tags: req.tags_all.clone(),
+            threshold: None,
+            user_id: Some(user_id),
+            space_id: req.space_id,
+            include_forgotten: Some(false),
+            mode: None,
+            question_type: None,
+            expand_relationships: false,
+            include_links: false,
+            latest_only: true,
+            source_filter: None,
+        };
+        let mut candidates = hybrid_search(db, search_req).await?;
+        // hybrid_search already applies category/source/tags_all/space_id,
+        // but we still need importance range, date range, tags_any, tags_none.
+        candidates.retain(|r| passes_filters(&r.memory));
+        candidates.truncate(limit);
+        results = candidates;
+    } else {
+        // Filter-only mode: direct DB query (no semantic ranking).
+        let matched = faceted_db_scan(db, user_id, &req, limit).await?;
+        results = matched
+            .into_iter()
+            .filter(|r| passes_filters(&r.memory))
+            .take(limit)
+            .collect();
+    }
+
+    // Compute facets over the matched set.
+    let total_matched = results.len();
+
+    let facets_tags = if requested_facets.contains("tags") {
+        Some(compute_tag_facets(&results, facet_limit))
+    } else {
+        None
+    };
+
+    let facets_categories = if requested_facets.contains("categories") {
+        Some(compute_string_facets(
+            results.iter().map(|r| r.memory.category.as_str()),
+            facet_limit,
+        ))
+    } else {
+        None
+    };
+
+    let facets_sources = if requested_facets.contains("sources") {
+        Some(compute_string_facets(
+            results.iter().map(|r| r.memory.source.as_str()),
+            facet_limit,
+        ))
+    } else {
+        None
+    };
+
+    let facets_importance = if requested_facets.contains("importance") {
+        Some(compute_string_facets(
+            results.iter().map(|r| leak_i32_str(r.memory.importance)),
+            facet_limit,
+        ))
+    } else {
+        None
+    };
+
+    let tag_cooccurrence = if requested_facets.contains("tags") {
+        Some(compute_tag_cooccurrence(&results, facet_limit))
+    } else {
+        None
+    };
+
+    Ok(FacetedSearchResponse {
+        results,
+        total_matched,
+        facets_tags,
+        facets_categories,
+        facets_sources,
+        facets_importance,
+        tag_cooccurrence,
+    })
+}
+
+/// Direct DB scan for filter-only faceted search (no semantic query).
+async fn faceted_db_scan(
+    db: &Database,
+    user_id: i64,
+    req: &FacetedSearchRequest,
+    limit: usize,
+) -> Result<Vec<SearchResult>> {
+    // Build SQL with applicable WHERE clauses pushed to DB level.
+    let mut conditions = vec![
+        "user_id = ?1".to_string(),
+        "is_forgotten = 0".to_string(),
+        "is_latest = 1".to_string(),
+        "is_consolidated = 0".to_string(),
+    ];
+    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql + Send>> =
+        vec![Box::new(user_id)];
+    let mut idx = 2usize;
+
+    if let Some(ref cat) = req.category {
+        conditions.push(format!("category = ?{}", idx));
+        params_vec.push(Box::new(cat.clone()));
+        idx += 1;
+    }
+    if let Some(ref src) = req.source {
+        conditions.push(format!("source = ?{}", idx));
+        params_vec.push(Box::new(src.clone()));
+        idx += 1;
+    }
+    if let Some(sid) = req.space_id {
+        conditions.push(format!("space_id = ?{}", idx));
+        params_vec.push(Box::new(sid));
+        idx += 1;
+    }
+    if let Some(imin) = req.importance_min {
+        conditions.push(format!("importance >= ?{}", idx));
+        params_vec.push(Box::new(imin));
+        idx += 1;
+    }
+    if let Some(imax) = req.importance_max {
+        conditions.push(format!("importance <= ?{}", idx));
+        params_vec.push(Box::new(imax));
+        idx += 1;
+    }
+    if let Some(ref dt) = req.date_from {
+        conditions.push(format!("created_at >= ?{}", idx));
+        params_vec.push(Box::new(dt.clone()));
+        idx += 1;
+    }
+    if let Some(ref dt) = req.date_to {
+        conditions.push(format!("created_at <= ?{}", idx));
+        params_vec.push(Box::new(dt.clone()));
+        let _ = idx;
+    }
+
+    let where_clause = conditions.join(" AND ");
+    let sql = format!(
+        "SELECT {} FROM memories WHERE {} ORDER BY created_at DESC LIMIT {}",
+        MEMORY_COLUMNS, where_clause, limit * 3 // over-fetch for tag filtering in Rust
+    );
+
+    db.read(move |conn| {
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|b| b.as_ref() as &dyn rusqlite::types::ToSql).collect();
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(param_refs.as_slice()).map_err(rusqlite_to_eng_error)?;
+        let mut memories = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            memories.push(row_to_memory(row)?);
+        }
+        Ok(memories
+            .into_iter()
+            .map(|m| SearchResult {
+                score: m.importance as f64 / 10.0,
+                memory: m,
+                search_type: "filter".to_string(),
+                decay_score: None,
+                combined_score: None,
+                semantic_score: None,
+                fts_score: None,
+                graph_score: None,
+                personality_signal_score: None,
+                temporal_boost: None,
+                channels: Some(vec!["filter".to_string()]),
+                question_type: None,
+                reranked: None,
+                reranker_ms: None,
+                candidate_count: None,
+                linked: None,
+                version_chain: None,
+            })
+            .collect())
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Facet computation helpers
+// ---------------------------------------------------------------------------
+
+fn compute_tag_facets(results: &[SearchResult], limit: usize) -> Vec<FacetBucket> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for r in results {
+        for tag in super::parse_tags_json(&r.memory.tags) {
+            *counts.entry(tag).or_insert(0) += 1;
+        }
+    }
+    let mut buckets: Vec<FacetBucket> = counts
+        .into_iter()
+        .map(|(value, count)| FacetBucket { value, count })
+        .collect();
+    buckets.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
+    buckets.truncate(limit);
+    buckets
+}
+
+fn compute_string_facets<'a>(values: impl Iterator<Item = &'a str>, limit: usize) -> Vec<FacetBucket> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for v in values {
+        if !v.is_empty() {
+            *counts.entry(v.to_string()).or_insert(0) += 1;
+        }
+    }
+    let mut buckets: Vec<FacetBucket> = counts
+        .into_iter()
+        .map(|(value, count)| FacetBucket { value, count })
+        .collect();
+    buckets.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
+    buckets.truncate(limit);
+    buckets
+}
+
+/// Cheap way to get &str from i32 for facet counting without allocation per call.
+fn leak_i32_str(v: i32) -> &'static str {
+    // For importance 1-10, we use a static array.
+    static NUMS: [&str; 11] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
+    if (0..=10).contains(&v) {
+        NUMS[v as usize]
+    } else {
+        // Leak is fine for edge cases -- importance is clamped 1-10.
+        Box::leak(v.to_string().into_boxed_str())
+    }
+}
+
+fn compute_tag_cooccurrence(results: &[SearchResult], limit: usize) -> Vec<TagCooccurrence> {
+    let mut pair_counts: HashMap<(String, String), usize> = HashMap::new();
+    for r in results {
+        let mut tags: Vec<String> = super::parse_tags_json(&r.memory.tags);
+        tags.sort();
+        tags.dedup();
+        for i in 0..tags.len() {
+            for j in (i + 1)..tags.len() {
+                let key = (tags[i].clone(), tags[j].clone());
+                *pair_counts.entry(key).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut pairs: Vec<TagCooccurrence> = pair_counts
+        .into_iter()
+        .map(|((tag_a, tag_b), count)| TagCooccurrence {
+            tag_a,
+            tag_b,
+            count,
+        })
+        .collect();
+    pairs.sort_by(|a, b| b.count.cmp(&a.count));
+    pairs.truncate(limit);
+    pairs
+}
+
+/// Parse an ISO-8601 date string into a comparable string (normalize format).
+fn parse_iso_date(s: &str) -> Option<String> {
+    // Accept both "2024-01-15" and "2024-01-15T00:00:00Z" formats.
+    // Return normalized form for string comparison against created_at.
+    let trimmed = s.trim();
+    if trimmed.len() >= 10 {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
 }
 
 /// Auto-link a memory to similar memories based on embedding similarity.
