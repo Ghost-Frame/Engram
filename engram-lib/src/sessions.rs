@@ -338,6 +338,7 @@ pub struct SessionCreateRequest {
     pub agent: String,
 }
 
+#[tracing::instrument(skip(db, req), fields(agent = %req.agent))]
 pub async fn create_session(
     db: &Database,
     req: &SessionCreateRequest,
@@ -360,6 +361,7 @@ pub async fn create_session(
     get_session(db, &id, user_id).await
 }
 
+#[tracing::instrument(skip(db), fields(session_id = %session_id))]
 pub async fn get_session(db: &Database, session_id: &str, user_id: i64) -> Result<SessionInfo> {
     let session_id = session_id.to_string();
     db.read(move |conn| {
@@ -376,6 +378,7 @@ pub async fn get_session(db: &Database, session_id: &str, user_id: i64) -> Resul
 }
 
 /// DOS-L4: enforce per-request pagination -- default 50 rows, max 500.
+#[tracing::instrument(skip(db))]
 pub async fn list_sessions(
     db: &Database,
     user_id: i64,
@@ -403,6 +406,7 @@ pub async fn list_sessions(
     .await
 }
 
+#[tracing::instrument(skip(db, line), fields(session_id = %session_id, line_len = line.len()))]
 pub async fn append_output(
     db: &Database,
     session_id: &str,
@@ -461,6 +465,7 @@ pub async fn append_output(
     Ok(())
 }
 
+#[tracing::instrument(skip(db), fields(session_id = %session_id))]
 pub async fn get_session_output(
     db: &Database,
     session_id: &str,

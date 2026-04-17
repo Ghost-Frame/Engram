@@ -466,6 +466,7 @@ pub async fn record_execution(
 }
 
 /// Get execution history for a skill.
+#[tracing::instrument(skip(db))]
 pub async fn get_executions(
     db: &Database,
     skill_id: i64,
@@ -513,6 +514,7 @@ pub async fn get_executions(
 
 // -- Judgments --
 
+#[tracing::instrument(skip(db, rationale), fields(judge_agent = %judge_agent))]
 pub async fn add_judgment(
     db: &Database,
     skill_id: i64,
@@ -560,6 +562,7 @@ pub async fn add_judgment(
     })
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_judgments(
     db: &Database,
     skill_id: i64,
@@ -600,6 +603,7 @@ pub async fn get_judgments(
 
 // -- Tool quality --
 
+#[tracing::instrument(skip(db), fields(tool_name = %tool_name, agent = %agent))]
 pub async fn record_tool_quality(
     db: &Database,
     tool_name: &str,
@@ -630,6 +634,7 @@ pub async fn record_tool_quality(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(tool_name = %tool_name))]
 pub async fn get_tool_quality(db: &Database, tool_name: &str) -> Result<serde_json::Value> {
     let tool_name_owned = tool_name.to_string();
 
@@ -676,6 +681,7 @@ pub async fn get_tool_quality(db: &Database, tool_name: &str) -> Result<serde_js
 
 // -- Skill tags --
 
+#[tracing::instrument(skip(db))]
 pub async fn get_skill_tags(db: &Database, skill_id: i64, user_id: i64) -> Result<Vec<String>> {
     get_skill(db, skill_id, user_id).await?;
 
@@ -699,6 +705,7 @@ pub async fn get_skill_tags(db: &Database, skill_id: i64, user_id: i64) -> Resul
 
 // -- Tool deps --
 
+#[tracing::instrument(skip(db))]
 pub async fn get_tool_deps(db: &Database, skill_id: i64, user_id: i64) -> Result<Vec<String>> {
     get_skill(db, skill_id, user_id).await?;
 
@@ -727,6 +734,7 @@ pub fn check_tool_safety(required_tools: &[String], available_tools: &[String]) 
 
 // -- Skill lineage --
 
+#[tracing::instrument(skip(db))]
 pub async fn get_lineage(db: &Database, skill_id: i64, user_id: i64) -> Result<Vec<i64>> {
     get_skill(db, skill_id, user_id).await?;
     // Only return parents that also belong to the caller; filter out any foreign-tenant ids
