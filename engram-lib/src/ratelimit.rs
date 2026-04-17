@@ -312,6 +312,44 @@ pub async fn check_and_increment(
     .await
 }
 
+/// Like `check_and_increment` but increments by `cost` instead of 1.
+/// Used for per-endpoint weighted rate limiting where expensive operations
+/// consume more tokens from the user's budget.
+pub async fn check_and_increment_by(
+    db: &Database,
+    key: &str,
+    max_requests: i64,
+    window_seconds: i64,
+    cost: i64,
+) -> Result<bool> {
+    let key_owned = key.to_string();
+
+    db.write(move |conn| {
+        let count: i64 = conn
+            .query_row(
+                "INSERT INTO rate_limits (key, count, window_start, updated_at)
+                 VALUES (?1, ?3, datetime('now'), datetime('now'))
+                 ON CONFLICT(key) DO UPDATE SET
+                     count = CASE
+                         WHEN (strftime('%s','now') - strftime('%s', window_start)) > ?2 THEN ?3
+                         ELSE count + ?3
+                     END,
+                     window_start = CASE
+                         WHEN (strftime('%s','now') - strftime('%s', window_start)) > ?2 THEN datetime('now')
+                         ELSE window_start
+                     END,
+                     updated_at = datetime('now')
+                 RETURNING count",
+                rusqlite::params![key_owned, window_seconds, cost],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        Ok(count <= max_requests)
+    })
+    .await
+}
+
 /// Delete rate-limit rows whose window expired more than `grace_seconds` ago.
 ///
 /// SECURITY: without periodic cleanup, spoofed pre-auth keys (e.g. from
