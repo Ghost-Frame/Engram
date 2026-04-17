@@ -4,12 +4,35 @@ use crate::embeddings::download::ensure_embedding_model;
 use crate::embeddings::normalize::{l2_normalize, mean_pool, weighted_mean_pool};
 use crate::embeddings::EmbeddingProvider;
 use crate::{EngError, Result};
+use lru::LruCache;
 use ort::session::Session;
 use ort::value::Tensor;
+use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use tokenizers::Tokenizer;
 use tracing::info;
+
+// ---------------------------------------------------------------------------
+// Embedding cache -- avoids re-computing identical embeddings within a session.
+// Keyed by a 64-bit SipHash of the input text, capacity 10k entries.
+// ---------------------------------------------------------------------------
+
+const EMBEDDING_CACHE_CAPACITY: usize = 10_000;
+
+static EMBEDDING_CACHE: LazyLock<Mutex<LruCache<u64, Vec<f32>>>> = LazyLock::new(|| {
+    Mutex::new(LruCache::new(
+        NonZeroUsize::new(EMBEDDING_CACHE_CAPACITY).unwrap(),
+    ))
+});
+
+/// Hash text to a u64 cache key using the default SipHash hasher.
+fn cache_key(text: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Local ONNX-based embedding provider using bge-m3 (or compatible model).
 ///
@@ -122,7 +145,16 @@ impl OnnxProvider {
 
 impl OnnxInner {
     /// Embed a single text string (no chunking).
+    /// Checks the module-level LRU cache first; inserts on cache miss.
     fn embed_single(&self, text: &str) -> Result<Vec<f32>> {
+        // -- Cache lookup --
+        let key = cache_key(text);
+        if let Ok(mut cache) = EMBEDDING_CACHE.lock() {
+            if let Some(cached) = cache.get(&key) {
+                return Ok(cached.clone());
+            }
+        }
+
         // 1. Tokenize
         let encoding = self
             .tokenizer
@@ -155,41 +187,42 @@ impl OnnxInner {
                 EngError::Internal(format!("failed to create attention_mask tensor: {}", e))
             })?;
 
-        // 4. Run inference using named inputs macro.
-        // ort::inputs! with "name" => value syntax returns a Vec (not a Result).
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|e| EngError::Internal(format!("session mutex poisoned: {}", e)))?;
+        // 4. Run inference -- hold the session lock for the forward pass and output
+        // extraction. Tokenization (above) and pooling/normalization (below) are lock-free.
+        let (raw_data, shape) = {
+            let mut session = self
+                .session
+                .lock()
+                .map_err(|e| EngError::Internal(format!("session mutex poisoned: {}", e)))?;
 
-        let outputs = session
-            .run(ort::inputs![
-                "input_ids" => ids_tensor,
-                "attention_mask" => mask_tensor,
-            ])
-            .map_err(|e| EngError::Internal(format!("ort inference error: {}", e)))?;
+            let outputs = session
+                .run(ort::inputs![
+                    "input_ids" => ids_tensor,
+                    "attention_mask" => mask_tensor,
+                ])
+                .map_err(|e| EngError::Internal(format!("ort inference error: {}", e)))?;
 
-        // 5. Extract first output tensor as ArrayViewD<f32>
-        let output_value = &outputs[0];
-        let tensor_view = output_value
-            .try_extract_array::<f32>()
-            .map_err(|e| EngError::Internal(format!("failed to extract output tensor: {}", e)))?;
-
-        let shape = tensor_view.shape();
+            // 5. Extract output tensor data into owned Vecs so we can release the lock.
+            let output_value = &outputs[0];
+            let tensor_view = output_value
+                .try_extract_array::<f32>()
+                .map_err(|e| {
+                    EngError::Internal(format!("failed to extract output tensor: {}", e))
+                })?;
+            let shape = tensor_view.shape().to_vec();
+            let data = tensor_view
+                .as_slice()
+                .ok_or_else(|| EngError::Internal("output tensor not contiguous".to_string()))?
+                .to_vec();
+            (data, shape)
+        };
+        // Lock released -- mean pooling and normalization are lock-free.
 
         // 6. Handle 2D [1, dim] vs 3D [1, seq, dim] output
         let mut embedding = if shape.len() == 2 {
-            // [1, dim] -- take the single row
-            tensor_view
-                .as_slice()
-                .ok_or_else(|| EngError::Internal("output tensor not contiguous".to_string()))?
-                .to_vec()
+            raw_data
         } else if shape.len() == 3 {
-            // [1, seq, dim] -- mean pool over non-padding positions
-            let hidden = tensor_view
-                .as_slice()
-                .ok_or_else(|| EngError::Internal("output tensor not contiguous".to_string()))?;
-            mean_pool(hidden, &attention_mask_for_pool, seq_len, self.dim)
+            mean_pool(&raw_data, &attention_mask_for_pool, seq_len, self.dim)
         } else {
             return Err(EngError::Internal(format!(
                 "unexpected output tensor shape: {:?}",
@@ -200,6 +233,11 @@ impl OnnxInner {
         // 7. L2 normalize and truncate to dim
         l2_normalize(&mut embedding);
         embedding.truncate(self.dim);
+
+        // -- Cache insert --
+        if let Ok(mut cache) = EMBEDDING_CACHE.lock() {
+            cache.put(key, embedding.clone());
+        }
 
         Ok(embedding)
     }

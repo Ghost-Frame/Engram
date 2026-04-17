@@ -714,8 +714,15 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
         top_ids.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         top_ids.truncate(strategy.relationship_seed_limit);
 
-        for (seed_id, _) in &top_ids {
-            if let Ok(rows) = fetch_graph_neighbors(db, *seed_id, user_id).await {
+        // Fire all neighbor fetches in parallel instead of sequential per-seed.
+        let neighbor_futures: Vec<_> = top_ids
+            .iter()
+            .map(|(seed_id, _)| fetch_graph_neighbors(db, *seed_id, user_id))
+            .collect();
+        let neighbor_results = futures::future::join_all(neighbor_futures).await;
+
+        for result in neighbor_results {
+            if let Ok(rows) = result {
                 let mut added = 0usize;
                 for row in rows {
                     if added >= strategy.hop1_limit {

@@ -182,13 +182,16 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
     let memories_count = scores_vec.len();
 
     // Wrap batch UPDATEs in transaction for atomicity (S1-5/S1-6 fix).
+    // Use prepare_cached so the statement is parsed once and reused across N rows.
     db.transaction(move |tx| {
-        for (id, normalized) in &scores_vec {
-            tx.execute(
+        let mut stmt = tx
+            .prepare_cached(
                 "UPDATE memories SET pagerank_score = ?1 WHERE id = ?2 AND user_id = ?3",
-                rusqlite::params![normalized, id, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
+        for (id, normalized) in &scores_vec {
+            stmt.execute(rusqlite::params![normalized, id, user_id])
+                .map_err(rusqlite_to_eng_error)?;
         }
         Ok(())
     })

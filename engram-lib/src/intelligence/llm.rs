@@ -4,6 +4,16 @@
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
+/// Shared HTTP client for LLM calls -- avoids per-request TLS/connection-pool
+/// setup. 120s timeout matches the old per-call builder.
+static LLM_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .pool_max_idle_per_host(4)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+});
+
 /// Options for LLM calls.
 #[derive(Debug, Clone)]
 pub struct LlmOptions {
@@ -75,12 +85,7 @@ pub async fn call_llm(
         },
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| format!("http client error: {}", e))?;
-
-    let resp = client
+    let resp = LLM_CLIENT
         .post(&url)
         .json(&body)
         .send()
