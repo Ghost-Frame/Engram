@@ -2,6 +2,7 @@
 name = "kleos-migrate"
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 description = "ETL tool to migrate Kleos from libsql to rusqlite + LanceDB"
 
 [[bin]]

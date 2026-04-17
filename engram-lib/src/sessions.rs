@@ -9,7 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-const MAX_OUTPUT_LINES: usize = 10_000;
+use crate::validation::MAX_SHELL_OUTPUT_LINES as MAX_OUTPUT_LINES;
 
 // ---------------------------------------------------------------------------
 // SessionStatus -- lifecycle status for agent sessions.

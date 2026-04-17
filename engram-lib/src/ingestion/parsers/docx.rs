@@ -8,11 +8,13 @@
 // for targeted string matching.
 
 use crate::ingestion::types::ParsedDocument;
+use crate::validation::MAX_DOCX_XML_BYTES;
 use crate::Result;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 
-const MAX_DOCX_XML_BYTES: u64 = 100 * 1024 * 1024;
+/// u64 view of the centralized byte limit.
+const MAX_DOCX_XML_BYTES_U64: u64 = MAX_DOCX_XML_BYTES as u64;
 
 /// Parse DOCX binary input into a parsed document.
 pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
@@ -24,24 +26,24 @@ pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
         let entry = archive.by_name("word/document.xml").map_err(|_| {
             crate::EngError::Internal("Not a valid DOCX: missing word/document.xml".to_string())
         })?;
-        if entry.size() > MAX_DOCX_XML_BYTES {
+        if entry.size() > MAX_DOCX_XML_BYTES_U64 {
             return Err(crate::EngError::InvalidInput(format!(
                 "DOCX document.xml too large: {} bytes (max {})",
                 entry.size(),
-                MAX_DOCX_XML_BYTES
+                MAX_DOCX_XML_BYTES_U64
             )));
         }
         let mut content = String::new();
         entry
-            .take(MAX_DOCX_XML_BYTES + 1)
+            .take(MAX_DOCX_XML_BYTES_U64 + 1)
             .read_to_string(&mut content)
             .map_err(|e| {
                 crate::EngError::Internal(format!("Failed to read document.xml: {}", e))
             })?;
-        if content.len() as u64 > MAX_DOCX_XML_BYTES {
+        if content.len() as u64 > MAX_DOCX_XML_BYTES_U64 {
             return Err(crate::EngError::InvalidInput(format!(
                 "DOCX document.xml exceeds max size {}",
-                MAX_DOCX_XML_BYTES
+                MAX_DOCX_XML_BYTES_U64
             )));
         }
         content

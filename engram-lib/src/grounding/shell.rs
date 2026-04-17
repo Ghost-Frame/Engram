@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio::process::Command;
 
+use crate::validation::MAX_SHELL_OUTPUT_BYTES as MAX_OUTPUT_SIZE;
+
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
-const MAX_OUTPUT_SIZE: usize = 100_000;
 
 /// SECURITY (SEC-CRIT-4 / SEC-HIGH-7): comma-separated allowlist of argv0
 /// values that `shell_exec` will accept. Empty or unset means "no shell

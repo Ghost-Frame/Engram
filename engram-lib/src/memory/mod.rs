@@ -1,3 +1,19 @@
+//! Memory domain -- storage, retrieval, and lifecycle for the core `memories` table.
+//!
+//! Submodules:
+//! - [`search`]  hybrid search (FTS + vector + graph), faceted search, RRF fusion.
+//! - [`fts`]     SQLite FTS5 helpers and tokenization.
+//! - [`vector`]  vector-search helpers over the LanceDB embeddings index.
+//! - [`scoring`] decay, pagerank, and per-channel scoring utilities.
+//! - [`simhash`] near-duplicate detection via SimHash / Hamming buckets.
+//! - [`types`]   request/response DTOs, `Memory`, `SearchResult`.
+//!
+//! This module (`mod.rs`) owns the CRUD surface: `store`, `get`, `list`,
+//! `update`, `delete`, plus tag/version helpers. Search lives in `search.rs`.
+//! The public `MEMORY_COLUMNS` constant and `row_to_memory` helper keep the
+//! SELECT shape and row-to-struct mapping in sync -- see the guard tests at
+//! the bottom of this file.
+
 pub mod fts;
 pub mod scoring;
 pub mod search;
@@ -179,8 +195,13 @@ pub(crate) const MEMORY_COLUMNS: &str = "id, content, category, source, session_
     fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
     valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated";
 
+/// Number of columns in `MEMORY_COLUMNS`. Must match the highest index
+/// `row_to_memory` reads from (indices 0..MEMORY_COLUMN_COUNT-1).
+pub(crate) const MEMORY_COLUMN_COUNT: usize = 48;
+
 // -- Public CRUD functions ---
 
+#[tracing::instrument(skip(db, req), fields(user_id = req.user_id.unwrap_or(0), content_len = req.content.len()))]
 pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
     // 1. Validate content
     let content = req.content.trim().to_string();
@@ -271,6 +292,13 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
 
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
         warn!("pagerank dirty mark failed on store: {}", e);
+    }
+
+    // Compute and persist emotional valence for future affect-weighted retrieval.
+    // Best-effort: a failure here must not block the store.
+    if let Err(e) = crate::intelligence::valence::store_valence(db, new_id, &content, user_id).await
+    {
+        warn!("valence analysis failed for memory {}: {}", new_id, e);
     }
 
     search::invalidate_search_cache(user_id);
@@ -368,6 +396,7 @@ fn store_transactional_rusqlite(
 }
 
 /// Retrieve a memory by ID for content access. Filters out forgotten and archived memories.
+#[tracing::instrument(skip(db))]
 pub async fn get(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
     let sql = format!(
         "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_archived = 0",
@@ -379,6 +408,7 @@ pub async fn get(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
 /// Retrieve a memory by ID for ownership/existence checks. Only filters forgotten memories,
 /// allowing archived memories to be returned. Use this for permission checks, link targets,
 /// and version chain lookups where the memory must exist but doesn't need to be active.
+#[tracing::instrument(skip(db))]
 pub async fn get_for_ownership(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
     let sql = format!(
         "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
@@ -428,6 +458,7 @@ async fn get_internal(
     Ok(memory)
 }
 
+#[tracing::instrument(skip(db, opts), fields(user_id = opts.user_id.unwrap_or(0), limit = opts.limit))]
 pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     // SECURITY (SEC-C3): user_id MUST be set. Without a tenant filter the
     // query returns every user's memories. All HTTP handlers set this, but
@@ -502,6 +533,7 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
     // Soft delete -- set is_forgotten, record reason
     let affected = db
@@ -543,6 +575,7 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
 /// List soft-deleted memories for a user (recovery window).
 /// Only returns memories deleted by the user (`forget_reason = 'user_deleted'`),
 /// not system-initiated forgets (consolidation, contradiction, etc.).
+#[tracing::instrument(skip(db))]
 pub async fn list_trashed(db: &Database, user_id: i64, limit: usize) -> Result<Vec<Memory>> {
     let sql = format!(
         "SELECT {} FROM memories \
@@ -566,6 +599,7 @@ pub async fn list_trashed(db: &Database, user_id: i64, limit: usize) -> Result<V
 
 /// Restore a soft-deleted memory (undo user delete).
 /// Returns the restored memory. Fails if the memory is not in a user-deleted state.
+#[tracing::instrument(skip(db))]
 pub async fn restore(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
     let affected = db
         .write(move |conn| {
@@ -593,6 +627,7 @@ pub async fn restore(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
 
 /// Permanently delete memories that have been in the trash longer than the
 /// retention window (default 30 days). Returns the number of purged rows.
+#[tracing::instrument(skip(db))]
 pub async fn purge_trashed(db: &Database, retention_days: i64) -> Result<usize> {
     db.write(move |conn| {
         conn.execute(
@@ -607,6 +642,7 @@ pub async fn purge_trashed(db: &Database, retention_days: i64) -> Result<usize> 
     .await
 }
 
+#[tracing::instrument(skip(db, req))]
 pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) -> Result<Memory> {
     // 1. Get the existing memory, scoped to user_id (outside transaction - read only)
     let sql = format!(
@@ -823,6 +859,7 @@ fn update_transactional_rusqlite(
 
 // -- Additional DB operations matching TS db.ts ---
 
+#[tracing::instrument(skip(db))]
 pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
@@ -855,6 +892,7 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
     Ok(())
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
@@ -878,6 +916,7 @@ pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
@@ -901,6 +940,7 @@ pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()>
     Ok(())
 }
 
+#[tracing::instrument(skip(db, reason))]
 pub async fn update_forget_reason(
     db: &Database,
     id: i64,
@@ -920,6 +960,7 @@ pub async fn update_forget_reason(
     Ok(())
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn adjust_importance(
     db: &Database,
     memory_id: i64,
@@ -939,6 +980,7 @@ pub async fn adjust_importance(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn insert_link(
     db: &Database,
     source_id: i64,
@@ -983,6 +1025,7 @@ pub async fn insert_link(
     Ok(())
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn update_source_count(
     db: &Database,
     id: i64,
@@ -1000,6 +1043,7 @@ pub async fn update_source_count(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
     let Some(index) = db.vector_index.as_ref() else {
         return Ok(0);
@@ -1036,7 +1080,7 @@ pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
         let embedding = blob_to_embedding(&emb_blob);
         index.insert(memory_id, user_id, &embedding).await?;
         count += 1;
-        if count.is_multiple_of(1000) {
+        if count % 1000 == 0 {
             tracing::info!(count, "rebuilt LanceDB vector index rows");
         }
     }
@@ -1056,6 +1100,7 @@ pub struct VectorSyncReplayReport {
 /// LanceDB op and remove the row on success. Rows whose underlying memory
 /// no longer has an embedding (or has been hard-deleted) are considered
 /// skipped and also removed.
+#[tracing::instrument(skip(db))]
 pub async fn replay_vector_sync_pending(
     db: &Database,
     limit: usize,
@@ -1168,6 +1213,7 @@ pub async fn replay_vector_sync_pending(
 
 /// Returns the distinct user_ids that have rows in `vector_sync_pending`.
 /// Used by the background task for per-user round-robin scheduling (MT-F17).
+#[tracing::instrument(skip(db))]
 pub async fn vector_sync_pending_users(db: &Database) -> Result<Vec<i64>> {
     db.read(|conn| {
         let mut stmt = conn
@@ -1185,6 +1231,7 @@ pub async fn vector_sync_pending_users(db: &Database) -> Result<Vec<i64>> {
 
 /// Same as `replay_vector_sync_pending` but processes only entries belonging
 /// to a single user. Called by the per-user round-robin background task (MT-F17).
+#[tracing::instrument(skip(db))]
 pub async fn replay_vector_sync_pending_for_user(
     db: &Database,
     user_id: i64,
@@ -1296,6 +1343,7 @@ pub async fn replay_vector_sync_pending_for_user(
     Ok(report)
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_all_tags(db: &Database, user_id: i64) -> Result<Vec<TagCount>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -1330,6 +1378,7 @@ pub async fn list_all_tags(db: &Database, user_id: i64) -> Result<Vec<TagCount>>
     .await
 }
 
+#[tracing::instrument(skip(db, tags), fields(tag_count = tags.len()))]
 pub async fn search_by_tags(
     db: &Database,
     user_id: i64,
@@ -1350,9 +1399,7 @@ pub async fn search_by_tags(
     // Use json_each() to push tag filtering to SQL level instead of
     // scanning every row and deserializing in Rust.
     let tag_count = normalized.len();
-    let placeholders: Vec<String> = (0..tag_count)
-        .map(|i| format!("?{}", i + 2))
-        .collect();
+    let placeholders: Vec<String> = (0..tag_count).map(|i| format!("?{}", i + 2)).collect();
 
     let sql = if match_all {
         // match_all: memory must contain ALL requested tags.
@@ -1396,14 +1443,17 @@ pub async fn search_by_tags(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         // Bind user_id at index 1, then each tag at indices 2..N+1.
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(tag_count + 1);
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(tag_count + 1);
         params_vec.push(Box::new(user_id));
         for tag in &normalized {
             params_vec.push(Box::new(tag.clone()));
         }
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params_vec.iter().map(|b| b.as_ref()).collect();
-        let mut rows = stmt.query(param_refs.as_slice()).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(param_refs.as_slice())
+            .map_err(rusqlite_to_eng_error)?;
         let mut memories = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             memories.push(row_to_memory(row)?);
@@ -1413,6 +1463,7 @@ pub async fn search_by_tags(
     .await
 }
 
+#[tracing::instrument(skip(db, tags), fields(tag_count = tags.len()))]
 pub async fn update_memory_tags(
     db: &Database,
     memory_id: i64,
@@ -1440,6 +1491,7 @@ pub async fn update_memory_tags(
     Ok(())
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_links_for(
     db: &Database,
     memory_id: i64,
@@ -1483,6 +1535,7 @@ pub async fn get_links_for(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_version_chain(
     db: &Database,
     memory_id: i64,
@@ -1528,6 +1581,7 @@ async fn count_user_rows(db: &Database, sql: &str, user_id: i64) -> Result<i64> 
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile> {
     let (memory_count, oldest_memory, newest_memory, avg_importance) = db
         .read(move |conn| {
@@ -1609,6 +1663,7 @@ pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile
     })
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
     let memories = count_user_rows(
         db,
@@ -1681,4 +1736,143 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
         skills,
         categories,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guard: MEMORY_COLUMNS and row_to_memory must stay aligned. If this test
+    /// fails, either the SELECT column list or the row_to_memory mapping
+    /// drifted -- both must be updated together.
+    #[test]
+    fn memory_columns_count_matches_row_mapping() {
+        let n = MEMORY_COLUMNS
+            .split(',')
+            .filter(|s| !s.trim().is_empty())
+            .count();
+        assert_eq!(
+            n, MEMORY_COLUMN_COUNT,
+            "MEMORY_COLUMNS has {n} columns; MEMORY_COLUMN_COUNT says {MEMORY_COLUMN_COUNT}. \
+             Update row_to_memory mapping and MEMORY_COLUMN_COUNT together."
+        );
+    }
+
+    /// Guard: the SELECT list must pull columns from `memories` with the same
+    /// order that `row_to_memory` reads by index. A live in-memory DB is the
+    /// cheapest way to catch typos (renamed column, wrong name) without
+    /// waiting for a runtime hit.
+    #[tokio::test]
+    async fn memory_columns_match_schema_for_select() {
+        use rusqlite::params;
+        let db = Database::connect_memory().await.expect("in-mem db");
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, source, user_id, importance, confidence, \
+                 created_at, updated_at, is_latest, is_forgotten, is_archived) \
+                 VALUES ('col-audit', 'general', 'test', 1, 5, 1.0, \
+                 datetime('now'), datetime('now'), 1, 0, 0)",
+                params![],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .expect("seed");
+
+        let sql = format!("SELECT {MEMORY_COLUMNS} FROM memories LIMIT 1");
+        let got = db
+            .read(move |conn| {
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let mem = stmt
+                    .query_row(params![], |row| {
+                        row_to_memory(row).map_err(|e| {
+                            rusqlite::Error::ToSqlConversionFailure(Box::new(
+                                std::io::Error::other(e.to_string()),
+                            ))
+                        })
+                    })
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                Ok(mem)
+            })
+            .await
+            .expect("select");
+        assert_eq!(got.content, "col-audit");
+    }
+
+    fn valence_store_request(content: &str, user_id: i64) -> crate::memory::types::StoreRequest {
+        crate::memory::types::StoreRequest {
+            content: content.to_string(),
+            category: "test".to_string(),
+            source: "test".to_string(),
+            importance: 5,
+            tags: None,
+            embedding: None,
+            session_id: None,
+            is_static: None,
+            user_id: Some(user_id),
+            space_id: None,
+            parent_memory_id: None,
+        }
+    }
+
+    async fn read_valence(db: &Database, id: i64) -> (Option<f64>, Option<String>) {
+        db.read(move |conn| {
+            conn.query_row(
+                "SELECT valence, dominant_emotion FROM memories WHERE id = ?1",
+                rusqlite::params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .expect("read valence")
+    }
+
+    #[tokio::test]
+    async fn store_persists_positive_valence_for_happy_content() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let user_id = 1;
+        let stored = store(
+            &db,
+            valence_store_request("I am ecstatic and thrilled about this release", user_id),
+        )
+        .await
+        .expect("store");
+        let (valence, emotion) = read_valence(&db, stored.id).await;
+        assert!(valence.unwrap_or(0.0) > 0.5, "valence should be positive");
+        assert_ne!(emotion.unwrap_or_default(), "");
+    }
+
+    #[tokio::test]
+    async fn store_persists_negative_valence_for_angry_content() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let user_id = 1;
+        let stored = store(
+            &db,
+            valence_store_request("I am furious and everything crashed", user_id),
+        )
+        .await
+        .expect("store");
+        let (valence, emotion) = read_valence(&db, stored.id).await;
+        assert!(valence.unwrap_or(0.0) < 0.0, "valence should be negative");
+        assert_ne!(emotion.unwrap_or_default(), "");
+    }
+
+    #[tokio::test]
+    async fn store_leaves_valence_null_for_neutral_content() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let user_id = 1;
+        let stored = store(
+            &db,
+            valence_store_request("The meeting is at 3pm tomorrow", user_id),
+        )
+        .await
+        .expect("store");
+        let (valence, emotion) = read_valence(&db, stored.id).await;
+        assert_eq!(valence, None, "neutral content leaves valence null");
+        assert_eq!(emotion, None);
+    }
 }

@@ -175,6 +175,17 @@ pub struct ProactiveMemory {
     pub score: f64,
 }
 
+/// A mined sequence pattern: `antecedent -> consequent` observed `support`
+/// times across the user's memory timeline. `confidence` is
+/// `support / antecedent_total`, i.e. P(consequent | antecedent).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SequencePattern {
+    pub antecedent: String,
+    pub consequent: String,
+    pub support: i64,
+    pub confidence: f64,
+}
+
 // ---------------------------------------------------------------------------
 // Reconsolidation types
 // ---------------------------------------------------------------------------

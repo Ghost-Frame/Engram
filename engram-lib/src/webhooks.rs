@@ -187,6 +187,7 @@ pub fn validate_webhook_url(raw: &str) -> Result<()> {
 ///
 /// Callers should invoke this at **delivery/request time**, not just at
 /// persist time, because DNS can change between the two.
+#[tracing::instrument(skip(raw))]
 pub async fn resolve_and_validate_url(raw: &str) -> Result<()> {
     // Fast-path: reject obvious bad schemes, literal IPs, and known names.
     validate_webhook_url(raw)?;
@@ -247,6 +248,7 @@ fn sign_body(secret: &str, body: &[u8]) -> String {
     hex
 }
 
+#[tracing::instrument(skip(db, url, events, secret), fields(event_count = events.len()))]
 pub async fn create_webhook(
     db: &Database,
     url: &str,
@@ -276,6 +278,7 @@ pub async fn create_webhook(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_webhooks(db: &Database, user_id: i64) -> Result<Vec<Webhook>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -357,6 +360,7 @@ async fn list_webhooks_with_secrets(db: &Database, user_id: i64) -> Result<Vec<W
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn delete_webhook(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -452,6 +456,7 @@ async fn insert_dead_letter(
 }
 
 /// List dead-letter entries for a webhook, most recent first.
+#[tracing::instrument(skip(db))]
 pub async fn list_dead_letters(
     db: &Database,
     webhook_id: i64,
@@ -548,7 +553,11 @@ async fn deliver_with_retry(
     );
     let failure_count = record_delivery_failure(&db, hook_id).await.unwrap_or(0);
     if failure_count >= WEBHOOK_FAILURE_THRESHOLD {
-        tracing::warn!(hook_id, failure_count, "webhook auto-disabled after threshold");
+        tracing::warn!(
+            hook_id,
+            failure_count,
+            "webhook auto-disabled after threshold"
+        );
     }
     let _ = insert_dead_letter(
         &db,
@@ -570,6 +579,7 @@ async fn deliver_with_retry(
 ///
 /// Accepts `&Arc<Database>` so spawned tasks can hold a cheap reference-counted
 /// handle without requiring `Database: Clone`.
+#[tracing::instrument(skip(db, payload), fields(event = %event))]
 pub async fn emit_webhook_event(
     db: &Arc<Database>,
     event: &str,
@@ -612,12 +622,15 @@ pub async fn emit_webhook_event(
 
         let db_clone = Arc::clone(db);
         let event_s = event.to_string();
-        tokio::spawn(deliver_with_retry(db_clone, hook, event_s, body_str, headers));
+        tokio::spawn(deliver_with_retry(
+            db_clone, hook, event_s, body_str, headers,
+        ));
     }
 }
 
 // -- Sync operations --
 
+#[tracing::instrument(skip(db, since))]
 pub async fn get_changes_since(
     db: &Database,
     since: &str,
@@ -905,12 +918,28 @@ mod tests {
             .await
             .unwrap();
         // Insert dead letter
-        insert_dead_letter(&db, 1, "memory.stored", r#"{"test":1}"#, 3, Some("HTTP 500"), Some(500))
-            .await
-            .unwrap();
-        insert_dead_letter(&db, 1, "memory.forgotten", r#"{"test":2}"#, 3, Some("timeout"), None)
-            .await
-            .unwrap();
+        insert_dead_letter(
+            &db,
+            1,
+            "memory.stored",
+            r#"{"test":1}"#,
+            3,
+            Some("HTTP 500"),
+            Some(500),
+        )
+        .await
+        .unwrap();
+        insert_dead_letter(
+            &db,
+            1,
+            "memory.forgotten",
+            r#"{"test":2}"#,
+            3,
+            Some("timeout"),
+            None,
+        )
+        .await
+        .unwrap();
         // List them
         let letters = list_dead_letters(&db, 1, 1, 50).await.unwrap();
         assert_eq!(letters.len(), 2);
@@ -925,7 +954,7 @@ mod tests {
     #[test]
     fn retry_constants_sensible() {
         assert_eq!(MAX_DELIVERY_ATTEMPTS, 3);
-        assert!(RETRY_BASE_MS >= 100);
-        assert!(WEBHOOK_FAILURE_THRESHOLD >= 5);
+        const _: () = assert!(RETRY_BASE_MS >= 100);
+        const _: () = assert!(WEBHOOK_FAILURE_THRESHOLD >= 5);
     }
 }

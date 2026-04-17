@@ -8,10 +8,8 @@
 //! - If user_id is alphanumeric + dash + underscore and <= 64 chars, use it directly
 //! - Otherwise, hash to `t_<sha256_prefix>`
 
+use crate::validation::MAX_TENANT_ID_LENGTH as MAX_DIRECT_LENGTH;
 use sha2::{Digest, Sha256};
-
-/// Maximum length for a direct tenant ID (no hashing).
-const MAX_DIRECT_LENGTH: usize = 64;
 
 /// Length of the SHA256 prefix used for hashed tenant IDs.
 const HASH_PREFIX_LENGTH: usize = 16;

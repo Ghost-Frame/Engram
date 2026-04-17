@@ -255,6 +255,13 @@ async fn body_json(res: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(json!(null))
 }
 
+async fn body_bytes(res: axum::response::Response) -> Vec<u8> {
+    axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .expect("failed to read response body")
+        .to_vec()
+}
+
 async fn pagerank_count_for_user(db: &Database, user_id: i64) -> i64 {
     db.read(move |conn| {
         conn.query_row(
@@ -304,6 +311,27 @@ async fn health_returns_version_field() {
         body.get("version").is_some(),
         "response should include version field"
     );
+}
+
+#[tokio::test]
+async fn health_ready_returns_200_when_db_ok_and_optional_components_absent() {
+    let app = TestApp::new().await;
+    let (status, body) = app.get("/health/ready").await;
+    assert_eq!(status, StatusCode::OK, "ready should be 200 with live DB");
+    assert_eq!(body["status"], "ready");
+    assert_eq!(body["checks"]["database"], "ok");
+    // Embedder + reranker are optional; their absence must not fail readiness.
+    assert_eq!(body["checks"]["embedder"], "disabled");
+    assert_eq!(body["checks"]["reranker"], "disabled");
+    assert!(body["failing"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn health_live_returns_minimal_payload() {
+    let app = TestApp::new().await;
+    let (status, body) = app.get("/health/live").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "ok");
 }
 
 // ---------------------------------------------------------------------------
@@ -811,6 +839,94 @@ async fn search_response_shape() {
     assert!(body.get("results").is_some(), "missing results");
     assert!(body.get("abstained").is_some(), "missing abstained");
     assert!(body.get("top_score").is_some(), "missing top_score");
+}
+
+#[tokio::test]
+async fn schema_endpoints_return_expected_shapes() {
+    let app = TestApp::new().await;
+
+    let (status, index) = app.get("/schema").await;
+    assert_eq!(status, StatusCode::OK);
+    let schemas = index["schemas"].as_array().expect("schemas array");
+    let names: Vec<&str> = schemas
+        .iter()
+        .map(|v| v["name"].as_str().unwrap())
+        .collect();
+    for n in ["memory", "services", "graph"] {
+        assert!(names.contains(&n), "missing schema name: {n}");
+    }
+
+    let (status, mem) = app.get("/schema/memory").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(mem["name"], "Memory");
+    assert!(mem["fields"].as_array().is_some_and(|a| !a.is_empty()));
+    assert!(mem["related_shapes"]["SearchResult"]["fields"].is_array());
+
+    let (status, svc) = app.get("/schema/services").await;
+    assert_eq!(status, StatusCode::OK);
+    let svc_names: Vec<&str> = svc["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["name"].as_str().unwrap())
+        .collect();
+    assert!(svc_names.contains(&"axon"));
+    assert!(svc_names.contains(&"brain"));
+
+    let (status, graph) = app.get("/schema/graph").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(graph["edge"]["name"], "MemoryLink");
+    assert!(graph["endpoints"].as_array().is_some_and(|a| !a.is_empty()));
+}
+
+#[tokio::test]
+async fn search_explain_returns_score_breakdown_and_timings() {
+    let app = TestApp::new().await;
+    app.post(
+        "/store",
+        json!({ "content": "explain endpoint breakdown content", "category": "test" }),
+    )
+    .await;
+
+    let (status, body) = app
+        .post(
+            "/search/explain",
+            json!({ "query": "explain endpoint breakdown", "limit": 5 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "expected 200, got {status}: {body}");
+
+    let results = body["results"].as_array().expect("results array");
+    assert!(!results.is_empty(), "expected at least one result: {body}");
+    let first = &results[0];
+    assert!(
+        first.get("scores").is_some(),
+        "missing scores subobject: {first}"
+    );
+    let scores = &first["scores"];
+    for key in [
+        "lexical",
+        "vector",
+        "graph",
+        "personality",
+        "temporal_boost",
+        "fused",
+        "reranked",
+        "reranker_ms",
+    ] {
+        assert!(scores.get(key).is_some(), "missing scores.{key}: {scores}");
+    }
+
+    let timings = body["timings_ms"].as_object().expect("timings_ms object");
+    for key in ["embed", "hybrid", "rerank", "total"] {
+        assert!(
+            timings.get(key).and_then(|v| v.as_f64()).is_some(),
+            "missing timings_ms.{key}: {body}"
+        );
+    }
+    let pipeline = body["pipeline"].as_object().expect("pipeline object");
+    assert!(pipeline.contains_key("embedded"));
+    assert!(pipeline.contains_key("reranker_applied"));
 }
 
 #[tokio::test]
@@ -1633,4 +1749,314 @@ async fn spawn_mock_credd() -> (String, tokio::task::JoinHandle<()>) {
         axum::serve(listener, app).await.expect("serve credd mock");
     });
     (format!("http://{}", addr), handle)
+}
+
+// ---------------------------------------------------------------------------
+// SSE streaming: /ingest/stream (Part 3.7)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ingest_stream_emits_sse_progress_and_result() {
+    let app = TestApp::new().await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/ingest/stream")
+        .header("Authorization", app.bearer())
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .body(Body::from(
+            json!({
+                "text": "Streaming ingest test body. One paragraph of plaintext content."
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let res = app.router.clone().oneshot(req).await.expect("request");
+    assert_eq!(res.status(), StatusCode::OK, "expected 200 on stream");
+    let content_type = res
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        content_type.starts_with("text/event-stream"),
+        "expected SSE content-type, got {content_type}"
+    );
+
+    let raw = body_bytes(res).await;
+    let text = String::from_utf8_lossy(&raw);
+
+    assert!(
+        text.contains("event: progress"),
+        "expected at least one progress event, body was: {text}"
+    );
+    assert!(
+        text.contains("\"type\":\"detected\"")
+            || text.contains("\"type\":\"parsed\"")
+            || text.contains("\"type\":\"done\""),
+        "expected pipeline phase event in body: {text}"
+    );
+}
+
+#[tokio::test]
+async fn ingest_stream_falls_back_to_json_without_accept_header() {
+    let app = TestApp::new().await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/ingest/stream")
+        .header("Authorization", app.bearer())
+        .header("Content-Type", "application/json")
+        .body(Body::from(json!({ "text": "Fallback body." }).to_string()))
+        .unwrap();
+
+    let res = app.router.clone().oneshot(req).await.expect("request");
+    assert_eq!(res.status(), StatusCode::OK);
+    let raw = body_bytes(res).await;
+    let text = String::from_utf8_lossy(&raw);
+    // Even without SSE Accept, we frame the result as a single SSE event
+    // for consistent client handling.
+    assert!(
+        text.contains("event: result"),
+        "expected result event: {text}"
+    );
+    assert!(
+        text.contains("\"status\":\"completed\"") || text.contains("\"chunks_processed\""),
+        "expected ingestion metadata in body: {text}"
+    );
+}
+
+#[tokio::test]
+async fn ingest_stream_rejects_empty_body() {
+    let app = TestApp::new().await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/ingest/stream")
+        .header("Authorization", app.bearer())
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .body(Body::from(json!({}).to_string()))
+        .unwrap();
+
+    let res = app.router.clone().oneshot(req).await.expect("request");
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// 3.8 Resumable chunked upload
+// ---------------------------------------------------------------------------
+
+fn sha256_hex_test(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+fn b64_test(data: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+#[tokio::test]
+async fn upload_init_chunk_complete_end_to_end() {
+    let app = TestApp::new().await;
+
+    let (status, init) = app
+        .post(
+            "/ingest/upload/init",
+            json!({
+                "filename": "notes.txt",
+                "content_type": "text/plain",
+                "total_chunks": 3,
+                "source": "upload-test",
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "init body: {init}");
+    let upload_id = init["upload_id"].as_str().unwrap().to_string();
+
+    let chunks: Vec<&[u8]> = vec![
+        b"The quick brown fox ",
+        b"jumps over the lazy ",
+        b"dog and keeps going.",
+    ];
+    for (idx, chunk) in chunks.iter().enumerate() {
+        let (cs, cb) = app
+            .post(
+                "/ingest/upload/chunk",
+                json!({
+                    "upload_id": upload_id,
+                    "chunk_index": idx as i64,
+                    "chunk_hash": sha256_hex_test(chunk),
+                    "data": b64_test(chunk),
+                }),
+            )
+            .await;
+        assert_eq!(cs, StatusCode::OK, "chunk {idx} body: {cb}");
+        assert_eq!(cb["chunks_received"].as_i64().unwrap(), (idx as i64) + 1);
+    }
+
+    // Resuming -- re-upload chunk 1 idempotently.
+    let (cs, cb) = app
+        .post(
+            "/ingest/upload/chunk",
+            json!({
+                "upload_id": upload_id,
+                "chunk_index": 1,
+                "chunk_hash": sha256_hex_test(chunks[1]),
+                "data": b64_test(chunks[1]),
+            }),
+        )
+        .await;
+    assert_eq!(cs, StatusCode::OK, "re-chunk body: {cb}");
+    assert_eq!(
+        cb["chunks_received"].as_i64().unwrap(),
+        3,
+        "re-upload should not inflate count"
+    );
+
+    let full: Vec<u8> = chunks.concat();
+    let (fs, fb) = app
+        .post(
+            "/ingest/upload/complete",
+            json!({
+                "upload_id": upload_id,
+                "total_chunks": 3,
+                "final_sha256": sha256_hex_test(&full),
+                "mode": "raw",
+            }),
+        )
+        .await;
+    assert_eq!(fs, StatusCode::OK, "complete body: {fb}");
+    assert_eq!(fb["status"], "completed");
+    assert!(fb["ingested_memories"].as_i64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn upload_chunk_rejects_bad_hash() {
+    let app = TestApp::new().await;
+    let (_, init) = app.post("/ingest/upload/init", json!({})).await;
+    let upload_id = init["upload_id"].as_str().unwrap().to_string();
+
+    let (cs, cb) = app
+        .post(
+            "/ingest/upload/chunk",
+            json!({
+                "upload_id": upload_id,
+                "chunk_index": 0,
+                // Deliberately wrong hash.
+                "chunk_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "data": b64_test(b"hello"),
+            }),
+        )
+        .await;
+    assert_eq!(cs, StatusCode::BAD_REQUEST, "body: {cb}");
+}
+
+#[tokio::test]
+async fn upload_complete_rejects_missing_chunk() {
+    let app = TestApp::new().await;
+    let (_, init) = app
+        .post("/ingest/upload/init", json!({ "total_chunks": 3 }))
+        .await;
+    let upload_id = init["upload_id"].as_str().unwrap().to_string();
+
+    // Upload chunk 0 and chunk 2, skip 1.
+    for idx in [0i64, 2] {
+        let data = format!("chunk-{idx}").into_bytes();
+        let (cs, _) = app
+            .post(
+                "/ingest/upload/chunk",
+                json!({
+                    "upload_id": upload_id,
+                    "chunk_index": idx,
+                    "chunk_hash": sha256_hex_test(&data),
+                    "data": b64_test(&data),
+                }),
+            )
+            .await;
+        assert_eq!(cs, StatusCode::OK);
+    }
+
+    let (fs, fb) = app
+        .post("/ingest/upload/complete", json!({ "upload_id": upload_id }))
+        .await;
+    assert_eq!(fs, StatusCode::BAD_REQUEST, "body: {fb}");
+}
+
+#[tokio::test]
+async fn upload_status_reports_received_indices() {
+    let app = TestApp::new().await;
+    let (_, init) = app.post("/ingest/upload/init", json!({})).await;
+    let upload_id = init["upload_id"].as_str().unwrap().to_string();
+
+    for idx in [0i64, 2] {
+        let data = format!("part-{idx}").into_bytes();
+        app.post(
+            "/ingest/upload/chunk",
+            json!({
+                "upload_id": upload_id,
+                "chunk_index": idx,
+                "chunk_hash": sha256_hex_test(&data),
+                "data": b64_test(&data),
+            }),
+        )
+        .await;
+    }
+
+    let (ss, sb) = app.get(&format!("/ingest/upload/{upload_id}/status")).await;
+    assert_eq!(ss, StatusCode::OK, "status body: {sb}");
+    let received: Vec<i64> = sb["received_indices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert_eq!(received, vec![0, 2]);
+    assert_eq!(sb["chunks_received"].as_i64().unwrap(), 2);
+    assert_eq!(sb["status"], "active");
+}
+
+#[tokio::test]
+async fn upload_abort_clears_chunks() {
+    let app = TestApp::new().await;
+    let (_, init) = app.post("/ingest/upload/init", json!({})).await;
+    let upload_id = init["upload_id"].as_str().unwrap().to_string();
+
+    let data = b"abort-me".to_vec();
+    app.post(
+        "/ingest/upload/chunk",
+        json!({
+            "upload_id": upload_id,
+            "chunk_index": 0,
+            "chunk_hash": sha256_hex_test(&data),
+            "data": b64_test(&data),
+        }),
+    )
+    .await;
+
+    let (abs, abb) = app
+        .post("/ingest/upload/abort", json!({ "upload_id": upload_id }))
+        .await;
+    assert_eq!(abs, StatusCode::OK, "abort body: {abb}");
+    assert_eq!(abb["status"], "aborted");
+
+    // A further chunk upload must now fail because the session is not active.
+    let (cs, _) = app
+        .post(
+            "/ingest/upload/chunk",
+            json!({
+                "upload_id": upload_id,
+                "chunk_index": 1,
+                "chunk_hash": sha256_hex_test(b"x"),
+                "data": b64_test(b"x"),
+            }),
+        )
+        .await;
+    assert_eq!(cs, StatusCode::BAD_REQUEST);
 }

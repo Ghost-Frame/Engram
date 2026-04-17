@@ -36,6 +36,7 @@ pub struct PageRankUpdateResult {
     pub iterations: u32,
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn compute_pagerank(
     db: &Database,
     user_id: i64,
@@ -152,6 +153,7 @@ pub async fn compute_pagerank(
     })
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageRankUpdateResult> {
     let result = compute_pagerank(db, user_id, 0.85, 25).await?;
     if result.scores.is_empty() {
@@ -205,8 +207,8 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
             })
             .await?;
 
-        // ln(2) ≈ 0.6931 for true half-life decay
-        const LN2: f64 = 0.6931471805599453;
+        // ln(2) for true half-life decay.
+        const LN2: f64 = std::f64::consts::LN_2;
         let decay_floor = 0.05;
 
         result
@@ -253,6 +255,7 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
 
 /// Compute normalized PageRank scores for a user and return as a vec of (memory_id, score).
 /// Does not write to any table.
+#[tracing::instrument(skip(db))]
 pub async fn compute_pagerank_for_user(db: &Database, user_id: i64) -> Result<Vec<(i64, f64)>> {
     let result = compute_pagerank(db, user_id, 0.85, 25).await?;
     if result.scores.is_empty() {
@@ -276,6 +279,7 @@ pub async fn compute_pagerank_for_user(db: &Database, user_id: i64) -> Result<Ve
 /// [`persist_pagerank_with_snapshot`] so that only the counted mutations get
 /// cleared. Any increments that arrived while the compute was running stay
 /// behind, and the next refresh cycle picks them up.
+#[tracing::instrument(skip(db))]
 pub async fn snapshot_pagerank_dirty(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
         let result = conn
@@ -295,6 +299,7 @@ pub async fn snapshot_pagerank_dirty(db: &Database, user_id: i64) -> Result<i64>
 /// dirty snapshot from the counter (clamped at zero). See
 /// [`snapshot_pagerank_dirty`] for the usage pattern that avoids losing
 /// concurrent writes.
+#[tracing::instrument(skip(db, scores), fields(score_count = scores.len()))]
 pub async fn persist_pagerank_with_snapshot(
     db: &Database,
     user_id: i64,
@@ -346,12 +351,14 @@ pub async fn persist_pagerank_with_snapshot(
 /// snapshot internally, which is correct for callers that compute and
 /// persist in a single await with no concurrent writers (admin rebuilds,
 /// tests). Background refresh workers should use the explicit snapshot API.
+#[tracing::instrument(skip(db, scores), fields(score_count = scores.len()))]
 pub async fn persist_pagerank(db: &Database, user_id: i64, scores: &[(i64, f64)]) -> Result<()> {
     let snapshot = snapshot_pagerank_dirty(db, user_id).await?;
     persist_pagerank_with_snapshot(db, user_id, scores, snapshot).await
 }
 
 /// Increment the dirty counter for a user. Called after memory/edge mutations.
+#[tracing::instrument(skip(db))]
 pub async fn mark_pagerank_dirty(db: &Database, user_id: i64, delta: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -376,6 +383,7 @@ const CONVERGENCE_THRESHOLD: f64 = 1e-6;
 /// Incremental PageRank update when a new memory is added.
 /// Inserts the memory with base rank and does NOT trigger full recompute.
 /// The new node has no incoming links yet, so it gets the teleportation score only.
+#[tracing::instrument(skip(db))]
 pub async fn incremental_add_memory(db: &Database, memory_id: i64, user_id: i64) -> Result<()> {
     // Get current memory count to compute base rank
     let n: i64 = db
@@ -410,6 +418,7 @@ pub async fn incremental_add_memory(db: &Database, memory_id: i64, user_id: i64)
 
 /// Incremental PageRank update when a link is added.
 /// Propagates score changes locally to affected nodes (2-hop neighborhood).
+#[tracing::instrument(skip(db))]
 pub async fn incremental_add_link(
     db: &Database,
     source_id: i64,
@@ -543,6 +552,7 @@ pub async fn incremental_add_link(
 
 /// Incremental PageRank update when a memory is deleted.
 /// Removes the score and redistributes to remaining nodes.
+#[tracing::instrument(skip(db))]
 pub async fn incremental_remove_memory(db: &Database, memory_id: i64, user_id: i64) -> Result<()> {
     // Get the score being removed
     let removed_score: Option<f64> = db
@@ -614,6 +624,7 @@ pub async fn incremental_remove_memory(db: &Database, memory_id: i64, user_id: i
 
 /// Check if incremental updates have drifted too far from true PageRank.
 /// Returns true if a full recompute is recommended.
+#[tracing::instrument(skip(db))]
 pub async fn needs_full_recompute(
     db: &Database,
     user_id: i64,
@@ -652,6 +663,7 @@ pub async fn needs_full_recompute(
 
 /// Compute PageRank for a single community only.
 /// Much more memory-efficient than global compute for large graphs.
+#[tracing::instrument(skip(db))]
 pub async fn compute_pagerank_for_community(
     db: &Database,
     user_id: i64,
@@ -796,6 +808,7 @@ pub async fn compute_pagerank_for_community(
 
 /// Compute PageRank for all communities in parallel, then merge results.
 /// Much more memory-efficient than loading entire graph at once.
+#[tracing::instrument(skip(db))]
 pub async fn compute_pagerank_by_communities(
     db: &Database,
     user_id: i64,
@@ -867,6 +880,7 @@ pub async fn compute_pagerank_by_communities(
 /// Ensure the pagerank cache is populated for this user. If empty, runs a
 /// synchronous compute and persists the result. Subsequent calls are cheap
 /// (single COUNT query that returns early).
+#[tracing::instrument(skip(db))]
 pub async fn ensure_pagerank_for_user(db: &Database, user_id: i64) -> Result<()> {
     let count: i64 = db
         .read(move |conn| {
@@ -890,6 +904,7 @@ pub async fn ensure_pagerank_for_user(db: &Database, user_id: i64) -> Result<()>
 
 /// Rebuild pagerank for every distinct user in the database.
 /// Used by the admin endpoint when no user_id is specified.
+#[tracing::instrument(skip(db))]
 pub async fn rebuild_all_users(db: &Database) -> Result<usize> {
     let user_ids: Vec<i64> = db
         .read(move |conn| {

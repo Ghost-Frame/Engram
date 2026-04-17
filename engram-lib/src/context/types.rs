@@ -195,3 +195,34 @@ pub struct LayerFlags {
     pub include_working_memory: bool,
     pub include_personality: bool,
 }
+
+// -- SSE progress events -----------------------------------------------------
+
+/// Progress event emitted during streaming context assembly.
+/// Each variant corresponds to a phase completing, so SSE clients
+/// can show progressive feedback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ContextProgressEvent {
+    /// A phase has completed.
+    #[serde(rename = "phase")]
+    Phase {
+        phase: String,
+        count: usize,
+        tokens: usize,
+        elapsed_ms: u64,
+    },
+    /// Context assembly is done; final result follows.
+    #[serde(rename = "done")]
+    Done {
+        total_blocks: usize,
+        total_tokens: usize,
+        elapsed_ms: u64,
+    },
+    /// An error occurred during assembly.
+    #[serde(rename = "error")]
+    Error { message: String },
+}
+
+/// Channel type for sending progress events during streaming assembly.
+pub type ProgressSender = tokio::sync::mpsc::UnboundedSender<ContextProgressEvent>;

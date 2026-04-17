@@ -34,6 +34,7 @@ fn row_to_entity(row: &rusqlite::Row<'_>) -> Result<Entity> {
 
 /// Upsert an entity by (name, entity_type, user_id). On conflict, increments
 /// occurrence_count and updates last_seen_at, then returns the stored entity.
+#[tracing::instrument(skip(db, req), fields(name = %req.name))]
 pub async fn create_entity(db: &Database, req: CreateEntityRequest) -> Result<Entity> {
     let entity_type = req.entity_type.unwrap_or_else(|| "general".to_string());
     // SECURITY: fail closed when user_id is missing so an unauthenticated path
@@ -111,6 +112,7 @@ async fn find_entity_by_name_type(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_entity(db: &Database, id: i64, user_id: i64) -> Result<Entity> {
     let query = format!(
         "SELECT {} FROM entities WHERE id = ?1 AND user_id = ?2 LIMIT 1",
@@ -131,6 +133,7 @@ pub async fn get_entity(db: &Database, id: i64, user_id: i64) -> Result<Entity> 
 }
 
 /// List entities for a user, ordered by occurrence_count descending.
+#[tracing::instrument(skip(db))]
 pub async fn list_entities(
     db: &Database,
     user_id: i64,
@@ -159,6 +162,7 @@ pub async fn list_entities(
 }
 
 /// Find an entity by name (case-sensitive) for a given user.
+#[tracing::instrument(skip(db, name))]
 pub async fn find_entity_by_name(
     db: &Database,
     name: &str,
@@ -183,6 +187,7 @@ pub async fn find_entity_by_name(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn delete_entity(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         let affected = conn
@@ -199,6 +204,7 @@ pub async fn delete_entity(db: &Database, id: i64, user_id: i64) -> Result<()> {
     .await
 }
 
+#[tracing::instrument(skip(db, name, entity_type, description, metadata))]
 pub async fn update_entity(
     db: &Database,
     id: i64,
@@ -265,6 +271,7 @@ pub async fn update_entity(
 /// Upsert a relationship between two entities. On conflict, increments
 /// evidence_count and keeps the higher strength value. Both source and target
 /// must belong to `user_id`, otherwise returns NotFound.
+#[tracing::instrument(skip(db, req))]
 pub async fn create_relationship(
     db: &Database,
     user_id: i64,
@@ -343,14 +350,11 @@ pub async fn create_relationship(
     .await
 }
 
-/// Maximum number of relationships returned per entity. Hot entities
-/// (for example a person mentioned in many memories) can accumulate
-/// thousands of edges; without a cap the response would blow up memory
-/// and client parsing.
-pub const MAX_ENTITY_RELATIONSHIPS: i64 = 1000;
+pub use crate::validation::MAX_ENTITY_RELATIONSHIPS;
 
 /// Return relationships where the entity appears as source or target,
 /// ordered by strength, capped at [`MAX_ENTITY_RELATIONSHIPS`].
+#[tracing::instrument(skip(db))]
 pub async fn get_entity_relationships(
     db: &Database,
     entity_id: i64,
@@ -368,7 +372,11 @@ pub async fn get_entity_relationships(
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![entity_id, user_id, MAX_ENTITY_RELATIONSHIPS])
+            .query(rusqlite::params![
+                entity_id,
+                user_id,
+                MAX_ENTITY_RELATIONSHIPS as i64
+            ])
             .map_err(rusqlite_to_eng_error)?;
         let mut rels = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -390,6 +398,7 @@ pub async fn get_entity_relationships(
 // -- Memory-Entity linking --
 
 /// Link a memory to an entity with a salience score. Silently ignores duplicates.
+#[tracing::instrument(skip(db))]
 pub async fn link_memory_entity(
     db: &Database,
     memory_id: i64,
@@ -436,6 +445,7 @@ pub async fn link_memory_entity(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn unlink_memory_entity(
     db: &Database,
     memory_id: i64,
@@ -464,6 +474,7 @@ pub async fn unlink_memory_entity(
 }
 
 /// Return all entities linked to the given memory.
+#[tracing::instrument(skip(db))]
 pub async fn get_memory_entities(
     db: &Database,
     memory_id: i64,
@@ -498,6 +509,7 @@ pub async fn get_memory_entities(
 }
 
 /// Return the IDs of all memories linked to the given entity.
+#[tracing::instrument(skip(db))]
 pub async fn get_entity_memories(db: &Database, entity_id: i64, user_id: i64) -> Result<Vec<i64>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -522,6 +534,7 @@ pub async fn get_entity_memories(db: &Database, entity_id: i64, user_id: i64) ->
     .await
 }
 
+#[tracing::instrument(skip(db, query), fields(query_len = query.len()))]
 pub async fn search_entity_memories(
     db: &Database,
     entity_id: i64,
@@ -567,6 +580,7 @@ pub async fn search_entity_memories(
     .await
 }
 
+#[tracing::instrument(skip(db, relationship_type))]
 pub async fn delete_relationship(
     db: &Database,
     entity_id: i64,
@@ -756,6 +770,7 @@ fn strip_punctuation(s: &str) -> &str {
 /// Extract entities from content, upsert each into the DB, link them to the
 /// given memory, and record pairwise co-occurrences. Returns the full entity
 /// list found in the content.
+#[tracing::instrument(skip(db, content), fields(content_len = content.len()))]
 pub async fn extract_and_link_entities(
     db: &Database,
     memory_id: i64,

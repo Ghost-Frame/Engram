@@ -34,6 +34,7 @@ pub mod platform;
 pub mod portability;
 pub mod projects;
 pub mod prompts;
+pub mod schema;
 pub mod scratchpad;
 pub mod search;
 pub mod security;

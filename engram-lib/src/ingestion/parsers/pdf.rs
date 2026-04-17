@@ -6,11 +6,9 @@
 // Handles multi-page documents; returns a single ParsedDocument with all text.
 
 use crate::ingestion::types::ParsedDocument;
+use crate::validation::{MAX_PDF_INPUT_BYTES, MAX_PDF_TEXT_BYTES};
 use crate::Result;
 use std::collections::HashMap;
-
-const MAX_PDF_INPUT_BYTES: usize = 100 * 1024 * 1024;
-const MAX_PDF_TEXT_BYTES: usize = 100 * 1024 * 1024;
 
 /// Parse PDF binary input into a parsed document.
 pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {

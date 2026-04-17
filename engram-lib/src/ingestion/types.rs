@@ -192,3 +192,55 @@ pub struct FormatMeta {
     pub extension: Option<String>,
     pub mime: Option<String>,
 }
+
+// -- SSE progress events ----------------------------------------------------
+
+/// Progress event emitted during streaming ingestion.
+/// Each variant marks a pipeline phase so SSE clients can show live feedback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum IngestProgressEvent {
+    /// Format detected.
+    #[serde(rename = "detected")]
+    Detected { job_id: String, format: String },
+    /// Documents parsed.
+    #[serde(rename = "parsed")]
+    Parsed {
+        job_id: String,
+        total_documents: usize,
+    },
+    /// A document has been chunked.
+    #[serde(rename = "chunked")]
+    Chunked {
+        job_id: String,
+        document_index: usize,
+        document_title: String,
+        chunks: usize,
+    },
+    /// Chunks for a document have been processed and stored.
+    #[serde(rename = "processed")]
+    Processed {
+        job_id: String,
+        document_index: usize,
+        memories_created: usize,
+        chunks_done: usize,
+        chunks_total: usize,
+    },
+    /// Ingestion completed -- final result follows.
+    #[serde(rename = "done")]
+    Done {
+        job_id: String,
+        total_documents: usize,
+        total_chunks: usize,
+        total_memories: usize,
+        duration_ms: u128,
+    },
+    /// Ingestion was skipped as a duplicate.
+    #[serde(rename = "skipped")]
+    Skipped { job_id: String, reason: String },
+    /// An error occurred.
+    #[serde(rename = "error")]
+    Error { job_id: String, message: String },
+}
+
+pub type IngestProgressSender = tokio::sync::mpsc::UnboundedSender<IngestProgressEvent>;

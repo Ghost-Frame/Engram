@@ -12,7 +12,10 @@ use crate::db::Database;
 use crate::Result;
 use sha2::{Digest, Sha256};
 use std::time::Instant;
-use types::{Chunk, FormatMeta, IngestOptions, IngestResult, IngestStatus, ProcessOptions};
+use types::{
+    Chunk, FormatMeta, IngestOptions, IngestProgressEvent, IngestProgressSender, IngestResult,
+    IngestStatus, ProcessOptions,
+};
 use uuid::Uuid;
 
 pub use chunker::chunk_document;
@@ -57,15 +60,46 @@ async fn record_hash(db: &Database, hash: &str, user_id: i64, job_id: &str) {
         .await;
 }
 
+/// Emit a progress event if `tx` is Some; silently ignore closed channels.
+fn emit(tx: &Option<IngestProgressSender>, event: IngestProgressEvent) {
+    if let Some(ref tx) = tx {
+        let _ = tx.send(event);
+    }
+}
+
 /// Run the ingestion pipeline: detect format -> parse -> chunk -> process -> store.
 ///
 /// This is the main entry point for bulk document ingestion.
 /// Ported from the TS runPipeline() function.
+#[tracing::instrument(skip(db, input, options, meta), fields(input_len = input.len()))]
 pub async fn ingest(
     db: &Database,
     input: &str,
     options: IngestOptions,
     meta: Option<&FormatMeta>,
+) -> Result<IngestResult> {
+    ingest_inner(db, input, options, meta, None).await
+}
+
+/// Streaming variant: same as [`ingest`] but emits [`IngestProgressEvent`]s as
+/// each pipeline phase completes.
+#[tracing::instrument(skip(db, input, options, meta, progress_tx), fields(input_len = input.len()))]
+pub async fn ingest_streaming(
+    db: &Database,
+    input: &str,
+    options: IngestOptions,
+    meta: Option<&FormatMeta>,
+    progress_tx: IngestProgressSender,
+) -> Result<IngestResult> {
+    ingest_inner(db, input, options, meta, Some(progress_tx)).await
+}
+
+async fn ingest_inner(
+    db: &Database,
+    input: &str,
+    options: IngestOptions,
+    meta: Option<&FormatMeta>,
+    progress_tx: Option<IngestProgressSender>,
 ) -> Result<IngestResult> {
     let start = Instant::now();
     let job_id = format!("ingest_{}", &Uuid::new_v4().to_string()[..8]);
@@ -76,6 +110,13 @@ pub async fn ingest(
     // Dedup: skip if this exact content was already ingested for this user.
     let hash = content_hash(input.as_bytes());
     if is_duplicate(db, &hash, options.user_id).await {
+        emit(
+            &progress_tx,
+            IngestProgressEvent::Skipped {
+                job_id: job_id.clone(),
+                reason: "duplicate content".into(),
+            },
+        );
         return Ok(IngestResult {
             job_id,
             status: IngestStatus::Skipped,
@@ -91,12 +132,26 @@ pub async fn ingest(
     let format = options
         .format
         .unwrap_or_else(|| detect_format(input.as_bytes(), meta));
+    emit(
+        &progress_tx,
+        IngestProgressEvent::Detected {
+            job_id: job_id.clone(),
+            format: format.to_string(),
+        },
+    );
 
     // 2. Parse documents
     let docs = match parsers::parse_with_format(format, input) {
         Ok(d) => d,
         Err(e) => {
             let msg = format!("Parser error: {}", e);
+            emit(
+                &progress_tx,
+                IngestProgressEvent::Error {
+                    job_id: job_id.clone(),
+                    message: msg.clone(),
+                },
+            );
             return Ok(IngestResult {
                 job_id,
                 status: IngestStatus::Failed,
@@ -110,11 +165,18 @@ pub async fn ingest(
     };
 
     let total_documents = docs.len();
+    emit(
+        &progress_tx,
+        IngestProgressEvent::Parsed {
+            job_id: job_id.clone(),
+            total_documents,
+        },
+    );
 
     // 3. Process each document: chunk -> process
     let chunker_opts = options.chunker_options.as_ref();
 
-    for doc in &docs {
+    for (doc_idx, doc) in docs.iter().enumerate() {
         // Chunk the document
         let doc_chunks: Vec<Chunk> =
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -127,7 +189,17 @@ pub async fn ingest(
                 }
             };
 
-        total_chunks += doc_chunks.len();
+        let doc_chunk_count = doc_chunks.len();
+        total_chunks += doc_chunk_count;
+        emit(
+            &progress_tx,
+            IngestProgressEvent::Chunked {
+                job_id: job_id.clone(),
+                document_index: doc_idx,
+                document_title: doc.title.clone(),
+                chunks: doc_chunk_count,
+            },
+        );
 
         // Build process options
         let process_options = ProcessOptions {
@@ -140,6 +212,9 @@ pub async fn ingest(
             entity_ids: options.entity_ids.clone(),
         };
 
+        let mut doc_memories: usize = 0;
+        let mut chunks_done: usize = 0;
+
         // Process chunks (one at a time matching TS behavior)
         for chunk in &doc_chunks {
             let result = processors::process_chunks(
@@ -150,9 +225,22 @@ pub async fn ingest(
             )
             .await;
 
+            doc_memories += result.memories_created;
             total_memories += result.memories_created;
             errors.extend(result.errors);
+            chunks_done += 1;
         }
+
+        emit(
+            &progress_tx,
+            IngestProgressEvent::Processed {
+                job_id: job_id.clone(),
+                document_index: doc_idx,
+                memories_created: doc_memories,
+                chunks_done,
+                chunks_total: doc_chunk_count,
+            },
+        );
     }
 
     let duration_ms = start.elapsed().as_millis();
@@ -168,6 +256,17 @@ pub async fn ingest(
     // Record hash so future identical content is skipped.
     record_hash(db, &hash, options.user_id, &job_id).await;
 
+    emit(
+        &progress_tx,
+        IngestProgressEvent::Done {
+            job_id: job_id.clone(),
+            total_documents,
+            total_chunks,
+            total_memories,
+            duration_ms,
+        },
+    );
+
     Ok(IngestResult {
         job_id,
         status: IngestStatus::Completed,
@@ -180,6 +279,7 @@ pub async fn ingest(
 }
 
 /// Ingest with binary input (for PDF, DOCX, ZIP formats).
+#[tracing::instrument(skip(db, input, options, meta), fields(input_bytes = input.len()))]
 pub async fn ingest_binary(
     db: &Database,
     input: &[u8],
