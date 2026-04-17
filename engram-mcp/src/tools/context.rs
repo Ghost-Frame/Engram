@@ -20,6 +20,7 @@ pub fn register(out: &mut Vec<ToolDef>) {
     ]);
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "context.assemble_context"))]
 pub async fn assemble_context(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let opts: ContextOptions =
@@ -29,6 +30,7 @@ pub async fn assemble_context(app: &App, args: Value) -> Result<Value> {
     ))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "context.get_header"))]
 pub async fn get_header(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     Ok(json!(
@@ -48,6 +50,7 @@ pub async fn get_header(app: &App, args: Value) -> Result<Value> {
     ))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "context.generate_prompt"))]
 pub async fn generate_prompt(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     Ok(json!(

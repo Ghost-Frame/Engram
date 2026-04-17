@@ -22,6 +22,7 @@ pub fn register(out: &mut Vec<ToolDef>) {
     ]);
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "graph.get_neighbors"))]
 pub async fn get_neighbors(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let node_id = args
@@ -39,6 +40,7 @@ pub async fn get_neighbors(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"nodes": nodes, "edges": edges}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "graph.pagerank_top"))]
 pub async fn pagerank_top(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     if args
@@ -54,6 +56,7 @@ pub async fn pagerank_top(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"scores": scores.into_iter().take(limit).collect::<Vec<_>>()}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "graph.louvain_communities"))]
 pub async fn louvain_communities(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     if args.get("run").and_then(Value::as_bool).unwrap_or(true) {
@@ -78,6 +81,7 @@ pub async fn louvain_communities(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"stats": communities::get_community_stats(&app.db, auth.user_id).await?}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "graph.cooccurrence"))]
 pub async fn cooccurrence(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     if args
