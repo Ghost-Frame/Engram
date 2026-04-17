@@ -298,6 +298,7 @@ pub fn interpolate(template: &str, vars: &serde_json::Value) -> String {
 // Logging
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db, message, data), fields(level = %level))]
 pub async fn add_log(
     db: &Database,
     run_id: i64,
@@ -322,6 +323,7 @@ pub async fn add_log(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_logs(
     db: &Database,
     run_id: i64,
@@ -404,6 +406,7 @@ pub async fn get_logs(
 // Workflow CRUD
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db, req), fields(name = %req.name))]
 pub async fn create_workflow(db: &Database, req: CreateWorkflowRequest) -> Result<Workflow> {
     // Validate step types
     for step in &req.steps {
@@ -453,6 +456,7 @@ pub async fn create_workflow(db: &Database, req: CreateWorkflowRequest) -> Resul
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_workflow(db: &Database, id: i64, user_id: i64) -> Result<Workflow> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -475,6 +479,7 @@ pub async fn get_workflow(db: &Database, id: i64, user_id: i64) -> Result<Workfl
     .await
 }
 
+#[tracing::instrument(skip(db), fields(name = %name))]
 pub async fn get_workflow_by_name(db: &Database, name: &str, user_id: i64) -> Result<Workflow> {
     let name = name.to_string();
     db.read(move |conn| {
@@ -498,6 +503,7 @@ pub async fn get_workflow_by_name(db: &Database, name: &str, user_id: i64) -> Re
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_workflows(db: &Database, user_id: i64) -> Result<Vec<Workflow>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -521,6 +527,7 @@ pub async fn list_workflows(db: &Database, user_id: i64) -> Result<Vec<Workflow>
     .await
 }
 
+#[tracing::instrument(skip(db, req))]
 pub async fn update_workflow(
     db: &Database,
     id: i64,
@@ -605,6 +612,7 @@ pub async fn update_workflow(
     get_workflow(db, id, user_id).await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn delete_workflow(db: &Database, id: i64, user_id: i64) -> Result<bool> {
     db.write(move |conn| {
         let affected = conn

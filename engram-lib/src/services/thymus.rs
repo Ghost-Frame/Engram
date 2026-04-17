@@ -904,6 +904,7 @@ pub async fn record_session_quality(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_session_quality(
     db: &Database,
     user_id: i64,
@@ -963,6 +964,7 @@ const VALID_DRIFT_TYPES: &[&str] = &[
 
 const VALID_SEVERITIES: &[&str] = &["low", "medium", "high", "critical"];
 
+#[tracing::instrument(skip(db, req))]
 pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> Result<DriftEvent> {
     let user_id = req
         .user_id
@@ -1015,6 +1017,7 @@ pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> 
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_drift_events(
     db: &Database,
     user_id: i64,
@@ -1044,6 +1047,7 @@ pub async fn get_drift_events(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_drift_summary(
     db: &Database,
     user_id: i64,
@@ -1080,6 +1084,7 @@ pub async fn get_drift_summary(
 // Stats
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db))]
 pub async fn get_stats(db: &Database, user_id: i64) -> Result<ThymusStats> {
     db.read(move |conn| {
         let rubrics: i64 = conn
