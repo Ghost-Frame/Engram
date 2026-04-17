@@ -119,6 +119,7 @@ pub async fn enqueue_job(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
     // Atomic claim using a transaction: SELECT then UPDATE within a transaction
     // ensures only one worker can claim the same pending job.
@@ -185,6 +186,7 @@ pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn complete_job(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -199,6 +201,7 @@ pub async fn complete_job(db: &Database, id: i64) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(skip(db, err_msg))]
 pub async fn fail_job(db: &Database, id: i64, err_msg: &str) -> Result<()> {
     let err_msg = err_msg.to_string();
     db.write(move |conn| {
@@ -214,6 +217,7 @@ pub async fn fail_job(db: &Database, id: i64, err_msg: &str) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(skip(db, err_msg))]
 pub async fn retry_job(db: &Database, id: i64, err_msg: &str, delay_sec: i64) -> Result<()> {
     let err_msg = err_msg.to_string();
     let modifier = format!("+{} seconds", delay_sec);
@@ -230,6 +234,7 @@ pub async fn retry_job(db: &Database, id: i64, err_msg: &str, delay_sec: i64) ->
     Ok(())
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_job_stats(db: &Database) -> Result<JobStats> {
     db.read(|conn| {
         let mut stmt = conn
@@ -262,6 +267,7 @@ pub async fn get_job_stats(db: &Database) -> Result<JobStats> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn cleanup_completed_jobs(db: &Database) -> Result<u64> {
     db.write(|conn| {
         let n = conn
@@ -277,6 +283,7 @@ pub async fn cleanup_completed_jobs(db: &Database) -> Result<u64> {
 
 /// Delete completed jobs older than the specified number of days.
 /// Returns the count of deleted jobs.
+#[tracing::instrument(skip(db))]
 pub async fn cleanup_jobs(db: &Database, older_than_days: i64) -> Result<u64> {
     // Clamp to non-negative to avoid deleting future jobs
     let days = older_than_days.max(0);
@@ -293,6 +300,7 @@ pub async fn cleanup_jobs(db: &Database, older_than_days: i64) -> Result<u64> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn recover_stuck_jobs(db: &Database) -> Result<u64> {
     db.write(|conn| {
         let n = conn
@@ -306,6 +314,7 @@ pub async fn recover_stuck_jobs(db: &Database) -> Result<u64> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_failed_jobs(db: &Database, limit: i64, offset: i64) -> Result<Vec<Job>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -355,6 +364,7 @@ pub async fn list_failed_jobs(db: &Database, limit: i64, offset: i64) -> Result<
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_pending_jobs(db: &Database, limit: i64, offset: i64) -> Result<Vec<Job>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -402,6 +412,7 @@ pub async fn list_pending_jobs(db: &Database, limit: i64, offset: i64) -> Result
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_running_jobs(db: &Database) -> Result<Vec<Job>> {
     db.read(|conn| {
         let mut stmt = conn
@@ -449,6 +460,7 @@ pub async fn list_running_jobs(db: &Database) -> Result<Vec<Job>> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn count_failed_jobs(db: &Database) -> Result<i64> {
     db.read(|conn| {
         conn.query_row(
@@ -461,6 +473,7 @@ pub async fn count_failed_jobs(db: &Database) -> Result<i64> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn retry_failed_job(db: &Database, id: i64) -> Result<bool> {
     db.write(move |conn| {
         let n = conn
