@@ -6,6 +6,7 @@ pub mod artifacts;
 pub mod audit;
 pub mod auth_keys;
 pub mod axon;
+pub mod batch;
 pub mod brain;
 pub mod broca;
 pub mod context;
