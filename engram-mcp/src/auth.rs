@@ -14,6 +14,7 @@ use serde_json::Value;
 ///
 /// SECURITY (SEC-LOW-3): callers that log `args` MUST strip the
 /// `bearer_token` field first. [`sanitize_args`] is provided for this.
+#[tracing::instrument(skip(app, args))]
 pub async fn resolve_auth(app: &App, args: &Value) -> Result<AuthContext> {
     let token = args
         .get("bearer_token")

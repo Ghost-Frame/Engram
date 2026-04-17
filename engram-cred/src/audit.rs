@@ -72,6 +72,7 @@ impl AccessTier {
 
 /// Log an audit entry.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip(db), fields(user_id, agent_name = ?agent_name, action = ?action, category = %category, secret_name = %secret_name, access_tier = ?access_tier, success))]
 pub async fn log_audit(
     db: &Database,
     user_id: i64,
@@ -125,6 +126,7 @@ fn collect_audit_rows(
 }
 
 /// Query audit entries for a user.
+#[tracing::instrument(skip(db), fields(user_id, limit, category = ?category, agent_name = ?agent_name))]
 pub async fn query_audit(
     db: &Database,
     user_id: i64,
@@ -193,6 +195,7 @@ pub async fn query_audit(
 }
 
 /// Get audit entries for a specific secret.
+#[tracing::instrument(skip(db), fields(user_id, category = %category, secret_name = %secret_name, limit))]
 pub async fn get_secret_audit(
     db: &Database,
     user_id: i64,
@@ -249,6 +252,7 @@ fn row_to_audit_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEntry> {
 }
 
 /// Prune old audit entries.
+#[tracing::instrument(skip(db), fields(user_id, days_to_keep))]
 pub async fn prune_audit(db: &Database, user_id: i64, days_to_keep: u32) -> Result<usize> {
     let cutoff = chrono::Utc::now()
         .checked_sub_signed(chrono::Duration::days(days_to_keep as i64))
