@@ -7,8 +7,8 @@ use axum::{
 use engram_lib::intelligence::extraction::fast_extract_facts;
 use engram_lib::memory::{
     self,
-    search::hybrid_search,
-    types::{ListOptions, SearchRequest, StoreRequest, UpdateRequest},
+    search::{faceted_search, hybrid_search},
+    types::{FacetedSearchRequest, ListOptions, SearchRequest, StoreRequest, UpdateRequest},
 };
 use rusqlite::params;
 use serde::Deserialize;
@@ -29,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/list", get(list_memories))
         .route("/tags", get(list_tags))
         .route("/tags/search", post(search_tags))
+        .route("/search/faceted", post(faceted_search_handler))
         .route("/profile", get(profile_handler))
         .route("/profile/synthesize", post(synthesize_profile))
         .route("/me/stats", get(user_stats))
@@ -551,6 +552,30 @@ async fn search_tags(
     .await?;
     let results: Vec<Value> = memories.iter().map(memory_to_json).collect();
     Ok(Json(json!({ "results": results })))
+}
+
+// 3.11: POST /search/faceted -- structured filter + facet aggregation
+async fn faceted_search_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(mut body): Json<FacetedSearchRequest>,
+) -> Result<Json<Value>, AppError> {
+    body.user_id = Some(auth.user_id);
+    body.limit = body.limit.min(100);
+
+    // Embed query if present.
+    if !body.query.is_empty() {
+        let embedder_guard = state.embedder.read().await;
+        if let Some(ref embedder) = *embedder_guard {
+            match embedder.embed(&body.query).await {
+                Ok(emb) => body.embedding = Some(emb),
+                Err(e) => tracing::warn!("embedding failed for faceted search: {}", e),
+            }
+        }
+    }
+
+    let resp = faceted_search(&state.db, body).await?;
+    Ok(Json(json!(resp)))
 }
 
 async fn update_tags(

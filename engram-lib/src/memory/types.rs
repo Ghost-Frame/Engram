@@ -422,3 +422,85 @@ pub struct DeduplicateOptions {
     pub dry_run: bool,
     pub max_merge: usize,
 }
+
+// ---------------------------------------------------------------------------
+// 3.11: Faceted / multi-tag search
+// ---------------------------------------------------------------------------
+
+/// Request for faceted search with structured filters and facet aggregation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FacetedSearchRequest {
+    /// Semantic query (optional -- omit for pure filter mode).
+    #[serde(default)]
+    pub query: String,
+    /// Pre-computed embedding (injected by server layer).
+    #[serde(skip_deserializing)]
+    pub embedding: Option<Vec<f32>>,
+    #[serde(default = "default_faceted_limit")]
+    pub limit: usize,
+    pub user_id: Option<i64>,
+    pub space_id: Option<i64>,
+
+    // -- Tag filters --
+    /// Tags that must ALL be present (intersection).
+    pub tags_all: Option<Vec<String>>,
+    /// Tags where ANY must be present (union).
+    pub tags_any: Option<Vec<String>>,
+    /// Tags to exclude.
+    pub tags_none: Option<Vec<String>>,
+
+    // -- Scalar filters --
+    pub category: Option<String>,
+    pub source: Option<String>,
+    pub importance_min: Option<i32>,
+    pub importance_max: Option<i32>,
+
+    // -- Date range --
+    /// ISO-8601 lower bound (inclusive).
+    pub date_from: Option<String>,
+    /// ISO-8601 upper bound (inclusive).
+    pub date_to: Option<String>,
+
+    // -- Facet control --
+    /// Which facets to compute: "tags", "categories", "sources", "importance".
+    /// Omit for no facets (faster).
+    pub facets: Option<Vec<String>>,
+    /// Max entries per facet bucket (default 20).
+    pub facet_limit: Option<usize>,
+}
+
+fn default_faceted_limit() -> usize {
+    50
+}
+
+/// A single facet bucket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FacetBucket {
+    pub value: String,
+    pub count: usize,
+}
+
+/// Tag co-occurrence entry: two tags that appear together and how often.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagCooccurrence {
+    pub tag_a: String,
+    pub tag_b: String,
+    pub count: usize,
+}
+
+/// Response from faceted search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FacetedSearchResponse {
+    pub results: Vec<SearchResult>,
+    pub total_matched: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facets_tags: Option<Vec<FacetBucket>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facets_categories: Option<Vec<FacetBucket>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facets_sources: Option<Vec<FacetBucket>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facets_importance: Option<Vec<FacetBucket>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag_cooccurrence: Option<Vec<TagCooccurrence>>,
+}
