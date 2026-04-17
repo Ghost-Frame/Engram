@@ -65,6 +65,7 @@ pub fn parse_recovery_key(encoded: &str) -> Result<[u8; RECOVERY_KEY_SIZE]> {
 ///
 /// The master key is encrypted with the recovery key and stored in the database.
 /// This allows recovering access if the primary authentication (YubiKey/password) is lost.
+#[tracing::instrument(skip(db, recovery_key, master_key, hint), fields(user_id, has_hint = hint.is_some()))]
 pub async fn store_recovery_key(
     db: &Database,
     user_id: i64,
@@ -109,6 +110,7 @@ pub async fn store_recovery_key(
 }
 
 /// Recover the master key using a recovery key.
+#[tracing::instrument(skip(db, recovery_key), fields(user_id))]
 pub async fn recover_master_key(
     db: &Database,
     user_id: i64,
@@ -173,6 +175,7 @@ pub async fn recover_master_key(
 }
 
 /// Check if a user has a recovery key stored.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn has_recovery_key(db: &Database, user_id: i64) -> Result<bool> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -195,6 +198,7 @@ pub async fn has_recovery_key(db: &Database, user_id: i64) -> Result<bool> {
 }
 
 /// Get recovery key info for a user.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_recovery_info(db: &Database, user_id: i64) -> Result<Option<RecoveryInfo>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -231,6 +235,7 @@ pub async fn get_recovery_info(db: &Database, user_id: i64) -> Result<Option<Rec
 }
 
 /// Delete the recovery key for a user.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn delete_recovery_key(db: &Database, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {

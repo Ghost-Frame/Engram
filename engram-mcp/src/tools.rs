@@ -55,6 +55,7 @@ fn all_tools() -> Vec<ToolDef> {
     out
 }
 
+#[tracing::instrument(skip(app, args), fields(name = %name))]
 pub async fn dispatch(app: &App, name: &str, args: Value) -> Result<Value> {
     match name {
         "memory.store" => memory::store(app, args).await,

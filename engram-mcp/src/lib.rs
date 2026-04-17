@@ -48,6 +48,7 @@ fn missing_id(req: &Value) -> Option<Value> {
     req.get("id").cloned()
 }
 
+#[tracing::instrument(skip(app, req), fields(method = req.get("method").and_then(|v| v.as_str()).unwrap_or("")))]
 pub async fn handle_jsonrpc(app: &App, req: Value) -> Option<Value> {
     let id = missing_id(&req);
     let method = req.get("method")?.as_str()?;

@@ -298,6 +298,7 @@ pub async fn revoke_agent_key(db: &Database, user_id: i64, name: &str) -> Result
 }
 
 /// Delete an agent key entirely (for cleanup).
+#[tracing::instrument(skip(db), fields(user_id, name = %name))]
 pub async fn delete_agent_key(db: &Database, user_id: i64, name: &str) -> Result<()> {
     let name_owned = name.to_string();
 
