@@ -125,6 +125,7 @@ pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Ev
     get_event(db, id, user_id).await
 }
 
+#[tracing::instrument(skip(db), fields(event_id = id, user_id))]
 pub async fn get_event(db: &Database, id: i64, user_id: i64) -> Result<Event> {
     let sql = format!("SELECT {EVENT_COLUMNS} FROM axon_events WHERE id = ?1 AND user_id = ?2");
 
@@ -142,6 +143,7 @@ pub async fn get_event(db: &Database, id: i64, user_id: i64) -> Result<Event> {
     .await
 }
 
+#[tracing::instrument(skip(db), fields(channel = ?channel, action = ?action, source = ?source, limit, offset, user_id))]
 pub async fn query_events(
     db: &Database,
     channel: Option<&str>,
@@ -193,6 +195,7 @@ pub async fn query_events(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_channels(db: &Database, _user_id: i64) -> Result<Vec<Channel>> {
     let sql = "SELECT id, name, description, retain_hours, created_at
                FROM axon_channels ORDER BY name ASC";
@@ -215,6 +218,7 @@ pub async fn list_channels(db: &Database, _user_id: i64) -> Result<Vec<Channel>>
     .await
 }
 
+#[tracing::instrument(skip(db, description), fields(name = %name))]
 pub async fn ensure_channel(
     db: &Database,
     name: String,
@@ -232,6 +236,7 @@ pub async fn ensure_channel(
     .await
 }
 
+#[tracing::instrument(skip(db, req), fields(agent = %req.agent, channel = %req.channel, user_id))]
 pub async fn upsert_subscription(
     db: &Database,
     req: SubscribeRequest,
@@ -256,6 +261,7 @@ pub async fn upsert_subscription(
     get_subscription(db, &req.agent, &req.channel, user_id).await
 }
 
+#[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel, user_id))]
 pub async fn get_subscription(
     db: &Database,
     agent: &str,
@@ -290,6 +296,7 @@ pub async fn get_subscription(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel, user_id))]
 pub async fn delete_subscription(
     db: &Database,
     agent: &str,
@@ -309,6 +316,7 @@ pub async fn delete_subscription(
     Ok(n > 0)
 }
 
+#[tracing::instrument(skip(db), fields(agent = %agent, user_id))]
 pub async fn list_subscriptions_for_agent(
     db: &Database,
     agent: &str,
@@ -342,6 +350,7 @@ pub async fn list_subscriptions_for_agent(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel, user_id))]
 pub async fn get_cursor(db: &Database, agent: &str, channel: &str, user_id: i64) -> Result<Cursor> {
     let sql = "SELECT agent, channel, last_event_id, updated_at, user_id
                FROM axon_cursors
@@ -398,6 +407,7 @@ async fn upsert_cursor(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel, limit, user_id))]
 pub async fn consume(
     db: &Database,
     agent: &str,
@@ -433,6 +443,7 @@ pub async fn consume(
     Ok(events)
 }
 
+#[tracing::instrument(skip(db), fields(user_id = ?user_id))]
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<AxonStats> {
     db.read(move |conn| {
         let stats = if let Some(uid) = user_id {
