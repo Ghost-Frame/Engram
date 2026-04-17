@@ -17,7 +17,9 @@ use engram_lib::intelligence::{
     health::memory_health,
     predictive::{detect_sequence_patterns, predictive_recall},
     reconsolidation::{reconsolidate_memory, run_reconsolidation_sweep},
-    reflections::{create_reflection, generate_reflections, list_reflections},
+    reflections::{
+        create_reflection, generate_reflections_with_llm, list_reflections, LlmReflector,
+    },
     sentiment,
     temporal::{detect_patterns, list_patterns, store_pattern, time_travel},
     valence::{analyze_valence, get_emotional_profile, store_valence},
@@ -358,7 +360,8 @@ async fn generate_reflections_handler(
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(10).min(100);
-    let items = generate_reflections(&state.db, auth.user_id, limit).await?;
+    let llm_ref: Option<&dyn LlmReflector> = state.llm.as_deref().map(|c| c as &dyn LlmReflector);
+    let items = generate_reflections_with_llm(&state.db, llm_ref, auth.user_id, limit).await?;
     Ok(Json(json!({ "reflections": items, "count": items.len() })))
 }
 
