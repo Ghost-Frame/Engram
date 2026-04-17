@@ -150,6 +150,7 @@ pub async fn heartbeat(db: &Database, agent_id: i64, user_id: i64) -> Result<()>
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent_id, user_id, status = %status))]
 pub async fn set_status(db: &Database, agent_id: i64, user_id: i64, status: &str) -> Result<()> {
     if !VALID_STATUSES.contains(&status) {
         return Err(EngError::InvalidInput(format!(
@@ -171,6 +172,7 @@ pub async fn set_status(db: &Database, agent_id: i64, user_id: i64, status: &str
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id, type_filter = ?type_filter, status_filter = ?status_filter, limit))]
 pub async fn list_agents(
     db: &Database,
     user_id: i64,
@@ -207,6 +209,7 @@ pub async fn list_agents(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent_id = id, user_id))]
 pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
     let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE id = ?1 AND user_id = ?2");
 
@@ -224,6 +227,7 @@ pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id, name = %name))]
 pub async fn get_agent_by_name(db: &Database, user_id: i64, name: &str) -> Result<Agent> {
     let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE user_id = ?1 AND name = ?2");
     let name_owned = name.to_string();
@@ -242,6 +246,7 @@ pub async fn get_agent_by_name(db: &Database, user_id: i64, name: &str) -> Resul
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent_id = id, user_id))]
 pub async fn delete_agent(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -275,6 +280,7 @@ pub struct AgentLog {
     pub created_at: String,
 }
 
+#[tracing::instrument(skip(db, description), fields(name = %name, user_id))]
 pub async fn create_group(
     db: &Database,
     name: String,
@@ -321,6 +327,7 @@ async fn get_group_by_name(db: &Database, name: &str, user_id: i64) -> Result<Gr
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn list_groups(db: &Database, user_id: i64) -> Result<Vec<Group>> {
     let sql = "SELECT id, name, description, user_id, created_at
                FROM soma_groups WHERE user_id = ?1 ORDER BY name ASC";
@@ -345,6 +352,7 @@ pub async fn list_groups(db: &Database, user_id: i64) -> Result<Vec<Group>> {
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent_id, group_id, user_id))]
 pub async fn add_agent_to_group(
     db: &Database,
     agent_id: i64,
@@ -363,6 +371,7 @@ pub async fn add_agent_to_group(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent_id, group_id, user_id))]
 pub async fn remove_agent_from_group(
     db: &Database,
     agent_id: i64,
@@ -382,6 +391,7 @@ pub async fn remove_agent_from_group(
     Ok(n > 0)
 }
 
+#[tracing::instrument(skip(db, message, data), fields(agent_id, level = %level))]
 pub async fn log_event(
     db: &Database,
     agent_id: i64,
@@ -405,6 +415,7 @@ pub async fn log_event(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(agent_id, user_id, limit))]
 pub async fn list_agent_logs(
     db: &Database,
     agent_id: i64,
@@ -439,6 +450,7 @@ pub async fn list_agent_logs(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id = ?user_id))]
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<SomaStats> {
     db.read(move |conn| {
         let row = if let Some(uid) = user_id {
