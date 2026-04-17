@@ -11,6 +11,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 
 /// Correct a memory: create a new version with corrected content, link it to
 /// the original via 'supersedes', and mark the original as superseded.
+#[tracing::instrument(skip(db, corrected_content, reason))]
 pub async fn correct_memory(
     db: &Database,
     user_id: i64,

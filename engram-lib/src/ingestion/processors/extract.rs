@@ -17,6 +17,7 @@ use crate::ingestion::types::{Chunk, ProcessOptions, ProcessResult};
 
 /// Process chunks using LLM fact extraction.
 /// Currently falls back to raw processing since LLM is not available.
+#[tracing::instrument(skip(db, chunks, options), fields(chunk_count = chunks.len()))]
 pub async fn process(db: &Database, chunks: &[Chunk], options: &ProcessOptions) -> ProcessResult {
     // TODO: When LLM integration is ported, implement:
     // 1. Build extraction prompt with chunk context

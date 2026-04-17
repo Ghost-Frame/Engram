@@ -20,6 +20,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 /// 2. Has this memory been accessed often (useful) or ignored (irrelevant)?
 /// 3. Is the memory's FSRS stability declining (being forgotten)?
 /// 4. Age + static classification -- very old dynamic memories decay
+#[tracing::instrument(skip(db))]
 pub async fn reconsolidate_memory(
     db: &Database,
     memory_id: i64,
@@ -234,6 +235,7 @@ pub async fn reconsolidate_memory(
 
 /// Run a reconsolidation sweep over memories that need re-evaluation.
 /// Called periodically (e.g., every hour).
+#[tracing::instrument(skip(db))]
 pub async fn run_reconsolidation_sweep(
     db: &Database,
     user_id: i64,
@@ -291,6 +293,7 @@ pub async fn run_reconsolidation_sweep(
 
 /// Record whether a recalled memory was useful.
 /// Called by search/recall endpoints when results are used or discarded.
+#[tracing::instrument(skip(db))]
 pub async fn record_recall_outcome(
     db: &Database,
     memory_id: i64,

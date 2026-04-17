@@ -21,6 +21,7 @@ pub struct MemoryHealthReport {
 }
 
 /// Generate a health report for a user's memory store.
+#[tracing::instrument(skip(db))]
 pub async fn memory_health(db: &Database, user_id: i64) -> Result<MemoryHealthReport> {
     let report = db
         .read(move |conn| {

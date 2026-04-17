@@ -70,6 +70,7 @@ pub async fn list_pending(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn count_pending(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
         conn.query_row(
@@ -82,6 +83,7 @@ pub async fn count_pending(db: &Database, user_id: i64) -> Result<i64> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn approve_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(

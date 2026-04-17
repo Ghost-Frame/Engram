@@ -43,6 +43,7 @@ pub struct AssignMemoriesRequest {
     pub memory_ids: Vec<i64>,
 }
 
+#[tracing::instrument(skip(db, req), fields(has_title = req.title.is_some()))]
 pub async fn create_episode(
     db: &Database,
     req: CreateEpisodeRequest,
@@ -78,6 +79,7 @@ pub async fn create_episode(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn list_episodes(db: &Database, user_id: i64, limit: usize) -> Result<Vec<EpisodeRow>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -107,6 +109,7 @@ pub async fn list_episodes(db: &Database, user_id: i64, limit: usize) -> Result<
     .await
 }
 
+#[tracing::instrument(skip(db, after, before))]
 pub async fn list_episodes_by_time_range(
     db: &Database,
     user_id: i64,
@@ -145,6 +148,7 @@ pub async fn list_episodes_by_time_range(
     .await
 }
 
+#[tracing::instrument(skip(db, query), fields(query_len = query.len()))]
 pub async fn search_episodes_fts(
     db: &Database,
     query: &str,
@@ -181,6 +185,7 @@ pub async fn search_episodes_fts(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_episode_for_user(db: &Database, id: i64, user_id: i64) -> Result<EpisodeRow> {
     db.read(move |conn| {
         conn.query_row(
@@ -200,6 +205,7 @@ pub async fn get_episode_for_user(db: &Database, id: i64, user_id: i64) -> Resul
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_episode_memories(
     db: &Database,
     episode_id: i64,
@@ -245,6 +251,7 @@ pub async fn get_episode_memories(
     .await
 }
 
+#[tracing::instrument(skip(db, req))]
 pub async fn update_episode_for_user(
     db: &Database,
     id: i64,
@@ -270,6 +277,7 @@ pub async fn update_episode_for_user(
     .await
 }
 
+#[tracing::instrument(skip(db, memory_ids), fields(memory_count = memory_ids.len()))]
 pub async fn assign_memories_to_episode(
     db: &Database,
     episode_id: i64,
@@ -305,6 +313,7 @@ pub async fn assign_memories_to_episode(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn finalize_episode(db: &Database, id: i64, user_id: i64) -> Result<EpisodeRow> {
     db.write(move |conn| {
         conn.execute(

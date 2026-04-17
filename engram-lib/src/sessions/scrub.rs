@@ -20,6 +20,7 @@ fn scrub_cache() -> &'static Mutex<HashMap<String, CachedSecrets>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[tracing::instrument(skip(db, credd, agent, message), fields(message_len = message.len()))]
 pub async fn scrub_message(
     db: &Database,
     credd: &CreddClient,
