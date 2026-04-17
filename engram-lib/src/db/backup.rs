@@ -9,6 +9,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 
 /// Creates a consistent backup of the database using VACUUM INTO.
 /// The destination path must not contain single quotes.
+#[tracing::instrument(skip(db, dest))]
 pub async fn vacuum_into(db: &crate::db::Database, dest: &Path) -> Result<()> {
     let path_str = dest.to_string_lossy().to_string();
     if path_str.contains('\'') {
@@ -27,6 +28,7 @@ pub async fn vacuum_into(db: &crate::db::Database, dest: &Path) -> Result<()> {
 
 /// Runs PRAGMA integrity_check on the given database file.
 /// Returns Ok(vec![]) if the database is valid, or Ok(vec![messages]) if corrupt.
+#[tracing::instrument(skip(path))]
 pub async fn integrity_check(path: &Path) -> Result<Vec<String>> {
     let path_str = path.to_string_lossy().to_string();
 
@@ -74,6 +76,7 @@ pub struct RestoreReport {
 /// that the sqlite_master catalog is queryable. Here we actually execute
 /// queries against the restored file -- exactly what a disaster-recovery
 /// restore would do.
+#[tracing::instrument(skip(path))]
 pub async fn restore_test(path: &Path) -> Result<RestoreReport> {
     let path_str = path.to_string_lossy().to_string();
     let path_for_task = path_str.clone();
@@ -123,6 +126,7 @@ pub async fn restore_test(path: &Path) -> Result<RestoreReport> {
 
 /// Runs WAL checkpoint with the given mode.
 /// Returns (busy, log, checkpointed) frame counts.
+#[tracing::instrument(skip(db), fields(mode = ?mode))]
 pub async fn wal_checkpoint(
     db: &crate::db::Database,
     mode: CheckpointMode,
