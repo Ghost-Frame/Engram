@@ -18,6 +18,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 
 /// Track that a memory category was accessed at this time.
 /// Builds the temporal pattern database over time.
+#[tracing::instrument(skip(db), fields(user_id, category = %category, project_id = ?project_id))]
 pub async fn track_temporal_access(
     db: &Database,
     user_id: i64,

@@ -25,6 +25,7 @@ pub struct Contradiction {
 /// Extracts SVO triples from the memory's structured_facts and compares
 /// against existing facts with the same subject+predicate. If the object
 /// differs, flags as a contradiction.
+#[tracing::instrument(skip(db, memory), fields(memory_id = memory.id, user_id = memory.user_id))]
 pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec<Contradiction>> {
     let memory_id = memory.id;
     let user_id = memory.user_id;

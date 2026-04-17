@@ -65,6 +65,7 @@ struct OllamaResponse {
 
 /// Call the local LLM with a system prompt and user content.
 /// Returns the raw text response.
+#[tracing::instrument(skip(system, user, opts), fields(system_len = system.len(), user_len = user.len()))]
 pub async fn call_llm(
     system: &str,
     user: &str,

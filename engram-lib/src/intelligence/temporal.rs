@@ -21,10 +21,12 @@ pub struct TemporalPattern {
     pub detail: String,
 }
 
+#[tracing::instrument(skip(_db))]
 pub async fn detect_patterns(_db: &Database, _user_id: i64) -> Result<Vec<TemporalPattern>> {
     Ok(Vec::new())
 }
 
+#[tracing::instrument(skip(_db))]
 pub async fn list_patterns(
     _db: &Database,
     _user_id: i64,
@@ -33,6 +35,7 @@ pub async fn list_patterns(
     Ok(Vec::new())
 }
 
+#[tracing::instrument(skip(_db, _pattern))]
 pub async fn store_pattern(_db: &Database, _pattern: &TemporalPattern) -> Result<()> {
     Ok(())
 }

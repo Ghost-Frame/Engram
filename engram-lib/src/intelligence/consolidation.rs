@@ -15,6 +15,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 /// Merges content from the candidate memories, computes new importance
 /// (max of the group), creates a consolidated memory, links the sources,
 /// and records the consolidation.
+#[tracing::instrument(skip(db, memory_ids), fields(memory_count = memory_ids.len(), user_id))]
 pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> Result<Memory> {
     if memory_ids.is_empty() {
         return Err(EngError::InvalidInput(
@@ -190,6 +191,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
 ///
 /// Uses memory_links similarity scores to find clusters of memories
 /// with similarity above the threshold.
+#[tracing::instrument(skip(db), fields(threshold, user_id))]
 pub async fn find_consolidation_candidates(
     db: &Database,
     threshold: f32,
@@ -315,6 +317,7 @@ pub async fn sweep(db: &Database, user_id: i64, threshold: f64) -> Result<SweepR
 }
 
 /// List recent consolidation records.
+#[tracing::instrument(skip(db), fields(user_id, limit))]
 pub async fn list_consolidations(
     db: &Database,
     user_id: i64,

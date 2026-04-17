@@ -259,6 +259,7 @@ pub struct CausalAncestor {
 ///
 /// Only links whose parent chain belongs to `user_id` are followed, so
 /// users never see each other's causal structure.
+#[tracing::instrument(skip(db), fields(effect_memory_id, user_id, max_depth))]
 pub async fn backward_chain(
     db: &Database,
     effect_memory_id: i64,

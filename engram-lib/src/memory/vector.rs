@@ -15,6 +15,7 @@ pub struct VectorHit {
 /// Note: This uses vector_top_k which requires the sqlite-vec extension.
 /// If the extension is not available, the query will fail gracefully and return empty results.
 /// The primary vector search path uses LanceDB; this is a fallback for embedded deployments.
+#[tracing::instrument(skip(db, embedding), fields(embedding_dim = embedding.len(), limit, user_id))]
 pub async fn vector_search(
     db: &Database,
     embedding: &[f32],

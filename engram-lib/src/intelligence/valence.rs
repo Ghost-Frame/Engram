@@ -175,6 +175,7 @@ pub fn analyze_valence(content: &str) -> ValenceResult {
     }
 }
 
+#[tracing::instrument(skip(db, content), fields(memory_id, content_len = content.len(), user_id))]
 pub async fn store_valence(
     db: &Database,
     memory_id: i64,
@@ -199,6 +200,7 @@ pub async fn store_valence(
     Ok(result)
 }
 
+#[tracing::instrument(skip(db), fields(emotion = %emotion, user_id, limit))]
 pub async fn query_by_emotion(
     db: &Database,
     emotion: &str,
