@@ -10,7 +10,12 @@ use crate::memory::types::{
 };
 use crate::validation::{DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, RERANKER_TOP_K};
 use crate::Result;
+use lru::LruCache;
 use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::num::NonZeroUsize;
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 use tracing::{info, warn};
 
 const DEFAULT_LIMIT: usize = DEFAULT_SEARCH_LIMIT;
@@ -18,6 +23,87 @@ const DEFAULT_LIMIT: usize = DEFAULT_SEARCH_LIMIT;
 /// Hard ceiling on results returned by hybrid_search. Applied at the library
 /// level so all consumers (HTTP routes, MCP, sidecar, CLI) inherit the cap.
 const MAX_LIMIT: usize = MAX_SEARCH_LIMIT;
+
+// ---------------------------------------------------------------------------
+// Search result cache (3.5)
+//
+// Per-user generation counter + LRU keyed by (user_id, generation, query_hash).
+// On any write for a user, bump the generation so old entries auto-miss.
+// TTL provides a secondary eviction policy.
+// ---------------------------------------------------------------------------
+
+const CACHE_CAPACITY: usize = 512;
+const CACHE_TTL_SECS: u64 = 15;
+
+struct CacheEntry {
+    results: Vec<SearchResult>,
+    inserted: Instant,
+}
+
+/// Cache key: (user_id, generation, query_param_hash)
+type CacheKey = (i64, u64, u64);
+
+struct SearchCache {
+    entries: LruCache<CacheKey, CacheEntry>,
+    generations: HashMap<i64, u64>,
+}
+
+static SEARCH_CACHE: LazyLock<Mutex<SearchCache>> = LazyLock::new(|| {
+    Mutex::new(SearchCache {
+        entries: LruCache::new(NonZeroUsize::new(CACHE_CAPACITY).unwrap()),
+        generations: HashMap::new(),
+    })
+});
+
+/// Hash the search parameters that affect results.
+fn hash_search_params(req: &SearchRequest) -> u64 {
+    let mut h = DefaultHasher::new();
+    req.query.hash(&mut h);
+    req.limit.hash(&mut h);
+    req.category.hash(&mut h);
+    req.source.hash(&mut h);
+    req.tags.hash(&mut h);
+    req.question_type.hash(&mut h);
+    req.space_id.hash(&mut h);
+    req.include_forgotten.hash(&mut h);
+    h.finish()
+}
+
+fn cache_get(user_id: i64, param_hash: u64) -> Option<Vec<SearchResult>> {
+    let mut cache = SEARCH_CACHE.lock().ok()?;
+    let gen = *cache.generations.get(&user_id).unwrap_or(&0);
+    let key = (user_id, gen, param_hash);
+    if let Some(entry) = cache.entries.get(&key) {
+        if entry.inserted.elapsed().as_secs() < CACHE_TTL_SECS {
+            return Some(entry.results.clone());
+        }
+        // Expired -- remove
+        cache.entries.pop(&key);
+    }
+    None
+}
+
+fn cache_put(user_id: i64, param_hash: u64, results: &[SearchResult]) {
+    if let Ok(mut cache) = SEARCH_CACHE.lock() {
+        let gen = *cache.generations.get(&user_id).unwrap_or(&0);
+        let key = (user_id, gen, param_hash);
+        cache.entries.put(
+            key,
+            CacheEntry {
+                results: results.to_vec(),
+                inserted: Instant::now(),
+            },
+        );
+    }
+}
+
+/// Invalidate all cached search results for a user. Call on any memory write.
+pub fn invalidate_search_cache(user_id: i64) {
+    if let Ok(mut cache) = SEARCH_CACHE.lock() {
+        let gen = cache.generations.entry(user_id).or_insert(0);
+        *gen += 1;
+    }
+}
 
 /// Internal candidate accumulator used during search pipeline.
 struct Candidate {
@@ -477,6 +563,13 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     let user_id = req
         .user_id
         .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
+
+    // 3.5: Check cache before running the full pipeline.
+    let param_hash = hash_search_params(&req);
+    if let Some(cached) = cache_get(user_id, param_hash) {
+        return Ok(cached);
+    }
+
     let (question_type, strategy) = resolve_strategy(&req);
 
     let candidate_target = limit
@@ -902,6 +995,9 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
         question_type = %question_type,
         "hybrid search completed"
     );
+
+    // 3.5: Populate cache before returning.
+    cache_put(user_id, param_hash, &final_results);
 
     Ok(final_results)
 }
