@@ -359,6 +359,7 @@ pub async fn check_and_increment_by(
 /// SECURITY: without periodic cleanup, spoofed pre-auth keys (e.g. from
 /// rotated X-Forwarded-For values) accumulate rows indefinitely. This
 /// function should be called from a background task.
+#[tracing::instrument(skip(db), fields(grace_seconds))]
 pub async fn cleanup_expired_rows(db: &Database, grace_seconds: i64) -> Result<u64> {
     db.write(move |conn| {
         let deleted = conn

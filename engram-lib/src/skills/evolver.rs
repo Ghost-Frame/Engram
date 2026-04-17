@@ -61,6 +61,7 @@ pub struct EvolutionResult {
 
 /// Persist an evolved skill to the database.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip(db, description, code, tags), fields(name = %name, agent = %agent, parent_ids = ?parent_ids, user_id))]
 pub async fn persist_evolved_skill(
     db: &Database,
     name: &str,
@@ -137,6 +138,7 @@ pub async fn persist_evolved_skill(
 }
 
 /// Deactivate a skill (soft-delete).
+#[tracing::instrument(skip(db), fields(skill_id))]
 pub async fn deactivate_skill(db: &Database, skill_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -150,6 +152,7 @@ pub async fn deactivate_skill(db: &Database, skill_id: i64) -> Result<()> {
 }
 
 /// Stub: fix a failing skill.
+#[tracing::instrument(skip(db, _agent), fields(skill_id, user_id = _user_id))]
 pub async fn fix_skill(
     db: &Database,
     skill_id: i64,
@@ -184,6 +187,7 @@ pub async fn fix_skill(
 }
 
 /// Stub: derive a new skill from parents.
+#[tracing::instrument(skip(db, _agent), fields(parent_ids = ?parent_ids, direction = %direction, user_id = _user_id))]
 pub async fn derive_skill(
     db: &Database,
     parent_ids: &[i64],
@@ -232,6 +236,7 @@ pub async fn derive_skill(
 }
 
 /// Stub: capture a new skill from a description.
+#[tracing::instrument(skip(_db, description, _agent), fields(description_len = description.len(), user_id = _user_id))]
 pub async fn capture_skill(
     _db: &Database,
     description: &str,
@@ -255,6 +260,7 @@ pub async fn capture_skill(
 }
 
 /// Main evolution dispatcher.
+#[tracing::instrument(skip(db, req), fields(evolution_type = %req.evolution_type, agent = %agent, user_id))]
 pub async fn evolve(
     db: &Database,
     req: &EvolutionRequest,
