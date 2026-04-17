@@ -203,6 +203,7 @@ fn metadata_to_string(meta: &Option<serde_json::Value>) -> Option<String> {
 // Conversation CRUD
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip(db, req), fields(agent = %req.agent, session_id = ?req.session_id, user_id))]
 pub async fn create_conversation(
     db: &Database,
     req: CreateConversationRequest,
