@@ -89,6 +89,7 @@ fn handlers() -> &'static RwLock<HashMap<String, JobHandler>> {
     HANDLERS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn ensure_schema(db: &Database) -> Result<()> {
     db.write(|conn| {
         conn.execute_batch("CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3, error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), claimed_at TEXT, completed_at TEXT, next_retry_at TEXT); CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, next_retry_at); CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type, status); CREATE TABLE IF NOT EXISTS scheduler_leases (job_name TEXT PRIMARY KEY, holder_id TEXT NOT NULL, acquired_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at TEXT NOT NULL, last_run_at TEXT);")
@@ -98,6 +99,7 @@ pub async fn ensure_schema(db: &Database) -> Result<()> {
     .await
 }
 
+#[tracing::instrument(skip(db, payload), fields(job_type = %job_type))]
 pub async fn enqueue_job(
     db: &Database,
     job_type: &str,
