@@ -24,6 +24,7 @@ pub struct SecretRow {
 }
 
 /// Store a new secret in the database.
+#[tracing::instrument(skip(db, data, key), fields(user_id, category = %category, name = %name))]
 pub async fn store_secret(
     db: &Database,
     user_id: i64,
@@ -65,6 +66,7 @@ pub async fn store_secret(
 }
 
 /// Get a secret by category and name.
+#[tracing::instrument(skip(db, key), fields(user_id, category = %category, name = %name))]
 pub async fn get_secret(
     db: &Database,
     user_id: i64,
@@ -150,6 +152,7 @@ pub async fn get_secret(
 }
 
 /// List secrets for a user, optionally filtered by category.
+#[tracing::instrument(skip(db), fields(user_id, category = ?category))]
 pub async fn list_secrets(
     db: &Database,
     user_id: i64,
@@ -231,6 +234,7 @@ pub async fn list_secrets(
 }
 
 /// Update an existing secret.
+#[tracing::instrument(skip(db, data, key), fields(user_id, category = %category, name = %name))]
 pub async fn update_secret(
     db: &Database,
     user_id: i64,
@@ -277,6 +281,7 @@ pub async fn update_secret(
 }
 
 /// Delete a secret.
+#[tracing::instrument(skip(db), fields(user_id, category = %category, name = %name))]
 pub async fn delete_secret(db: &Database, user_id: i64, category: &str, name: &str) -> Result<()> {
     let category = category.to_string();
     let name = name.to_string();
