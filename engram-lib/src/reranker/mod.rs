@@ -2,13 +2,15 @@ pub mod pool;
 
 use crate::config::Config;
 use crate::embeddings::download::ensure_reranker_model;
+use crate::resilience::{retry_with_backoff, BreakerConfig, CircuitBreaker, CircuitError};
 use crate::{EngError, Result};
 use async_trait::async_trait;
 use ort::session::Session;
 use ort::value::Tensor;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokenizers::Tokenizer;
-use tracing::info;
+use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
 // 3.13: Reranker trait -- swappable backends
@@ -157,6 +159,15 @@ impl RerankerInner {
 
 #[async_trait]
 impl Reranker for OnnxReranker {
+    #[tracing::instrument(
+        name = "rerank_onnx",
+        skip_all,
+        fields(
+            backend = "onnx",
+            query_len = query.len(),
+            result_count = results.len(),
+        )
+    )]
     async fn rerank_results(
         &self,
         query: &str,
@@ -212,15 +223,11 @@ pub struct HttpReranker {
     api_key: Option<String>,
     model: String,
     top_k: usize,
+    breaker: Arc<CircuitBreaker>,
 }
 
 impl HttpReranker {
-    pub fn new(
-        endpoint: String,
-        api_key: Option<String>,
-        model: String,
-        top_k: usize,
-    ) -> Self {
+    pub fn new(endpoint: String, api_key: Option<String>, model: String, top_k: usize) -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
@@ -233,13 +240,25 @@ impl HttpReranker {
             "HTTP reranker configured"
         );
 
+        // Open after 5 consecutive failures, probe again after 30s.
+        let breaker = Arc::new(CircuitBreaker::new(BreakerConfig {
+            failure_threshold: 5,
+            cooldown: Duration::from_secs(30),
+        }));
+
         Self {
             client,
             endpoint,
             api_key,
             model,
             top_k,
+            breaker,
         }
+    }
+
+    /// Exposed for tests/metrics. Returns "closed", "open", or "half_open".
+    pub fn breaker_state(&self) -> &'static str {
+        self.breaker.state()
     }
 }
 
@@ -264,6 +283,15 @@ struct HttpRerankResult {
 
 #[async_trait]
 impl Reranker for HttpReranker {
+    #[tracing::instrument(
+        name = "rerank_http",
+        skip_all,
+        fields(
+            backend = "http",
+            query_len = query.len(),
+            result_count = results.len(),
+        )
+    )]
     async fn rerank_results(
         &self,
         query: &str,
@@ -274,7 +302,11 @@ impl Reranker for HttpReranker {
         }
 
         let k = self.top_k.min(results.len());
-        let documents: Vec<&str> = results.iter().take(k).map(|r| r.memory.content.as_str()).collect();
+        let documents: Vec<&str> = results
+            .iter()
+            .take(k)
+            .map(|r| r.memory.content.as_str())
+            .collect();
 
         let body = HttpRerankRequest {
             model: &self.model,
@@ -283,27 +315,48 @@ impl Reranker for HttpReranker {
             top_n: k,
         };
 
-        let mut req = self.client.post(&self.endpoint).json(&body);
-        if let Some(ref key) = self.api_key {
-            req = req.header("Authorization", format!("Bearer {}", key));
-        }
+        // Retry transient failures 3x with exponential backoff, then guard
+        // the whole thing with a circuit breaker. If the breaker is open the
+        // reranker fails fast and the caller falls back to the base scores.
+        let client = &self.client;
+        let endpoint = &self.endpoint;
+        let api_key = self.api_key.as_deref();
+        let body_ref = &body;
 
-        let resp = req.send().await.map_err(|e| {
-            EngError::Internal(format!("HTTP reranker request failed: {}", e))
-        })?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(EngError::Internal(format!(
-                "HTTP reranker returned {}: {}",
-                status, body
-            )));
-        }
-
-        let rerank_resp: HttpRerankResponse = resp.json().await.map_err(|e| {
-            EngError::Internal(format!("HTTP reranker response parse error: {}", e))
-        })?;
+        let rerank_resp: HttpRerankResponse = match self
+            .breaker
+            .call(|| async move {
+                retry_with_backoff(3, Duration::from_millis(200), || async {
+                    let mut req = client.post(endpoint).json(body_ref);
+                    if let Some(key) = api_key {
+                        req = req.header("Authorization", format!("Bearer {}", key));
+                    }
+                    let resp = req.send().await.map_err(|e| {
+                        EngError::Internal(format!("HTTP reranker request failed: {}", e))
+                    })?;
+                    let status = resp.status();
+                    if !status.is_success() {
+                        let body = resp.text().await.unwrap_or_default();
+                        return Err(EngError::Internal(format!(
+                            "HTTP reranker returned {}: {}",
+                            status, body
+                        )));
+                    }
+                    resp.json::<HttpRerankResponse>().await.map_err(|e| {
+                        EngError::Internal(format!("HTTP reranker response parse error: {}", e))
+                    })
+                })
+                .await
+            })
+            .await
+        {
+            Ok(r) => r,
+            Err(CircuitError::Open) => {
+                warn!("HTTP reranker circuit open; skipping rerank, returning base scores");
+                return Ok(());
+            }
+            Err(CircuitError::Inner(e)) => return Err(e),
+        };
 
         // Apply scores: blend 70% remote score, 30% original
         for item in &rerank_resp.results {

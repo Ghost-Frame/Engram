@@ -9,8 +9,10 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+use crate::validation::MAX_PAGERANK_ITERATIONS;
+
 const DAMPING: f64 = 0.85;
-const MAX_ITERATIONS: u32 = 25;
+const MAX_ITERATIONS: u32 = MAX_PAGERANK_ITERATIONS as u32;
 const CONVERGENCE_THRESHOLD: f64 = 1e-6;
 
 /// Compute PageRank scores for a tenant database.

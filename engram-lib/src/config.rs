@@ -58,7 +58,12 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+fn default_backup_retention_daily() -> usize {
+    30
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GateConfig {
     pub blocked_patterns: Vec<String>,
     pub reserved_targets: Vec<String>,
@@ -95,6 +100,7 @@ impl Default for GateConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GrowthConfig {
     pub reflection_interval_secs: u64,
     pub observation_limit: usize,
@@ -110,6 +116,7 @@ impl Default for GrowthConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SessionsConfig {
     pub max_concurrent: usize,
     pub buffer_size: usize,
@@ -129,6 +136,7 @@ impl Default for SessionsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PromptConfig {
     pub default_max_tokens: usize,
     pub personality_weight: f32,
@@ -150,6 +158,7 @@ impl Default for PromptConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CreddConfig {
     pub url: String,
     pub agent_key_env: String,
@@ -169,6 +178,7 @@ impl Default for CreddConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EidolonConfig {
     pub enabled: bool,
     pub url: Option<String>,
@@ -188,20 +198,22 @@ pub struct EidolonConfig {
 
 impl EidolonConfig {
     pub fn from_env() -> Self {
-        let mut c = Self {
-            enabled: std::env::var("ENGRAM_EIDOLON_ENABLED")
-                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes"))
-                .unwrap_or(false),
-            url: std::env::var("ENGRAM_EIDOLON_URL").ok(),
-            api_key: std::env::var("ENGRAM_EIDOLON_API_KEY")
-                .ok()
-                .map(SecretString::new),
-            credd: CreddConfig::default(),
-            gate: GateConfig::default(),
-            growth: GrowthConfig::default(),
-            sessions: SessionsConfig::default(),
-            prompt: PromptConfig::default(),
-        };
+        Self::default().apply_env()
+    }
+
+    /// Apply environment-variable overrides on top of `self`. Used to layer
+    /// env on top of a TOML-loaded base so env always wins.
+    pub fn apply_env(mut self) -> Self {
+        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_ENABLED") {
+            self.enabled = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
+        }
+        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_URL") {
+            self.url = Some(v);
+        }
+        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_API_KEY") {
+            self.api_key = Some(SecretString::new(v));
+        }
+        let c = &mut self;
         if let Ok(v) = std::env::var("CREDD_URL") {
             c.credd.url = v;
         }
@@ -277,7 +289,7 @@ impl EidolonConfig {
             c.prompt.default_include_personality =
                 matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
-        c
+        self
     }
 }
 
@@ -289,6 +301,7 @@ pub struct SafetyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub db_path: String,
     pub host: String,
@@ -323,6 +336,27 @@ pub struct Config {
     pub pagerank_dirty_threshold: u32,
     pub pagerank_max_concurrent: usize,
     pub pagerank_enabled: bool,
+    /// Whether to run the auto-backup background task.
+    pub backup_enabled: bool,
+    /// Seconds between scheduled backups. Default: 6 hours.
+    pub backup_interval_secs: u64,
+    /// Directory for backup files. Relative paths resolve under `data_dir`.
+    /// Default: `backups`.
+    pub backup_dir: String,
+    /// Maximum number of hourly backup files to retain. Older backups are
+    /// pruned after each successful run. Default: 14 (kept for back-compat;
+    /// the disaster-recovery plan calls for 8 hourly + 30 daily).
+    pub backup_retention: usize,
+    /// Maximum number of daily backup files to retain in `<backup_dir>/daily`.
+    /// After each successful run the verified hourly backup is promoted to
+    /// the daily directory if no backup for the current UTC date exists.
+    /// Default: 30.
+    #[serde(default = "default_backup_retention_daily")]
+    pub backup_retention_daily: usize,
+    /// Grace period (in hours) for an old key after `POST /keys/rotate`.
+    /// During this window the old key continues to authenticate so clients
+    /// can cut over without downtime. Default: 24.
+    pub auth_key_rotation_grace_hours: i64,
     #[serde(default)]
     pub encryption: EncryptionConfig,
     #[serde(default)]
@@ -371,6 +405,12 @@ impl Default for Config {
             pagerank_dirty_threshold: 100,
             pagerank_max_concurrent: 2,
             pagerank_enabled: true,
+            backup_enabled: false,
+            backup_interval_secs: 6 * 3600,
+            backup_dir: "backups".to_string(),
+            backup_retention: 14,
+            backup_retention_daily: default_backup_retention_daily(),
+            auth_key_rotation_grace_hours: 24,
             encryption: EncryptionConfig::default(),
             eidolon: EidolonConfig::default(),
             trusted_proxies: Vec::new(),
@@ -381,8 +421,75 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Load a `Config` from a TOML file. Missing fields fall back to
+    /// their `Default` values via `#[serde(default)]` on most fields.
+    ///
+    /// Secret fields (`api_key`, `gui_password`, `eidolon.api_key`) are
+    /// `#[serde(skip)]` and must be supplied via environment variables.
+    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, String> {
+        let path = path.as_ref();
+        let text =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+        toml::from_str(&text).map_err(|e| format!("parse {}: {}", path.display(), e))
+    }
+
+    /// Resolve the TOML config path using (in order):
+    /// 1. `ENGRAM_CONFIG_FILE` env var
+    /// 2. `./engram.toml` in the current directory
+    /// 3. `$XDG_CONFIG_HOME/engram/config.toml` (or `~/.config/engram/config.toml`)
+    ///
+    /// Returns `None` if no config file is found.
+    fn resolve_config_path() -> Option<std::path::PathBuf> {
+        if let Ok(p) = std::env::var("ENGRAM_CONFIG_FILE") {
+            let path = std::path::PathBuf::from(p);
+            if path.exists() {
+                return Some(path);
+            } else {
+                tracing::warn!(
+                    "ENGRAM_CONFIG_FILE set but file not found: {}",
+                    path.display()
+                );
+            }
+        }
+        let cwd_path = std::path::PathBuf::from("engram.toml");
+        if cwd_path.exists() {
+            return Some(cwd_path);
+        }
+        if let Some(cfg_dir) = dirs::config_dir() {
+            let path = cfg_dir.join("engram").join("config.toml");
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    /// Load config layered: defaults -> TOML file (if present) -> env var overrides.
+    ///
+    /// This is the preferred entry point for server startup. Env vars always
+    /// win so operators can override file values without editing the file.
+    pub fn load() -> Self {
+        let base = match Self::resolve_config_path() {
+            Some(path) => match Self::from_file(&path) {
+                Ok(cfg) => {
+                    tracing::info!("loaded config from {}", path.display());
+                    cfg
+                }
+                Err(e) => {
+                    tracing::warn!("failed to load config file: {}. Using defaults.", e);
+                    Self::default()
+                }
+            },
+            None => Self::default(),
+        };
+        Self::apply_env(base)
+    }
+
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        Self::apply_env(Self::default())
+    }
+
+    fn apply_env(mut config: Self) -> Self {
         if let Ok(v) = std::env::var("ENGRAM_DB_PATH") {
             config.db_path = v;
         }
@@ -550,6 +657,56 @@ impl Config {
         if let Ok(v) = std::env::var("ENGRAM_PAGERANK_ENABLED") {
             config.pagerank_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
         }
+        if let Ok(v) = std::env::var("ENGRAM_BACKUP_ENABLED") {
+            config.backup_enabled = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
+        }
+        if let Ok(v) = std::env::var("ENGRAM_BACKUP_INTERVAL_SECS") {
+            match v.parse() {
+                Ok(n) => config.backup_interval_secs = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_BACKUP_INTERVAL_SECS={}, using default {}",
+                    v,
+                    config.backup_interval_secs
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("ENGRAM_BACKUP_DIR") {
+            config.backup_dir = v;
+        }
+        if let Ok(v) = std::env::var("ENGRAM_BACKUP_RETENTION") {
+            match v.parse() {
+                Ok(n) => config.backup_retention = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_BACKUP_RETENTION={}, using default {}",
+                    v,
+                    config.backup_retention
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("ENGRAM_BACKUP_RETENTION_DAILY") {
+            match v.parse() {
+                Ok(n) => config.backup_retention_daily = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_BACKUP_RETENTION_DAILY={}, using default {}",
+                    v,
+                    config.backup_retention_daily
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("ENGRAM_AUTH_KEY_ROTATION_GRACE_HOURS") {
+            match v.parse() {
+                Ok(n) if n > 0 => config.auth_key_rotation_grace_hours = n,
+                Ok(_) => tracing::warn!(
+                    "ENGRAM_AUTH_KEY_ROTATION_GRACE_HOURS must be > 0, using default {}",
+                    config.auth_key_rotation_grace_hours
+                ),
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_AUTH_KEY_ROTATION_GRACE_HOURS={}, using default {}",
+                    v,
+                    config.auth_key_rotation_grace_hours
+                ),
+            }
+        }
         if let Ok(v) = std::env::var("ENGRAM_ENCRYPTION_MODE") {
             config.encryption.mode = match v.to_ascii_lowercase().as_str() {
                 "none" => EncryptionMode::None,
@@ -575,7 +732,7 @@ impl Config {
                 tracing::info!("trusted proxies configured: {:?}", config.trusted_proxies);
             }
         }
-        config.eidolon = EidolonConfig::from_env();
+        config.eidolon = config.eidolon.apply_env();
         config
     }
 
@@ -645,5 +802,54 @@ mod tests {
     fn config_exposes_eidolon_field() {
         let c = Config::default();
         assert_eq!(c.eidolon.prompt.default_max_tokens, 4000);
+    }
+
+    #[test]
+    fn from_file_parses_partial_toml_and_uses_defaults() {
+        let dir = std::env::temp_dir().join(format!("engram-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("engram.toml");
+        std::fs::write(
+            &path,
+            r#"
+host = "0.0.0.0"
+port = 8080
+pagerank_enabled = false
+
+[eidolon]
+enabled = true
+
+[eidolon.prompt]
+default_max_tokens = 8000
+"#,
+        )
+        .unwrap();
+
+        let c = Config::from_file(&path).expect("parse toml");
+        assert_eq!(c.host, "0.0.0.0");
+        assert_eq!(c.port, 8080);
+        assert!(!c.pagerank_enabled);
+        // unspecified fields fall back to defaults
+        assert_eq!(c.db_path, "engram.db");
+        assert_eq!(c.embedding_dim, 1024);
+        assert!(c.eidolon.enabled);
+        assert_eq!(c.eidolon.prompt.default_max_tokens, 8000);
+        // nested default still applied for unspecified sub-field
+        assert_eq!(c.eidolon.prompt.max_tokens_cap, 128000);
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn from_file_rejects_malformed_toml() {
+        let dir = std::env::temp_dir().join(format!("engram-cfg-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("engram.toml");
+        std::fs::write(&path, "port = \"not-a-number\"\n").unwrap();
+        let err = Config::from_file(&path).unwrap_err();
+        assert!(err.contains("parse"));
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&dir).ok();
     }
 }

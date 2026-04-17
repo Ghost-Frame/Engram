@@ -8,17 +8,14 @@
 // Nested ZIPs are skipped to prevent zip bomb attacks.
 
 use crate::ingestion::types::{ParsedDocument, SupportedFormat};
+use crate::validation::{MAX_ZIP_AGGREGATE_SIZE, MAX_ZIP_ENTRY_SIZE};
 use crate::Result;
 use std::io::{Cursor, Read};
 
-/// Maximum uncompressed size per entry (50 MB). Entries larger than this
-/// are skipped with a warning to guard against decompression bombs.
-const MAX_ZIP_ENTRY_SIZE: u64 = 50 * 1024 * 1024;
-
-/// Maximum aggregate uncompressed bytes across all entries in a single
-/// ZIP archive. Prevents zip bombs where many entries each fit under
-/// the per-entry cap but total to gigabytes.
-const MAX_ZIP_AGGREGATE_SIZE: u64 = 500 * 1024 * 1024; // 500 MiB
+/// Maximum uncompressed size per entry (u64 view of the centralized constant).
+const MAX_ZIP_ENTRY_SIZE_U64: u64 = MAX_ZIP_ENTRY_SIZE as u64;
+/// Maximum aggregate uncompressed bytes (u64 view of the centralized constant).
+const MAX_ZIP_AGGREGATE_SIZE_U64: u64 = MAX_ZIP_AGGREGATE_SIZE as u64;
 
 /// Parse a ZIP archive; returns one ParsedDocument per successfully parsed entry.
 pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
@@ -54,7 +51,7 @@ pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
         }
 
         // Size guard against decompression bombs
-        if uncompressed_size > MAX_ZIP_ENTRY_SIZE {
+        if uncompressed_size > MAX_ZIP_ENTRY_SIZE_U64 {
             tracing::warn!(
                 "ZIP: skipping {} -- uncompressed size {} bytes exceeds limit",
                 name,
@@ -63,12 +60,12 @@ pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
             continue;
         }
 
-        if aggregate_bytes.saturating_add(uncompressed_size) > MAX_ZIP_AGGREGATE_SIZE {
+        if aggregate_bytes.saturating_add(uncompressed_size) > MAX_ZIP_AGGREGATE_SIZE_U64 {
             tracing::warn!(
                 "ZIP: skipping {} -- aggregate uncompressed size {} would exceed limit {}",
                 name,
                 aggregate_bytes.saturating_add(uncompressed_size),
-                MAX_ZIP_AGGREGATE_SIZE
+                MAX_ZIP_AGGREGATE_SIZE_U64
             );
             continue;
         }

@@ -25,6 +25,7 @@ pub fn router() -> Router<AppState> {
         .route("/memories", post(store_memory))
         .route("/search", post(search_memories))
         .route("/memories/search", post(search_memories))
+        .route("/search/explain", post(explain_search))
         .route("/recall", post(recall))
         .route("/list", get(list_memories))
         .route("/tags", get(list_tags))
@@ -261,6 +262,114 @@ async fn search_memories(
 
     Ok(Json(json!({
         "results": result_items, "abstained": abstained, "top_score": top_score,
+    })))
+}
+
+/// Part 5.13: POST /search/explain -- runs the full hybrid search pipeline and
+/// returns a per-result score breakdown (lexical/vector/graph/reranker/fused)
+/// alongside stage timings so operators can diagnose ranking regressions.
+async fn explain_search(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<SearchBody>,
+) -> Result<Json<Value>, AppError> {
+    let total_start = std::time::Instant::now();
+
+    let embed_start = std::time::Instant::now();
+    let embedding = {
+        let embedder_guard = state.embedder.read().await;
+        if let Some(ref embedder) = *embedder_guard {
+            match embedder.embed(&body.query).await {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    tracing::warn!("embedding failed for explain: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+    let embed_ms = embed_start.elapsed().as_secs_f64() * 1000.0;
+    let embedded = embedding.is_some();
+
+    let body_query = body.query.clone();
+    let limit = body.limit.map(|l| l.min(100));
+
+    let req = SearchRequest {
+        query: body.query,
+        embedding,
+        limit,
+        category: body.category,
+        source: body.source,
+        tags: body.tags.or_else(|| body.tag.map(|tag| vec![tag])),
+        threshold: body.threshold,
+        user_id: Some(auth.user_id),
+        space_id: body.space_id,
+        include_forgotten: body.include_forgotten,
+        mode: body.mode.clone(),
+        question_type: body.question_type,
+        expand_relationships: body.expand_relationships.unwrap_or(false),
+        include_links: body.include_links.unwrap_or(false),
+        latest_only: body.latest_only.unwrap_or(true),
+        source_filter: body.source_filter,
+    };
+
+    let hybrid_start = std::time::Instant::now();
+    let mut results = hybrid_search(&state.db, req).await?;
+    let hybrid_ms = hybrid_start.elapsed().as_secs_f64() * 1000.0;
+
+    let rerank_start = std::time::Instant::now();
+    let mut reranker_applied = false;
+    {
+        let reranker_guard = state.reranker.read().await;
+        if let Some(ref reranker) = *reranker_guard {
+            match reranker.rerank_results(&body_query, &mut results).await {
+                Ok(()) => reranker_applied = true,
+                Err(e) => tracing::warn!("reranker failed for explain: {}", e),
+            }
+        }
+    }
+    let rerank_ms = rerank_start.elapsed().as_secs_f64() * 1000.0;
+
+    let result_items: Vec<Value> = results
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.memory.id,
+                "content": r.memory.content,
+                "score": r.score,
+                "search_type": r.search_type,
+                "scores": {
+                    "lexical": r.fts_score,
+                    "vector": r.semantic_score,
+                    "graph": r.graph_score,
+                    "personality": r.personality_signal_score,
+                    "temporal_boost": r.temporal_boost,
+                    "fused": r.combined_score,
+                    "reranked": r.reranked.unwrap_or(false),
+                    "reranker_ms": r.reranker_ms,
+                },
+            })
+        })
+        .collect();
+
+    let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
+
+    Ok(Json(json!({
+        "results": result_items,
+        "count": result_items.len(),
+        "timings_ms": {
+            "embed": embed_ms,
+            "hybrid": hybrid_ms,
+            "rerank": rerank_ms,
+            "total": total_ms,
+        },
+        "pipeline": {
+            "embedded": embedded,
+            "reranker_applied": reranker_applied,
+            "mode": body.mode,
+        },
     })))
 }
 

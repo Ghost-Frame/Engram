@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     middleware,
     routing::{get, post},
@@ -13,8 +13,6 @@ use tracing::info;
 use crate::auth::require_token;
 use crate::session::Observation;
 use crate::SidecarState;
-
-const FLUSH_THRESHOLD: usize = 1;
 
 /// Byte threshold below which /compress passes content through without LLM.
 const COMPRESS_PASSTHROUGH_BYTES: usize = 2000;
@@ -31,9 +29,73 @@ pub fn router(state: SidecarState) -> Router {
         .route("/compress", post(compress))
         .route("/end", post(end_session))
         .route("/session/start", post(start_session))
+        .route("/session/{id}/resume", post(resume_session))
         .route("/sessions", get(list_sessions))
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// POST /session/{id}/resume -- rehydrate a session from the persistent store
+// ---------------------------------------------------------------------------
+
+async fn resume_session(
+    State(state): State<SidecarState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let store = state.session_store.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "persistent session store not configured -- set ENGRAM_SIDECAR_STORE_PATH",
+            })),
+        )
+    })?;
+
+    // If the session is already loaded, return its current state without
+    // touching the store -- the in-memory copy is authoritative.
+    {
+        let sessions = state.sessions.read().await;
+        if let Some(s) = sessions.get(&id) {
+            return Ok(Json(json!({
+                "session_id": s.id,
+                "started_at": s.started_at,
+                "observation_count": s.observation_count,
+                "stored_count": s.stored_count,
+                "pending_count": s.pending.len(),
+                "ended": s.ended,
+                "source": "in_memory",
+            })));
+        }
+    }
+
+    let snap = store.load_one(&id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("store load failed: {e}") })),
+        )
+    })?;
+    let snap = snap.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("session {id} not found in persistent store") })),
+        )
+    })?;
+
+    let info = json!({
+        "session_id": snap.id,
+        "started_at": snap.started_at,
+        "observation_count": snap.observation_count,
+        "stored_count": snap.stored_count,
+        "pending_count": snap.pending.len(),
+        "ended": snap.ended,
+        "source": "persistent_store",
+    });
+
+    let mut sessions = state.sessions.write().await;
+    sessions.restore_snapshot(snap);
+
+    Ok(Json(info))
 }
 
 async fn health(State(state): State<SidecarState>) -> Json<Value> {
@@ -171,7 +233,7 @@ async fn observe(
         (count, sid)
     };
 
-    let flushed = if pending_count >= FLUSH_THRESHOLD {
+    let flushed = if pending_count >= state.batch_size {
         flush_pending(&state, &session_id).await
     } else {
         0
@@ -557,8 +619,15 @@ async fn end_session(
 // ---------------------------------------------------------------------------
 // flush_pending -- drain and store observations for a specific session
 // ---------------------------------------------------------------------------
+//
+// Sends all pending observations for `session_id` to the engram server in a
+// single POST /batch request. If /batch is unavailable (older server) we
+// fall back to one /store per observation so upgrades can be rolling. Partial
+// failures surface as a reduced `stored` count; the corresponding pending
+// observations stay dropped (the original behavior), so a failure trades
+// durability for progress -- matching what the per-observation loop did.
 
-async fn flush_pending(state: &SidecarState, session_id: &str) -> usize {
+pub(crate) async fn flush_pending(state: &SidecarState, session_id: &str) -> usize {
     let observations = {
         let mut sessions = state.sessions.write().await;
         match sessions.get_mut(session_id) {
@@ -571,9 +640,105 @@ async fn flush_pending(state: &SidecarState, session_id: &str) -> usize {
         return 0;
     }
 
-    let mut stored = 0usize;
+    // Build one /batch request with all observations as store ops.
+    let ops: Vec<Value> = observations
+        .iter()
+        .map(|obs| {
+            json!({
+                "op": "store",
+                "body": {
+                    "content": format!("[{}] {}", obs.tool_name, obs.content),
+                    "category": obs.category,
+                    "source": state.source,
+                    "importance": obs.importance,
+                    "tags": vec!["sidecar".to_string(), obs.tool_name.clone()],
+                    "session_id": session_id,
+                }
+            })
+        })
+        .collect();
+    let batch_req = json!({ "ops": ops });
 
-    for obs in &observations {
+    let url = format!("{}/batch", state.engram_url);
+    let mut req = state.client.post(&url).json(&batch_req);
+    if let Some(ref api_key) = state.engram_api_key {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(
+                session_id = %session_id,
+                user_id = state.user_id,
+                error = %e,
+                "batch flush: engram server unreachable"
+            );
+            return 0;
+        }
+    };
+
+    // Older servers don't implement /batch -- fall back to per-obs /store.
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        tracing::debug!(
+            session_id = %session_id,
+            "batch flush: /batch not available, falling back to /store"
+        );
+        return flush_pending_fallback(state, session_id, &observations).await;
+    }
+
+    // /batch returns 200 when all ops succeed, 207 MULTI_STATUS when any
+    // op fails. In either case we parse `results[]` to count successes.
+    let status = response.status();
+    if !status.is_success() && status != reqwest::StatusCode::MULTI_STATUS {
+        tracing::error!(
+            session_id = %session_id,
+            status = %status,
+            "batch flush: engram server rejected batch"
+        );
+        return 0;
+    }
+
+    let body: Value = match response.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(
+                session_id = %session_id,
+                error = %e,
+                "batch flush: failed to parse /batch response"
+            );
+            return 0;
+        }
+    };
+
+    let stored = body
+        .get("results")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter(|r| r.get("success") == Some(&Value::Bool(true)))
+                .count()
+        })
+        .unwrap_or(0);
+
+    tracing::debug!(
+        session_id = %session_id,
+        total = observations.len(),
+        stored,
+        "batch flush complete"
+    );
+
+    stored
+}
+
+/// Per-observation fallback used when the server doesn't have /batch yet.
+async fn flush_pending_fallback(
+    state: &SidecarState,
+    session_id: &str,
+    observations: &[Observation],
+) -> usize {
+    let mut stored = 0usize;
+    for obs in observations {
         let req = json!({
             "content": format!("[{}] {}", obs.tool_name, obs.content),
             "category": obs.category,
@@ -584,22 +749,16 @@ async fn flush_pending(state: &SidecarState, session_id: &str) -> usize {
             "user_id": state.user_id,
         });
 
-        // Try /store (Node.js), fall back to /memory/store (Rust)
         match post_with_fallback(state, "/store", "/memory/store", &req).await {
             Ok(response) if response.status().is_success() => {
                 stored += 1;
-                tracing::debug!(
-                    tool = %obs.tool_name,
-                    session_id = %session_id,
-                    "observation stored via engram server"
-                );
             }
             Ok(response) => {
                 tracing::error!(
                     tool = %obs.tool_name,
                     session_id = %session_id,
                     status = %response.status(),
-                    "engram server rejected observation"
+                    "fallback flush: engram server rejected observation"
                 );
             }
             Err(_) => {
@@ -607,11 +766,10 @@ async fn flush_pending(state: &SidecarState, session_id: &str) -> usize {
                     tool = %obs.tool_name,
                     session_id = %session_id,
                     user_id = state.user_id,
-                    "failed to send observation to engram server"
+                    "fallback flush: failed to send observation"
                 );
             }
         }
     }
-
     stored
 }

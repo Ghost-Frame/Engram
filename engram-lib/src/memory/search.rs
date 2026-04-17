@@ -556,6 +556,15 @@ fn resolve_strategy(req: &SearchRequest) -> (QuestionType, crate::memory::types:
 }
 
 /// Run the full hybrid search pipeline matching TS hybridSearch.
+#[tracing::instrument(
+    name = "hybrid_search",
+    skip_all,
+    fields(
+        user_id = ?req.user_id,
+        query_len = req.query.len(),
+        limit = ?req.limit,
+    )
+)]
 pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<SearchResult>> {
     // SECURITY (SEC-MED-6): clamp at library entry point so MCP, sidecar,
     // and CLI callers inherit the cap. HTTP route-level clamp is kept as
@@ -825,8 +834,8 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
             .collect();
         let neighbor_results = futures::future::join_all(neighbor_futures).await;
 
-        for result in neighbor_results {
-            if let Ok(rows) = result {
+        for rows in neighbor_results.into_iter().flatten() {
+            {
                 let mut added = 0usize;
                 for row in rows {
                     if added >= strategy.hop1_limit {
@@ -995,9 +1004,8 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
                 }
             }
             if let Some(ref wanted) = filter_tags {
-                let mem_tags: HashSet<String> = super::parse_tags_json(&m.tags)
-                    .into_iter()
-                    .collect();
+                let mem_tags: HashSet<String> =
+                    super::parse_tags_json(&m.tags).into_iter().collect();
                 if !wanted.iter().all(|t| mem_tags.contains(t)) {
                     return false;
                 }
@@ -1064,6 +1072,14 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
 /// Faceted search: runs hybrid search (if query present) OR direct DB scan,
 /// applies structured tag/category/source/importance/date filters, then
 /// computes requested facet aggregations over the matched set.
+#[tracing::instrument(
+    skip(db, req),
+    fields(
+        user_id = req.user_id.unwrap_or(0),
+        query_len = req.query.len(),
+        limit = req.limit,
+    )
+)]
 pub async fn faceted_search(
     db: &Database,
     req: FacetedSearchRequest,
@@ -1083,22 +1099,37 @@ pub async fn faceted_search(
     let tags_all: Vec<String> = req
         .tags_all
         .as_ref()
-        .map(|t| t.iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
+        .map(|t| {
+            t.iter()
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
     let tags_any: HashSet<String> = req
         .tags_any
         .as_ref()
-        .map(|t| t.iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
+        .map(|t| {
+            t.iter()
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
     let tags_none: HashSet<String> = req
         .tags_none
         .as_ref()
-        .map(|t| t.iter().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
+        .map(|t| {
+            t.iter()
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
 
     // Date bounds parsed once.
-    let date_from = req.date_from.as_deref().and_then(|s| parse_iso_date(s));
-    let date_to = req.date_to.as_deref().and_then(|s| parse_iso_date(s));
+    let date_from = req.date_from.as_deref().and_then(parse_iso_date);
+    let date_to = req.date_to.as_deref().and_then(parse_iso_date);
 
     // Predicate closure over a Memory: returns true if it passes all filters.
     let passes_filters = |m: &super::types::Memory| -> bool {
@@ -1264,8 +1295,7 @@ async fn faceted_db_scan(
         "is_latest = 1".to_string(),
         "is_consolidated = 0".to_string(),
     ];
-    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql + Send>> =
-        vec![Box::new(user_id)];
+    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql + Send>> = vec![Box::new(user_id)];
     let mut idx = 2usize;
 
     if let Some(ref cat) = req.category {
@@ -1307,14 +1337,20 @@ async fn faceted_db_scan(
     let where_clause = conditions.join(" AND ");
     let sql = format!(
         "SELECT {} FROM memories WHERE {} ORDER BY created_at DESC LIMIT {}",
-        MEMORY_COLUMNS, where_clause, limit * 3 // over-fetch for tag filtering in Rust
+        MEMORY_COLUMNS,
+        where_clause,
+        limit * 3 // over-fetch for tag filtering in Rust
     );
 
     db.read(move |conn| {
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params_vec.iter().map(|b| b.as_ref() as &dyn rusqlite::types::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec
+            .iter()
+            .map(|b| b.as_ref() as &dyn rusqlite::types::ToSql)
+            .collect();
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(param_refs.as_slice()).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(param_refs.as_slice())
+            .map_err(rusqlite_to_eng_error)?;
         let mut memories = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             memories.push(row_to_memory(row)?);
@@ -1365,7 +1401,10 @@ fn compute_tag_facets(results: &[SearchResult], limit: usize) -> Vec<FacetBucket
     buckets
 }
 
-fn compute_string_facets<'a>(values: impl Iterator<Item = &'a str>, limit: usize) -> Vec<FacetBucket> {
+fn compute_string_facets<'a>(
+    values: impl Iterator<Item = &'a str>,
+    limit: usize,
+) -> Vec<FacetBucket> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for v in values {
         if !v.is_empty() {
@@ -1433,6 +1472,7 @@ fn parse_iso_date(s: &str) -> Option<String> {
 
 /// Auto-link a memory to similar memories based on embedding similarity.
 /// Matches TS autoLink function.
+#[tracing::instrument(skip(db, embedding), fields(embedding_dim = embedding.len()))]
 pub async fn auto_link(
     db: &Database,
     memory_id: i64,

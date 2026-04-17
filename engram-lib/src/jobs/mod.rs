@@ -1,8 +1,25 @@
+//! Jobs domain -- durable background queue plus recurring schedulers.
+//!
+//! This module owns the `jobs` table (pending/running/completed/failed rows
+//! with retry counts) and exposes:
+//! - `enqueue`, `dequeue`, `complete`, `fail` for one-shot work.
+//! - A scheduler loop that claims pending rows, runs a registered handler
+//!   keyed by `job_type`, and retries with exponential backoff on failure.
+//! - [`pagerank_refresh`] -- the canonical recurring job that recomputes
+//!   per-user personalized PageRank and writes results back into
+//!   `pagerank_cache`.
+//! - [`pagerank_refresh_tenant`] (feature `tenant-sharding`) -- per-shard
+//!   variant for multi-tenant deployments.
+//!
+//! Handlers are registered at server startup via [`JobRegistry`]. Silent
+//! failures are surfaced via `tracing::warn` / `tracing::error`, never
+//! swallowed -- regressions break CI via the swallowed-errors sweep.
+
 pub mod pagerank_refresh;
 #[cfg(feature = "tenant-sharding")]
 pub mod pagerank_refresh_tenant;
 
-// JOBS - Durable job queue with retries (ported from TS jobs/index.ts + scheduler.ts)
+// Durable job queue with retries (ported from TS jobs/index.ts + scheduler.ts)
 use crate::db::Database;
 use crate::Result;
 use rusqlite::params;

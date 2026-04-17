@@ -66,6 +66,7 @@ pub struct EpisodeSummary {
     pub started_at: Option<String>,
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memory>> {
     let sql = format!(
         "SELECT {} FROM memories WHERE user_id = ?1 AND is_static = 1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 ORDER BY importance DESC",
@@ -85,6 +86,7 @@ pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memo
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_memory_without_embedding(
     db: &Database,
     id: i64,
@@ -107,6 +109,7 @@ pub async fn get_memory_without_embedding(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_version_chain(
     db: &Database,
     root_id: i64,
@@ -121,7 +124,7 @@ pub async fn get_version_chain(
         let mut rows = stmt
             .query(rusqlite::params![root_id, user_id])
             .map_err(rusqlite_to_eng_error)?;
-        let mut chain = Vec::new();
+        let mut chain = Vec::with_capacity(8);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             chain.push(VersionChainEntry {
                 id: row.get::<_, i64>(0).map_err(rusqlite_to_eng_error)?,
@@ -137,6 +140,7 @@ pub async fn get_version_chain(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_episode_summary(
     db: &Database,
     ep_id: i64,
@@ -164,6 +168,7 @@ pub async fn get_episode_summary(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<LinkedMemory>> {
     let sql = "SELECT m.id, m.content, m.category, ml.similarity, m.is_forgotten, m.model, m.source \
                FROM memory_links ml \
@@ -176,7 +181,7 @@ pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<L
         let mut rows = stmt
             .query(rusqlite::params![mem_id, user_id])
             .map_err(rusqlite_to_eng_error)?;
-        let mut linked = Vec::new();
+        let mut linked = Vec::with_capacity(10);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             linked.push(LinkedMemory {
                 id: row.get::<_, i64>(0).map_err(rusqlite_to_eng_error)?,
@@ -197,6 +202,7 @@ pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<L
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Result<Vec<Memory>> {
     let sql = format!(
         "SELECT {} FROM memories \
@@ -209,7 +215,7 @@ pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Re
         let mut rows = stmt
             .query(rusqlite::params![user_id, limit as i64])
             .map_err(rusqlite_to_eng_error)?;
-        let mut memories = Vec::new();
+        let mut memories = Vec::with_capacity(limit);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             memories.push(row_to_memory(row)?);
         }
@@ -218,6 +224,7 @@ pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Re
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_current_state(db: &Database, user_id: i64) -> Result<Vec<StateEntry>> {
     let sql = "SELECT key, value, updated_count FROM current_state \
                WHERE user_id = ?1 ORDER BY updated_at DESC LIMIT 30";
@@ -226,7 +233,7 @@ pub async fn get_current_state(db: &Database, user_id: i64) -> Result<Vec<StateE
         let mut rows = stmt
             .query(rusqlite::params![user_id])
             .map_err(rusqlite_to_eng_error)?;
-        let mut entries = Vec::new();
+        let mut entries = Vec::with_capacity(30);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             entries.push(StateEntry {
                 key: row.get::<_, String>(0).map_err(rusqlite_to_eng_error)?,
@@ -239,6 +246,7 @@ pub async fn get_current_state(db: &Database, user_id: i64) -> Result<Vec<StateE
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_user_preferences(db: &Database, user_id: i64) -> Result<Vec<PreferenceEntry>> {
     let sql = "SELECT domain, preference, strength FROM user_preferences \
                WHERE user_id = ?1 AND strength >= 1.5 ORDER BY strength DESC LIMIT 15";
@@ -247,7 +255,7 @@ pub async fn get_user_preferences(db: &Database, user_id: i64) -> Result<Vec<Pre
         let mut rows = stmt
             .query(rusqlite::params![user_id])
             .map_err(rusqlite_to_eng_error)?;
-        let mut prefs = Vec::new();
+        let mut prefs = Vec::with_capacity(15);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             prefs.push(PreferenceEntry {
                 domain: row.get::<_, String>(0).map_err(rusqlite_to_eng_error)?,
@@ -260,6 +268,7 @@ pub async fn get_user_preferences(db: &Database, user_id: i64) -> Result<Vec<Pre
     .await
 }
 
+#[tracing::instrument(skip(db, mem_ids), fields(mem_id_count = mem_ids.len()))]
 pub async fn get_structured_facts(
     db: &Database,
     mem_ids: &[i64],
@@ -269,7 +278,9 @@ pub async fn get_structured_facts(
         return Ok(vec![]);
     }
     // SECURITY: user_id is always scoped; memory IDs are i64 so format! is safe.
-    let placeholders: Vec<String> = mem_ids.iter().map(|id| id.to_string()).collect();
+    let mem_ids_len = mem_ids.len();
+    let mut placeholders: Vec<String> = Vec::with_capacity(mem_ids_len);
+    placeholders.extend(mem_ids.iter().map(|id| id.to_string()));
     let sql = format!(
         "SELECT subject, verb, object, quantity, unit, date_ref, date_approx, valid_at, invalid_at \
          FROM structured_facts WHERE user_id = ?1 AND memory_id IN ({}) AND invalid_at IS NULL \
@@ -281,7 +292,7 @@ pub async fn get_structured_facts(
         let mut rows = stmt
             .query(rusqlite::params![user_id])
             .map_err(rusqlite_to_eng_error)?;
-        let mut facts = Vec::new();
+        let mut facts = Vec::with_capacity(mem_ids_len);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             facts.push(StructuredFact {
                 subject: row.get::<_, String>(0).map_err(rusqlite_to_eng_error)?,
@@ -314,6 +325,7 @@ pub async fn get_structured_facts(
     .await
 }
 
+#[tracing::instrument(skip(db, ids), fields(id_count = ids.len()))]
 pub async fn track_access(db: &Database, ids: &[i64], user_id: i64) {
     for &id in ids {
         if let Err(e) = db

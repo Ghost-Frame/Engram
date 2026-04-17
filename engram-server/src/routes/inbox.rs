@@ -62,7 +62,16 @@ async fn reject(
 ) -> Result<Json<Value>, AppError> {
     engram_lib::inbox::reject_memory(&state.db, id, auth.user_id).await?;
     if let Some(reason) = &body.reason {
-        let _ = engram_lib::inbox::set_forget_reason(&state.db, id, reason, auth.user_id).await;
+        if let Err(e) =
+            engram_lib::inbox::set_forget_reason(&state.db, id, reason, auth.user_id).await
+        {
+            tracing::warn!(
+                memory_id = id,
+                user_id = auth.user_id,
+                error = %e,
+                "failed to record forget reason after inbox reject",
+            );
+        }
     }
     Ok(Json(json!({ "rejected": true, "id": id })))
 }

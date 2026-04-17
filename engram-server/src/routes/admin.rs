@@ -873,7 +873,9 @@ async fn backup_handler(
     let bytes = tokio::fs::read(&tmp)
         .await
         .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?;
-    let _ = tokio::fs::remove_file(&tmp).await;
+    if let Err(e) = tokio::fs::remove_file(&tmp).await {
+        tracing::warn!(path = %tmp, error = %e, "failed to remove temporary backup file");
+    }
     Ok((
         [
             (axum::http::header::CONTENT_TYPE, "application/octet-stream"),

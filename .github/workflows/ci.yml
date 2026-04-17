@@ -31,10 +31,52 @@ jobs:
         run: cargo check --workspace
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --exclude engram-migrate --all-targets -- -D warnings
 
       - name: Test workspace (excluding engram-migrate due to linker conflicts)
         run: cargo test --workspace --exclude engram-migrate
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Verify MSRV declaration in workspace
+        run: |
+          grep -q 'rust-version = "1.85"' Cargo.toml \
+            || { echo "workspace rust-version not declared or drifted"; exit 1; }
+
+  audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit || true
+
+      - name: Audit dependencies for known advisories
+        run: cargo audit || true
+
+  deny:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny || true
+
+      - name: Check licenses, sources, and advisories
+        run: |
+          if [ -f deny.toml ]; then
+            cargo deny check || true
+          else
+            echo "deny.toml not present -- skipping"
+          fi

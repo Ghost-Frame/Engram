@@ -92,9 +92,11 @@ async fn batch_handler(
         )));
     }
     if req.ops.len() > MAX_BATCH_OPS {
-        return Err(AppError(engram_lib::EngError::InvalidInput(
-            format!("batch limited to {} ops, got {}", MAX_BATCH_OPS, req.ops.len()),
-        )));
+        return Err(AppError(engram_lib::EngError::InvalidInput(format!(
+            "batch limited to {} ops, got {}",
+            MAX_BATCH_OPS,
+            req.ops.len()
+        ))));
     }
 
     let user_id = auth.user_id;
@@ -132,12 +134,7 @@ async fn batch_handler(
 // Per-op dispatch
 // ---------------------------------------------------------------------------
 
-async fn execute_op(
-    state: &AppState,
-    user_id: i64,
-    index: usize,
-    op: BatchOp,
-) -> BatchResult {
+async fn execute_op(state: &AppState, user_id: i64, index: usize, op: BatchOp) -> BatchResult {
     match op {
         BatchOp::Store { body } => execute_store(state, user_id, index, body).await,
         BatchOp::Update { body } => execute_update(state, user_id, index, body).await,
@@ -254,12 +251,7 @@ async fn execute_update(
     }
 }
 
-async fn execute_link(
-    state: &AppState,
-    user_id: i64,
-    index: usize,
-    body: LinkBody,
-) -> BatchResult {
+async fn execute_link(state: &AppState, user_id: i64, index: usize, body: LinkBody) -> BatchResult {
     let similarity = body.similarity.unwrap_or(1.0);
     let link_type = body.link_type.unwrap_or_else(|| "manual".to_string());
 

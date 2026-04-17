@@ -8,7 +8,8 @@ use engram_lib::llm::local::{LocalModelClient, OllamaConfig};
 use engram_lib::reranker::{self, Reranker};
 use engram_lib::services::brain::create_brain_backend;
 use engram_server::background::{
-    start_auto_checkpoint_task, start_job_cleanup_task, start_vector_sync_replay_task,
+    start_auto_backup_task, start_auto_checkpoint_task, start_job_cleanup_task,
+    start_vector_sync_replay_task,
 };
 use engram_server::state::AppState;
 use std::sync::atomic::AtomicBool;
@@ -26,7 +27,7 @@ async fn main() {
         )
         .init();
 
-    let config = Config::from_env();
+    let config = Config::load();
 
     // Install Prometheus metrics recorder before any metrics are emitted.
     engram_server::middleware::metrics::init_metrics();
@@ -75,6 +76,16 @@ async fn main() {
             tracing::info!("loading ONNX embedding model in background...");
             match OnnxProvider::new(&config).await {
                 Ok(provider) => {
+                    // 6.11 pre-warm: one dummy embed so the first real
+                    // request avoids ONNX session + allocator cold start.
+                    let prewarm_start = std::time::Instant::now();
+                    match provider.embed("warmup").await {
+                        Ok(_) => tracing::info!(
+                            elapsed_ms = prewarm_start.elapsed().as_millis() as u64,
+                            "embedder pre-warm complete"
+                        ),
+                        Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
+                    }
                     let mut guard = embedder.write().await;
                     *guard = Some(Arc::new(provider));
                     tracing::info!("ONNX embedding provider ready");
@@ -177,17 +188,36 @@ async fn main() {
     };
 
     // Start infrastructure background tasks.
-    let (checkpoint_token, checkpoint_handle) =
-        start_auto_checkpoint_task(Arc::clone(&state.db));
+    let (checkpoint_token, checkpoint_handle) = start_auto_checkpoint_task(Arc::clone(&state.db));
     tracing::info!("auto-checkpoint background task started");
 
-    let (job_cleanup_token, job_cleanup_handle) =
-        start_job_cleanup_task(Arc::clone(&state.db));
+    let (job_cleanup_token, job_cleanup_handle) = start_job_cleanup_task(Arc::clone(&state.db));
     tracing::info!("job-cleanup background task started");
 
     let (vector_sync_token, vector_sync_handle) =
         start_vector_sync_replay_task(Arc::clone(&state.db));
     tracing::info!("vector-sync-replay background task started");
+
+    let backup_handles = if state.config.backup_enabled {
+        let (token, handle) = start_auto_backup_task(
+            Arc::clone(&state.db),
+            state.config.data_dir.clone(),
+            state.config.backup_dir.clone(),
+            state.config.backup_interval_secs,
+            state.config.backup_retention,
+            state.config.backup_retention_daily,
+        );
+        tracing::info!(
+            interval_secs = state.config.backup_interval_secs,
+            retention = state.config.backup_retention,
+            retention_daily = state.config.backup_retention_daily,
+            "auto-backup background task started"
+        );
+        Some((token, handle))
+    } else {
+        tracing::info!("auto-backup disabled -- skipping");
+        None
+    };
 
     // Monitor background tasks -- log if any exit unexpectedly (panic/abort).
     tokio::spawn(async move {
@@ -196,6 +226,7 @@ async fn main() {
         let _job_cleanup_token = job_cleanup_token;
         let _vector_sync_token = vector_sync_token;
         let _pagerank_token = pagerank_handles.as_ref().map(|(t, _)| t);
+        let _backup_token = backup_handles.as_ref().map(|(t, _)| t);
 
         let mut tasks: Vec<(&str, tokio::task::JoinHandle<()>)> = vec![
             ("auto-checkpoint", checkpoint_handle),
@@ -204,6 +235,9 @@ async fn main() {
         ];
         if let Some((_, handle)) = pagerank_handles {
             tasks.push(("pagerank-refresh", handle));
+        }
+        if let Some((_, handle)) = backup_handles {
+            tasks.push(("auto-backup", handle));
         }
 
         // Wait for ANY task to exit -- they should all run forever.

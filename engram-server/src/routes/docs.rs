@@ -1,4 +1,24 @@
-use axum::{routing::get, Json, Router};
+// ============================================================================
+// OpenAPI spec + Swagger UI
+// ============================================================================
+//
+// Publishes:
+//   GET /openapi.json        -- machine-readable spec
+//   GET /docs/openapi.json   -- alias
+//   GET /docs                -- Swagger UI (HTML, pulls assets from jsDelivr)
+//
+// The spec is hand-curated: paths list every registered route, with tag +
+// summary + common parameters + request/response shapes for the core types.
+// Detailed per-field definitions for the domain objects (Memory,
+// SearchResult, etc.) live in the `GET /schema` routes and are also referenced
+// from the components/schemas block below.
+
+use axum::{
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+    routing::get,
+    Json, Router,
+};
 use serde_json::{json, Map, Value};
 
 use crate::state::AppState;
@@ -7,10 +27,43 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/openapi.json", get(openapi))
         .route("/docs/openapi.json", get(openapi))
+        .route("/docs", get(swagger_ui))
+        .route("/docs/", get(swagger_ui))
 }
 
 async fn openapi() -> Json<Value> {
     Json(build_openapi_spec())
+}
+
+async fn swagger_ui() -> Response {
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Engram API -- Swagger UI</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css" />
+  <style>body { margin: 0; }</style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: '/openapi.json',
+      dom_id: '#swagger-ui',
+      deepLinking: true,
+      presets: [SwaggerUIBundle.presets.apis],
+      layout: 'BaseLayout'
+    });
+  </script>
+</body>
+</html>"#;
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        html,
+    )
+        .into_response()
 }
 
 fn build_openapi_spec() -> Value {
@@ -20,13 +73,7 @@ fn build_openapi_spec() -> Value {
         for method in methods.iter() {
             item.insert(
                 (*method).to_string(),
-                json!({
-                    "summary": summary,
-                    "tags": [tag],
-                    "responses": {
-                        "200": { "description": "Successful response" }
-                    }
-                }),
+                operation_for(path, method, summary, tag),
             );
         }
         paths.insert(path.to_string(), Value::Object(item));
@@ -37,11 +84,286 @@ fn build_openapi_spec() -> Value {
         "info": {
             "title": "Engram Memory API",
             "version": env!("CARGO_PKG_VERSION"),
-            "description": "OpenAPI surface for the current Rust server routes."
+            "description": "OpenAPI surface for the Engram Rust server. \
+                Per-field definitions of core domain objects (Memory, SearchResult, \
+                MemoryLink, services) are also served by the live schema \
+                introspection endpoints: `GET /schema`, `GET /schema/memory`, \
+                `GET /schema/services`, `GET /schema/graph`."
         },
         "servers": [{ "url": "/" }],
+        "security": [{ "BearerAuth": [] }],
         "paths": paths,
+        "components": {
+            "securitySchemes": {
+                "BearerAuth": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "bearerFormat": "API key",
+                    "description": "Provide the tenant API key in `Authorization: Bearer <key>`."
+                }
+            },
+            "parameters": {
+                "Limit": {
+                    "name": "limit",
+                    "in": "query",
+                    "required": false,
+                    "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 },
+                    "description": "Maximum number of records to return."
+                },
+                "Offset": {
+                    "name": "offset",
+                    "in": "query",
+                    "required": false,
+                    "schema": { "type": "integer", "minimum": 0, "default": 0 },
+                    "description": "Offset for offset-based pagination."
+                },
+                "Cursor": {
+                    "name": "cursor",
+                    "in": "query",
+                    "required": false,
+                    "schema": { "type": "string" },
+                    "description": "Opaque cursor token for forward pagination."
+                }
+            },
+            "schemas": {
+                "Error": {
+                    "type": "object",
+                    "required": ["error"],
+                    "properties": {
+                        "error": { "type": "string", "description": "Human-readable error message." },
+                        "code":  { "type": "string", "description": "Optional stable error code." }
+                    }
+                },
+                "PageMeta": {
+                    "type": "object",
+                    "description": "Standard pagination metadata. See engram-lib::pagination.",
+                    "required": ["has_more"],
+                    "properties": {
+                        "next_cursor": { "type": "string", "description": "Forward cursor for the next page; absent at end." },
+                        "has_more":    { "type": "boolean" },
+                        "total":       { "type": "integer", "format": "int64", "description": "Total match count, when cheap to compute." }
+                    }
+                },
+                "Envelope": {
+                    "type": "object",
+                    "description": "Standard success envelope for single-resource responses.",
+                    "required": ["data"],
+                    "properties": {
+                        "data": { "description": "Resource payload (shape depends on the endpoint)." },
+                        "meta": { "type": "object", "description": "Optional arbitrary metadata (timings, warnings)." }
+                    }
+                },
+                "ListEnvelope": {
+                    "type": "object",
+                    "description": "Standard list response envelope with pagination.",
+                    "required": ["data", "meta"],
+                    "properties": {
+                        "data": { "type": "array", "items": { "type": "object" } },
+                        "meta": { "$ref": "#/components/schemas/PageMeta" }
+                    }
+                },
+                "StoreRequest": {
+                    "type": "object",
+                    "required": ["content"],
+                    "properties": {
+                        "content":    { "type": "string", "maxLength": 102400, "description": "Memory body." },
+                        "category":   { "type": "string", "description": "Category label (e.g. fact, task, preference)." },
+                        "importance": { "type": "integer", "minimum": 1, "maximum": 10 },
+                        "tags":       { "type": "array", "items": { "type": "string" } },
+                        "source":     { "type": "string" },
+                        "session_id": { "type": "string" },
+                        "agent":      { "type": "string" }
+                    }
+                },
+                "StoreResponse": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {
+                        "id":      { "type": "integer", "format": "int64" },
+                        "status":  { "type": "string", "enum": ["stored"] }
+                    }
+                },
+                "SearchRequest": {
+                    "type": "object",
+                    "required": ["query"],
+                    "properties": {
+                        "query":    { "type": "string", "maxLength": 4096 },
+                        "limit":    { "type": "integer", "minimum": 1, "maximum": 100 },
+                        "tags":     { "type": "array", "items": { "type": "string" } },
+                        "category": { "type": "string" }
+                    }
+                },
+                "Memory": {
+                    "type": "object",
+                    "description": "See GET /schema/memory for full field definitions.",
+                    "properties": {
+                        "id":         { "type": "integer", "format": "int64" },
+                        "content":    { "type": "string" },
+                        "category":   { "type": "string" },
+                        "importance": { "type": "integer" },
+                        "tags":       { "type": "array", "items": { "type": "string" } },
+                        "created_at": { "type": "string", "format": "date-time" }
+                    }
+                },
+                "SearchResult": {
+                    "type": "object",
+                    "description": "See GET /schema/memory related_shapes.SearchResult for full fields.",
+                    "properties": {
+                        "id":      { "type": "integer", "format": "int64" },
+                        "content": { "type": "string" },
+                        "score":   { "type": "number", "format": "float" }
+                    }
+                },
+                "SearchResponse": {
+                    "type": "object",
+                    "properties": {
+                        "results": { "type": "array", "items": { "$ref": "#/components/schemas/SearchResult" } },
+                        "total":   { "type": "integer" }
+                    }
+                },
+                "MemoryLink": {
+                    "type": "object",
+                    "description": "See GET /schema/graph for edge definition.",
+                    "properties": {
+                        "source_id":   { "type": "integer", "format": "int64" },
+                        "target_id":   { "type": "integer", "format": "int64" },
+                        "link_type":   { "type": "string" },
+                        "strength":    { "type": "number", "format": "float" }
+                    }
+                },
+                "HealthResponse": {
+                    "type": "object",
+                    "properties": {
+                        "status":  { "type": "string" },
+                        "version": { "type": "string" }
+                    }
+                }
+            },
+            "responses": {
+                "Unauthorized": {
+                    "description": "Missing or invalid API key.",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+                },
+                "BadRequest": {
+                    "description": "Request validation failed.",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+                },
+                "NotFound": {
+                    "description": "Resource not found.",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+                }
+            }
+        }
     })
+}
+
+/// Build a single operation object. Adds path/query parameters, request
+/// body for write methods, and typed responses for well-known routes.
+fn operation_for(path: &str, method: &str, summary: &str, tag: &str) -> Value {
+    let mut op = Map::new();
+    op.insert("summary".into(), Value::String(summary.into()));
+    op.insert("tags".into(), json!([tag]));
+
+    let mut params: Vec<Value> = Vec::new();
+    for segment in path.split('/').filter(|s| !s.is_empty()) {
+        if let Some(name) = segment.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+            let schema_type = if name.ends_with("_id") || name == "id" || name == "mid" {
+                "integer"
+            } else {
+                "string"
+            };
+            let mut schema = Map::new();
+            schema.insert("type".into(), Value::String(schema_type.into()));
+            if schema_type == "integer" {
+                schema.insert("format".into(), Value::String("int64".into()));
+            }
+            params.push(json!({
+                "name": name,
+                "in": "path",
+                "required": true,
+                "schema": Value::Object(schema),
+            }));
+        }
+    }
+
+    let is_list = matches!(method, "get")
+        && (path.ends_with('s')
+            || path.ends_with("/list")
+            || path.ends_with("/feed")
+            || path.ends_with("/events")
+            || path.ends_with("/messages")
+            || path.ends_with("/members"));
+    if is_list {
+        params.push(json!({ "$ref": "#/components/parameters/Limit" }));
+        params.push(json!({ "$ref": "#/components/parameters/Offset" }));
+        params.push(json!({ "$ref": "#/components/parameters/Cursor" }));
+    }
+
+    if !params.is_empty() {
+        op.insert("parameters".into(), Value::Array(params));
+    }
+
+    if matches!(method, "post" | "put" | "patch") {
+        let body_schema = request_body_for(path, method);
+        op.insert(
+            "requestBody".into(),
+            json!({
+                "required": true,
+                "content": {
+                    "application/json": { "schema": body_schema }
+                }
+            }),
+        );
+    }
+
+    let success = response_schema_for(path, method);
+    op.insert(
+        "responses".into(),
+        json!({
+            "200": {
+                "description": "Successful response",
+                "content": { "application/json": { "schema": success } }
+            },
+            "400": { "$ref": "#/components/responses/BadRequest" },
+            "401": { "$ref": "#/components/responses/Unauthorized" },
+            "404": { "$ref": "#/components/responses/NotFound" }
+        }),
+    );
+
+    Value::Object(op)
+}
+
+fn request_body_for(path: &str, _method: &str) -> Value {
+    match path {
+        "/store" | "/memory" | "/memories" => {
+            json!({ "$ref": "#/components/schemas/StoreRequest" })
+        }
+        "/search" | "/memories/search" | "/search/explain" | "/search/faceted" | "/recall" => {
+            json!({ "$ref": "#/components/schemas/SearchRequest" })
+        }
+        _ => json!({ "type": "object", "additionalProperties": true }),
+    }
+}
+
+fn response_schema_for(path: &str, method: &str) -> Value {
+    match (path, method) {
+        ("/health", _)
+        | ("/live", _)
+        | ("/ready", _)
+        | ("/health/live", _)
+        | ("/health/ready", _) => {
+            json!({ "$ref": "#/components/schemas/HealthResponse" })
+        }
+        ("/store", _) | ("/memory", "post") | ("/memories", "post") => {
+            json!({ "$ref": "#/components/schemas/StoreResponse" })
+        }
+        ("/search", _)
+        | ("/memories/search", _)
+        | ("/search/explain", _)
+        | ("/search/faceted", _)
+        | ("/recall", _) => json!({ "$ref": "#/components/schemas/SearchResponse" }),
+        _ => json!({ "type": "object", "additionalProperties": true }),
+    }
 }
 
 fn route_specs() -> &'static [(
@@ -54,6 +376,8 @@ fn route_specs() -> &'static [(
         ("/health", &["get"], "Health check", "System"),
         ("/live", &["get"], "Liveness check", "System"),
         ("/ready", &["get"], "Readiness check", "System"),
+        ("/health/live", &["get"], "Liveness probe", "System"),
+        ("/health/ready", &["get"], "Readiness probe", "System"),
         ("/openapi.json", &["get"], "OpenAPI specification", "Docs"),
         (
             "/docs/openapi.json",
@@ -61,11 +385,43 @@ fn route_specs() -> &'static [(
             "OpenAPI specification",
             "Docs",
         ),
+        ("/docs", &["get"], "Swagger UI", "Docs"),
+        ("/schema", &["get"], "Schema index", "Schema"),
+        (
+            "/schema/memory",
+            &["get"],
+            "Memory + SearchResult schema",
+            "Schema",
+        ),
+        (
+            "/schema/services",
+            &["get"],
+            "Service module catalog",
+            "Schema",
+        ),
+        (
+            "/schema/graph",
+            &["get"],
+            "Graph node/edge schema",
+            "Schema",
+        ),
         ("/store", &["post"], "Store memory", "Memory"),
         ("/memory", &["post"], "Store memory", "Memory"),
         ("/memories", &["post"], "Store memory", "Memory"),
         ("/search", &["post"], "Search memories", "Memory"),
         ("/memories/search", &["post"], "Search memories", "Memory"),
+        (
+            "/search/explain",
+            &["post"],
+            "Search with per-result score breakdown + stage timings",
+            "Memory",
+        ),
+        (
+            "/search/faceted",
+            &["post"],
+            "Faceted search with multi-tag + facet aggregation",
+            "Memory",
+        ),
         ("/recall", &["post"], "Recall memories", "Memory"),
         ("/list", &["get"], "List memories", "Memory"),
         ("/tags", &["get"], "List memory tags", "Memory"),
@@ -679,6 +1035,12 @@ fn route_specs() -> &'static [(
             "Ingestion",
         ),
         ("/ingest", &["post"], "Ingest text", "Ingestion"),
+        (
+            "/ingest/stream",
+            &["post"],
+            "Ingest text with SSE progress events",
+            "Ingestion",
+        ),
         ("/add", &["post"], "Add conversation", "Ingestion"),
         ("/derive", &["post"], "Derive memories", "Ingestion"),
         ("/prompt", &["get"], "Get prompt", "Prompts"),
@@ -753,5 +1115,71 @@ fn route_specs() -> &'static [(
         ("/brain/feedback", &["post"], "Brain feedback", "Brain"),
         ("/brain/decay", &["post"], "Brain decay", "Brain"),
         ("/context", &["post"], "Build context", "Context"),
+        ("/batch", &["post"], "Batch operations", "Batch"),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spec_has_required_top_level_fields() {
+        let spec = build_openapi_spec();
+        assert_eq!(spec["openapi"], "3.1.0");
+        assert!(spec["info"]["title"].is_string());
+        assert!(spec["paths"].is_object());
+        assert!(spec["components"]["securitySchemes"]["BearerAuth"].is_object());
+        assert!(spec["components"]["schemas"]["Memory"].is_object());
+        assert!(spec["components"]["schemas"]["StoreRequest"].is_object());
+    }
+
+    #[test]
+    fn docs_route_present_in_spec() {
+        let spec = build_openapi_spec();
+        assert!(spec["paths"]["/docs"].is_object());
+        assert!(spec["paths"]["/docs"]["get"].is_object());
+    }
+
+    #[test]
+    fn store_route_has_request_body_and_typed_response() {
+        let spec = build_openapi_spec();
+        let op = &spec["paths"]["/store"]["post"];
+        assert_eq!(
+            op["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/StoreRequest"
+        );
+        assert_eq!(
+            op["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/StoreResponse"
+        );
+    }
+
+    #[test]
+    fn path_params_are_extracted() {
+        let spec = build_openapi_spec();
+        let op = &spec["paths"]["/memory/{id}"]["get"];
+        let params = op["parameters"].as_array().expect("parameters array");
+        assert!(params
+            .iter()
+            .any(|p| p["name"] == "id" && p["in"] == "path"));
+    }
+
+    #[test]
+    fn list_route_has_pagination_params() {
+        let spec = build_openapi_spec();
+        let op = &spec["paths"]["/conversations"]["get"];
+        let params = op["parameters"].as_array().expect("parameters array");
+        let has_limit = params.iter().any(|p| {
+            p.get("$ref").and_then(|v| v.as_str()) == Some("#/components/parameters/Limit")
+        });
+        assert!(has_limit);
+    }
+
+    #[test]
+    fn security_requirement_applied_globally() {
+        let spec = build_openapi_spec();
+        let sec = spec["security"].as_array().expect("security array");
+        assert_eq!(sec[0]["BearerAuth"], json!([]));
+    }
 }

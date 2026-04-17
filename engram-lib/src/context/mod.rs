@@ -1,7 +1,22 @@
-// ============================================================================
-// CONTEXT DOMAIN -- Context assembly engine
-// Port of assembly.ts: budget-aware RAG context from 8 layers
-// ============================================================================
+//! Context assembly engine.
+//!
+//! Builds a budget-aware RAG context window from up to 8 parallel layers
+//! (permanent facts, semantic matches, evolution/version hints, graph
+//! neighbors, user preferences, current state, structured facts,
+//! episode summaries). Each layer is a query against the core memory store;
+//! layers are fetched in parallel via [`deps`] and then scored + trimmed to
+//! fit a model-specific token budget.
+//!
+//! Submodules:
+//! - [`deps`]    raw data-access helpers used by each layer.
+//! - [`budget`]  model-aware token budgeting (3.2).
+//! - [`scoring`] per-block scoring + selection heuristics.
+//! - [`modes`]   preset context profiles (e.g. recall-heavy vs. reasoning).
+//! - [`types`]   `ContextBlock`, `ContextProgressEvent`, request DTOs.
+//!
+//! Public entry points: [`assemble_context`] (blocking) and
+//! [`assemble_context_streaming`] (SSE, emits `ContextProgressEvent`s as
+//! each layer resolves).
 
 pub mod budget;
 pub mod deps;
@@ -10,6 +25,7 @@ pub mod scoring;
 pub mod types;
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -33,7 +49,7 @@ pub use types::*;
 
 /// Build an attribution tag string for a context block.
 fn build_attribution(block: &ContextBlock) -> String {
-    let mut parts = Vec::new();
+    let mut parts = Vec::with_capacity(2);
     if let Some(ref m) = block.model {
         if !m.is_empty() {
             parts.push(format!("model:{}", m));
@@ -69,7 +85,8 @@ pub fn assemble_context_string(
     blocks: &[ContextBlock],
     supplementary: &[SupplementarySection],
 ) -> String {
-    let mut parts: Vec<String> = Vec::new();
+    // Upper bound: one part per supplementary section + one per layer group (7 layers + inference).
+    let mut parts: Vec<String> = Vec::with_capacity(supplementary.len() + 8);
 
     // Supplementary sections come first.
     // Wrap user-generated content with structural delimiters to prevent prompt injection
@@ -91,38 +108,55 @@ pub fn assemble_context_string(
     }
     let empty = Vec::new();
     let static_blocks = by_source.get(&ContextBlockSource::Static).unwrap_or(&empty);
-    let semantic_blocks = by_source.get(&ContextBlockSource::Semantic).unwrap_or(&empty);
-    let evolution_blocks = by_source.get(&ContextBlockSource::Evolution).unwrap_or(&empty);
-    let episode_blocks = by_source.get(&ContextBlockSource::Episode).unwrap_or(&empty);
+    let semantic_blocks = by_source
+        .get(&ContextBlockSource::Semantic)
+        .unwrap_or(&empty);
+    let evolution_blocks = by_source
+        .get(&ContextBlockSource::Evolution)
+        .unwrap_or(&empty);
+    let episode_blocks = by_source
+        .get(&ContextBlockSource::Episode)
+        .unwrap_or(&empty);
     let linked_blocks = by_source.get(&ContextBlockSource::Linked).unwrap_or(&empty);
     let recent_blocks = by_source.get(&ContextBlockSource::Recent).unwrap_or(&empty);
-    let inference_blocks = by_source.get(&ContextBlockSource::Inference).unwrap_or(&empty);
+    let inference_blocks = by_source
+        .get(&ContextBlockSource::Inference)
+        .unwrap_or(&empty);
 
     if !static_blocks.is_empty() {
-        let lines: Vec<String> = static_blocks
-            .iter()
-            .map(|b| {
-                format!(
-                    "- {}{}",
-                    wrap_user_content(&b.content),
-                    build_attribution(b)
-                )
-            })
-            .collect();
-        parts.push(format!("## Permanent Facts\n{}", lines.join("\n")));
+        // Build with a single growable buffer instead of N format! calls plus
+        // Vec<String> allocation plus join allocation (6.10).
+        let avg_len = static_blocks
+            .first()
+            .map(|b| b.content.len() + 24)
+            .unwrap_or(0);
+        let mut out = String::with_capacity(64 + avg_len * static_blocks.len());
+        out.push_str("## Permanent Facts");
+        for b in static_blocks.iter() {
+            let _ = write!(
+                out,
+                "\n- {}{}",
+                wrap_user_content(&b.content),
+                build_attribution(b)
+            );
+        }
+        parts.push(out);
     }
 
     if !semantic_blocks.is_empty() {
-        let fact_blocks: Vec<_> = semantic_blocks
-            .iter()
-            .filter(|b| b.category == "fact")
-            .collect();
-        let non_fact_blocks: Vec<_> = semantic_blocks
-            .iter()
-            .filter(|b| b.category != "fact")
-            .collect();
+        let mut fact_blocks: Vec<&ContextBlock> = Vec::with_capacity(semantic_blocks.len());
+        let mut non_fact_blocks: Vec<&ContextBlock> = Vec::with_capacity(semantic_blocks.len());
+        for b in semantic_blocks.iter() {
+            if b.category == "fact" {
+                fact_blocks.push(b);
+            } else {
+                non_fact_blocks.push(b);
+            }
+        }
 
-        let mut lines: Vec<String> = Vec::new();
+        // Upper bound: one line per non-fact + one header + facts per parent.
+        let mut lines: Vec<String> =
+            Vec::with_capacity(non_fact_blocks.len() + fact_blocks.len() + 4);
         for b in &non_fact_blocks {
             lines.push(format!(
                 "- [{}] {}{}",
@@ -258,7 +292,7 @@ fn build_working_memory_block(rows: &[scratchpad::ScratchEntry]) -> Option<Strin
     }
     const MAX_CHARS: usize = 4000;
     const VALUE_MAX: usize = 300;
-    let mut lines: Vec<String> = Vec::new();
+    let mut lines: Vec<String> = Vec::with_capacity(rows.len());
     let mut total_len: usize = 0;
     for (i, row) in rows.iter().enumerate() {
         let model_part = if !row.model.is_empty() {
@@ -320,6 +354,62 @@ fn format_scratch_age(updated_at: &str) -> String {
 // Core context assembly -- progressive disclosure algorithm
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(
+    name = "assemble_context",
+    skip_all,
+    fields(
+        user_id = user_id,
+        query_len = opts.query.len(),
+        mode = ?opts.mode,
+    )
+)]
+pub async fn assemble_context(
+    db: &Database,
+    opts: ContextOptions,
+    user_id: i64,
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    llm_client: Option<Arc<LocalModelClient>>,
+) -> Result<ContextResult> {
+    assemble_context_inner(db, opts, user_id, embedding_provider, llm_client, None).await
+}
+
+/// Streaming variant: same as `assemble_context` but sends
+/// [`ContextProgressEvent`] messages on `progress_tx` as each phase completes.
+#[tracing::instrument(
+    name = "assemble_context_streaming",
+    skip_all,
+    fields(
+        user_id = user_id,
+        query_len = opts.query.len(),
+        mode = ?opts.mode,
+    )
+)]
+pub async fn assemble_context_streaming(
+    db: &Database,
+    opts: ContextOptions,
+    user_id: i64,
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    llm_client: Option<Arc<LocalModelClient>>,
+    progress_tx: ProgressSender,
+) -> Result<ContextResult> {
+    assemble_context_inner(
+        db,
+        opts,
+        user_id,
+        embedding_provider,
+        llm_client,
+        Some(progress_tx),
+    )
+    .await
+}
+
+/// Emit a progress event if `tx` is Some, silently ignore closed channels.
+fn emit_progress(tx: &Option<ProgressSender>, event: ContextProgressEvent) {
+    if let Some(ref tx) = tx {
+        let _ = tx.send(event);
+    }
+}
+
 /// Core progressive disclosure algorithm.
 ///
 /// Assembles context from 8 layers:
@@ -331,21 +421,19 @@ fn format_scratch_age(updated_at: &str) -> String {
 ///   4. Recent memories (temporal context)
 ///   5. Inference (LLM-generated implicit connections via local model)
 ///   + Supplementary: working memory, current state, personality, preferences, facts
-pub async fn assemble_context(
+async fn assemble_context_inner(
     db: &Database,
     mut opts: ContextOptions,
     user_id: i64,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     llm_client: Option<Arc<LocalModelClient>>,
+    progress_tx: Option<ProgressSender>,
 ) -> Result<ContextResult> {
     // --- Apply mode preset ---
     apply_context_mode(&mut opts);
 
     // --- Resolve parameters ---
-    let explicit_budget = opts
-        .max_tokens
-        .or(opts.token_budget)
-        .or(opts.budget);
+    let explicit_budget = opts.max_tokens.or(opts.token_budget).or(opts.budget);
     let (token_budget, _budget_note) = resolve_budget(
         explicit_budget,
         opts.model_id.as_deref(),
@@ -392,7 +480,7 @@ pub async fn assemble_context(
         }
 
         // Score by cosine similarity when embedding provider is available; fall back to source_count.
-        let mut scored: Vec<(usize, f64, Option<Vec<f32>>)> = Vec::new();
+        let mut scored: Vec<(usize, f64, Option<Vec<f32>>)> = Vec::with_capacity(statics.len());
         for (i, s) in statics.iter().enumerate() {
             let mut relevance = 0.5;
             let static_emb: Option<Vec<f32>> = if let Some(ref p) = embedding_provider {
@@ -436,6 +524,19 @@ pub async fn assemble_context(
         }
     }
     timing.static_ms = Some(t0.elapsed().as_millis() as u64 - timing.embed_ms.unwrap_or(0));
+    let static_count = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Static)
+        .count();
+    emit_progress(
+        &progress_tx,
+        ContextProgressEvent::Phase {
+            phase: "static".into(),
+            count: static_count,
+            tokens: used_tokens,
+            elapsed_ms: t0.elapsed().as_millis() as u64,
+        },
+    );
 
     // ---- Phase 2: Semantic search ----
     let t_search = Instant::now();
@@ -554,6 +655,19 @@ pub async fn assemble_context(
             - timing.static_ms.unwrap_or(0)
             - timing.search_ms.unwrap_or(0),
     );
+    let semantic_count = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Semantic)
+        .count();
+    emit_progress(
+        &progress_tx,
+        ContextProgressEvent::Phase {
+            phase: "semantic".into(),
+            count: semantic_count,
+            tokens: used_tokens,
+            elapsed_ms: t0.elapsed().as_millis() as u64,
+        },
+    );
 
     // ---- Phase 2.5a: Version chain evolution ----
     let t_evolution = Instant::now();
@@ -623,6 +737,19 @@ pub async fn assemble_context(
         }
     }
     timing.evolution_ms = Some(t_evolution.elapsed().as_millis() as u64);
+    let evo_count = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Evolution)
+        .count();
+    emit_progress(
+        &progress_tx,
+        ContextProgressEvent::Phase {
+            phase: "evolution".into(),
+            count: evo_count,
+            tokens: used_tokens,
+            elapsed_ms: t0.elapsed().as_millis() as u64,
+        },
+    );
 
     // ---- Phase 2.5b: Episode context ----
     let t_episodes = Instant::now();
@@ -673,6 +800,19 @@ pub async fn assemble_context(
         }
     }
     timing.episodes_ms = Some(t_episodes.elapsed().as_millis() as u64);
+    let ep_count = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Episode)
+        .count();
+    emit_progress(
+        &progress_tx,
+        ContextProgressEvent::Phase {
+            phase: "episodes".into(),
+            count: ep_count,
+            tokens: used_tokens,
+            elapsed_ms: t0.elapsed().as_millis() as u64,
+        },
+    );
 
     // ---- Phase 3: Linked memories (graph expansion) ----
     let t_linked = Instant::now();
@@ -742,6 +882,19 @@ pub async fn assemble_context(
         }
     }
     timing.linked_ms = Some(t_linked.elapsed().as_millis() as u64);
+    let link_count = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Linked)
+        .count();
+    emit_progress(
+        &progress_tx,
+        ContextProgressEvent::Phase {
+            phase: "linked".into(),
+            count: link_count,
+            tokens: used_tokens,
+            elapsed_ms: t0.elapsed().as_millis() as u64,
+        },
+    );
 
     // ---- Phase 4: Recent memories (temporal context) ----
     let t_recent = Instant::now();
@@ -798,6 +951,19 @@ pub async fn assemble_context(
         }
     }
     timing.recent_ms = Some(t_recent.elapsed().as_millis() as u64);
+    let rec_count = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Recent)
+        .count();
+    emit_progress(
+        &progress_tx,
+        ContextProgressEvent::Phase {
+            phase: "recent".into(),
+            count: rec_count,
+            tokens: used_tokens,
+            elapsed_ms: t0.elapsed().as_millis() as u64,
+        },
+    );
 
     // ---- Phase 5: Inference (LLM-generated implicit connections) ----
     let t_inference = Instant::now();
@@ -843,10 +1009,24 @@ pub async fn assemble_context(
         }
     }
     timing.inference_ms = Some(t_inference.elapsed().as_millis() as u64);
+    let inf_count = blocks
+        .iter()
+        .filter(|b| b.source == ContextBlockSource::Inference)
+        .count();
+    emit_progress(
+        &progress_tx,
+        ContextProgressEvent::Phase {
+            phase: "inference".into(),
+            count: inf_count,
+            tokens: used_tokens,
+            elapsed_ms: t0.elapsed().as_millis() as u64,
+        },
+    );
 
     // ---- Assembly: supplementary sections ----
     let t_assembly = Instant::now();
-    let mut supplementary: Vec<SupplementarySection> = Vec::new();
+    // Upper bound: working_memory, current_state, personality, preferences, structured_facts, plus slack.
+    let mut supplementary: Vec<SupplementarySection> = Vec::with_capacity(6);
     let mut personality_block_tokens: usize = 0;
 
     // Fire independent supplementary DB fetches in parallel. Each returns
@@ -1043,6 +1223,15 @@ pub async fn assemble_context(
     } else {
         0.0
     };
+
+    emit_progress(
+        &progress_tx,
+        ContextProgressEvent::Done {
+            total_blocks: block_summaries.len(),
+            total_tokens: used_tokens,
+            elapsed_ms: timing.total_ms.unwrap_or(0),
+        },
+    );
 
     Ok(ContextResult {
         context: context_string,

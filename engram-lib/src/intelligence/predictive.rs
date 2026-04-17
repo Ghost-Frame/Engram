@@ -4,9 +4,12 @@
 //! day of week, project context, and activity patterns.
 
 use crate::db::Database;
-use crate::intelligence::types::{PredictedProject, PredictiveContext, ProactiveMemory};
+use crate::intelligence::types::{
+    PredictedProject, PredictiveContext, ProactiveMemory, SequencePattern,
+};
 use crate::{EngError, Result};
 use rusqlite::params;
+use std::collections::HashMap;
 use tracing::info;
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
@@ -41,6 +44,7 @@ pub async fn track_temporal_access(
 
 /// Generate proactive context for the current moment.
 /// Called at session start or periodically.
+#[tracing::instrument(skip(db))]
 pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<PredictiveContext> {
     let now = chrono::Utc::now();
     let dow = now.format("%w").to_string().parse::<i32>().unwrap_or(0);
@@ -274,6 +278,127 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
     })
 }
 
+/// Minimum number of observations of a (antecedent, consequent) pair
+/// before it's surfaced as a predictive sequence pattern. Below this,
+/// the "pattern" is statistical noise.
+pub const SEQUENCE_MIN_SUPPORT: i64 = 2;
+
+/// Mine consecutive-bigram patterns from a user's memory timeline.
+///
+/// Memories are scanned in created-at order. For each adjacent pair
+/// `(m_i, m_{i+1})` where the gap is at most `window_mins` minutes we
+/// count the `(category_i -> category_{i+1})` bigram. Pairs observed at
+/// least `SEQUENCE_MIN_SUPPORT` times are returned as
+/// `SequencePattern { antecedent, consequent, support, confidence }`.
+///
+/// `confidence = support / antecedent_total`, i.e. P(consequent |
+/// antecedent), measured over consecutive pairs only.
+///
+/// Results are sorted by `support` descending, then `confidence`
+/// descending, so the strongest patterns surface first.
+pub async fn detect_sequence_patterns(
+    db: &Database,
+    user_id: i64,
+    window_mins: i64,
+) -> Result<Vec<SequencePattern>> {
+    if window_mins <= 0 {
+        return Ok(Vec::new());
+    }
+
+    let rows: Vec<(String, String)> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT category, created_at \
+                     FROM memories \
+                     WHERE user_id = ?1 \
+                       AND is_latest = 1 \
+                       AND is_forgotten = 0 \
+                       AND is_archived = 0 \
+                     ORDER BY created_at ASC, id ASC",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let iter = stmt
+                .query_map(params![user_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(rusqlite_to_eng_error)?;
+            iter.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+
+    if rows.len() < 2 {
+        return Ok(Vec::new());
+    }
+
+    let window_secs = window_mins.saturating_mul(60);
+
+    let mut bigram_support: HashMap<(String, String), i64> = HashMap::new();
+    let mut antecedent_total: HashMap<String, i64> = HashMap::new();
+
+    for pair in rows.windows(2) {
+        let (cat_a, ts_a) = &pair[0];
+        let (cat_b, ts_b) = &pair[1];
+        let a = parse_sql_timestamp(ts_a);
+        let b = parse_sql_timestamp(ts_b);
+        let (Some(a), Some(b)) = (a, b) else {
+            continue;
+        };
+        let gap = (b - a).num_seconds();
+        if gap < 0 || gap > window_secs {
+            continue;
+        }
+        *bigram_support
+            .entry((cat_a.clone(), cat_b.clone()))
+            .or_insert(0) += 1;
+        *antecedent_total.entry(cat_a.clone()).or_insert(0) += 1;
+    }
+
+    let mut out: Vec<SequencePattern> = bigram_support
+        .into_iter()
+        .filter_map(|((a, c), support)| {
+            if support < SEQUENCE_MIN_SUPPORT {
+                return None;
+            }
+            let total = *antecedent_total.get(&a).unwrap_or(&support);
+            let confidence = if total > 0 {
+                support as f64 / total as f64
+            } else {
+                0.0
+            };
+            Some(SequencePattern {
+                antecedent: a,
+                consequent: c,
+                support,
+                confidence,
+            })
+        })
+        .collect();
+
+    out.sort_by(|x, y| {
+        y.support.cmp(&x.support).then_with(|| {
+            y.confidence
+                .partial_cmp(&x.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+    Ok(out)
+}
+
+fn parse_sql_timestamp(ts: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+        return Some(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+            dt,
+            chrono::Utc,
+        ));
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    None
+}
+
 /// Predict which project the user is likely working on based on recent memory-project links.
 async fn predict_project(db: &Database, user_id: i64) -> Result<Option<PredictedProject>> {
     db.read(move |conn| {
@@ -306,6 +431,154 @@ async fn predict_project(db: &Database, user_id: i64) -> Result<Option<Predicted
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::memory::types::StoreRequest;
+
+    fn req(content: &str, category: &str, user_id: i64) -> StoreRequest {
+        StoreRequest {
+            content: content.to_string(),
+            category: category.to_string(),
+            source: "test".to_string(),
+            importance: 5,
+            tags: None,
+            embedding: None,
+            session_id: None,
+            is_static: None,
+            user_id: Some(user_id),
+            space_id: None,
+            parent_memory_id: None,
+        }
+    }
+
+    async fn seed(db: &Database, content: &str, category: &str, user_id: i64) -> i64 {
+        crate::memory::store(db, req(content, category, user_id))
+            .await
+            .expect("store")
+            .id
+    }
+
+    async fn set_created(db: &Database, mid: i64, created_at: &str) {
+        let owned = created_at.to_string();
+        db.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET created_at = ?1 WHERE id = ?2",
+                params![owned, mid],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .expect("set created_at");
+    }
+
+    #[tokio::test]
+    async fn sequences_empty_below_two_memories() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let out = detect_sequence_patterns(&db, 1, 60).await.expect("det");
+        assert!(out.is_empty());
+        let _ = seed(&db, "pi alpha", "code", 1).await;
+        let out = detect_sequence_patterns(&db, 1, 60).await.expect("det");
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sequences_empty_when_window_non_positive() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let a = seed(&db, "rho alpha", "code", 1).await;
+        let b = seed(&db, "rho beta", "docs", 1).await;
+        set_created(&db, a, "2026-04-01 10:00:00").await;
+        set_created(&db, b, "2026-04-01 10:05:00").await;
+        let out = detect_sequence_patterns(&db, 1, 0).await.expect("det");
+        assert!(out.is_empty());
+        let out = detect_sequence_patterns(&db, 1, -5).await.expect("det");
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sequences_empty_when_all_gaps_exceed_window() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let a = seed(&db, "sigma alpha", "code", 1).await;
+        let b = seed(&db, "sigma beta", "docs", 1).await;
+        set_created(&db, a, "2026-04-01 08:00:00").await;
+        set_created(&db, b, "2026-04-01 10:00:00").await; // 120 min gap
+        let out = detect_sequence_patterns(&db, 1, 30).await.expect("det");
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sequences_mines_repeated_bigrams() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let uid = 1;
+        let ids = [
+            (
+                seed(&db, "phi morning rust refactor kicked off", "code", uid).await,
+                "2026-04-01 10:00:00",
+            ),
+            (
+                seed(
+                    &db,
+                    "phi wrote documentation for the new refactor",
+                    "docs",
+                    uid,
+                )
+                .await,
+                "2026-04-01 10:10:00",
+            ),
+            (
+                seed(
+                    &db,
+                    "phi afternoon rust optimization pass on retrieval",
+                    "code",
+                    uid,
+                )
+                .await,
+                "2026-04-01 11:00:00",
+            ),
+            (
+                seed(
+                    &db,
+                    "phi wrote benchmark report for optimization",
+                    "docs",
+                    uid,
+                )
+                .await,
+                "2026-04-01 11:10:00",
+            ),
+            (
+                seed(&db, "phi quick chat with master later", "chat", uid).await,
+                "2026-04-01 13:00:00",
+            ),
+        ];
+        for (id, ts) in &ids {
+            set_created(&db, *id, ts).await;
+        }
+        let out = detect_sequence_patterns(&db, uid, 30).await.expect("det");
+        let top = out.first().expect("at least one");
+        assert_eq!(top.antecedent, "code");
+        assert_eq!(top.consequent, "docs");
+        assert!(top.support >= 2);
+        assert!(top.confidence > 0.0);
+    }
+
+    #[tokio::test]
+    async fn sequences_isolated_per_user() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let a = seed(&db, "upsilon kicked off feature branch", "code", 1).await;
+        let b = seed(&db, "upsilon documented the branch changes", "docs", 1).await;
+        let c = seed(&db, "upsilon followup refactor pass finished", "code", 1).await;
+        let d = seed(&db, "upsilon followup doc changelog entry", "docs", 1).await;
+        for (id, ts) in [
+            (a, "2026-04-01 10:00:00"),
+            (b, "2026-04-01 10:05:00"),
+            (c, "2026-04-01 11:00:00"),
+            (d, "2026-04-01 11:05:00"),
+        ] {
+            set_created(&db, id, ts).await;
+        }
+        let other = detect_sequence_patterns(&db, 99, 30).await.expect("det");
+        assert!(other.is_empty());
+    }
+
     #[test]
     fn test_time_context_format() {
         let day_names = [

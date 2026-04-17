@@ -5,7 +5,7 @@ use axum::{
     Json, Router,
 };
 use engram_lib::intelligence::{
-    causal::{add_link, create_chain, get_chain, list_chains},
+    causal::{add_link, backward_chain, create_chain, get_chain, list_chains},
     consolidation::{consolidate, find_consolidation_candidates, list_consolidations, sweep},
     contradiction::{detect_contradictions, scan_all_contradictions},
     correction::correct_memory,
@@ -15,9 +15,9 @@ use engram_lib::intelligence::{
     extraction::fast_extract_facts,
     feedback::{self, FeedbackRequest},
     health::memory_health,
-    predictive::predictive_recall,
+    predictive::{detect_sequence_patterns, predictive_recall},
     reconsolidation::{reconsolidate_memory, run_reconsolidation_sweep},
-    reflections::{create_reflection, list_reflections},
+    reflections::{create_reflection, generate_reflections, list_reflections},
     sentiment,
     temporal::{detect_patterns, list_patterns, store_pattern, time_travel},
     valence::{analyze_valence, get_emotional_profile, store_valence},
@@ -90,6 +90,11 @@ pub fn router() -> Router<AppState> {
             "/intelligence/reflections",
             post(create_reflection_handler).get(list_reflections_handler),
         )
+        .route("/reflections/generate", post(generate_reflections_handler))
+        .route(
+            "/intelligence/reflections/generate",
+            post(generate_reflections_handler),
+        )
         // Causal
         .route(
             "/intelligence/causal/chains",
@@ -97,6 +102,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/intelligence/causal/chains/{id}", get(get_chain_handler))
         .route("/intelligence/causal/links", post(add_link_handler))
+        .route(
+            "/intelligence/causal/backward/{memory_id}",
+            post(causal_backward_handler),
+        )
         // -- NEW: Sentiment
         .route(
             "/intelligence/sentiment/analyze",
@@ -124,6 +133,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/intelligence/predictive/patterns",
             get(predictive_patterns_handler),
+        )
+        .route(
+            "/intelligence/predictive/sequences",
+            post(predictive_sequences_handler),
         )
         // -- NEW: Reconsolidation
         .route(
@@ -339,6 +352,16 @@ async fn list_reflections_handler(
     Ok(Json(json!({ "reflections": items })))
 }
 
+async fn generate_reflections_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<LimitQuery>,
+) -> Result<Json<Value>, AppError> {
+    let limit = params.limit.unwrap_or(10).min(100);
+    let items = generate_reflections(&state.db, auth.user_id, limit).await?;
+    Ok(Json(json!({ "reflections": items, "count": items.len() })))
+}
+
 // ---------------------------------------------------------------------------
 // Causal
 // ---------------------------------------------------------------------------
@@ -410,6 +433,24 @@ async fn add_link_handler(
     )
     .await?;
     Ok((StatusCode::CREATED, Json(json!(link))))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BackwardBody {
+    pub max_depth: Option<usize>,
+}
+
+async fn causal_backward_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(memory_id): Path<i64>,
+    body: Option<Json<BackwardBody>>,
+) -> Result<Json<Value>, AppError> {
+    let max_depth = body.and_then(|b| b.0.max_depth).unwrap_or(5).min(20);
+    let ancestors = backward_chain(&state.db, memory_id, auth.user_id, max_depth).await?;
+    Ok(Json(
+        json!({ "ancestors": ancestors, "max_depth": max_depth, "count": ancestors.len() }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -578,6 +619,23 @@ async fn predictive_patterns_handler(
     let limit = params.limit.unwrap_or(20).min(500);
     let patterns = list_patterns(&state.db, auth.user_id, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
+}
+
+#[derive(Debug, Deserialize)]
+struct SequencesBody {
+    pub window_mins: Option<i64>,
+}
+
+async fn predictive_sequences_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<SequencesBody>,
+) -> Result<Json<Value>, AppError> {
+    let window_mins = body.window_mins.unwrap_or(60).clamp(1, 24 * 60);
+    let patterns = detect_sequence_patterns(&state.db, auth.user_id, window_mins).await?;
+    Ok(Json(
+        json!({ "patterns": patterns, "window_mins": window_mins, "count": patterns.len() }),
+    ))
 }
 
 // ---------------------------------------------------------------------------

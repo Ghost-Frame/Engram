@@ -8,6 +8,9 @@
 use crate::db::Database;
 use crate::intelligence::llm::{call_llm, is_llm_available, repair_and_parse_json, LlmOptions};
 use crate::intelligence::types::{DecompositionResult, DecompositionTier, DecompositionWithTier};
+use crate::validation::{
+    MAX_DECOMPOSITION_FACTS as MAX_FACTS, MIN_DECOMPOSITION_LENGTH as MIN_LENGTH,
+};
 use crate::{EngError, Result};
 use rusqlite::params;
 use rusqlite::OptionalExtension;
@@ -32,9 +35,6 @@ Respond with ONLY a JSON object:
 }
 
 Set skip=true if the content is too short, already atomic, or not decomposable."#;
-
-const MIN_LENGTH: usize = 50;
-const MAX_FACTS: usize = 10;
 
 /// Filler phrases to strip from sentence starts.
 const FILLER_PREFIXES: &[&str] = &[
@@ -77,6 +77,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 
 /// Decompose a memory into atomic facts.
 /// Returns the decomposed memory IDs (newly created child facts).
+#[tracing::instrument(skip(db))]
 pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Vec<i64>> {
     // Fetch the memory content - MUST belong to caller
     let row_opt = db
