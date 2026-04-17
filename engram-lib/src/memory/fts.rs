@@ -34,7 +34,7 @@ pub fn sanitize_fts_query(query: &str) -> String {
 
 /// Maximum FTS query length in bytes. Queries beyond this are rejected to
 /// prevent denial-of-service through pathological FTS5 expressions.
-const MAX_FTS_QUERY_LEN: usize = 4096;
+use crate::validation::MAX_FTS_QUERY_LEN;
 
 /// Search memories using FTS5 full-text search with BM25 ranking.
 /// Returns up to `limit` results ordered by relevance (most relevant first).

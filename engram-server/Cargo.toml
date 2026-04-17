@@ -34,6 +34,8 @@ futures = { workspace = true }
 rusqlite = { workspace = true }
 secrecy = { workspace = true }
 mimalloc = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
 
 [dev-dependencies]
 engram-lib = { path = "../engram-lib", features = ["test-utils"] }

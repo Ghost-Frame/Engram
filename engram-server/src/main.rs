@@ -28,6 +28,9 @@ async fn main() {
 
     let config = Config::from_env();
 
+    // Install Prometheus metrics recorder before any metrics are emitted.
+    engram_server::middleware::metrics::init_metrics();
+
     // Resolve at-rest encryption key based on configured mode.
     let encryption_key = match config.encryption.mode {
         EncryptionMode::None => None,

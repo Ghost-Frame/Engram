@@ -49,6 +49,8 @@ secrecy = { version = "0.8", features = ["serde"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 mimalloc = { version = "0.1", default-features = false }
 lru = "0.12"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
 # Note: Can't use bundled sqlite with libsql in same binary - they conflict.
 # engram-lib gates bundled-sqlcipher behind the "sqlcipher" feature so
 # engram-migrate (which still uses libsql) compiles without collision.
