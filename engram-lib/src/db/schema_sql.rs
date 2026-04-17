@@ -115,6 +115,16 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         CREATE INDEX IF NOT EXISTS idx_links_source ON memory_links(source_id);
         CREATE INDEX IF NOT EXISTS idx_links_target ON memory_links(target_id);
 
+        -- Ingestion dedup hashes -- prevents duplicate document ingestion.
+        -- Keyed by SHA-256 of the raw input content, scoped per user.
+        CREATE TABLE IF NOT EXISTS ingestion_hashes (
+            sha256 TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            job_id TEXT,
+            PRIMARY KEY (sha256, user_id)
+        );
+
         -- Agents (Soma) -- defined before api_keys which references it
         CREATE TABLE IF NOT EXISTS agents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

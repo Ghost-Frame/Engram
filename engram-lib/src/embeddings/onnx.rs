@@ -286,16 +286,25 @@ impl EmbeddingProvider for OnnxProvider {
             }
 
             let weights: Vec<f32> = chunks.iter().map(|c| c.len() as f32).collect();
-            let mut embeddings = Vec::with_capacity(chunks.len());
 
-            for chunk in chunks {
-                let inner_cloned = Arc::clone(&inner);
-                let emb = tokio::task::spawn_blocking(move || inner_cloned.embed_single(&chunk))
-                    .await
-                    .map_err(|e| {
-                        EngError::Internal(format!("spawn_blocking join error: {}", e))
-                    })??;
-                embeddings.push(emb);
+            // Launch all chunk embeddings in parallel -- tokenization and
+            // post-processing overlap even though session.run() serializes on
+            // the OnnxInner mutex.
+            let futures: Vec<_> = chunks
+                .into_iter()
+                .map(|chunk| {
+                    let inner_cloned = Arc::clone(&inner);
+                    tokio::task::spawn_blocking(move || inner_cloned.embed_single(&chunk))
+                })
+                .collect();
+
+            let results = futures::future::try_join_all(futures)
+                .await
+                .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))?;
+
+            let mut embeddings = Vec::with_capacity(results.len());
+            for result in results {
+                embeddings.push(result?);
             }
 
             Ok(weighted_mean_pool(&embeddings, &weights))
