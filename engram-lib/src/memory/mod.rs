@@ -273,6 +273,8 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
         warn!("pagerank dirty mark failed on store: {}", e);
     }
 
+    search::invalidate_search_cache(user_id);
+
     Ok(StoreResult {
         id: new_id,
         created: true,
@@ -534,6 +536,7 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
             user_id, e
         );
     }
+    search::invalidate_search_cache(user_id);
     Ok(())
 }
 
@@ -583,6 +586,7 @@ pub async fn restore(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
             id
         )));
     }
+    search::invalidate_search_cache(user_id);
     // Return the restored memory
     get(db, id, user_id).await
 }
@@ -701,6 +705,7 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
         warn!("pagerank dirty mark failed on update: {}", e);
     }
+    search::invalidate_search_cache(user_id);
 
     let new_sql = format!(
         "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2",
@@ -846,6 +851,7 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
             user_id, e
         );
     }
+    search::invalidate_search_cache(user_id);
     Ok(())
 }
 
@@ -868,6 +874,7 @@ pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
             user_id, e
         );
     }
+    search::invalidate_search_cache(user_id);
     Ok(())
 }
 
@@ -890,6 +897,7 @@ pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()>
             user_id, e
         );
     }
+    search::invalidate_search_cache(user_id);
     Ok(())
 }
 
@@ -971,6 +979,7 @@ pub async fn insert_link(
             user_id, e
         );
     }
+    search::invalidate_search_cache(user_id);
     Ok(())
 }
 
@@ -1397,7 +1406,9 @@ pub async fn update_memory_tags(
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })
-    .await
+    .await?;
+    search::invalidate_search_cache(user_id);
+    Ok(())
 }
 
 pub async fn get_links_for(
