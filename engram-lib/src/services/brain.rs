@@ -1174,6 +1174,7 @@ pub struct AbsorbMemoryData {
 }
 
 /// Look up a memory row by id and user_id, for the absorb route.
+#[tracing::instrument(skip(db), fields(memory_id = id, user_id))]
 pub async fn get_memory_for_absorb(
     db: &Database,
     id: i64,
@@ -1219,6 +1220,7 @@ pub async fn get_memory_for_absorb(
     .await
 }
 /// Verify that all memory IDs belong to the given user. Returns true if all match.
+#[tracing::instrument(skip(db, memory_ids), fields(memory_count = memory_ids.len(), user_id))]
 pub async fn verify_memory_ownership(
     db: &Database,
     memory_ids: &[i64],

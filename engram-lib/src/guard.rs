@@ -106,6 +106,7 @@ pub async fn evaluate(db: &Database, content: &str) -> Result<GuardResult> {
 }
 
 /// Create a new guard rule.
+#[tracing::instrument(skip(db, rule), fields(rule_name = %rule.name))]
 pub async fn create_rule(db: &Database, rule: GuardRule) -> Result<GuardRule> {
     // SECURITY: reject over-long patterns at create time so they can never
     // reach the hot evaluate() path and starve CPU.
@@ -184,6 +185,7 @@ pub async fn create_rule(db: &Database, rule: GuardRule) -> Result<GuardRule> {
 }
 
 /// List all guard rules.
+#[tracing::instrument(skip(db))]
 pub async fn list_rules(db: &Database) -> Result<Vec<GuardRule>> {
     db.read(move |conn| {
         let mut stmt = conn

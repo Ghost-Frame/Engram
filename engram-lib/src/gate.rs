@@ -66,6 +66,7 @@ pub struct GateCheckResult {
 }
 
 /// Check a command against blocked patterns and store the gate request in the DB.
+#[tracing::instrument(skip(db, req), fields(agent = %req.agent, tool_name = ?req.tool_name, command_len = req.command.len(), user_id))]
 pub async fn check_command(
     db: &Database,
     req: &GateCheckRequest,
@@ -76,6 +77,7 @@ pub async fn check_command(
 
 /// Check a command against blocked patterns using a resolved copy while storing
 /// the original command text in the DB.
+#[tracing::instrument(skip(db, req, resolved_command, blocked_patterns, config), fields(agent = %req.agent, tool_name = ?req.tool_name, command_len = req.command.len(), user_id, blocked_patterns_count = blocked_patterns.len()))]
 pub async fn check_command_with_context(
     db: &Database,
     req: &GateCheckRequest,
@@ -220,6 +222,7 @@ pub fn check_blocked_patterns(command: &str, blocked_patterns: &[String]) -> Opt
 }
 
 /// Update a gate request with approval decision.
+#[tracing::instrument(skip(db, reason), fields(gate_id, approved, user_id))]
 pub async fn respond_to_gate(
     db: &Database,
     gate_id: i64,
@@ -272,6 +275,7 @@ pub async fn respond_to_gate(
 }
 
 /// Mark a gate request as complete and scrub sensitive data from output.
+#[tracing::instrument(skip(db, output, known_secrets), fields(gate_id, output_len = output.len(), user_id))]
 pub async fn complete_gate(
     db: &Database,
     gate_id: i64,

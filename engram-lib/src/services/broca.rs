@@ -61,6 +61,7 @@ fn row_to_action_entry(row: &rusqlite::Row<'_>) -> Result<ActionEntry> {
     })
 }
 
+#[tracing::instrument(skip(db, req), fields(agent = %req.agent, action = %req.action, service = ?req.service, user_id = ?req.user_id))]
 pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEntry> {
     let service = req.service.clone().unwrap_or_else(|| "kleos".to_string());
     let payload = req
@@ -100,6 +101,8 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
     get_action(db, id, user_id).await
 }
 
+#[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip(db), fields(agent = ?agent, service = ?service, action = ?action, limit, offset, user_id))]
 pub async fn query_actions(
     db: &Database,
     agent: Option<&str>,
@@ -150,6 +153,7 @@ pub async fn query_actions(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(action_id = id, user_id))]
 pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEntry> {
     let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
 
@@ -167,6 +171,7 @@ pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEn
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id = ?user_id))]
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<BrocaStats> {
     db.read(move |conn| {
         let stats = if let Some(uid) = user_id {

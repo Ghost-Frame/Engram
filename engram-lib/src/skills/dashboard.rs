@@ -213,6 +213,7 @@ pub async fn get_skill_detail(db: &Database, skill_id: i64) -> Result<serde_json
 }
 
 /// Health check for the skills subsystem.
+#[tracing::instrument(skip(db))]
 pub async fn health_check(db: &Database) -> Result<serde_json::Value> {
     db.read(move |conn| {
         let count: i64 = conn
