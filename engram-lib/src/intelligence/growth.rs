@@ -60,6 +60,7 @@ pub async fn list_observations(
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Result<i64> {
     db.write(move |conn| {
         let result: Option<(String, String)> = conn
@@ -283,6 +284,7 @@ pub async fn reflect(
 
 /// Self-reflection for Engram -- called periodically (e.g., every hour).
 /// Gathers memory stats, builds context, and generates a growth observation.
+#[tracing::instrument(skip(db))]
 pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectResult> {
     // Min activity threshold: 50 new memories in last hour
     let recent_count: i64 = db

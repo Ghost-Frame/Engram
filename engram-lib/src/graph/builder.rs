@@ -16,6 +16,7 @@ pub struct GraphBuildResult {
 }
 
 /// Build the full graph for the default user.
+#[tracing::instrument(skip(db))]
 pub async fn build_graph(db: &Database) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
     let opts = GraphBuildOptions::default();
     let result = build_graph_data(db, &opts).await?;
@@ -28,6 +29,7 @@ pub async fn build_graph(db: &Database) -> Result<(Vec<GraphNode>, Vec<GraphEdge
 /// Phase 2: Build nodes from memory metadata
 /// Phase 3: Batch fetch links as edges
 /// Phase 4: Prune orphan memory nodes (no edges)
+#[tracing::instrument(skip(db, opts), fields(user_id = opts.user_id, limit = ?opts.limit))]
 pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result<GraphBuildResult> {
     let limit = opts.limit.unwrap_or(500) as i64;
     let user_id = opts.user_id;

@@ -19,6 +19,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 }
 
 /// Process chunks by storing each as a raw memory.
+#[tracing::instrument(skip(db, chunks, options), fields(chunk_count = chunks.len()))]
 pub async fn process(db: &Database, chunks: &[Chunk], options: &ProcessOptions) -> ProcessResult {
     let mut memories_created = 0;
     let mut errors = Vec::new();

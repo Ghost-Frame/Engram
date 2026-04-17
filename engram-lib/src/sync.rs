@@ -28,6 +28,7 @@ pub struct SyncReceiveResult {
     pub skipped: i64,
 }
 
+#[tracing::instrument(skip(db, changes), fields(change_count = changes.len()))]
 pub async fn receive_sync(
     db: &Database,
     user_id: i64,
