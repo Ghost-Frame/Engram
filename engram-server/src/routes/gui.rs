@@ -253,6 +253,7 @@ fn get_auth_cookie(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Resolve the GUI session (user_id + scopes) from the cookie, if any.
+#[tracing::instrument(skip(state, headers), fields(layer = "gui.session"))]
 pub async fn get_gui_session(state: &AppState, headers: &HeaderMap) -> Option<GuiSession> {
     let cookie = get_auth_cookie(headers)?;
     let secret = get_hmac_secret(&state.config.data_dir).await;
@@ -267,6 +268,7 @@ pub async fn get_gui_session(state: &AppState, headers: &HeaderMap) -> Option<Gu
 }
 
 /// Check if a request is authenticated via GUI cookie and return the user_id.
+#[tracing::instrument(skip(state, headers), fields(layer = "gui.user_id"))]
 pub async fn get_gui_user_id(state: &AppState, headers: &HeaderMap) -> Option<i64> {
     get_gui_session(state, headers).await.map(|s| s.user_id)
 }
@@ -301,6 +303,7 @@ async fn require_gui_scope(
 }
 
 /// Check if a request is authenticated via GUI cookie (bool convenience wrapper)
+#[tracing::instrument(skip(state, headers), fields(layer = "gui.authenticated"))]
 pub async fn is_gui_authenticated(state: &AppState, headers: &HeaderMap) -> bool {
     get_gui_user_id(state, headers).await.is_some()
 }
@@ -533,6 +536,7 @@ fn get_cached_build_dir(state: &AppState) -> Option<PathBuf> {
 
 /// Middleware that intercepts SPA routes when Accept: text/html is present.
 /// Must be applied BEFORE the main router so it can intercept before API handlers.
+#[tracing::instrument(skip_all, fields(middleware = "gui.spa"))]
 pub async fn gui_spa_middleware(
     State(state): State<AppState>,
     request: Request<Body>,

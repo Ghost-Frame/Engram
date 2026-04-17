@@ -20,6 +20,7 @@ use engram_lib::services::brain::{AbsorbMemoryData, BrainBackend};
 /// - `category`: "task" for task.* actions, "activity" for others
 /// - `importance`: 6 for completed, 7 for blocked/error, 4 otherwise
 /// - `source`: The agent name from the activity report
+#[tracing::instrument(skip(brain, embedder, content), fields(memory_id, category = %category, importance, source = %source))]
 pub async fn absorb_activity_to_brain(
     brain: Arc<dyn BrainBackend>,
     embedder: Arc<RwLock<Option<Arc<dyn EmbeddingProvider>>>>,
@@ -82,6 +83,7 @@ pub async fn absorb_activity_to_brain(
 /// - `issue_lines`: Lines from output that represent blocked/gate issues (max 5 used)
 /// - `discovery_lines`: Lines from output matching discovery keywords (max 10 used)
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip(brain, embedder, task, issue_lines, discovery_lines), fields(session_short_id = %session_short_id, outcome = %outcome, agent = %agent, corrections))]
 pub async fn absorb_session_to_brain(
     brain: Arc<dyn BrainBackend>,
     embedder: Arc<RwLock<Option<Arc<dyn EmbeddingProvider>>>>,

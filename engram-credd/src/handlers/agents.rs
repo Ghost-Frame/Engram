@@ -27,6 +27,7 @@ pub struct AgentKeyInfo {
 }
 
 /// List agent keys.
+#[tracing::instrument(skip_all, fields(handler = "credd.agents.list"))]
 pub async fn list_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -66,6 +67,7 @@ pub struct CreateKeyRequest {
 }
 
 /// Create a new agent key.
+#[tracing::instrument(skip_all, fields(handler = "credd.agents.create"))]
 pub async fn create_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -94,6 +96,7 @@ pub async fn create_handler(
 }
 
 /// Revoke an agent key.
+#[tracing::instrument(skip_all, fields(handler = "credd.agents.revoke"))]
 pub async fn revoke_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -114,6 +117,7 @@ pub async fn revoke_handler(
 }
 
 /// Delete an agent key entirely.
+#[tracing::instrument(skip_all, fields(handler = "credd.agents.delete"))]
 pub async fn delete_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,

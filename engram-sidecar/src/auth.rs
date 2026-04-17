@@ -29,6 +29,7 @@ fn unauthorized() -> Response {
         .into_response()
 }
 
+#[tracing::instrument(skip_all, fields(middleware = "sidecar.require_token"))]
 pub async fn require_token(
     State(state): State<SidecarState>,
     request: Request<Body>,

@@ -69,6 +69,7 @@ fn open_access_allowed() -> bool {
     )
 }
 
+#[tracing::instrument(skip_all, fields(middleware = "server.auth"))]
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut request: Request<axum::body::Body>,

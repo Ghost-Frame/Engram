@@ -7,6 +7,7 @@ use axum::{
 };
 use engram_lib::validation::{MAX_JSON_BUFFER_BYTES as MAX_BUFFER_BYTES, MAX_JSON_DEPTH};
 
+#[tracing::instrument(skip_all, fields(middleware = "server.json_depth"))]
 pub async fn json_depth_middleware(request: Request, next: Next) -> Response {
     let is_json = request
         .headers()

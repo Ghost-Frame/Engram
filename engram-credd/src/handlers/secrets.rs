@@ -31,6 +31,7 @@ pub struct SecretListItem {
 }
 
 /// List secrets.
+#[tracing::instrument(skip_all, fields(handler = "credd.secrets.list"))]
 pub async fn list_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -59,6 +60,7 @@ pub struct StoreRequest {
 }
 
 /// Store a new secret.
+#[tracing::instrument(skip_all, fields(handler = "credd.secrets.store"))]
 pub async fn store_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -99,6 +101,7 @@ pub async fn store_handler(
 }
 
 /// Get a secret.
+#[tracing::instrument(skip_all, fields(handler = "credd.secrets.get"))]
 pub async fn get_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -151,6 +154,7 @@ pub async fn get_handler(
 }
 
 /// Update a secret.
+#[tracing::instrument(skip_all, fields(handler = "credd.secrets.update"))]
 pub async fn update_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -193,6 +197,7 @@ pub async fn update_handler(
 }
 
 /// Delete a secret.
+#[tracing::instrument(skip_all, fields(handler = "credd.secrets.delete"))]
 pub async fn delete_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,

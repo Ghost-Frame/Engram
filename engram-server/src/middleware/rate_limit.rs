@@ -115,6 +115,7 @@ fn client_ip_key(request: &Request, trusted_proxies: &[String]) -> String {
     format!("ip:{}", ip)
 }
 
+#[tracing::instrument(skip_all, fields(middleware = "server.preauth_rate_limit"))]
 pub async fn preauth_rate_limit_middleware(
     State(state): State<AppState>,
     request: Request,
@@ -158,6 +159,7 @@ pub async fn preauth_rate_limit_middleware(
 ///
 /// Returns HTTP 429 with a `Retry-After` header when the limit is exceeded.
 /// Open paths and unauthenticated requests bypass the limiter.
+#[tracing::instrument(skip_all, fields(middleware = "server.rate_limit"))]
 pub async fn rate_limit_middleware(
     State(state): State<AppState>,
     request: Request,

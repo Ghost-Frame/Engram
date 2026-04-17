@@ -235,6 +235,7 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received, draining connections");
 }
 
+#[tracing::instrument(skip(state), fields(host = %state.config.host, port = state.config.port))]
 pub async fn run(state: AppState) -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", state.config.host, state.config.port);
     let app = build_router(state);

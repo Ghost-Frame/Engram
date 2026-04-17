@@ -8,6 +8,7 @@ use crate::state::AppState;
 
 /// Rejects mutating HTTP methods with 503 when safe mode is active.
 /// GET and HEAD pass through so operators can still inspect state.
+#[tracing::instrument(skip_all, fields(middleware = "server.safe_mode"))]
 pub async fn safe_mode_middleware(
     State(state): State<AppState>,
     request: Request<axum::body::Body>,

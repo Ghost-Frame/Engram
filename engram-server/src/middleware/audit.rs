@@ -12,6 +12,7 @@ use crate::state::AppState;
 ///
 /// Runs after auth middleware so that `AuthContext` is available in extensions.
 /// Uses fire-and-forget logging so it never delays the response.
+#[tracing::instrument(skip_all, fields(middleware = "server.audit"))]
 pub async fn audit_middleware(
     State(state): State<AppState>,
     request: Request,

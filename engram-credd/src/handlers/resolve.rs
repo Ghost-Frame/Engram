@@ -68,6 +68,7 @@ pub struct ResolveTextResponse {
 }
 
 /// Resolve secret placeholders in text.
+#[tracing::instrument(skip_all, fields(handler = "credd.resolve.text"))]
 pub async fn resolve_text_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -179,6 +180,7 @@ pub struct ProxyResponse {
 /// SECURITY: validates the target URL against SSRF deny lists (loopback,
 /// RFC1918 private, link-local, cloud metadata) before making the outbound
 /// request, which carries injected secret headers.
+#[tracing::instrument(skip_all, fields(handler = "credd.resolve.proxy"))]
 pub async fn proxy_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -321,6 +323,7 @@ pub async fn proxy_handler(
 }
 
 /// Raw secret access endpoint (returns full secret data).
+#[tracing::instrument(skip_all, fields(handler = "credd.resolve.raw"))]
 pub async fn raw_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,

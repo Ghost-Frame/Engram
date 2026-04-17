@@ -46,6 +46,7 @@ pub fn init_metrics() {
 // Middleware: record request count + latency per route
 // ---------------------------------------------------------------------------
 
+#[tracing::instrument(skip_all, fields(middleware = "server.metrics"))]
 pub async fn metrics_middleware(req: Request<Body>, next: Next) -> Response {
     let path = req
         .extensions()

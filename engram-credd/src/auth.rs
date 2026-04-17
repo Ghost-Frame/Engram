@@ -34,6 +34,7 @@ fn ip_to_key(addr: &std::net::IpAddr) -> i64 {
 ///
 /// Uses the real TCP peer address (ConnectInfo) to prevent brute-force
 /// token guessing. Runs BEFORE auth_middleware in the layer stack.
+#[tracing::instrument(skip_all, fields(middleware = "credd.preauth_rate_limit"))]
 pub async fn preauth_rate_limit(
     State(state): State<AppState>,
     request: Request,
@@ -116,6 +117,7 @@ fn extract_bearer_token(request: &Request) -> Option<&str> {
 }
 
 /// Authentication middleware.
+#[tracing::instrument(skip_all, fields(middleware = "credd.auth"))]
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut request: Request,
