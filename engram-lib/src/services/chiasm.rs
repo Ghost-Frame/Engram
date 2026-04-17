@@ -149,6 +149,7 @@ pub async fn get_task(db: &Database, id: i64, user_id: i64) -> Result<Task> {
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id, status = ?status, agent = ?agent, project = ?project, limit, offset))]
 pub async fn list_tasks(
     db: &Database,
     user_id: i64,
@@ -201,6 +202,7 @@ pub async fn list_tasks(
 /// Update a task AND append a history row atomically. The history row records
 /// the agent making the change, the resulting status, and the resulting summary
 /// so external consumers can replay the task's lifecycle.
+#[tracing::instrument(skip(db, req), fields(task_id = id, user_id))]
 pub async fn update_task(
     db: &Database,
     id: i64,
@@ -272,6 +274,7 @@ pub async fn update_task(
     get_task(db, id, user_id).await
 }
 
+#[tracing::instrument(skip(db), fields(task_id = id, user_id))]
 pub async fn delete_task(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -284,6 +287,7 @@ pub async fn delete_task(db: &Database, id: i64, user_id: i64) -> Result<()> {
     .await
 }
 
+#[tracing::instrument(skip(db), fields(task_id, user_id, limit))]
 pub async fn list_task_history(
     db: &Database,
     task_id: i64,
@@ -318,6 +322,7 @@ pub async fn list_task_history(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id = ?user_id))]
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<ChiasmStats> {
     db.read(move |conn| {
         let mut by_status = BTreeMap::new();
@@ -354,6 +359,7 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<ChiasmStat
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id, limit, offset))]
 pub async fn get_feed(
     db: &Database,
     user_id: i64,
