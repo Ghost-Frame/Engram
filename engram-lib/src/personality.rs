@@ -966,6 +966,7 @@ pub async fn extract_personality_signals(
 }
 
 /// Synthesize a personality profile from stored signals.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Result<String> {
     // Gather all personality signals
     let signals = db
@@ -1097,6 +1098,7 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
 }
 
 /// Get a cached personality profile.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_cached_profile(db: &Database, user_id: i64) -> Result<Option<String>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -1119,6 +1121,7 @@ pub async fn get_cached_profile(db: &Database, user_id: i64) -> Result<Option<St
 }
 
 /// Invalidate (mark stale) the cached personality profile.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn invalidate_profile(db: &Database, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -1132,6 +1135,7 @@ pub async fn invalidate_profile(db: &Database, user_id: i64) -> Result<()> {
 }
 
 /// Get profile for context injection. Returns profile and staleness flag.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_profile_for_injection(
     db: &Database,
     user_id: i64,
@@ -1183,6 +1187,7 @@ pub fn detect_signals(content: &str) -> Vec<(String, f64)> {
         .collect()
 }
 
+#[tracing::instrument(skip(db, evidence), fields(signal_type = %signal_type, value, user_id, agent = ?agent))]
 pub async fn store_signal(
     db: &Database,
     signal_type: &str,
@@ -1226,6 +1231,7 @@ pub async fn store_signal(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id, limit))]
 pub async fn list_signals(db: &Database, user_id: i64, limit: usize) -> Result<Vec<StoredSignal>> {
     let limit = limit as i64;
     db.read(move |conn| {
@@ -1262,6 +1268,7 @@ pub async fn list_signals(db: &Database, user_id: i64, limit: usize) -> Result<V
     .await
 }
 
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_profile(db: &Database, user_id: i64) -> Result<StoredProfile> {
     if let Some(profile) = get_existing_profile(db, user_id).await? {
         return Ok(profile);
@@ -1269,6 +1276,7 @@ pub async fn get_profile(db: &Database, user_id: i64) -> Result<StoredProfile> {
     update_profile(db, user_id).await
 }
 
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn update_profile(db: &Database, user_id: i64) -> Result<StoredProfile> {
     let signals = list_signals(db, user_id, 200).await?;
     let mut traits = serde_json::Map::new();

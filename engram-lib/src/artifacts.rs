@@ -72,6 +72,7 @@ pub fn is_indexable_mime_type(mime: &str) -> bool {
     INDEXABLE_APP_TYPES.contains(&mime)
 }
 
+#[tracing::instrument(skip(db, data), fields(artifact_id, user_id, mime_type = %mime_type, data_len = data.len()))]
 pub async fn index_artifact(
     db: &Database,
     artifact_id: i64,
@@ -155,6 +156,7 @@ pub struct StoreArtifactOpts {
 /// Without this gate, a tenant holding any numeric memory id could attach
 /// files to another tenant's memory row.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip(db, data, disk_path, opts), fields(user_id, memory_id, mime_type = %mime_type, size_bytes, sha256 = %sha256, storage_mode = %storage_mode, is_encrypted))]
 pub async fn store_artifact(
     db: &Database,
     user_id: i64,
@@ -235,6 +237,7 @@ pub async fn store_artifact(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(memory_id, user_id))]
 pub async fn get_artifacts_by_memory(
     db: &Database,
     memory_id: i64,
@@ -261,6 +264,7 @@ pub async fn get_artifacts_by_memory(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(artifact_id, user_id))]
 pub async fn get_artifact_by_id(
     db: &Database,
     artifact_id: i64,
@@ -288,6 +292,7 @@ pub async fn get_artifact_by_id(
 /// tenant's artifacts collapsed into one number." That was an admin
 /// backdoor reachable from an otherwise tenant-scoped handler. Split into
 /// two explicit entry points so the scope is obvious at the call site.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_artifact_stats(db: &Database, user_id: i64) -> Result<ArtifactStats> {
     db.read(move |conn| {
         conn.query_row(
