@@ -5,19 +5,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-
-/// SECURITY/DoS: serde_json does not enforce a recursion cap during
-/// deserialization. A crafted payload with thousands of nested array or
-/// object openings can blow the stack long before hitting our 2 MiB body
-/// limit, taking the whole server down. This middleware counts opening
-/// brackets in the raw body before the JSON extractor sees it and rejects
-/// anything deeper than `MAX_JSON_DEPTH`.
-const MAX_JSON_DEPTH: u32 = 64;
-
-/// Upper bound on the body we will buffer for depth validation. Matches the
-/// server-wide DefaultBodyLimit so we never grow beyond what the app would
-/// have accepted anyway.
-const MAX_BUFFER_BYTES: usize = 2 * 1024 * 1024;
+use engram_lib::validation::{MAX_JSON_BUFFER_BYTES as MAX_BUFFER_BYTES, MAX_JSON_DEPTH};
 
 pub async fn json_depth_middleware(request: Request, next: Next) -> Response {
     let is_json = request

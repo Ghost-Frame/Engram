@@ -115,8 +115,7 @@ async fn list_dead_letters_handler(
     Query(query): Query<DeadLetterQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = query.limit.unwrap_or(50).min(200);
-    let items =
-        engram_lib::webhooks::list_dead_letters(&state.db, id, auth.user_id, limit).await?;
+    let items = engram_lib::webhooks::list_dead_letters(&state.db, id, auth.user_id, limit).await?;
     Ok(Json(
         json!({ "dead_letters": items, "count": items.len(), "webhook_id": id }),
     ))

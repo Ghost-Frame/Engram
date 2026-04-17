@@ -276,12 +276,18 @@ fn load_or_create_signing_secret() -> String {
         hex::encode(raw)
     };
     if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+        if let Err(e) = fs::create_dir_all(parent) {
+            tracing::warn!(
+                path = %parent.display(),
+                error = %e,
+                "failed to create signing secret parent dir; secret will not persist across restarts"
+            );
+        }
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        let _ = std::fs::OpenOptions::new()
+        let write_result = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
@@ -291,10 +297,23 @@ fn load_or_create_signing_secret() -> String {
                 use std::io::Write;
                 f.write_all(generated.as_bytes())
             });
+        if let Err(e) = write_result {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to persist signing secret; new secret will be regenerated on next restart"
+            );
+        }
     }
     #[cfg(not(unix))]
     {
-        let _ = fs::write(&path, &generated);
+        if let Err(e) = fs::write(&path, &generated) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to persist signing secret; new secret will be regenerated on next restart"
+            );
+        }
     }
     generated
 }

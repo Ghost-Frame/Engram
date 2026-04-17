@@ -204,11 +204,9 @@ impl OnnxInner {
 
             // 5. Extract output tensor data into owned Vecs so we can release the lock.
             let output_value = &outputs[0];
-            let tensor_view = output_value
-                .try_extract_array::<f32>()
-                .map_err(|e| {
-                    EngError::Internal(format!("failed to extract output tensor: {}", e))
-                })?;
+            let tensor_view = output_value.try_extract_array::<f32>().map_err(|e| {
+                EngError::Internal(format!("failed to extract output tensor: {}", e))
+            })?;
             let shape = tensor_view.shape().to_vec();
             let data = tensor_view
                 .as_slice()
@@ -252,62 +250,73 @@ impl EmbeddingProvider for OnnxProvider {
         let chunk_overlap = self.chunk_overlap;
         let chunk_max_chunks = self.chunk_max_chunks;
         let inner = Arc::clone(&self.inner);
-        Box::pin(async move {
-            let text = text.to_string();
+        let span = tracing::info_span!("embed_onnx", backend = "onnx", text_len = text.len(),);
+        use tracing::Instrument;
+        Box::pin(
+            async move {
+                let text = text.to_string();
 
-            // Short text: embed directly on blocking thread. Cloning the Arc
-            // keeps OnnxInner alive for the full duration of the blocking task,
-            // so dropping the OnnxProvider mid-inference is safe.
-            if text.len() <= chunk_max_chars {
-                let inner_cloned = Arc::clone(&inner);
-                let result = tokio::task::spawn_blocking(move || inner_cloned.embed_single(&text))
-                    .await
-                    .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))?;
-                return result;
-            }
-
-            // Long text: chunk, embed each, weighted mean pool
-            let chunks =
-                chunk_text_with_limit(&text, chunk_max_chars, chunk_overlap, chunk_max_chunks);
-
-            if chunks.is_empty() {
-                return Err(EngError::InvalidInput(
-                    "text produced no chunks after splitting".to_string(),
-                ));
-            }
-
-            if chunks.len() == 1 {
-                let chunk = chunks.into_iter().next().unwrap();
-                let inner_cloned = Arc::clone(&inner);
-                let result = tokio::task::spawn_blocking(move || inner_cloned.embed_single(&chunk))
-                    .await
-                    .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))?;
-                return result;
-            }
-
-            let weights: Vec<f32> = chunks.iter().map(|c| c.len() as f32).collect();
-
-            // Launch all chunk embeddings in parallel -- tokenization and
-            // post-processing overlap even though session.run() serializes on
-            // the OnnxInner mutex.
-            let futures: Vec<_> = chunks
-                .into_iter()
-                .map(|chunk| {
+                // Short text: embed directly on blocking thread. Cloning the Arc
+                // keeps OnnxInner alive for the full duration of the blocking task,
+                // so dropping the OnnxProvider mid-inference is safe.
+                if text.len() <= chunk_max_chars {
                     let inner_cloned = Arc::clone(&inner);
-                    tokio::task::spawn_blocking(move || inner_cloned.embed_single(&chunk))
-                })
-                .collect();
+                    let result =
+                        tokio::task::spawn_blocking(move || inner_cloned.embed_single(&text))
+                            .await
+                            .map_err(|e| {
+                                EngError::Internal(format!("spawn_blocking join error: {}", e))
+                            })?;
+                    return result;
+                }
 
-            let results = futures::future::try_join_all(futures)
-                .await
-                .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))?;
+                // Long text: chunk, embed each, weighted mean pool
+                let chunks =
+                    chunk_text_with_limit(&text, chunk_max_chars, chunk_overlap, chunk_max_chunks);
 
-            let mut embeddings = Vec::with_capacity(results.len());
-            for result in results {
-                embeddings.push(result?);
+                if chunks.is_empty() {
+                    return Err(EngError::InvalidInput(
+                        "text produced no chunks after splitting".to_string(),
+                    ));
+                }
+
+                if chunks.len() == 1 {
+                    let chunk = chunks.into_iter().next().unwrap();
+                    let inner_cloned = Arc::clone(&inner);
+                    let result =
+                        tokio::task::spawn_blocking(move || inner_cloned.embed_single(&chunk))
+                            .await
+                            .map_err(|e| {
+                                EngError::Internal(format!("spawn_blocking join error: {}", e))
+                            })?;
+                    return result;
+                }
+
+                let weights: Vec<f32> = chunks.iter().map(|c| c.len() as f32).collect();
+
+                // Launch all chunk embeddings in parallel -- tokenization and
+                // post-processing overlap even though session.run() serializes on
+                // the OnnxInner mutex.
+                let futures: Vec<_> = chunks
+                    .into_iter()
+                    .map(|chunk| {
+                        let inner_cloned = Arc::clone(&inner);
+                        tokio::task::spawn_blocking(move || inner_cloned.embed_single(&chunk))
+                    })
+                    .collect();
+
+                let results = futures::future::try_join_all(futures)
+                    .await
+                    .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))?;
+
+                let mut embeddings = Vec::with_capacity(results.len());
+                for result in results {
+                    embeddings.push(result?);
+                }
+
+                Ok(weighted_mean_pool(&embeddings, &weights))
             }
-
-            Ok(weighted_mean_pool(&embeddings, &weights))
-        })
+            .instrument(span),
+        )
     }
 }

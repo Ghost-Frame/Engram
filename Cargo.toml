@@ -2,6 +2,9 @@
 resolver = "2"
 members = ["engram-lib", "engram-server", "engram-cli", "engram-sidecar", "engram-approval-tui", "engram-mcp", "engram-cred", "engram-credd", "agent-forge", "engram-migrate"]
 
+[workspace.package]
+rust-version = "1.85"
+
 [workspace.dependencies]
 libsql = "0.6"
 rusqlite = "0.31"

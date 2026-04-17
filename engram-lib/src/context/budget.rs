@@ -194,7 +194,13 @@ pub fn truncate_to_token_budget(content: &str, max_memory_tokens: usize) -> Stri
     let end = max_chars.min(content.len());
     // Avoid cutting in the middle of a multi-byte char
     let safe_end = if end < content.len() {
-        content.floor_char_boundary(end)
+        // MSRV 1.85: floor_char_boundary is stable since 1.91, so walk back
+        // from `end` to the nearest UTF-8 char boundary manually.
+        let mut i = end;
+        while i > 0 && !content.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
     } else {
         end
     };

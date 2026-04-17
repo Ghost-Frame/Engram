@@ -1,3 +1,21 @@
+//! Skills domain -- versioned, composable agent workflows backed by the
+//! `skills` table.
+//!
+//! A skill bundles a name, prompt, and metadata; submodules add behavior:
+//! - [`registry`]  CRUD over the `skills` table plus lookup-by-name.
+//! - [`search`]    keyword + semantic search across skills.
+//! - [`analyzer`]  structural analysis passes (size, graph shape).
+//! - [`evolver`]   controlled mutation + evaluation loops.
+//! - [`patch`]     incremental edit application + rollback.
+//! - [`dashboard`] aggregate stats/health for UI surfaces.
+//! - [`cloud`]     import/export to shared cloud skill libraries.
+//! - [`conversation_formatter`] projects conversations into the message
+//!   schemas LLM backends expect.
+//!
+//! Routes under `/skills/*` in `engram-server` dispatch into these.
+//! Skills read memories and write derived rows; they must not mutate raw
+//! `memories` outside their own tables.
+
 pub mod analyzer;
 pub mod cloud;
 pub mod conversation_formatter;
@@ -259,12 +277,7 @@ pub async fn get_skill(db: &Database, id: i64, user_id: i64) -> Result<Skill> {
     .await
 }
 
-/// Hard upper bound on how many skill rows `list_skills` will ever return in
-/// a single call, regardless of what the caller asks for. Route handlers
-/// apply their own clamp, but library consumers (other modules, tests,
-/// scripts) must not be trusted to pass sensible values; a bug or a compromised
-/// caller could otherwise OOM the process by loading every row.
-pub const MAX_SKILLS_LIMIT: usize = 500;
+pub use crate::validation::MAX_SKILLS_LIMIT;
 
 pub async fn list_skills(
     db: &Database,

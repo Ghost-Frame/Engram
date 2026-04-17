@@ -622,6 +622,16 @@ pub fn pagerank_boost(pagerank_score: f64) -> f64 {
     1.0 + pagerank_score * PAGERANK_WEIGHT
 }
 
+/// Map a per-category preference score (see
+/// `intelligence::feedback::category_preferences`) to a retrieval boost
+/// multiplier. Input is clamped to `[-1.0, 1.0]` and linearly mapped to
+/// `[0.8, 1.2]`: a score of 0 produces a neutral boost of 1.0, +1 yields
+/// 1.2, -1 yields 0.8.
+pub fn category_preference_boost(preference_score: f64) -> f64 {
+    let s = preference_score.clamp(-1.0, 1.0);
+    1.0 + s * 0.2
+}
+
 pub fn link_type_weight(link_type: &str) -> f64 {
     match link_type {
         "caused_by" | "causes" => 2.0,
@@ -808,6 +818,27 @@ mod tests {
         assert_eq!(link_type_weight("caused_by"), 2.0);
         assert_eq!(link_type_weight("updates"), 1.5);
         assert_eq!(link_type_weight("similarity"), 1.0);
+    }
+
+    #[test]
+    fn category_preference_boost_neutral() {
+        assert!((category_preference_boost(0.0) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn category_preference_boost_endpoints() {
+        assert!((category_preference_boost(1.0) - 1.2).abs() < 1e-9);
+        assert!((category_preference_boost(-1.0) - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn category_preference_boost_clamps_above_one() {
+        assert!((category_preference_boost(5.0) - 1.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn category_preference_boost_clamps_below_negative_one() {
+        assert!((category_preference_boost(-3.5) - 0.8).abs() < 1e-9);
     }
 
     #[test]

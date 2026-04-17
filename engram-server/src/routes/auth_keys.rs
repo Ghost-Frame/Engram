@@ -28,10 +28,10 @@ struct CreateKeyBody {
     pub name: Option<String>,
     pub scopes: Option<String>,
     pub user_id: Option<i64>,
-    #[allow(dead_code)]
-    pub rate_limit: Option<i32>,
-    #[allow(dead_code)]
+    pub rate_limit: Option<i64>,
     pub expires_at: Option<String>,
+    /// Alternative to absolute `expires_at`: relative TTL in seconds.
+    pub ttl_secs: Option<i64>,
 }
 
 async fn create_key(
@@ -88,8 +88,24 @@ async fn create_key(
         }
     }
 
-    let (api_key, raw_key) =
-        auth::create_key(&state.db, target_user_id, name, scopes, None).await?;
+    // Absolute expires_at takes precedence; otherwise derive from ttl_secs.
+    let final_expires_at = body.expires_at.clone().or_else(|| {
+        body.ttl_secs.filter(|s| *s > 0).map(|s| {
+            (chrono::Utc::now() + chrono::Duration::seconds(s))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+    });
+
+    let (api_key, raw_key) = auth::create_key_with_expiry(
+        &state.db,
+        target_user_id,
+        name,
+        scopes,
+        body.rate_limit,
+        final_expires_at.clone(),
+    )
+    .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -100,7 +116,7 @@ async fn create_key(
             "scopes": scopes_str,
             "rate_limit": api_key.rate_limit,
             "user_id": target_user_id,
-            "expires_at": body.expires_at,
+            "expires_at": final_expires_at,
             "message": "Save this key -- it cannot be retrieved again.",
         })),
     ))
@@ -162,8 +178,9 @@ async fn revoke_key(
 #[derive(Debug, Deserialize)]
 struct RotateKeyBody {
     pub key_id: i64,
-    #[allow(dead_code)]
-    pub expires_at: Option<String>,
+    /// Optional per-request override for the grace period applied to the
+    /// old key. When absent, falls back to `config.auth_key_rotation_grace_hours`.
+    pub grace_hours: Option<i64>,
 }
 
 async fn rotate_key(
@@ -195,12 +212,19 @@ async fn rotate_key(
     )
     .await?;
 
-    // Set 24-hour grace period on old key.
+    // Grace period on old key -- caller override takes precedence over
+    // `auth_key_rotation_grace_hours` config default. Clamped to >= 1h so
+    // the returned key always has a non-trivial overlap window.
+    //
     // SECURITY (SEC-HIGH-5): the UPDATE is scoped to the caller's user_id
     // as defense-in-depth. Ownership was already verified above via
     // list_keys, but constraining the SQL means an attacker who bypassed
     // the in-memory check still cannot touch another tenant's keys.
-    let grace_expiry = (chrono::Utc::now() + chrono::Duration::hours(24))
+    let grace_hours = body
+        .grace_hours
+        .unwrap_or(state.config.auth_key_rotation_grace_hours)
+        .max(1);
+    let grace_expiry = (chrono::Utc::now() + chrono::Duration::hours(grace_hours))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
     let key_id = body.key_id;
@@ -222,7 +246,11 @@ async fn rotate_key(
         "new_key_id": new_key.id,
         "old_key_id": body.key_id,
         "old_key_expires": grace_expiry,
-        "message": "Old key will expire in 24 hours. Update your clients to use the new key.",
+        "grace_hours": grace_hours,
+        "message": format!(
+            "Old key will expire in {} hour(s). Update your clients to use the new key.",
+            grace_hours
+        ),
     })))
 }
 
@@ -269,8 +297,8 @@ async fn create_user(
         })
         .await?;
 
-    // Create default space (best-effort)
-    let _ = state
+    // Create default space (best-effort).
+    if let Err(e) = state
         .db
         .write(move |conn| {
             conn.execute(
@@ -279,7 +307,14 @@ async fn create_user(
             )
             .map_err(|e| engram_lib::EngError::DatabaseMessage(e.to_string()))
         })
-        .await;
+        .await
+    {
+        tracing::warn!(
+            user_id = id,
+            error = %e,
+            "failed to create default space after user provisioning",
+        );
+    }
 
     Ok((
         StatusCode::CREATED,

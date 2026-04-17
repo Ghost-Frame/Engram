@@ -23,6 +23,7 @@ const MIGRATION_CRED_TABLES: i64 = 17;
 const MIGRATION_API_KEY_HASH_UNIQUE: i64 = 18;
 const MIGRATION_API_KEY_HASH_VERSION: i64 = 19;
 const MIGRATION_LINK_COVERING_INDEXES: i64 = 20;
+const MIGRATION_UPLOAD_SESSIONS: i64 = 21;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
@@ -171,6 +172,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             MIGRATION_LINK_COVERING_INDEXES,
             "link_covering_indexes",
         )?;
+    }
+
+    if current_version < MIGRATION_UPLOAD_SESSIONS {
+        info!("Running migration 21: upload_sessions");
+        run_migration_upload_sessions(conn)?;
+        record_migration(conn, MIGRATION_UPLOAD_SESSIONS, "upload_sessions")?;
     }
 
     Ok(())
@@ -615,6 +622,46 @@ fn run_migration_link_covering_indexes(conn: &rusqlite::Connection) -> Result<()
              ON memory_links(source_id, target_id, similarity, type);
          CREATE INDEX IF NOT EXISTS idx_links_target_covering \
              ON memory_links(target_id, source_id, similarity, type);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+/// Migration 21: resumable upload sessions + per-chunk persistence. Large
+/// ingestion payloads can now be uploaded piece by piece and survive transient
+/// network failures. Chunks are content-hashed so an interrupted client can
+/// probe `status` and replay only what it needs.
+fn run_migration_upload_sessions(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS upload_sessions (
+             upload_id TEXT PRIMARY KEY,
+             user_id INTEGER NOT NULL,
+             filename TEXT,
+             content_type TEXT,
+             source TEXT NOT NULL DEFAULT 'upload',
+             total_size INTEGER,
+             total_chunks INTEGER,
+             chunk_size INTEGER NOT NULL,
+             status TEXT NOT NULL DEFAULT 'active',
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             completed_at TEXT,
+             expires_at TEXT NOT NULL,
+             final_sha256 TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_upload_sessions_user ON upload_sessions(user_id);
+         CREATE INDEX IF NOT EXISTS idx_upload_sessions_status ON upload_sessions(status);
+         CREATE INDEX IF NOT EXISTS idx_upload_sessions_expires ON upload_sessions(expires_at);
+
+         CREATE TABLE IF NOT EXISTS upload_chunks (
+             upload_id TEXT NOT NULL,
+             chunk_index INTEGER NOT NULL,
+             chunk_hash TEXT NOT NULL,
+             size INTEGER NOT NULL,
+             data BLOB NOT NULL,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             PRIMARY KEY (upload_id, chunk_index),
+             FOREIGN KEY (upload_id) REFERENCES upload_sessions(upload_id) ON DELETE CASCADE
+         );",
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())

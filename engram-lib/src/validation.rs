@@ -153,6 +153,38 @@ pub const MAX_ACTIVITY_SUMMARY_LEN: usize = 10_000;
 pub const MAX_BATCH_OPS: usize = 100;
 
 // ---------------------------------------------------------------------------
+// HTTP transport limits (server-side)
+// ---------------------------------------------------------------------------
+//
+// These cap the size and shape of JSON request bodies before the handler sees
+// them, and bound ingest/upload payloads. Centralizing here lets SDK
+// generators surface the limits as part of the API contract.
+
+/// Maximum recursion depth accepted by the JSON body middleware. Requests
+/// with deeper nesting are rejected with 400 to prevent pathological
+/// parser CPU usage.
+pub const MAX_JSON_DEPTH: u32 = 64;
+
+/// Maximum accumulated body bytes held in memory by the JSON depth
+/// middleware. Requests beyond this return 413.
+pub const MAX_JSON_BUFFER_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
+
+/// Maximum single artifact upload body size (`POST /artifacts`).
+pub const MAX_ARTIFACT_UPLOAD_BYTES: usize = 50 * 1024 * 1024; // 50 MiB
+
+/// Maximum rows accepted in a single import batch.
+pub const MAX_IMPORT_BATCH: usize = 5_000;
+
+/// Maximum bytes of raw text accepted by `/ingest` in a single request.
+pub const MAX_INGEST_TEXT_BYTES: usize = 1 << 20; // 1 MiB
+
+/// Maximum total bytes for a resumable/chunked upload session.
+pub const MAX_UPLOAD_TOTAL_BYTES: i64 = 256 * 1024 * 1024; // 256 MiB
+
+/// Maximum bytes per individual upload chunk.
+pub const MAX_UPLOAD_CHUNK_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -188,4 +220,54 @@ pub fn validate_string_len(field: &str, value: &str, max: usize) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Validate a batch operation count is non-empty and within MAX_BATCH_OPS.
+pub fn validate_batch_size(n: usize) -> Result<()> {
+    if n == 0 {
+        return Err(EngError::InvalidInput("ops must not be empty".to_string()));
+    }
+    if n > MAX_BATCH_OPS {
+        return Err(EngError::InvalidInput(format!(
+            "batch limited to {} ops, got {}",
+            MAX_BATCH_OPS, n
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_content_rejects_empty_and_too_large() {
+        assert!(validate_content("").is_err());
+        assert!(validate_content("   ").is_err());
+        assert!(validate_content("ok").is_ok());
+        let big = "a".repeat(MAX_CONTENT_SIZE + 1);
+        assert!(validate_content(&big).is_err());
+    }
+
+    #[test]
+    fn clamp_limit_stays_in_range() {
+        assert_eq!(clamp_limit(None), DEFAULT_SEARCH_LIMIT);
+        assert_eq!(clamp_limit(Some(0)), 1);
+        assert_eq!(clamp_limit(Some(5)), 5);
+        assert_eq!(clamp_limit(Some(999)), MAX_SEARCH_LIMIT);
+    }
+
+    #[test]
+    fn validate_string_len_enforces_cap() {
+        assert!(validate_string_len("x", "hi", 10).is_ok());
+        assert!(validate_string_len("x", "abcdefghijk", 10).is_err());
+    }
+
+    #[test]
+    fn validate_batch_size_range() {
+        assert!(validate_batch_size(0).is_err());
+        assert!(validate_batch_size(1).is_ok());
+        assert!(validate_batch_size(MAX_BATCH_OPS).is_ok());
+        assert!(validate_batch_size(MAX_BATCH_OPS + 1).is_err());
+    }
 }

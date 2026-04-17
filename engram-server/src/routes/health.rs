@@ -17,6 +17,8 @@ use engram_lib::jobs;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(get_health))
+        .route("/health/live", get(get_live))
+        .route("/health/ready", get(get_ready))
         .route("/live", get(get_live))
         .route("/ready", get(get_ready))
         .route("/metrics", get(get_metrics))
@@ -95,9 +97,14 @@ async fn get_live() -> Json<Value> {
 }
 
 async fn get_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
-    let mut checks: Vec<(&str, bool)> = Vec::new();
+    // Required checks must all pass for 200. Optional components (embedder,
+    // reranker, LLM) report their state but do not block readiness, because
+    // a server deployment may legitimately run without them.
+    //
+    // Returns 503 when any required check fails, with a `failing` array so
+    // operators can see at a glance what is wrong.
 
-    // DB ping: run a trivial query to verify the connection pool is alive.
+    // DB ping: required. Run a trivial query to verify the connection pool.
     let db_ok = state
         .db
         .read(|conn| {
@@ -106,32 +113,30 @@ async fn get_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         })
         .await
         .is_ok();
-    checks.push(("database", db_ok));
 
-    // Embedder loaded
-    let embedder_ok = state.embedder.read().await.is_some();
-    checks.push(("embedder", embedder_ok));
+    // Optional components: surface state but do not fail readiness.
+    let embedder_loaded = state.embedder.read().await.is_some();
+    let reranker_loaded = state.reranker.read().await.is_some();
+    let llm_configured = state.brain.is_some();
 
-    // Reranker loaded
-    let reranker_ok = state.reranker.read().await.is_some();
-    checks.push(("reranker", reranker_ok));
+    let mut failing: Vec<&'static str> = Vec::new();
+    if !db_ok {
+        failing.push("database");
+    }
 
-    let all_ok = checks.iter().all(|(_, ok)| *ok);
+    let all_ok = failing.is_empty();
     let status = if all_ok {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
 
-    let details: serde_json::Map<String, Value> = checks
-        .iter()
-        .map(|(name, ok)| {
-            (
-                name.to_string(),
-                json!(if *ok { "ok" } else { "unavailable" }),
-            )
-        })
-        .collect();
+    let checks = json!({
+        "database": if db_ok { "ok" } else { "unavailable" },
+        "embedder": if embedder_loaded { "loaded" } else { "disabled" },
+        "reranker": if reranker_loaded { "loaded" } else { "disabled" },
+        "llm": if llm_configured { "configured" } else { "disabled" },
+    });
 
     (
         status,
@@ -139,7 +144,8 @@ async fn get_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
             "status": if all_ok { "ready" } else { "not_ready" },
             "service": "engram",
             "version": "0.1.0",
-            "checks": details,
+            "checks": checks,
+            "failing": failing,
         })),
     )
 }

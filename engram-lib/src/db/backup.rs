@@ -51,6 +51,76 @@ pub async fn integrity_check(path: &Path) -> Result<Vec<String>> {
     }
 }
 
+/// Outcome of a restore-test probe on a backup file.
+#[derive(Debug, Clone)]
+pub struct RestoreReport {
+    /// Value from `PRAGMA schema_version`.
+    pub schema_version: i64,
+    /// Row count of the `memories` table, or `None` if that table is absent.
+    /// Absence does not fail the probe -- a fresh database legitimately has
+    /// no `memories` yet -- but it is surfaced so callers can flag surprises.
+    pub memory_count: Option<i64>,
+    /// Count of tables reported by `sqlite_master`. Used as a liveness signal
+    /// even when `memories` hasn't been created yet.
+    pub table_count: i64,
+}
+
+/// Restore-test hook: opens the backup file as a live SQLite database and
+/// runs a handful of sanity queries. A successful return means the file is
+/// openable, query-able, and has the expected SQLite metadata surface.
+///
+/// This is a strictly stronger signal than `integrity_check`: a page-level
+/// checksum pass does not guarantee that the schema was copied cleanly nor
+/// that the sqlite_master catalog is queryable. Here we actually execute
+/// queries against the restored file -- exactly what a disaster-recovery
+/// restore would do.
+pub async fn restore_test(path: &Path) -> Result<RestoreReport> {
+    let path_str = path.to_string_lossy().to_string();
+    let path_for_task = path_str.clone();
+    tokio::task::spawn_blocking(move || -> Result<RestoreReport> {
+        let conn = rusqlite::Connection::open_with_flags(
+            &path_for_task,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("restore_test open: {e}")))?;
+
+        let schema_version: i64 = conn
+            .query_row("PRAGMA schema_version", [], |row| row.get(0))
+            .map_err(rusqlite_to_eng_error)?;
+
+        let table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        let memory_count: Option<i64> = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memories'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+            .filter(|n| *n > 0)
+            .and_then(|_| {
+                conn.query_row("SELECT COUNT(*) FROM memories", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .ok()
+            });
+
+        Ok(RestoreReport {
+            schema_version,
+            memory_count,
+            table_count,
+        })
+    })
+    .await
+    .map_err(|e| EngError::DatabaseMessage(format!("restore_test join: {e}")))?
+}
+
 /// Runs WAL checkpoint with the given mode.
 /// Returns (busy, log, checkpointed) frame counts.
 pub async fn wal_checkpoint(
@@ -152,6 +222,44 @@ mod tests {
             "wal_checkpoint should not error: {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn test_restore_test_reports_tables_and_schema_version() {
+        let path = std::env::temp_dir().join(format!("engram-restore-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = rusqlite::Connection::open(path.to_str().unwrap()).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT); \
+                 INSERT INTO memories (content) VALUES ('a'), ('b'), ('c');",
+            )
+            .unwrap();
+        }
+        let report = restore_test(&path).await.expect("restore_test");
+        assert!(report.table_count >= 1);
+        assert_eq!(report.memory_count, Some(3));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn test_restore_test_errors_on_missing_file() {
+        let path = std::env::temp_dir().join(format!("engram-missing-{}.db", uuid::Uuid::new_v4()));
+        let result = restore_test(&path).await;
+        assert!(result.is_err(), "missing file should fail restore_test");
+    }
+
+    #[tokio::test]
+    async fn test_restore_test_handles_db_without_memories_table() {
+        let path = std::env::temp_dir().join(format!("engram-no-mem-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = rusqlite::Connection::open(path.to_str().unwrap()).unwrap();
+            conn.execute_batch("CREATE TABLE other (id INTEGER PRIMARY KEY);")
+                .unwrap();
+        }
+        let report = restore_test(&path).await.expect("restore_test");
+        assert!(report.table_count >= 1);
+        assert_eq!(report.memory_count, None);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]

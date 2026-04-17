@@ -10,9 +10,7 @@ use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
-
-/// Max upload size: 50 MB
-const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
+use engram_lib::validation::MAX_ARTIFACT_UPLOAD_BYTES as MAX_UPLOAD_BYTES;
 
 pub fn router() -> Router<AppState> {
     Router::new()

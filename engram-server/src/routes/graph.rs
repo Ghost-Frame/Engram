@@ -696,15 +696,11 @@ async fn neighborhood_handler(
             .collect()
     });
 
-    let (nodes, edges, hops) = neighborhood_filtered(
-        &state.db,
-        &id,
-        depth,
-        auth.user_id,
-        link_types.as_deref(),
-    )
-    .await?;
-    Ok(Json(json!({ "nodes": nodes, "edges": edges, "hops": hops })))
+    let (nodes, edges, hops) =
+        neighborhood_filtered(&state.db, &id, depth, auth.user_id, link_types.as_deref()).await?;
+    Ok(Json(
+        json!({ "nodes": nodes, "edges": edges, "hops": hops }),
+    ))
 }
 
 // ---------------------------------------------------------------------------

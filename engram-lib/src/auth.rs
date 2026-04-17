@@ -261,6 +261,7 @@ fn scopes_to_string(scopes: &[Scope]) -> String {
 /// Create a new API key for a user and store it in the database.
 /// Returns (ApiKey, raw_key). The raw_key is shown once and never stored.
 /// `rate_limit`: requests-per-minute cap. None uses the column default (1000).
+#[tracing::instrument(skip(db, name, scopes), fields(name = %name, scope_count = scopes.len()))]
 pub async fn create_key(
     db: &Database,
     user_id: i64,
@@ -268,18 +269,40 @@ pub async fn create_key(
     scopes: Vec<Scope>,
     rate_limit: Option<i64>,
 ) -> Result<(ApiKey, String)> {
+    create_key_with_expiry(db, user_id, name, scopes, rate_limit, None).await
+}
+
+/// Create a new API key with an optional absolute `expires_at` (as a
+/// chrono-serialized `YYYY-MM-DD HH:MM:SS` string or RFC3339). When `None`,
+/// the key does not expire.
+#[tracing::instrument(skip(db, name, scopes, expires_at), fields(name = %name, scope_count = scopes.len()))]
+pub async fn create_key_with_expiry(
+    db: &Database,
+    user_id: i64,
+    name: &str,
+    scopes: Vec<Scope>,
+    rate_limit: Option<i64>,
+    expires_at: Option<String>,
+) -> Result<(ApiKey, String)> {
     let (full_key, key_prefix, key_hash, hash_version) = generate_key();
     let scopes_str = scopes_to_string(&scopes);
     let rate_limit_val = rate_limit.unwrap_or(1000).max(1);
     let name_owned = name.to_string();
+
+    if let Some(ref s) = expires_at {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+            .map(|_| ())
+            .or_else(|_| chrono::DateTime::parse_from_rfc3339(s).map(|_| ()))
+            .map_err(|_| crate::EngError::InvalidInput("invalid expires_at format".into()))?;
+    }
 
     let key_prefix_for_read = key_prefix.clone();
     let key_hash_for_read = key_hash.clone();
 
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO api_keys (user_id, key_prefix, key_hash, name, scopes, rate_limit, hash_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO api_keys (user_id, key_prefix, key_hash, name, scopes, rate_limit, hash_version, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 user_id,
                 key_prefix,
@@ -287,7 +310,8 @@ pub async fn create_key(
                 name_owned,
                 scopes_str,
                 rate_limit_val,
-                hash_version
+                hash_version,
+                expires_at
             ],
         )
         .map_err(rusqlite_to_eng_error)?;
@@ -327,6 +351,7 @@ pub async fn create_key(
 }
 
 /// Validate a raw API key from a request. Returns an AuthContext on success.
+#[tracing::instrument(skip(db, raw_key))]
 pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     let normalized_key =
         normalize_key(raw_key).ok_or_else(|| crate::EngError::Auth("invalid key format".into()))?;
@@ -440,6 +465,7 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
 /// callers should already verify ownership before reaching this function,
 /// but constraining the UPDATE here means any future caller that forgets
 /// to check ownership still cannot revoke another tenant's keys.
+#[tracing::instrument(skip(db))]
 pub async fn revoke_key(db: &Database, user_id: i64, key_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -453,6 +479,7 @@ pub async fn revoke_key(db: &Database, user_id: i64, key_id: i64) -> Result<()> 
 }
 
 /// Deactivate any API key by id regardless of owner (admin use only).
+#[tracing::instrument(skip(db))]
 pub async fn revoke_key_admin(db: &Database, key_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -466,6 +493,7 @@ pub async fn revoke_key_admin(db: &Database, key_id: i64) -> Result<()> {
 }
 
 /// Look up an active, unexpired API key by id.
+#[tracing::instrument(skip(db))]
 pub async fn get_active_key_by_id(db: &Database, key_id: i64) -> Result<ApiKey> {
     let api_key = db
         .read(move |conn| {
@@ -505,6 +533,7 @@ pub async fn get_active_key_by_id(db: &Database, key_id: i64) -> Result<ApiKey> 
 }
 
 /// List active API keys for a user. Never exposes key_hash.
+#[tracing::instrument(skip(db))]
 pub async fn list_keys(db: &Database, user_id: i64) -> Result<Vec<ApiKey>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -598,4 +627,81 @@ fn row_to_api_key_rusqlite_with_offset(row: &rusqlite::Row<'_>) -> crate::Result
         created_at,
         hash_version,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::db::Database;
+
+    async fn setup_db() -> Database {
+        let db_path = std::env::temp_dir()
+            .join(format!("engram-auth-test-{}.db", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned();
+        let config = Config {
+            db_path,
+            use_lance_index: false,
+            ..Config::default()
+        };
+        Database::connect_with_config(&config, None).await.unwrap()
+    }
+
+    async fn make_user(db: &Database, username: &str) -> i64 {
+        let username = username.to_string();
+        db.write(move |conn| {
+            conn.query_row(
+                "INSERT INTO users (username, role, is_admin) VALUES (?1, 'admin', 1) RETURNING id",
+                rusqlite::params![username],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_key_with_expiry_persists_absolute_timestamp() {
+        let db = setup_db().await;
+        let uid = make_user(&db, "alice").await;
+
+        let expiry = (chrono::Utc::now() + chrono::Duration::hours(6))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        let (api_key, _raw) = create_key_with_expiry(
+            &db,
+            uid,
+            "rotated",
+            vec![Scope::Read],
+            Some(250),
+            Some(expiry.clone()),
+        )
+        .await
+        .expect("create_key_with_expiry should succeed");
+
+        assert_eq!(api_key.expires_at.as_deref(), Some(expiry.as_str()));
+        assert_eq!(api_key.rate_limit, 250);
+    }
+
+    #[tokio::test]
+    async fn create_key_with_expiry_rejects_malformed_timestamp() {
+        let db = setup_db().await;
+        let uid = make_user(&db, "bob").await;
+
+        let err = create_key_with_expiry(
+            &db,
+            uid,
+            "bad",
+            vec![Scope::Read],
+            None,
+            Some("not-a-timestamp".into()),
+        )
+        .await
+        .expect_err("malformed expires_at must be rejected");
+
+        assert!(matches!(err, crate::EngError::InvalidInput(_)));
+    }
 }
