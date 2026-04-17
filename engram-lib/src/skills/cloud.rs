@@ -27,6 +27,7 @@ pub struct CloudSearchResult {
 }
 
 /// Stub: Search skills in the cloud registry.
+#[tracing::instrument(skip(query), fields(query_len = query.len(), limit))]
 pub async fn search_skills_cloud(query: &str, limit: usize) -> Result<Vec<CloudSearchResult>> {
     let Some(api_key) = std::env::var("OPENSPACE_API_KEY")
         .ok()
@@ -58,6 +59,7 @@ pub async fn search_skills_cloud(query: &str, limit: usize) -> Result<Vec<CloudS
 }
 
 /// Stub: Upload a skill to the cloud registry.
+#[tracing::instrument(skip(description, content, tags), fields(name = %name, category = %category, tags_count = tags.len(), content_len = content.len()))]
 pub async fn upload_skill_to_cloud(
     name: &str,
     description: &str,

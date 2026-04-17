@@ -46,6 +46,7 @@ pub struct SkillOverview {
 }
 
 /// Get dashboard overview stats.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_overview(db: &Database, user_id: i64) -> Result<SkillOverview> {
     db.read(move |conn| {
         conn.query_row(
@@ -85,6 +86,7 @@ pub struct SkillStats {
 }
 
 /// Get stats for all active skills.
+#[tracing::instrument(skip(db), fields(user_id, sort_by = ?sort_by, limit))]
 pub async fn get_skill_stats(
     db: &Database,
     user_id: i64,
@@ -130,6 +132,7 @@ pub async fn get_skill_stats(
 }
 
 /// Get detailed info for a single skill.
+#[tracing::instrument(skip(db), fields(skill_id))]
 pub async fn get_skill_detail(db: &Database, skill_id: i64) -> Result<serde_json::Value> {
     db.read(move |conn| {
         let row = conn.query_row(

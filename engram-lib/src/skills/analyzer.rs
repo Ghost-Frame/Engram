@@ -32,6 +32,7 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
 
 /// Correct a potentially misspelled skill ID against known skill names.
 /// Returns the best match name if edit distance <= 3, or prefix match.
+#[tracing::instrument(skip(db), fields(name = %name, user_id))]
 pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result<Option<String>> {
     let name = name.to_string();
     db.read(move |conn| {
@@ -90,6 +91,7 @@ pub const ANALYSIS_SYSTEM_PROMPT: &str = "You are a skill execution analyzer. Gi
 
 /// Persist an execution analysis to the database.
 /// Inserts into execution_analyses, creates skill_judgments entries, and updates counters.
+#[tracing::instrument(skip(db, analysis), fields(skill_id, duration_ms = ?duration_ms, agent = %agent))]
 pub async fn persist_analysis(
     db: &Database,
     skill_id: i64,
@@ -149,6 +151,7 @@ pub async fn persist_analysis(
 }
 
 /// Get usage stats for skills (underused or failing).
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_usage_stats(db: &Database, user_id: i64) -> Result<serde_json::Value> {
     db.read(move |conn| {
         // Underused: active skills with < 5 executions
