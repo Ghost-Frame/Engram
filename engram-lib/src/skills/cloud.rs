@@ -5,6 +5,15 @@ use serde_json::json;
 const DEFAULT_OPENSPACE_API_URL: &str = "https://api.openspace.dev";
 const TIMEOUT_SECS: u64 = 10;
 
+/// Shared HTTP client for cloud skill registry calls.
+static CLOUD_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS + 5))
+        .pool_max_idle_per_host(2)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+});
+
 /// Stubbed cloud skill candidate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloudSearchResult {
@@ -27,14 +36,11 @@ pub async fn search_skills_cloud(query: &str, limit: usize) -> Result<Vec<CloudS
     };
     let base_url = std::env::var("OPENSPACE_API_URL")
         .unwrap_or_else(|_| DEFAULT_OPENSPACE_API_URL.to_string());
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
-        .build()
-        .map_err(|e| crate::EngError::Internal(format!("failed to build cloud client: {}", e)))?;
     let url = format!("{}/skills/search", base_url.trim_end_matches('/'));
-    let response = client
+    let response = CLOUD_CLIENT
         .get(url)
         .bearer_auth(api_key)
+        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
         .query(&[("q", query), ("limit", &limit.to_string())])
         .send()
         .await;
@@ -63,12 +69,7 @@ pub async fn upload_skill_to_cloud(
         .map_err(|_| crate::EngError::InvalidInput("OPENSPACE_API_KEY not configured".into()))?;
     let base_url = std::env::var("OPENSPACE_API_URL")
         .unwrap_or_else(|_| DEFAULT_OPENSPACE_API_URL.to_string());
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS + 5))
-        .build()
-        .map_err(|e| crate::EngError::Internal(format!("failed to build cloud client: {}", e)))?;
-
-    let response = client
+    let response = CLOUD_CLIENT
         .post(format!("{}/skills", base_url.trim_end_matches('/')))
         .bearer_auth(api_key)
         .json(&json!({

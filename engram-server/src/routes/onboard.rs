@@ -14,6 +14,18 @@ use crate::{error::AppError, extractors::Auth, state::AppState};
 /// Maximum response body size for /fetch (10 MiB).
 const FETCH_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 
+/// Shared HTTP client for /fetch endpoint -- no-redirect policy prevents SSRF
+/// via open redirect chains after initial URL validation.
+static FETCH_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("Engram/5.8 (fetch)")
+        .pool_max_idle_per_host(4)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+});
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/onboard", post(onboard))
@@ -206,16 +218,7 @@ async fn fetch_url(
     let parsed = url::Url::parse(&body.url)
         .map_err(|_| AppError(engram_lib::EngError::InvalidInput("Invalid URL".into())))?;
 
-    // Disable redirect following to prevent SSRF via open redirects that
-    // bounce to internal hosts after the initial validation.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("Engram/5.8 (fetch)")
-        .build()
-        .map_err(|e| AppError(engram_lib::EngError::Internal(e.to_string())))?;
-
-    let resp = client.get(&body.url).send().await.map_err(|e| {
+    let resp = FETCH_CLIENT.get(&body.url).send().await.map_err(|e| {
         AppError(engram_lib::EngError::Internal(format!(
             "Fetch error: {}",
             e

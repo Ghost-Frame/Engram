@@ -98,6 +98,9 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         CREATE INDEX IF NOT EXISTS idx_memories_parent_fact ON memories(parent_memory_id) WHERE is_fact = 1;
         CREATE INDEX IF NOT EXISTS idx_memories_not_decomposed ON memories(is_decomposed) WHERE is_decomposed = 0 AND is_fact = 0;
         CREATE INDEX IF NOT EXISTS idx_memories_community ON memories(community_id) WHERE community_id IS NOT NULL;
+        -- Composite index covering the primary search/count predicates (user_id + forgotten + archived).
+        -- Speeds up health endpoint counts and hybrid_search base filters by avoiding individual index merges.
+        CREATE INDEX IF NOT EXISTS idx_memories_search ON memories(user_id, is_forgotten, is_archived, is_latest);
 
         -- Memory links
         CREATE TABLE IF NOT EXISTS memory_links (

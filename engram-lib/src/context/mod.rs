@@ -860,73 +860,93 @@ pub async fn assemble_context(
     let mut supplementary: Vec<SupplementarySection> = Vec::new();
     let mut personality_block_tokens: usize = 0;
 
-    // Working memory
-    if flags.include_working_memory {
-        let session_filter: Option<&str> = opts.session.as_deref().filter(|s| !s.is_empty());
-        if let Ok(scratch_rows) =
-            scratchpad::list_entries(db, user_id, None, None, session_filter).await
-        {
-            if let Some(wm) = build_working_memory_block(&scratch_rows) {
-                supplementary.push(SupplementarySection {
-                    label: "working_memory".to_string(),
-                    content: wm,
-                });
+    // Fire independent supplementary DB fetches in parallel. Each returns
+    // Option/None based on its flag so we skip unnecessary work but still
+    // overlap the I/O of whichever fetches are enabled.
+    let session_filter: Option<&str> = opts.session.as_deref().filter(|s| !s.is_empty());
+    let (scratch_res, state_res, personality_res, pref_res) = tokio::join!(
+        async {
+            if !flags.include_working_memory {
+                return None;
             }
+            scratchpad::list_entries(db, user_id, None, None, session_filter)
+                .await
+                .ok()
+        },
+        async {
+            if !flags.include_current_state {
+                return None;
+            }
+            get_current_state(db, user_id).await.ok()
+        },
+        async {
+            if !flags.include_personality {
+                return None;
+            }
+            personality::get_profile_for_injection(db, user_id)
+                .await
+                .ok()
+                .flatten()
+        },
+        async {
+            if !flags.include_preferences {
+                return None;
+            }
+            get_user_preferences(db, user_id).await.ok()
+        },
+    );
+
+    // Process results sequentially to build supplementary sections.
+    if let Some(scratch_rows) = scratch_res {
+        if let Some(wm) = build_working_memory_block(&scratch_rows) {
+            supplementary.push(SupplementarySection {
+                label: "working_memory".to_string(),
+                content: wm,
+            });
         }
     }
 
-    // Current state
-    if flags.include_current_state {
-        if let Ok(state_rows) = get_current_state(db, user_id).await {
-            if !state_rows.is_empty() {
-                let state_lines: Vec<String> = state_rows
-                    .iter()
-                    .map(|s| {
-                        if s.updated_count > 1 {
-                            format!("- {}: {} (updated {}x)", s.key, s.value, s.updated_count)
-                        } else {
-                            format!("- {}: {}", s.key, s.value)
-                        }
-                    })
-                    .collect();
-                supplementary.push(SupplementarySection {
-                    label: "current_state".to_string(),
-                    content: format!("## Current State\n{}", state_lines.join("\n")),
-                });
-            }
+    if let Some(state_rows) = state_res {
+        if !state_rows.is_empty() {
+            let state_lines: Vec<String> = state_rows
+                .iter()
+                .map(|s| {
+                    if s.updated_count > 1 {
+                        format!("- {}: {} (updated {}x)", s.key, s.value, s.updated_count)
+                    } else {
+                        format!("- {}: {}", s.key, s.value)
+                    }
+                })
+                .collect();
+            supplementary.push(SupplementarySection {
+                label: "current_state".to_string(),
+                content: format!("## Current State\n{}", state_lines.join("\n")),
+            });
         }
     }
 
-    // Personality profile
-    if flags.include_personality {
-        if let Ok(Some((profile, _is_stale))) =
-            personality::get_profile_for_injection(db, user_id).await
-        {
-            let tokens = estimate_tokens(&profile);
-            if tokens <= (token_budget as f64 * 0.10) as usize {
-                supplementary.push(SupplementarySection {
-                    label: "personality".to_string(),
-                    content: format!("## Personality\n{}", profile),
-                });
-                personality_block_tokens = tokens;
-                used_tokens += tokens;
-            }
+    if let Some((profile, _is_stale)) = personality_res {
+        let tokens = estimate_tokens(&profile);
+        if tokens <= (token_budget as f64 * 0.10) as usize {
+            supplementary.push(SupplementarySection {
+                label: "personality".to_string(),
+                content: format!("## Personality\n{}", profile),
+            });
+            personality_block_tokens = tokens;
+            used_tokens += tokens;
         }
     }
 
-    // User preferences
-    if flags.include_preferences {
-        if let Ok(pref_rows) = get_user_preferences(db, user_id).await {
-            if !pref_rows.is_empty() {
-                let pref_lines: Vec<String> = pref_rows
-                    .iter()
-                    .map(|p| format!("- [{}] {}", p.domain, p.preference))
-                    .collect();
-                supplementary.push(SupplementarySection {
-                    label: "preferences".to_string(),
-                    content: format!("## User Preferences\n{}", pref_lines.join("\n")),
-                });
-            }
+    if let Some(pref_rows) = pref_res {
+        if !pref_rows.is_empty() {
+            let pref_lines: Vec<String> = pref_rows
+                .iter()
+                .map(|p| format!("- [{}] {}", p.domain, p.preference))
+                .collect();
+            supplementary.push(SupplementarySection {
+                label: "preferences".to_string(),
+                content: format!("## User Preferences\n{}", pref_lines.join("\n")),
+            });
         }
     }
 
