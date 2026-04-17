@@ -39,6 +39,7 @@ pub struct GuardResult {
 /// - Block rules: immediately deny if matched
 /// - Flag rules: allow but include in triggered_rules list
 /// - Redact rules: replace matches with [REDACTED]
+#[tracing::instrument(skip(db, content), fields(content_len = content.len()))]
 pub async fn evaluate(db: &Database, content: &str) -> Result<GuardResult> {
     let rules = list_rules(db).await?;
 

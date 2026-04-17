@@ -39,6 +39,7 @@ pub struct PackResult {
     pub utilization: String,
 }
 
+#[tracing::instrument(skip(db, _context), fields(token_budget, format = ?format, user_id))]
 pub async fn pack_memories(
     db: &Database,
     _context: &str,
