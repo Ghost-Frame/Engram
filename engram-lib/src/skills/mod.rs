@@ -151,6 +151,7 @@ pub(crate) fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
 
 // -- CRUD --
 
+#[tracing::instrument(skip(db, req), fields(name = %req.name, agent = %req.agent))]
 pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skill> {
     let user_id = req
         .user_id
@@ -256,6 +257,7 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
     get_skill(db, id, user_id).await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn get_skill(db: &Database, id: i64, user_id: i64) -> Result<Skill> {
     let sql = format!(
         "SELECT {} FROM skill_records WHERE id = ?1 AND user_id = ?2",
@@ -279,6 +281,7 @@ pub async fn get_skill(db: &Database, id: i64, user_id: i64) -> Result<Skill> {
 
 pub use crate::validation::MAX_SKILLS_LIMIT;
 
+#[tracing::instrument(skip(db))]
 pub async fn list_skills(
     db: &Database,
     user_id: i64,
@@ -325,6 +328,7 @@ pub async fn list_skills(
     .await
 }
 
+#[tracing::instrument(skip(db, req))]
 pub async fn update_skill(
     db: &Database,
     id: i64,
@@ -383,6 +387,7 @@ pub async fn update_skill(
     get_skill(db, id, user_id).await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn delete_skill(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
@@ -401,6 +406,7 @@ pub async fn delete_skill(db: &Database, id: i64, user_id: i64) -> Result<()> {
 
 // -- Execution recording --
 
+#[tracing::instrument(skip(db, error_message))]
 pub async fn record_execution(
     db: &Database,
     skill_id: i64,

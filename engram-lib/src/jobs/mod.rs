@@ -487,6 +487,7 @@ pub async fn retry_failed_job(db: &Database, id: i64) -> Result<bool> {
     .await
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn purge_failed_jobs(db: &Database, older_than_days: i64) -> Result<u64> {
     // Reject negatives defensively so we never expand the purge window to a
     // future timestamp and mass-delete completed jobs.
@@ -504,6 +505,7 @@ pub async fn purge_failed_jobs(db: &Database, older_than_days: i64) -> Result<u6
     .await
 }
 
+#[tracing::instrument(skip(handler), fields(job_type = %job_type))]
 pub async fn register_job_handler<F, Fut>(job_type: &str, handler: F)
 where
     F: Fn(Value) -> Fut + Send + Sync + 'static,
@@ -515,6 +517,7 @@ where
     );
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn process_next_job(db: &Database) -> Result<bool> {
     let job = match claim_next_job(db).await? {
         Some(job) => job,
@@ -565,6 +568,7 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
     Ok(true)
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn drain_jobs(db: &Database, limit: usize) -> Result<usize> {
     let mut processed = 0;
     while processed < limit {
@@ -577,6 +581,7 @@ pub async fn drain_jobs(db: &Database, limit: usize) -> Result<usize> {
 }
 
 // -- Scheduler leases (ported from TS jobs/scheduler.ts) --
+#[tracing::instrument(skip(db), fields(job_name = %job_name, holder_id = %holder_id))]
 pub async fn acquire_lease(
     db: &Database,
     job_name: &str,
@@ -604,6 +609,7 @@ pub async fn acquire_lease(
     .await
 }
 
+#[tracing::instrument(skip(db), fields(job_name = %job_name, holder_id = %holder_id))]
 pub async fn release_lease(db: &Database, job_name: &str, holder_id: &str) -> Result<()> {
     let job_name = job_name.to_string();
     let holder_id = holder_id.to_string();
@@ -618,6 +624,7 @@ pub async fn release_lease(db: &Database, job_name: &str, holder_id: &str) -> Re
     .await
 }
 
+#[tracing::instrument(skip(db), fields(job_name = %job_name, holder_id = %holder_id))]
 pub async fn touch_lease(
     db: &Database,
     job_name: &str,
