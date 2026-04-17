@@ -101,12 +101,8 @@ pub struct SidecarState {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "kleos_sidecar=debug".into()),
-        )
-        .init();
+    let _otel_guard =
+        kleos_lib::observability::init_tracing("kleos-sidecar", "kleos_sidecar=debug");
 
     let cli = Cli::parse();
 

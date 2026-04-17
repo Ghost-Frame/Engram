@@ -235,11 +235,7 @@ fn value_as_string(value: Option<&Value>) -> Option<String> {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
-        )
-        .init();
+    let _otel_guard = kleos_lib::observability::init_tracing("kleos-cli", "warn");
 
     let cli = Cli::parse();
     let api_key = cli

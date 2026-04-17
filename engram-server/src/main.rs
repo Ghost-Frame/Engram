@@ -20,12 +20,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "kleos_server=debug,tower_http=debug".into()),
-        )
-        .init();
+    let _otel_guard = kleos_lib::observability::init_tracing(
+        "kleos-server",
+        "kleos_server=debug,tower_http=debug",
+    );
 
     let config = Config::load();
 

@@ -29,6 +29,7 @@ pub mod intelligence;
 pub mod jobs;
 pub mod llm;
 pub mod memory;
+pub mod observability;
 pub mod pack;
 pub mod pagination;
 pub mod personality;

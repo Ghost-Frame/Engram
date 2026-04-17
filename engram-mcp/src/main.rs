@@ -11,12 +11,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "kleos_mcp=info".into()),
-        )
-        .init();
+    let _otel_guard = kleos_lib::observability::init_tracing("kleos-mcp", "kleos_mcp=info");
 
     let args = Args::parse();
     let app = kleos_mcp::App::from_env()
