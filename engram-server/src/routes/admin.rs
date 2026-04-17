@@ -95,6 +95,9 @@ pub fn router() -> Router<AppState> {
             "/admin/vector/rebuild-index",
             post(admin_vector_rebuild_index),
         )
+        // Point-in-time recovery
+        .route("/admin/pitr/snapshots", get(admin_pitr_snapshots))
+        .route("/admin/pitr/prepare-restore", post(admin_pitr_prepare))
 }
 
 // ---------------------------------------------------------------------------
@@ -891,6 +894,47 @@ async fn backup_handler(
         ],
         bytes,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Point-in-time recovery
+// ---------------------------------------------------------------------------
+
+async fn admin_pitr_snapshots(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let dir =
+        crate::background::resolve_backup_dir(&state.config.data_dir, &state.config.backup_dir);
+    let snapshots = engram_lib::db::pitr::list_snapshots(&dir);
+    Ok(Json(json!({ "snapshots": snapshots })))
+}
+
+#[derive(Deserialize)]
+struct PitrPrepareBody {
+    target: String,
+    dest_path: String,
+}
+
+async fn admin_pitr_prepare(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<PitrPrepareBody>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let target = chrono::DateTime::parse_from_rfc3339(&body.target)
+        .map_err(|e| {
+            AppError(engram_lib::EngError::InvalidInput(format!(
+                "target must be RFC3339: {e}"
+            )))
+        })?
+        .with_timezone(&chrono::Utc);
+    let dir =
+        crate::background::resolve_backup_dir(&state.config.data_dir, &state.config.backup_dir);
+    let dest = std::path::PathBuf::from(&body.dest_path);
+    let prepared = engram_lib::db::pitr::prepare_restore(&dir, target, &dest).await?;
+    Ok(Json(json!(prepared)))
 }
 
 // ---------------------------------------------------------------------------
