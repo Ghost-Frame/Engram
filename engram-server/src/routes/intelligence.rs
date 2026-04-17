@@ -20,6 +20,7 @@ use engram_lib::intelligence::{
     reflections::{
         create_reflection, generate_reflections_with_llm, list_reflections, LlmReflector,
     },
+    scheduler::default_pipeline,
     sentiment,
     temporal::{detect_patterns, list_patterns, store_pattern, time_travel},
     valence::{analyze_valence, get_emotional_profile, store_valence},
@@ -167,6 +168,8 @@ pub fn router() -> Router<AppState> {
         .route("/deduplicate", post(deduplicate_handler))
         // -- NEW: Dream
         .route("/intelligence/dream", post(dream_handler))
+        // -- NEW: Pipeline DAG runner
+        .route("/intelligence/run", post(run_pipeline_handler))
 }
 
 // ---------------------------------------------------------------------------
@@ -874,6 +877,14 @@ async fn deduplicate_handler(
 // ---------------------------------------------------------------------------
 // Dream (Eidolon integration -- graceful degradation)
 // ---------------------------------------------------------------------------
+
+async fn run_pipeline_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let report = default_pipeline().run(&state.db, auth.user_id).await?;
+    Ok(Json(json!(report)))
+}
 
 async fn dream_handler(
     State(state): State<AppState>,

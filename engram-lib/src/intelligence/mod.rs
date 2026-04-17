@@ -13,6 +13,7 @@ pub mod llm;
 pub mod predictive;
 pub mod reconsolidation;
 pub mod reflections;
+pub mod scheduler;
 pub mod sentiment;
 pub mod temporal;
 pub mod types;
