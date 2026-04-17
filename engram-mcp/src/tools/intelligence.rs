@@ -159,6 +159,7 @@ pub async fn extract_facts(app: &App, args: Value) -> Result<Value> {
     }))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "intelligence.sentiment"))]
 pub async fn sentiment(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     let text = if let Some(text) = args.get("text").and_then(Value::as_str) {
@@ -172,6 +173,7 @@ pub async fn sentiment(app: &App, args: Value) -> Result<Value> {
     Ok(json!({"score": sentiment::score_text(&text), "sum": sum, "lexicon_hits": count}))
 }
 
+#[tracing::instrument(skip(app, args), fields(tool = "intelligence.causal_trace"))]
 pub async fn causal_trace(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     if let Some(chain_id) = args.get("chain_id").and_then(Value::as_i64) {
