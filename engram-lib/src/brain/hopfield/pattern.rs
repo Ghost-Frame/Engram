@@ -168,6 +168,7 @@ pub async fn touch_pattern(db: &Database, id: i64, user_id: i64) -> Result<()> {
 }
 
 /// Delete a single pattern.
+#[tracing::instrument(skip(db), fields(pattern_id = id, user_id))]
 pub async fn delete_pattern(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
@@ -188,6 +189,7 @@ pub async fn delete_pattern(db: &Database, id: i64, user_id: i64) -> Result<()> 
 
 /// Delete all patterns whose strength is below the given threshold.
 /// Returns the number of deleted patterns.
+#[tracing::instrument(skip(db), fields(user_id, threshold))]
 pub async fn delete_weak_patterns(db: &Database, user_id: i64, threshold: f32) -> Result<usize> {
     db.write(move |conn| {
         // First collect IDs so we can clean edges
@@ -231,6 +233,7 @@ pub async fn delete_weak_patterns(db: &Database, user_id: i64, threshold: f32) -
 }
 
 /// Count patterns for a user.
+#[tracing::instrument(skip(db), fields(user_id))]
 pub async fn count_patterns(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
         conn.query_row(
