@@ -174,6 +174,7 @@ pub enum IngestStatus {
     Processing,
     Completed,
     Failed,
+    Skipped,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

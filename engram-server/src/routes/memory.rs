@@ -40,6 +40,8 @@ pub fn router() -> Router<AppState> {
         .route("/memory/{id}/forget", post(forget_memory))
         .route("/memory/{id}/archive", post(archive_memory))
         .route("/memory/{id}/unarchive", post(unarchive_memory))
+        .route("/memory/{id}/restore", post(restore_memory))
+        .route("/memory/trash", get(list_trashed))
         // S7-26: search/recall is DB + embedding lookup; 10s is generous.
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -431,6 +433,11 @@ struct ListQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct TrashListOptions {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SearchTagsBody {
     pub tags: Vec<String>,
     pub match_all: Option<bool>,
@@ -483,6 +490,26 @@ async fn delete_memory(
 ) -> Result<Json<Value>, AppError> {
     memory::delete(&state.db, id, auth.user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
+}
+
+async fn list_trashed(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(opts): Query<TrashListOptions>,
+) -> Result<Json<Value>, AppError> {
+    let limit = opts.limit.unwrap_or(50).min(200);
+    let memories = memory::list_trashed(&state.db, auth.user_id, limit).await?;
+    let items: Vec<Value> = memories.iter().map(memory_to_json).collect();
+    Ok(Json(json!({ "memories": items, "count": items.len() })))
+}
+
+async fn restore_memory(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let restored = memory::restore(&state.db, id, auth.user_id).await?;
+    Ok(Json(memory_to_json(&restored)))
 }
 
 async fn update_memory(

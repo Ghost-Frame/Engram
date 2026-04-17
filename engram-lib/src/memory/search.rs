@@ -582,17 +582,27 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
         return Ok(vec![]);
     }
 
-    // RRF fusion across channels
+    // RRF fusion across channels, weighted by strategy.
+    // Confidence gate: if vector search returned few results relative to what
+    // we asked for, semantic confidence is low -- amplify FTS weight by 1.5x.
     let mut rrf_scores: HashMap<i64, f64> = HashMap::new();
     let vector_set: HashSet<i64> = vector_ranked.iter().map(|(id, _)| *id).collect();
     let fts_set: HashSet<i64> = fts_ranked.iter().map(|(id, _)| *id).collect();
     let fts_score_map: HashMap<i64, f64> = fts_ranked.iter().cloned().collect();
 
+    let semantic_confident =
+        vector_ranked.len() >= (candidate_target / 3).max(3) || vector_ranked.len() >= 10;
+    let effective_fts_weight = if semantic_confident {
+        strategy.fts_weight
+    } else {
+        (strategy.fts_weight * 1.5).min(1.0)
+    };
+
     for (rank, (id, _)) in vector_ranked.iter().enumerate() {
-        *rrf_scores.entry(*id).or_default() += rrf_score(rank);
+        *rrf_scores.entry(*id).or_default() += rrf_score(rank) * strategy.vector_weight;
     }
     for (rank, (id, _)) in fts_ranked.iter().enumerate() {
-        *rrf_scores.entry(*id).or_default() += rrf_score(rank);
+        *rrf_scores.entry(*id).or_default() += rrf_score(rank) * effective_fts_weight;
     }
 
     // Temporal boost date extraction

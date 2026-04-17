@@ -10,12 +10,52 @@ pub mod types;
 
 use crate::db::Database;
 use crate::Result;
+use sha2::{Digest, Sha256};
 use std::time::Instant;
 use types::{Chunk, FormatMeta, IngestOptions, IngestResult, IngestStatus, ProcessOptions};
 use uuid::Uuid;
 
 pub use chunker::chunk_document;
 pub use detect::detect_format;
+
+/// Compute SHA-256 hex digest of input bytes for dedup.
+fn content_hash(input: &[u8]) -> String {
+    let hash = Sha256::digest(input);
+    hex::encode(hash)
+}
+
+/// Check if this content has already been ingested for the given user.
+/// Returns true if a matching hash exists (skip this ingestion).
+async fn is_duplicate(db: &Database, hash: &str, user_id: i64) -> bool {
+    let h = hash.to_string();
+    db.read(move |conn| {
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM ingestion_hashes WHERE sha256 = ?1 AND user_id = ?2",
+                rusqlite::params![h, user_id],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        Ok(exists)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Record a content hash after successful ingestion.
+async fn record_hash(db: &Database, hash: &str, user_id: i64, job_id: &str) {
+    let h = hash.to_string();
+    let j = job_id.to_string();
+    let _ = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO ingestion_hashes (sha256, user_id, job_id) VALUES (?1, ?2, ?3)",
+                rusqlite::params![h, user_id, j],
+            )
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await;
+}
 
 /// Run the ingestion pipeline: detect format -> parse -> chunk -> process -> store.
 ///
@@ -32,6 +72,20 @@ pub async fn ingest(
     let mut errors: Vec<String> = Vec::new();
     let mut total_chunks: usize = 0;
     let mut total_memories: usize = 0;
+
+    // Dedup: skip if this exact content was already ingested for this user.
+    let hash = content_hash(input.as_bytes());
+    if is_duplicate(db, &hash, options.user_id).await {
+        return Ok(IngestResult {
+            job_id,
+            status: IngestStatus::Skipped,
+            total_documents: 0,
+            total_chunks: 0,
+            total_memories: 0,
+            errors: vec!["duplicate content -- already ingested".to_string()],
+            duration_ms: start.elapsed().as_millis(),
+        });
+    }
 
     // 1. Detect format
     let format = options
@@ -111,6 +165,9 @@ pub async fn ingest(
         duration_ms
     );
 
+    // Record hash so future identical content is skipped.
+    record_hash(db, &hash, options.user_id, &job_id).await;
+
     Ok(IngestResult {
         job_id,
         status: IngestStatus::Completed,
@@ -141,6 +198,20 @@ pub async fn ingest_binary(
             crate::EngError::InvalidInput(format!("input is not valid UTF-8: {}", e))
         })?;
         return ingest(db, text, options, meta).await;
+    }
+
+    // Dedup: skip if this exact binary content was already ingested.
+    let hash = content_hash(input);
+    if is_duplicate(db, &hash, options.user_id).await {
+        return Ok(IngestResult {
+            job_id,
+            status: IngestStatus::Skipped,
+            total_documents: 0,
+            total_chunks: 0,
+            total_memories: 0,
+            errors: vec!["duplicate content -- already ingested".to_string()],
+            duration_ms: start.elapsed().as_millis(),
+        });
     }
 
     // Binary format parsing
@@ -191,6 +262,9 @@ pub async fn ingest_binary(
             errors.extend(result.errors);
         }
     }
+
+    // Record hash so future identical content is skipped.
+    record_hash(db, &hash, options.user_id, &job_id).await;
 
     Ok(IngestResult {
         job_id,

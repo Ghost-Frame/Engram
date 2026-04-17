@@ -174,11 +174,52 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
         });
     }
 
-    let scores_vec: Vec<(i64, f64)> = result
-        .scores
-        .iter()
-        .map(|(&id, &rank)| (id, rank / max_rank))
-        .collect();
+    let scores_vec: Vec<(i64, f64)> = {
+        // Temporal decay: reduce PageRank for older memories so stale nodes don't
+        // dominate graph traversal. Uses a true half-life: score * 0.5^(age/half_life).
+        let half_life: f64 = std::env::var("ENGRAM_PAGERANK_HALF_LIFE_DAYS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(180.0);
+
+        // Fetch memory ages in one query (julianday diff).
+        let uid = user_id;
+        let ages: HashMap<i64, f64> = db
+            .read(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, julianday('now') - julianday(created_at) \
+                         FROM memories WHERE user_id = ?1",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![uid])
+                    .map_err(rusqlite_to_eng_error)?;
+                let mut m = HashMap::new();
+                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                    let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+                    let age_days: f64 = row.get(1).unwrap_or(0.0);
+                    m.insert(id, age_days);
+                }
+                Ok(m)
+            })
+            .await?;
+
+        // ln(2) ≈ 0.6931 for true half-life decay
+        const LN2: f64 = 0.6931471805599453;
+        let decay_floor = 0.05;
+
+        result
+            .scores
+            .iter()
+            .map(|(&id, &rank)| {
+                let normalized = rank / max_rank;
+                let age_days = ages.get(&id).copied().unwrap_or(0.0).max(0.0);
+                let decay = (-(age_days * LN2 / half_life)).exp().max(decay_floor);
+                (id, normalized * decay)
+            })
+            .collect()
+    };
     let memories_count = scores_vec.len();
 
     // Wrap batch UPDATEs in transaction for atomicity (S1-5/S1-6 fix).

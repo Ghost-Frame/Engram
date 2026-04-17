@@ -537,6 +537,72 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// List soft-deleted memories for a user (recovery window).
+/// Only returns memories deleted by the user (`forget_reason = 'user_deleted'`),
+/// not system-initiated forgets (consolidation, contradiction, etc.).
+pub async fn list_trashed(db: &Database, user_id: i64, limit: usize) -> Result<Vec<Memory>> {
+    let sql = format!(
+        "SELECT {} FROM memories \
+         WHERE user_id = ?1 AND is_forgotten = 1 AND forget_reason = 'user_deleted' \
+         ORDER BY updated_at DESC LIMIT ?2",
+        MEMORY_COLUMNS
+    );
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id, limit as i64])
+            .map_err(rusqlite_to_eng_error)?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            result.push(row_to_memory(row)?);
+        }
+        Ok(result)
+    })
+    .await
+}
+
+/// Restore a soft-deleted memory (undo user delete).
+/// Returns the restored memory. Fails if the memory is not in a user-deleted state.
+pub async fn restore(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
+    let affected = db
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET \
+                    is_forgotten = 0, \
+                    forget_reason = NULL, \
+                    updated_at = datetime('now') \
+                 WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 1 AND forget_reason = 'user_deleted'",
+                rusqlite::params![id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!(
+            "memory {} not found in trash",
+            id
+        )));
+    }
+    // Return the restored memory
+    get(db, id, user_id).await
+}
+
+/// Permanently delete memories that have been in the trash longer than the
+/// retention window (default 30 days). Returns the number of purged rows.
+pub async fn purge_trashed(db: &Database, retention_days: i64) -> Result<usize> {
+    db.write(move |conn| {
+        conn.execute(
+            "DELETE FROM memories \
+             WHERE is_forgotten = 1 \
+               AND forget_reason = 'user_deleted' \
+               AND updated_at < datetime('now', ?1)",
+            rusqlite::params![format!("-{} days", retention_days)],
+        )
+        .map_err(rusqlite_to_eng_error)
+    })
+    .await
+}
+
 pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) -> Result<Memory> {
     // 1. Get the existing memory, scoped to user_id (outside transaction - read only)
     let sql = format!(
