@@ -5,7 +5,7 @@ use engram_lib::embeddings::onnx::OnnxProvider;
 use engram_lib::embeddings::EmbeddingProvider;
 use engram_lib::jobs::pagerank_refresh::start_pagerank_refresh_job;
 use engram_lib::llm::local::{LocalModelClient, OllamaConfig};
-use engram_lib::reranker::Reranker;
+use engram_lib::reranker::{self, Reranker};
 use engram_lib::services::brain::create_brain_backend;
 use engram_server::background::{
     start_auto_checkpoint_task, start_job_cleanup_task, start_vector_sync_replay_task,
@@ -64,7 +64,7 @@ async fn main() {
     // Deferred embedder/reranker initialization -- server starts immediately, models load in background
     let embedder: Arc<tokio::sync::RwLock<Option<Arc<dyn EmbeddingProvider>>>> =
         Arc::new(tokio::sync::RwLock::new(None));
-    let reranker: Arc<tokio::sync::RwLock<Option<Arc<Reranker>>>> =
+    let reranker: Arc<tokio::sync::RwLock<Option<Arc<dyn Reranker>>>> =
         Arc::new(tokio::sync::RwLock::new(None));
 
     // Spawn background task to load embedding model
@@ -89,17 +89,20 @@ async fn main() {
         });
     }
 
-    // Spawn background task to load reranker model
+    // Spawn background task to load reranker
     if config.reranker_enabled {
         let reranker = Arc::clone(&reranker);
         let config = config.clone();
         tokio::spawn(async move {
-            tracing::info!("loading cross-encoder reranker in background...");
-            match Reranker::new(&config).await {
-                Ok(r) => {
+            tracing::info!("loading reranker in background...");
+            match reranker::create_reranker(&config).await {
+                Ok(Some(r)) => {
+                    tracing::info!(backend = r.backend_name(), "reranker ready");
                     let mut guard = reranker.write().await;
-                    *guard = Some(Arc::new(r));
-                    tracing::info!("cross-encoder reranker ready");
+                    *guard = Some(r);
+                }
+                Ok(None) => {
+                    tracing::info!("reranker disabled by backend config");
                 }
                 Err(e) => {
                     tracing::warn!(

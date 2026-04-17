@@ -1,18 +1,42 @@
+pub mod pool;
+
 use crate::config::Config;
 use crate::embeddings::download::ensure_reranker_model;
 use crate::{EngError, Result};
+use async_trait::async_trait;
 use ort::session::Session;
 use ort::value::Tensor;
 use std::sync::{Arc, Mutex};
 use tokenizers::Tokenizer;
 use tracing::info;
 
-/// Cross-encoder reranker using IBM Granite model.
-///
-/// Heavy state lives behind an `Arc<RerankerInner>` so blocking work can be
-/// scheduled on `spawn_blocking` with a cheap clone instead of a raw-pointer
-/// cast, closing the previous use-after-free risk.
-pub struct Reranker {
+// ---------------------------------------------------------------------------
+// 3.13: Reranker trait -- swappable backends
+// ---------------------------------------------------------------------------
+
+/// Trait for reranking search results. Backends implement this to provide
+/// different reranking strategies (local ONNX, remote HTTP API, noop).
+#[async_trait]
+pub trait Reranker: Send + Sync {
+    /// Rerank the given search results in-place by adjusting scores.
+    /// Only the first `top_k` results (configured per-backend) are reranked;
+    /// the rest keep their original scores. Results are re-sorted after scoring.
+    async fn rerank_results(
+        &self,
+        query: &str,
+        results: &mut [crate::memory::types::SearchResult],
+    ) -> Result<()>;
+
+    /// Human-readable name for logging/diagnostics.
+    fn backend_name(&self) -> &str;
+}
+
+// ---------------------------------------------------------------------------
+// ONNX cross-encoder backend (IBM Granite)
+// ---------------------------------------------------------------------------
+
+/// Cross-encoder reranker using IBM Granite model via ONNX Runtime.
+pub struct OnnxReranker {
     inner: Arc<RerankerInner>,
     top_k: usize,
 }
@@ -23,7 +47,7 @@ struct RerankerInner {
     max_seq: usize,
 }
 
-impl Reranker {
+impl OnnxReranker {
     pub async fn new(config: &Config) -> Result<Self> {
         let model_dir = config.model_dir("granite-reranker");
         let (tokenizer_path, model_path) =
@@ -53,7 +77,7 @@ impl Reranker {
         info!(
             model = %model_path.display(),
             top_k = config.reranker_top_k,
-            "cross-encoder reranker initialized"
+            "ONNX cross-encoder reranker initialized"
         );
 
         Ok(Self {
@@ -131,9 +155,9 @@ impl RerankerInner {
     }
 }
 
-impl Reranker {
-    /// Rerank search results by cross-encoder relevance.
-    pub async fn rerank_results(
+#[async_trait]
+impl Reranker for OnnxReranker {
+    async fn rerank_results(
         &self,
         query: &str,
         results: &mut [crate::memory::types::SearchResult],
@@ -164,5 +188,190 @@ impl Reranker {
         });
 
         Ok(())
+    }
+
+    fn backend_name(&self) -> &str {
+        "onnx-granite"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP reranker backend (Cohere / Jina compatible)
+// ---------------------------------------------------------------------------
+
+/// Remote HTTP reranker that calls a Cohere-compatible /v1/rerank API.
+/// Also works with Jina Reranker (same API shape).
+///
+/// Expected response format:
+/// ```json
+/// { "results": [ { "index": 0, "relevance_score": 0.95 }, ... ] }
+/// ```
+pub struct HttpReranker {
+    client: reqwest::Client,
+    endpoint: String,
+    api_key: Option<String>,
+    model: String,
+    top_k: usize,
+}
+
+impl HttpReranker {
+    pub fn new(
+        endpoint: String,
+        api_key: Option<String>,
+        model: String,
+        top_k: usize,
+    ) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+
+        info!(
+            endpoint = %endpoint,
+            model = %model,
+            top_k = top_k,
+            "HTTP reranker configured"
+        );
+
+        Self {
+            client,
+            endpoint,
+            api_key,
+            model,
+            top_k,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct HttpRerankRequest<'a> {
+    model: &'a str,
+    query: &'a str,
+    documents: Vec<&'a str>,
+    top_n: usize,
+}
+
+#[derive(serde::Deserialize)]
+struct HttpRerankResponse {
+    results: Vec<HttpRerankResult>,
+}
+
+#[derive(serde::Deserialize)]
+struct HttpRerankResult {
+    index: usize,
+    relevance_score: f64,
+}
+
+#[async_trait]
+impl Reranker for HttpReranker {
+    async fn rerank_results(
+        &self,
+        query: &str,
+        results: &mut [crate::memory::types::SearchResult],
+    ) -> Result<()> {
+        if results.is_empty() {
+            return Ok(());
+        }
+
+        let k = self.top_k.min(results.len());
+        let documents: Vec<&str> = results.iter().take(k).map(|r| r.memory.content.as_str()).collect();
+
+        let body = HttpRerankRequest {
+            model: &self.model,
+            query,
+            documents,
+            top_n: k,
+        };
+
+        let mut req = self.client.post(&self.endpoint).json(&body);
+        if let Some(ref key) = self.api_key {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
+
+        let resp = req.send().await.map_err(|e| {
+            EngError::Internal(format!("HTTP reranker request failed: {}", e))
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(EngError::Internal(format!(
+                "HTTP reranker returned {}: {}",
+                status, body
+            )));
+        }
+
+        let rerank_resp: HttpRerankResponse = resp.json().await.map_err(|e| {
+            EngError::Internal(format!("HTTP reranker response parse error: {}", e))
+        })?;
+
+        // Apply scores: blend 70% remote score, 30% original
+        for item in &rerank_resp.results {
+            if item.index < results.len() {
+                results[item.index].score =
+                    item.relevance_score * 0.7 + results[item.index].score * 0.3;
+            }
+        }
+
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        Ok(())
+    }
+
+    fn backend_name(&self) -> &str {
+        "http"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Factory: create reranker from config
+// ---------------------------------------------------------------------------
+
+/// Create the appropriate reranker backend based on config.
+///
+/// Backend selection:
+/// - `ENGRAM_RERANKER_BACKEND=onnx` (default): local ONNX cross-encoder
+/// - `ENGRAM_RERANKER_BACKEND=http`: remote Cohere/Jina API
+/// - `ENGRAM_RERANKER_BACKEND=none` or `reranker_enabled=false`: returns None
+///
+/// For HTTP backend, set:
+/// - `ENGRAM_RERANKER_HTTP_ENDPOINT` (required, e.g. https://api.cohere.ai/v1/rerank)
+/// - `ENGRAM_RERANKER_HTTP_API_KEY` (optional, for authenticated APIs)
+/// - `ENGRAM_RERANKER_HTTP_MODEL` (default: "rerank-v3.5")
+pub async fn create_reranker(config: &Config) -> Result<Option<Arc<dyn Reranker>>> {
+    if !config.reranker_enabled {
+        return Ok(None);
+    }
+
+    let backend = std::env::var("ENGRAM_RERANKER_BACKEND")
+        .unwrap_or_else(|_| "onnx".to_string())
+        .to_lowercase();
+
+    match backend.as_str() {
+        "onnx" | "local" => {
+            let reranker = OnnxReranker::new(config).await?;
+            Ok(Some(Arc::new(reranker) as Arc<dyn Reranker>))
+        }
+        "http" | "remote" | "cohere" | "jina" => {
+            let endpoint = std::env::var("ENGRAM_RERANKER_HTTP_ENDPOINT").map_err(|_| {
+                EngError::InvalidInput(
+                    "ENGRAM_RERANKER_HTTP_ENDPOINT required for http reranker backend".into(),
+                )
+            })?;
+            let api_key = std::env::var("ENGRAM_RERANKER_HTTP_API_KEY").ok();
+            let model = std::env::var("ENGRAM_RERANKER_HTTP_MODEL")
+                .unwrap_or_else(|_| "rerank-v3.5".to_string());
+            let reranker = HttpReranker::new(endpoint, api_key, model, config.reranker_top_k);
+            Ok(Some(Arc::new(reranker) as Arc<dyn Reranker>))
+        }
+        "none" | "disabled" => Ok(None),
+        other => Err(EngError::InvalidInput(format!(
+            "unknown reranker backend '{}'; expected onnx, http, or none",
+            other
+        ))),
     }
 }
