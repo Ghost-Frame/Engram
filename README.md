@@ -4,7 +4,7 @@
 
 **Persistent memory and cognitive infrastructure for AI agents. Written in Rust.**
 
-[![License](https://img.shields.io/badge/License-Elastic--2.0-blue.svg)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org) [![Workspace](https://img.shields.io/badge/workspace-10%20crates-brightgreen.svg)](Cargo.toml)
+[![License](https://img.shields.io/badge/License-Elastic--2.0-blue.svg)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://www.rust-lang.org) [![Workspace](https://img.shields.io/badge/workspace-10%20crates-brightgreen.svg)](Cargo.toml)
 
 </div>
 

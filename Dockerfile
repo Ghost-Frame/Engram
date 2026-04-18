@@ -6,7 +6,7 @@
 # SQLCipher is vendored at compile time via the "sqlcipher" feature so no
 # system libsqlcipher is needed at runtime.
 # =============================================================================
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.94-bookworm AS builder
 
 WORKDIR /build
 
@@ -30,7 +30,7 @@ RUN cargo build --release -p kleos-server -p kleos-cli
 # =============================================================================
 FROM debian:bookworm-slim AS runtime
 
-LABEL org.opencontainers.image.source="https://github.com/Ghost-Frame/Kleos-rust" \
+LABEL org.opencontainers.image.source="https://github.com/Ghost-Frame/Kleos" \
       org.opencontainers.image.description="Kleos memory server -- personal knowledge graph and semantic memory store" \
       org.opencontainers.image.licenses="Elastic-2.0"
 

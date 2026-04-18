@@ -41,7 +41,7 @@ jobs:
 
       - name: Verify MSRV declaration in workspace
         run: |
-          grep -q 'rust-version = "1.85"' Cargo.toml \
+          grep -q 'rust-version = "1.94"' Cargo.toml \
             || { echo "workspace rust-version not declared or drifted"; exit 1; }
 
   audit:

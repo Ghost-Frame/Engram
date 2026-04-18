@@ -3,7 +3,7 @@ resolver = "2"
 members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate"]
 
 [workspace.package]
-rust-version = "1.85"
+rust-version = "1.94"
 
 [workspace.dependencies]
 libsql = "0.6"
