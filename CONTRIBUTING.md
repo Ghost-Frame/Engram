@@ -3,8 +3,8 @@
 ## Getting Started
 
 ```bash
-git clone https://github.com/GhostFrame/Kleos.git
-cd Engram
+git clone https://github.com/Ghost-Frame/Kleos.git
+cd Kleos
 cargo build --workspace
 cargo test --workspace
 ```

@@ -12,7 +12,7 @@
 
 <div align="center">
 
-[Why Rust?](#why-rust) · [Quick Start](#quick-start) · [Features](#features) · [Workspace](#workspace) · [Architecture](#architecture) · [API](#api-reference) · [CLI](#cli) · [Sidecar](#sidecar) · [Config](#configuration) · [Wiki](https://github.com/GhostFrame/Kleos/wiki)
+[Why Rust?](#why-rust) · [Quick Start](#quick-start) · [Features](#features) · [Workspace](#workspace) · [Architecture](#architecture) · [API](#api-reference) · [CLI](#cli) · [Sidecar](#sidecar) · [Config](#configuration) · [Wiki](https://github.com/Ghost-Frame/Kleos/wiki)
 
 </div>
 
@@ -37,7 +37,7 @@ One binary. One SQLite database. Local embeddings. No cloud keys required. Your 
 ## Quick Start
 
 ```bash
-git clone https://github.com/GhostFrame/Kleos.git && cd Engram
+git clone https://github.com/Ghost-Frame/Kleos.git && cd Engram
 cargo build --release
 ./target/release/kleos-server
 ```
@@ -312,7 +312,7 @@ curl -X POST http://localhost:4200/admin/safe-mode/exit \
 <details>
 <summary><strong>API Reference</strong></summary>
 
-Every endpoint needs `Authorization: Bearer eg_...` unless the server runs with no API key configured. Full endpoint documentation is in the [wiki](https://github.com/GhostFrame/Kleos/wiki/API-Reference).
+Every endpoint needs `Authorization: Bearer eg_...` unless the server runs with no API key configured. Full endpoint documentation is in the [wiki](https://github.com/Ghost-Frame/Kleos/wiki/API-Reference).
 
 ### Core
 
@@ -624,7 +624,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and codebase
 
 <div align="center">
 
-[Wiki](https://github.com/GhostFrame/Kleos/wiki) · [Issues](https://github.com/GhostFrame/Kleos/issues)
+[Wiki](https://github.com/Ghost-Frame/Kleos/wiki) · [Issues](https://github.com/Ghost-Frame/Kleos/issues)
 
 Elastic License 2.0
 

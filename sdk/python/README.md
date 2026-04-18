@@ -1,6 +1,6 @@
 # kleos-client (Python SDK)
 
-Python client for the [Kleos](https://github.com/GhostFrame/Kleos) memory server.
+Python client for the [Kleos](https://github.com/Ghost-Frame/Kleos) memory server.
 
 ## Install
 

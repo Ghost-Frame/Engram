@@ -1,13 +1,13 @@
 # kleos (Go SDK)
 
-Go client for the [Kleos](https://github.com/GhostFrame/Kleos) memory server.
+Go client for the [Kleos](https://github.com/Ghost-Frame/Kleos) memory server.
 
 Uses only the Go standard library -- no third-party dependencies.
 
 ## Install
 
 ```bash
-go get github.com/GhostFrame/Kleos/sdk/go
+go get github.com/Ghost-Frame/Kleos/sdk/go
 ```
 
 ## Quick start
@@ -20,7 +20,7 @@ import (
     "fmt"
     "log"
 
-    kleos "github.com/GhostFrame/Kleos/sdk/go"
+    kleos "github.com/Ghost-Frame/Kleos/sdk/go"
 )
 
 func main() {
