@@ -314,6 +314,19 @@ pub struct FactContradiction {
 }
 
 // ---------------------------------------------------------------------------
+// Growth observations
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrowthObservation {
+    pub id: i64,
+    pub content: String,
+    pub source: String,
+    pub importance: i64,
+    pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
 // LLM options
 // ---------------------------------------------------------------------------
 

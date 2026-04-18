@@ -12,7 +12,7 @@ use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::intelligence::{
     growth::{list_observations, materialize, reflect},
-    types::GrowthReflectRequest,
+    types::{GrowthObservation, GrowthReflectRequest},
 };
 
 pub fn router() -> Router<AppState> {
@@ -42,7 +42,7 @@ async fn observations_handler(
     Query(params): Query<ObservationsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
-    let observations: Vec<engram_lib::intelligence::growth::GrowthObservation> =
+    let observations: Vec<GrowthObservation> =
         list_observations(&state.db, auth.user_id, limit).await?;
     let count = observations.len();
     Ok(Json(
