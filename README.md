@@ -141,7 +141,7 @@ Engram includes seven coordination services that share the same auth and databas
 - **Soma**: agent registry, heartbeats, capability search, groups
 - **Thymus**: rubric-driven quality evaluation and metrics
 
-### Cognitive Layer (Cognithor)
+### Cognitive Layer
 - **Context Routing**: intelligent routing of queries to the right retrieval pipeline
 - **Compression**: context compression for token-efficient prompt assembly
 - **Tactical**: tactical planning for multi-step retrieval
@@ -297,7 +297,7 @@ curl -X POST http://localhost:4200/admin/safe-mode/exit \
 |  +----------+  +----------+  +----------+               |
 |                                                         |
 |  +----------+  +----------+                             |
-|  |Cognithor |  |  Brain   |                             |
+|  |Cognitive |  |  Brain   |                             |
 |  | Routing  |  | Hopfield |                             |
 |  +----------+  +----------+                             |
 |                                                         |
