@@ -6,8 +6,8 @@
 use crate::config::Config;
 use crate::cred::{has_secret_patterns, CreddClient};
 use crate::db::Database;
-use crate::intelligence::llm::{call_llm, is_llm_available, LlmOptions};
-use crate::intelligence::types::{GrowthReflectRequest, GrowthReflectResult};
+use crate::intelligence::llm::{call_llm, is_llm_available};
+use crate::intelligence::types::{GrowthReflectRequest, GrowthReflectResult, LlmOptions};
 use crate::{EngError, Result};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};

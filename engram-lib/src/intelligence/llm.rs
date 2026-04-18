@@ -1,6 +1,7 @@
 //! LLM helper -- configurable endpoint for calling a local model (Ollama, etc).
 //! Ported from llm/local.ts.
 
+use super::types::LlmOptions;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -13,22 +14,6 @@ static LLM_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::n
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 });
-
-/// Options for LLM calls.
-#[derive(Debug, Clone)]
-pub struct LlmOptions {
-    pub temperature: f64,
-    pub max_tokens: u32,
-}
-
-impl Default for LlmOptions {
-    fn default() -> Self {
-        Self {
-            temperature: 0.3,
-            max_tokens: 1024,
-        }
-    }
-}
 
 /// Check whether a local LLM endpoint is configured and reachable.
 pub fn is_llm_available() -> bool {
