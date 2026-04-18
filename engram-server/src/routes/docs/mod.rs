@@ -23,6 +23,9 @@ use serde_json::{json, Map, Value};
 
 use crate::state::AppState;
 
+#[allow(dead_code)]
+mod types;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/openapi.json", get(openapi))

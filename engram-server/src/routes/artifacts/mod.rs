@@ -12,6 +12,9 @@ use serde_json::{json, Value};
 use crate::{error::AppError, extractors::Auth, state::AppState};
 use engram_lib::validation::MAX_ARTIFACT_UPLOAD_BYTES as MAX_UPLOAD_BYTES;
 
+#[allow(dead_code)]
+mod types;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/artifacts/stats", get(get_stats))

@@ -14,6 +14,9 @@ use crate::{extractors::Auth, state::AppState};
 use engram_lib::auth::Scope;
 use engram_lib::jobs;
 
+#[allow(dead_code)]
+mod types;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(get_health))

@@ -11,6 +11,9 @@ use engram_lib::services::brain::{
     FeedbackRequest,
 };
 
+#[allow(dead_code)]
+mod types;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/brain/stats", get(stats_handler))

@@ -10,6 +10,9 @@ use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::activity::{process_activity, ActivityReport};
 
+#[allow(dead_code)]
+mod types;
+
 pub fn router() -> Router<AppState> {
     Router::new().route("/activity", post(report_activity))
 }
