@@ -15,11 +15,26 @@ use kleos_lib::EngError;
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+
+/// Program-lifetime monotonic anchor. We store `last_request_time` as
+/// milliseconds since this anchor so that idleness checks are immune to
+/// wall-clock jumps (NTP step, DST, manual `date` changes). The anchor is
+/// lazily initialised on first use and never reset.
+fn monotonic_anchor() -> Instant {
+    static ANCHOR: OnceLock<Instant> = OnceLock::new();
+    *ANCHOR.get_or_init(Instant::now)
+}
+
+/// Milliseconds elapsed since [`monotonic_anchor`]. Always monotonically
+/// non-decreasing; safe to store in `AtomicU64` and subtract.
+pub fn monotonic_millis() -> u64 {
+    monotonic_anchor().elapsed().as_millis() as u64
+}
 
 /// Probability (0.0..1.0) that a dream cycle also triggers a growth reflection
 /// for each user. Matches eidolon-daemon's 20% probabilistic hook.
@@ -106,11 +121,11 @@ pub fn start_dreamer_task(
                 _ = tokio::time::sleep(interval) => {
                     if !is_idle(&last_request_time, idle_threshold) {
                         let last = last_request_time.load(Ordering::Relaxed);
-                        let now = now_secs();
-                        let busy_for = now.saturating_sub(last);
+                        let busy_for_secs = monotonic_millis()
+                            .saturating_sub(last) / 1000;
                         info!(
                             idle_threshold,
-                            seconds_since_last_request = busy_for,
+                            seconds_since_last_request = busy_for_secs,
                             "dreamer: skipping tick -- server still busy"
                         );
                         let mut s = stats.write().await;
@@ -126,13 +141,6 @@ pub fn start_dreamer_task(
     (token, handle)
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 fn is_idle(last_request_time: &AtomicU64, threshold_secs: u64) -> bool {
     if threshold_secs == 0 {
         return true;
@@ -142,7 +150,8 @@ fn is_idle(last_request_time: &AtomicU64, threshold_secs: u64) -> bool {
         // Never received a request -- treat as idle.
         return true;
     }
-    now_secs().saturating_sub(last) >= threshold_secs
+    let elapsed_secs = monotonic_millis().saturating_sub(last) / 1000;
+    elapsed_secs >= threshold_secs
 }
 
 async fn run_cycle(

@@ -11,7 +11,80 @@ use super::types::VectorSyncReplayReport;
 use crate::db::Database;
 use crate::Result;
 use rusqlite::params;
+use std::collections::HashMap;
 use tracing::warn;
+
+/// Batch-fetch embedding blobs for (memory_id, user_id) pairs.
+/// Returns a HashMap keyed by memory_id.  Rows whose embedding column is
+/// NULL (or that are missing entirely) are simply absent from the map, so
+/// callers can treat lookup misses as "skip".
+async fn fetch_embeddings_batch(
+    db: &Database,
+    pairs: &[(i64, i64)],
+) -> Result<HashMap<i64, Vec<u8>>> {
+    if pairs.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let owned: Vec<(i64, i64)> = pairs.to_vec();
+    db.read(move |conn| {
+        // Use a row-value IN filter so we do not pull embeddings that
+        // belong to a different user (tenant isolation). SQLite supports
+        // `(col1, col2) IN (VALUES (?, ?), ...)` natively.
+        let mut sql = String::from(
+            "SELECT id, embedding_vec_1024 FROM memories \
+             WHERE embedding_vec_1024 IS NOT NULL AND (id, user_id) IN (VALUES ",
+        );
+        for (i, _) in owned.iter().enumerate() {
+            if i > 0 {
+                sql.push(',');
+            }
+            sql.push_str("(?, ?)");
+        }
+        sql.push(')');
+
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(owned.len() * 2);
+        for (mid, uid) in &owned {
+            params.push(Box::new(*mid));
+            params.push(Box::new(*uid));
+        }
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+
+        let mut rows = stmt
+            .query(param_refs.as_slice())
+            .map_err(rusqlite_to_eng_error)?;
+        let mut map: HashMap<i64, Vec<u8>> = HashMap::with_capacity(owned.len());
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+            let blob: Vec<u8> = row.get(1).map_err(rusqlite_to_eng_error)?;
+            map.insert(id, blob);
+        }
+        Ok(map)
+    })
+    .await
+}
+
+/// Batch-delete ledger rows by id in a single write.
+async fn delete_pending_batch(db: &Database, ledger_ids: Vec<i64>) -> Result<()> {
+    if ledger_ids.is_empty() {
+        return Ok(());
+    }
+    db.write(move |conn| {
+        let placeholders = ledger_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("DELETE FROM vector_sync_pending WHERE id IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            ledger_ids.iter().map(|id| Box::new(*id) as _).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+        stmt.execute(param_refs.as_slice())
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
+}
 
 /// Deserialize a BLOB (IEEE 754 LE f32 bytes) back into a Vec<f32>.
 fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
@@ -104,40 +177,47 @@ pub async fn replay_vector_sync_pending(
         })
         .await?;
 
+    process_pending_batch(db, index.as_ref(), pending, &mut report).await?;
+    Ok(report)
+}
+
+/// Process a batch of pending vector-sync rows with batched DB reads and
+/// a single batched DELETE for succeeded rows.  Failed rows still take an
+/// individual UPDATE because we stamp per-row error text.
+async fn process_pending_batch(
+    db: &Database,
+    index: &dyn crate::vector::VectorIndex,
+    pending: Vec<(i64, i64, i64, String)>,
+    report: &mut VectorSyncReplayReport,
+) -> Result<()> {
+    // 1. One SQL read for every `insert` op we are about to retry.
+    let insert_pairs: Vec<(i64, i64)> = pending
+        .iter()
+        .filter(|(_, _, _, op)| op == "insert")
+        .map(|(_, mid, uid, _)| (*mid, *uid))
+        .collect();
+    let embeddings = fetch_embeddings_batch(db, &insert_pairs).await?;
+
+    // 2. Execute LanceDB ops sequentially (the trait is single-row) and
+    //    collect ledger_ids by outcome so we can batch-delete successes.
+    let mut succeeded_ids: Vec<i64> = Vec::with_capacity(pending.len());
     for (ledger_id, memory_id, user_id, op) in pending {
         report.processed += 1;
         let outcome: std::result::Result<(), String> = match op.as_str() {
             "delete" => index.delete(memory_id).await.map_err(|e| e.to_string()),
-            "insert" => {
-                let emb_row: Option<Option<Vec<u8>>> = db
-                    .read(move |conn| {
-                        let result = conn.query_row(
-                            "SELECT embedding_vec_1024 \
-                             FROM memories WHERE id = ?1 AND user_id = ?2",
-                            rusqlite::params![memory_id, user_id],
-                            |row| row.get::<_, Option<Vec<u8>>>(0),
-                        );
-                        match result {
-                            Ok(v) => Ok(Some(v)),
-                            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                            Err(e) => Err(rusqlite_to_eng_error(e)),
-                        }
-                    })
-                    .await?;
-                match emb_row {
-                    Some(Some(blob)) => {
-                        let embedding = blob_to_embedding(&blob);
-                        index
-                            .insert(memory_id, user_id, &embedding)
-                            .await
-                            .map_err(|e| e.to_string())
-                    }
-                    _ => {
-                        report.skipped += 1;
-                        Ok(())
-                    }
+            "insert" => match embeddings.get(&memory_id) {
+                Some(blob) => {
+                    let embedding = blob_to_embedding(blob);
+                    index
+                        .insert(memory_id, user_id, &embedding)
+                        .await
+                        .map_err(|e| e.to_string())
                 }
-            }
+                None => {
+                    report.skipped += 1;
+                    Ok(())
+                }
+            },
             other => {
                 report.skipped += 1;
                 warn!("replay skipped unknown vector_sync op '{}'", other);
@@ -147,15 +227,7 @@ pub async fn replay_vector_sync_pending(
 
         match outcome {
             Ok(()) => {
-                db.write(move |conn| {
-                    conn.execute(
-                        "DELETE FROM vector_sync_pending WHERE id = ?1",
-                        params![ledger_id],
-                    )
-                    .map_err(rusqlite_to_eng_error)?;
-                    Ok(())
-                })
-                .await?;
+                succeeded_ids.push(ledger_id);
                 report.succeeded += 1;
             }
             Err(e) => {
@@ -178,7 +250,9 @@ pub async fn replay_vector_sync_pending(
         }
     }
 
-    Ok(report)
+    // 3. One SQL write for the happy path.
+    delete_pending_batch(db, succeeded_ids).await?;
+    Ok(())
 }
 
 /// Returns the distinct user_ids that have rows in `vector_sync_pending`.
@@ -236,79 +310,6 @@ pub async fn replay_vector_sync_pending_for_user(
         })
         .await?;
 
-    for (ledger_id, memory_id, uid, op) in pending {
-        report.processed += 1;
-        let outcome: std::result::Result<(), String> = match op.as_str() {
-            "delete" => index.delete(memory_id).await.map_err(|e| e.to_string()),
-            "insert" => {
-                let emb_row: Option<Option<Vec<u8>>> = db
-                    .read(move |conn| {
-                        let result = conn.query_row(
-                            "SELECT embedding_vec_1024 \
-                             FROM memories WHERE id = ?1 AND user_id = ?2",
-                            rusqlite::params![memory_id, uid],
-                            |row| row.get::<_, Option<Vec<u8>>>(0),
-                        );
-                        match result {
-                            Ok(v) => Ok(Some(v)),
-                            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                            Err(e) => Err(rusqlite_to_eng_error(e)),
-                        }
-                    })
-                    .await?;
-                match emb_row {
-                    Some(Some(blob)) => {
-                        let embedding = blob_to_embedding(&blob);
-                        index
-                            .insert(memory_id, uid, &embedding)
-                            .await
-                            .map_err(|e| e.to_string())
-                    }
-                    _ => {
-                        report.skipped += 1;
-                        Ok(())
-                    }
-                }
-            }
-            other => {
-                report.skipped += 1;
-                warn!("replay skipped unknown vector_sync op '{}'", other);
-                Ok(())
-            }
-        };
-
-        match outcome {
-            Ok(()) => {
-                db.write(move |conn| {
-                    conn.execute(
-                        "DELETE FROM vector_sync_pending WHERE id = ?1",
-                        params![ledger_id],
-                    )
-                    .map_err(rusqlite_to_eng_error)?;
-                    Ok(())
-                })
-                .await?;
-                report.succeeded += 1;
-            }
-            Err(e) => {
-                report.failed += 1;
-                warn!("replay failed for memory {} op {}: {}", memory_id, op, e);
-                let e_clone = e.clone();
-                db.write(move |conn| {
-                    conn.execute(
-                        "UPDATE vector_sync_pending \
-                         SET error = ?1, attempts = attempts + 1, \
-                             last_attempt_at = datetime('now') \
-                         WHERE id = ?2",
-                        params![e_clone, ledger_id],
-                    )
-                    .map_err(rusqlite_to_eng_error)?;
-                    Ok(())
-                })
-                .await?;
-            }
-        }
-    }
-
+    process_pending_batch(db, index.as_ref(), pending, &mut report).await?;
     Ok(report)
 }

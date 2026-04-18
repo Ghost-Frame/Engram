@@ -171,8 +171,8 @@ async fn post_prompt_generate(
     if include_brain {
         if let Some(ref brain) = state.brain {
             if brain.is_ready() {
-                let embedder_guard = state.embedder.read().await;
-                if let Some(ref embedder) = *embedder_guard {
+                let embedder_clone = state.current_embedder().await;
+                if let Some(embedder) = embedder_clone {
                     // Query 1: task-specific recall
                     let task_opts = BrainQueryOptions {
                         query: task.to_string(),
