@@ -7,10 +7,12 @@ use axum::{
 use engram_lib::auth::{self, Scope};
 use engram_lib::quota;
 use engram_lib::ratelimit;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::{CreateApiKeyBody, RecordUsageBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -25,13 +27,6 @@ pub fn router() -> Router<AppState> {
         .route("/rate-limit/{key}", get(rate_limit_status_handler))
         .route("/quota", get(get_quota_handler))
         .route("/usage", post(record_usage_handler))
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateApiKeyBody {
-    name: Option<String>,
-    scopes: Option<String>,
-    rate_limit: Option<i64>,
 }
 
 async fn create_api_key_handler(
@@ -159,13 +154,6 @@ async fn get_quota_handler(
 ) -> Result<Json<Value>, AppError> {
     let status = quota::check_quota(&state.db, auth.user_id).await?;
     Ok(Json(json!(status)))
-}
-
-#[derive(Debug, Deserialize)]
-struct RecordUsageBody {
-    event_type: String,
-    quantity: Option<i64>,
-    agent_id: Option<i64>,
 }
 
 async fn record_usage_handler(
