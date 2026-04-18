@@ -2,7 +2,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -13,6 +12,9 @@ use engram_lib::services::loom::{
     get_run, get_stats, get_steps, get_workflow, list_runs, list_workflows, update_workflow,
     CreateRunRequest, CreateWorkflowRequest, UpdateWorkflowRequest,
 };
+
+mod types;
+use types::{CompleteStepBody, FailStepBody, GetLogsParams, ListRunsParams};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -109,13 +111,6 @@ async fn create_run_handler(
     Ok((StatusCode::CREATED, Json(json!(run))))
 }
 
-#[derive(Debug, Deserialize)]
-struct ListRunsParams {
-    workflow_id: Option<i64>,
-    status: Option<String>,
-    limit: Option<usize>,
-}
-
 async fn list_runs_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -160,13 +155,6 @@ async fn get_steps_handler(
     Ok(Json(json!({ "steps": steps })))
 }
 
-#[derive(Debug, Deserialize)]
-struct GetLogsParams {
-    step_id: Option<i64>,
-    level: Option<String>,
-    limit: Option<usize>,
-}
-
 async fn get_logs_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -190,11 +178,6 @@ async fn get_logs_handler(
 // Step handlers
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct CompleteStepBody {
-    output: serde_json::Value,
-}
-
 async fn complete_step_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -203,11 +186,6 @@ async fn complete_step_handler(
 ) -> Result<Json<Value>, AppError> {
     complete_step(&state.db, id, body.output, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
-}
-
-#[derive(Debug, Deserialize)]
-struct FailStepBody {
-    error: String,
 }
 
 async fn fail_step_handler(
