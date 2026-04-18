@@ -2,7 +2,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -11,6 +10,9 @@ use crate::state::AppState;
 use kleos_lib::services::broca::{
     get_action, get_stats as get_broca_stats, log_action, query_actions, LogActionRequest,
 };
+
+mod types;
+use types::{LogActionBody, QueryActionsParams};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -21,30 +23,6 @@ pub fn router() -> Router<AppState> {
         .route("/broca/actions/{id}", get(get_action_handler))
         .route("/broca/feed", get(get_feed_handler))
         .route("/broca/stats", get(get_stats))
-}
-
-#[derive(Debug, Deserialize)]
-struct LogActionBody {
-    agent: String,
-    service: Option<String>,
-    action: Option<String>,
-    summary: Option<String>,
-    detail: Option<String>,
-    narrative: Option<String>,
-    project: Option<String>,
-    payload: Option<serde_json::Value>,
-    metadata: Option<serde_json::Value>,
-    axon_event_id: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct QueryActionsParams {
-    agent: Option<String>,
-    service: Option<String>,
-    action: Option<String>,
-    since: Option<String>,
-    limit: Option<usize>,
-    offset: Option<usize>,
 }
 
 async fn log_action_handler(
