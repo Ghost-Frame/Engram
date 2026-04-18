@@ -1,48 +1,46 @@
 <div align="center">
 
-# Engram (Rust)
+# Engram
 
-**The cognitive layer for AI agents. Rewritten in Rust.**
+**Persistent memory and cognitive infrastructure for AI agents. Written in Rust.**
 
-[![License](https://img.shields.io/badge/License-Elastic--2.0-blue.svg)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org) [![Workspace](https://img.shields.io/badge/workspace-10%20crates-brightgreen.svg)](Cargo.toml)
+[![License](https://img.shields.io/badge/License-Elastic--2.0-blue.svg)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org) [![Workspace](https://img.shields.io/badge/workspace-10%20crates-brightgreen.svg)](Cargo.toml)
 
 </div>
 
 <div align="center">
 
-[Why Rust?](#why-rust) · [Quick Start](#quick-start) · [Features](#features) · [Workspace](#workspace) · [Architecture](#architecture) · [API](#api-reference) · [CLI](#cli) · [Sidecar](#sidecar) · [Config](#configuration)
+[Why Rust?](#why-rust) · [Quick Start](#quick-start) · [Features](#features) · [Workspace](#workspace) · [Architecture](#architecture) · [API](#api-reference) · [CLI](#cli) · [Sidecar](#sidecar) · [Config](#configuration) · [Wiki](https://github.com/Ghost-Frame/Engram/wiki)
 
 </div>
 
 ---
-GUI DEMO: [Demo](https://demo-gui.syntheos.dev)
+
 ## Why Rust?
 
 Engram started as a Node.js server. It worked. But a memory system that injects into every agent turn has to stay fast under load, and Node made that harder than it should have been.
 
-This repo is the ground-up Rust port. Same cognitive model, same API, same data format. Different runtime.
+This is the ground-up Rust rewrite. Same cognitive model, same API surface, same data format. Different runtime.
 
 - **Single static binary.** `cargo build --release` gives you one file. No Node, no `node_modules`, no flags.
 - **Tokio + Axum.** Async from the socket down to SQLite. Thousands of concurrent agent requests on a small VPS.
 - **In-process ONNX.** `ort` runs embeddings and the cross-encoder reranker inside the server process. No Python, no worker threads, no sidecar model server.
 - **SQLite + LanceDB.** rusqlite (with optional SQLCipher) holds relational memory and FTS5. LanceDB holds the vector index once the corpus outgrows memory.
-- **One workspace.** Library, server, CLI, and sidecar build from one `cargo` command.
+- **One workspace.** Library, server, CLI, MCP, sidecar, and credential manager build from one `cargo` command.
 
-One binary. One SQLite database. Local embeddings. No OpenAI key. Your hardware, your data.
-
-The TypeScript engram remains the reference design. This is the runtime.
+One binary. One SQLite database. Local embeddings. No cloud keys required. Your hardware, your data.
 
 ---
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/Ghost-Frame/Engram.git && cd engram
+git clone https://github.com/Ghost-Frame/Engram.git && cd Engram
 cargo build --release
 ./target/release/engram-server
 ```
 
-Server binds to `127.0.0.1:4200` and writes to `./data` by default. Bootstrap an admin key, then store and search:
+Server binds to `127.0.0.1:4200` by default. Bootstrap an admin key, then store and search:
 
 ```bash
 curl -X POST http://localhost:4200/bootstrap \
@@ -60,9 +58,11 @@ curl -X POST http://localhost:4200/search \
   -d '{"query": "database connection info"}'
 ```
 
-The Rust server keeps the TypeScript API surface. Existing SDKs, MCP clients, and CLI wrappers point at the new binary without changes.
+MCP stdio entrypoint:
 
-MCP stdio entrypoint: `ENGRAM_MCP_BEARER_TOKEN=engram_... cargo run -p engram-mcp`
+```bash
+ENGRAM_MCP_BEARER_TOKEN=eg_... cargo run -p engram-mcp
+```
 
 ---
 
@@ -82,9 +82,9 @@ MCP stdio entrypoint: `ENGRAM_MCP_BEARER_TOKEN=engram_... cargo run -p engram-mc
 - **Encryption at Rest.** SQLCipher database encryption with keyfile, environment variable, or YubiKey HMAC-SHA1 challenge-response.
 - **Atomic Fact Decomposition.** Long memories split into self-contained facts. Each fact links back to its parent via `has_fact`.
 - **Contradiction Detection.** When agents learn conflicting information, Engram surfaces the conflict.
-- **Guardrails.** Agents check before they act. Stored rules return allow/warn/block on proposed actions.
+- **Guardrails.** The gate system checks commands before agents act. Stored rules return allow/warn/block on proposed actions, with optional human-in-the-loop approval.
 - **Episodic Memory.** Conversation episodes stored as searchable narratives.
-- **Bulk Ingestion.** Markdown, PDFs, chat exports, ZIP archives through the async ingestion pipeline.
+- **Bulk Ingestion.** 11 parsers: Markdown, PDF, HTML, DOCX, CSV, JSONL, ZIP archives, ChatGPT exports, Claude exports, and raw message formats through the async ingestion pipeline.
 - **LanceDB Vector Index.** Optional ANN backend for large corpora. Small tenants fall back to in-memory scan.
 - **Claude Code Hooks.** Ready-to-use hooks for session memory, context injection, and tool tracking. See [`hooks/README.md`](hooks/README.md).
 
@@ -103,34 +103,45 @@ MCP stdio entrypoint: `ENGRAM_MCP_BEARER_TOKEN=engram_... cargo run -p engram-mc
 - **Reflections & Consolidation**: meta-analysis and cluster compression, non-destructive
 - **Causal and Valence**: detect cause/effect links and emotional charge on new memories
 - **Growth**: self-improving observations from agent activity, stored as growth memories
+- **Sentiment Analysis**: emotional tone detection on stored content
+- **Predictive**: anticipatory memory retrieval based on usage patterns
+- **Reconsolidation**: update existing memory traces when new evidence arrives
 
 ### Developer Platform
-- **REST API**: 80+ endpoints, drop-in compatible with the reference engram
-- **Rust CLI**: `engram-cli` for store, search, context, recall, list, bootstrap
-- **MCP Server**: `engram-mcp` for LLM tool integration via Model Context Protocol (stdio or HTTP)
-- **Sidecar**: `engram-sidecar` for session-scoped agent runs
-- **Credential Manager**: `engram-cred` CLI + `engram-credd` daemon for encrypted credential vault with YubiKey support
+- **REST API**: 80+ endpoints across 40+ route modules
+- **Rust CLI**: `engram-cli` for store, search, context, recall, list, bootstrap, and credential management
+- **MCP Server**: `engram-mcp` for LLM tool integration via Model Context Protocol (stdio; HTTP behind feature flag)
+- **Sidecar**: `engram-sidecar` for session-scoped agent runs with batched observation flushing
+- **Credential Manager**: `engram-cred` library + `engram-credd` daemon for encrypted credential vault with YubiKey and agent key support
+- **TypeScript SDK**: `@engram/sdk` client library in `sdk/typescript/`
 - **Multi-Tenant + RBAC**: isolated memory per user, role-based access, quota enforcement
 - **Webhooks & Digests**: event hooks and scheduled digests
 - **Audit Trail**: every mutation logged with who, what, when, from where
 - **Scratchpad**: ephemeral working memory with TTL auto-purge
 
 ### Coordination Services
+
 Engram bundles a set of coordination services behind the same auth and database:
 
 - **Axon**: event bus with channels, subscriptions, SSE streaming, cursor polling
-- **Brain**: cross-service orchestration primitives
+- **Brain**: cross-service orchestration primitives, Hopfield networks, spreading activation (feature-gated: `brain_hopfield`)
 - **Broca**: structured action log with auto-narration
 - **Chiasm**: task tracking with audit trails
 - **Loom**: workflow orchestration with step callbacks
 - **Soma**: agent registry, heartbeats, capability search, groups
 - **Thymus**: rubric-driven quality evaluation and metrics
 
+### Cognitive Layer (Cognithor)
+- **Context Routing**: intelligent routing of queries to the right retrieval pipeline
+- **Compression**: context compression for token-efficient prompt assembly
+- **Tactical**: tactical planning for multi-step retrieval
+- **Weight Optimization**: dynamic weight tuning for search channel fusion
+
 ### Organization
 - **Graph Endpoints**: full memory graph (nodes + edges), timeline, community browse
 - **Entities & Projects**: people, servers, tools, projects
 - **Review Queue / Inbox**: approve, reject, or edit before memories enter recall
-- **Community Detection**: label propagation surfaces memory clusters
+- **Community Detection**: Louvain algorithm surfaces memory clusters
 - **PageRank**: structural importance boosts search results
 
 </details>
@@ -143,16 +154,16 @@ Ten Cargo crates:
 
 | Crate | Role |
 |-------|------|
-| `engram-lib` | Core library. Memory, search, embeddings, graph, intelligence, services, auth, jobs. |
-| `engram-server` | Axum HTTP server. Binds routes to library functions. Handles middleware, auth, rate limiting, GUI. |
-| `engram-cli` | Command-line client over the HTTP API. |
-| `engram-sidecar` | Session-scoped memory proxy with file watcher and local caching. Talks to `engram-server`. |
-| `engram-mcp` | MCP (Model Context Protocol) stdio and HTTP entrypoint for LLM tool integration. |
-| `engram-cred` | Credential management CLI with encrypted vault and YubiKey support. |
-| `engram-credd` | Credential management daemon. Serves credentials over local HTTP with session auth. |
+| `engram-lib` | Core library. Memory, search, embeddings, graph, intelligence, services, auth, jobs, 50+ modules. |
+| `engram-server` | Axum HTTP server. 40+ route modules, middleware (auth, rate limiting, safe mode, JSON depth, metrics), GUI. |
+| `engram-cli` | Command-line client over the HTTP API. Memory ops and credential management via credd. |
+| `engram-sidecar` | Session-scoped memory proxy with file watcher, batched observation flushing, and persistent session store. |
+| `engram-mcp` | MCP (Model Context Protocol) server. 35 tools across memory, context, graph, intelligence, services, and admin. Stdio transport; HTTP behind feature flag. |
+| `engram-cred` | Credential management library. Crypto primitives, YubiKey challenge-response, key derivation. |
+| `engram-credd` | Credential management daemon. HTTP server with master key + agent key two-tier auth, ChaCha20-Poly1305 encryption. |
 | `engram-approval-tui` | Terminal UI for human approval workflow. Ratatui-based interactive review queue. (WIP) |
-| `engram-migrate` | ETL tool for migrating from libsql to rusqlite + LanceDB. |
-| `agent-forge` | Agent-facing protocol helpers: spec, hypothesis, verify primitives. Tree-sitter AST parsing. |
+| `engram-migrate` | ETL tool for migrating from libsql to rusqlite + LanceDB. One-shot utility. |
+| `agent-forge` | Structured reasoning CLI: spec-task, log-hypothesis, verify, challenge-code, repo-map, search-code. Tree-sitter AST parsing. |
 
 ```bash
 cargo build --release --workspace   # build everything
@@ -168,13 +179,15 @@ cargo clippy --workspace             # lint
 
 ### Runtime Stack
 
-- Server: Axum 0.8 on Tokio, `tower-http` for tracing and CORS
-- Database: rusqlite with FTS5 and optional SQLCipher encryption, behind an async connection pool
-- Vector index: LanceDB (optional, toggled via `use_lance_index`)
-- Embeddings: BAAI/bge-m3, 1024-dim, ONNX via `ort` with the `tokenizers` crate
-- Reranker: IBM granite-embedding-reranker-english-r2 INT8 cross-encoder (optional)
-- Decay: FSRS-6 with trained parameters and power-law forgetting
-- LLM: optional. Any OpenAI-compatible endpoint for fact extraction, decomposition, consolidation
+- **Server**: Axum 0.8 on Tokio, `tower-http` for tracing, CORS, compression (gzip/br/zstd), timeouts
+- **Database**: rusqlite with FTS5 and optional SQLCipher encryption, behind a deadpool async connection pool
+- **Vector index**: LanceDB (optional, toggled via `use_lance_index`)
+- **Embeddings**: BAAI/bge-m3, 1024-dim, ONNX via `ort` with the `tokenizers` crate. Deferred background loading with pre-warm.
+- **Reranker**: IBM granite-embedding-reranker-english-r2 INT8 cross-encoder (optional, deferred loading)
+- **Decay**: FSRS-6 with trained parameters and power-law forgetting
+- **LLM**: optional. Ollama (OpenAI-compatible endpoint) for fact extraction, decomposition, consolidation, growth reflection. Env vars: `OLLAMA_URL`, `OLLAMA_MODEL`. Circuit breaker with configurable threshold and cooldown.
+- **Allocator**: mimalloc global allocator
+- **Observability**: OpenTelemetry tracing + Prometheus metrics endpoint
 
 ### Search Pipeline
 
@@ -192,7 +205,7 @@ Question-type detection (fact recall, preference, reasoning, generalization, tim
 1. **Store**: SimHash checks for near-duplicates. Unique memories get embedded by `ort` and written to SQLite with FTS5 indexing and an optional LanceDB insert.
 2. **Auto-link**: the new memory gets compared against existing ones via cosine similarity. Typed edges form: similarity, updates, extends, contradicts, caused_by, prerequisite_for.
 3. **FSRS-6 init**: each memory receives starting stability, difficulty, storage strength, retrieval strength.
-4. **Fact extraction**: when an LLM is configured, structured facts get pulled with temporal validity windows.
+4. **Fact extraction**: when Ollama is configured, structured facts get pulled with temporal validity windows.
 5. **Atomic decomposition**: long memories split into self-contained facts linked to the parent via `has_fact`. The parent stays intact.
 6. **Entity cooccurrence**: entities in the same memory update the weighted cooccurrence graph.
 7. **Personality extraction**: six signal types scanned: preference, value, motivation, decision, emotion, identity.
@@ -201,50 +214,74 @@ Question-type detection (fact recall, preference, reasoning, generalization, tim
 10. **Dual-strength decay**: storage strength accumulates. Retrieval strength decays via power law.
 11. **Community detection and PageRank**: background workers rerun Louvain grouping and weighted PageRank on a schedule and on dirty-edge thresholds.
 
-### Security
+### Server Startup
 
-The Rust port closes boundaries the TypeScript version left open:
+The server initializes in a specific order:
+
+1. Load config (TOML file + env var overrides)
+2. Install Prometheus metrics recorder
+3. Resolve encryption key (none/keyfile/env/yubikey)
+4. Connect to database with optional SQLCipher
+5. Spawn background model loading (embedder + reranker -- server starts serving immediately, models load async)
+6. Probe local LLM (Ollama) -- graceful degradation if unavailable
+7. Initialize brain backend (feature-gated)
+8. Check for crash-looping (safe mode activates after 3+ restarts in 5 minutes)
+9. Start background tasks: PageRank refresh, auto-checkpoint, job cleanup, vector sync replay, auto-backup
+
+### Security
 
 - `user_id` scoping on every query, including parent lookups during versioning
 - Transactional store/update paths with forward-compatible migrations
 - FTS5 query sanitization against DoS and injection
 - Rate limiting layered inside auth so the limiter sees the resolved tenant
+- Pre-auth rate limiting to prevent brute-force
 - Bearer-token auth with scope enforcement and audit logging on every mutation
+- JSON depth limiting to prevent stack-bomb payloads
+- Request body size limit (2 MiB default)
+- Request timeout (120s default, tighter per-route: health 1s, search 10s, context 30s)
+- Response hardening headers: nosniff, DENY framing, no-referrer, HSTS, no cross-domain policies
+- CORS restricted by default (explicit `ENGRAM_ALLOWED_ORIGINS` required for cross-origin access)
+- Safe mode: automatic write-blocking after crash-loop detection
 
 ### ASCII Diagram
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                 engram-server (Axum)                 │
-│                                                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐            │
-│  │  FSRS-6  │  │   RRF    │  │  FTS5    │            │
-│  │  Engine  │  │  Scorer  │  │  Search  │            │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘            │
-│       │             │             │                  │
-│  ┌────┴─────────────┴─────────────┴────┐             │
-│  │  SQLite/SQLCipher + FTS5            │             │
-│  │  + LanceDB (vector ANN, optional)   │             │
-│  └─────────────────────────────────────┘             │
-│                                                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐            │
-│  │ ort/ONNX │  │ Reranker │  │  Graph   │            │
-│  │  bge-m3  │  │ (Granite)│  │  Engine  │            │
-│  └──────────┘  └──────────┘  └──────────┘            │
-│                                                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐            │
-│  │ SimHash  │  │Personality│ │ Temporal │            │
-│  │  Dedup   │  │  Engine   │ │  Facts   │            │
-│  └──────────┘  └──────────┘  └──────────┘            │
-│                                                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐            │
-│  │  Atomic  │  │  Async   │  │Consolida-│            │
-│  │  Decomp  │  │ Job Pool │  │  tion    │            │
-│  └──────────┘  └──────────┘  └──────────┘            │
-│                                                      │
-│  Services: axon · brain · broca · chiasm ·           │
-│  loom · soma · thymus                                │
-└──────────────────────────────────────────────────────┘
++---------------------------------------------------------+
+|                  engram-server (Axum)                    |
+|                                                         |
+|  +----------+  +----------+  +----------+               |
+|  |  FSRS-6  |  |   RRF    |  |  FTS5    |               |
+|  |  Engine  |  |  Scorer  |  |  Search  |               |
+|  +----+-----+  +----+-----+  +----+-----+               |
+|       |             |             |                      |
+|  +----+-------------+-------------+----+                 |
+|  |  SQLite/SQLCipher + FTS5           |                  |
+|  |  + LanceDB (vector ANN, optional)  |                  |
+|  +------------------------------------+                  |
+|                                                         |
+|  +----------+  +----------+  +----------+               |
+|  | ort/ONNX |  | Reranker |  |  Graph   |               |
+|  |  bge-m3  |  | (Granite)|  |  Engine  |               |
+|  +----------+  +----------+  +----------+               |
+|                                                         |
+|  +----------+  +----------+  +----------+               |
+|  | SimHash  |  |Personality| | Temporal |               |
+|  |  Dedup   |  |  Engine   | |  Facts   |               |
+|  +----------+  +----------+  +----------+               |
+|                                                         |
+|  +----------+  +----------+  +----------+               |
+|  |  Atomic  |  |  Async   |  |Consolida-|               |
+|  |  Decomp  |  | Job Pool |  |  tion    |               |
+|  +----------+  +----------+  +----------+               |
+|                                                         |
+|  +----------+  +----------+                             |
+|  |Cognithor |  |  Brain   |                             |
+|  | Routing  |  | Hopfield |                             |
+|  +----------+  +----------+                             |
+|                                                         |
+|  Services: axon . brain . broca . chiasm .              |
+|  loom . soma . thymus                                   |
++---------------------------------------------------------+
 ```
 
 </details>
@@ -253,7 +290,7 @@ The Rust port closes boundaries the TypeScript version left open:
 <details>
 <summary><strong>API Reference</strong></summary>
 
-Every endpoint needs `Authorization: Bearer eg_...` unless the server runs in open-access mode. Shapes match the reference engram: OpenAPI clients, SDKs, and MCP integrations work without changes.
+Every endpoint needs `Authorization: Bearer eg_...` unless the server runs with no API key configured. Full endpoint documentation is in the [wiki](https://github.com/Ghost-Frame/Engram/wiki/API-Reference).
 
 ### Core
 
@@ -297,17 +334,6 @@ Every endpoint needs `Authorization: Bearer eg_...` unless the server runs in op
 | `GET` | `/memory-health` | Diagnostic report: stale, duplicates, unlinked |
 | `POST` | `/feedback` | Submit retrieval feedback |
 
-### Graph and Organization
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/communities` | List memory communities |
-| `GET` | `/graph/timeline` | Weekly graph growth |
-| `GET` | `/tags` | List all tags |
-| `POST` | `/episodes` | Create episode |
-| `POST` | `/entities` | Create entity |
-| `POST` | `/projects` | Create project |
-
 ### Coordination Services
 
 | Prefix | Service | Highlights |
@@ -333,12 +359,13 @@ Every endpoint needs `Authorization: Bearer eg_...` unless the server runs in op
 | `POST` | `/admin/detect-communities` | Run Louvain community detection |
 | `POST` | `/admin/decompose-sweep` | Retroactively decompose memories |
 | `POST` | `/admin/compact` | VACUUM and ANALYZE |
+| `POST` | `/admin/safe-mode/exit` | Exit crash-loop safe mode |
 | `GET` | `/audit` | Query audit log |
 | `GET` | `/stats` | Detailed statistics |
 | `GET` | `/metrics` | Prometheus metrics |
 | `GET` | `/openapi.json` | OpenAPI 3.1 spec |
 
-The full endpoint list (inbox, sync, webhooks, digests, pack, prompts, scratchpad, gate, grounding, growth, sessions, agents, artifacts, portability, onboarding, docs) lives in `engram-server/src/server.rs` and `engram-server/src/routes/`.
+The full endpoint list (activity, agents, approvals, artifacts, auth_keys, batch, conversations, docs, episodes, errors, fsrs, gate, graph, grounding, growth, gui, health, inbox, ingestion, jobs, loom, onboard, pack, personality, platform, portability, projects, prompts, schema, scratchpad, search, security, sessions, skills, soma, tasks, thymus, webhooks) lives in `engram-server/src/routes/`.
 
 </details>
 
@@ -364,13 +391,25 @@ engram-cli store "Deployed auth migration to production" --category state --impo
 engram-cli search "deployment history" --limit 5
 engram-cli context "current infrastructure state" --limit 5
 engram-cli recall 42
-engram-cli guard "rm -rf /opt/engram/data"
 engram-cli list --limit 20
 engram-cli delete 42
 engram-cli bootstrap
 ```
 
-Every command takes `--server` and `--key` overrides, or reads `ENGRAM_URL` / `ENGRAM_API_KEY` from the environment.
+### Credential Management (via credd)
+
+```bash
+engram-cli cred get <category> <name>          # get a secret
+engram-cli cred get <category> <name> --raw    # raw value only
+engram-cli cred set <category> <name>          # set (prompted for value)
+engram-cli cred list                           # list all secrets
+engram-cli cred delete <category> <name>       # delete
+engram-cli cred agent-create <name>            # create agent key
+engram-cli cred agent-list                     # list agent keys
+engram-cli cred agent-revoke <name>            # revoke agent key
+```
+
+Every command takes `--server` and `--key` overrides, or reads `ENGRAM_URL` / `ENGRAM_API_KEY` from the environment. Credential commands talk to the credd daemon at `CREDD_URL` (default `http://127.0.0.1:4400`).
 
 </details>
 
@@ -382,16 +421,18 @@ Every command takes `--server` and `--key` overrides, or reads `ENGRAM_URL` / `E
 
 - **Session-scoped context** with local caching for fast recall
 - **File watcher** for Claude Code session JSONL files (auto-extracts memories)
-- **LLM re-probe** for analyzing conversation context
-- **Instant flush** to push memories to the server on demand
+- **Batched observation flushing** -- configurable by count (`--batch-size`) and time (`--batch-interval-ms`)
+- **Persistent session store** -- optional SQLite-backed session persistence (`--store-path`)
+- **Shared-secret auth** -- auto-generated or explicit token for sidecar access
+- **Local LLM integration** -- Ollama probe for conversation compression
 
 ```bash
 ENGRAM_URL=http://localhost:4200 \
 ENGRAM_API_KEY=eg_your_key \
-engram-sidecar --session-id my-session --watch
+engram-sidecar --engram-url http://localhost:4200 --watch
 ```
 
-The sidecar is a lightweight HTTP service that talks to `engram-server` for storage and search. It doesn't run embeddings locally.
+Default port: `7711`. The sidecar is a lightweight HTTP service that talks to `engram-server` for storage and search. It doesn't run embeddings locally.
 
 </details>
 
@@ -399,7 +440,9 @@ The sidecar is a lightweight HTTP service that talks to `engram-server` for stor
 <details>
 <summary><strong>Configuration</strong></summary>
 
-`engram_lib::config::Config` reads environment variables. Defaults live in `engram-lib/src/config.rs`.
+Configuration is layered: defaults -> TOML file -> environment variable overrides. Env vars always win.
+
+TOML config is loaded from (in order): `ENGRAM_CONFIG_FILE` env var, `./engram.toml` in CWD, or `~/.config/engram/config.toml`.
 
 ### Core
 
@@ -420,24 +463,46 @@ The sidecar is a lightweight HTTP service that talks to `engram-server` for stor
 | `ENGRAM_EMBEDDING_DIM` | `1024` | Embedding dimension |
 | `ENGRAM_EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding model name |
 | `ENGRAM_EMBEDDING_MODEL_DIR` | auto | Override ONNX model directory (must hold `tokenizer.json` + ONNX file) |
-| `ENGRAM_EMBEDDING_ONNX_FILE` | `model_quantized.onnx` | Model filename inside the model dir |
+| `ENGRAM_ONNX_MODEL_FILE` | `model_quantized.onnx` | Model filename inside the model dir |
 | `ENGRAM_EMBEDDING_MAX_SEQ` | `512` | Max token sequence length |
+| `ENGRAM_EMBEDDING_OFFLINE_ONLY` | `false` | Block model downloads from HuggingFace |
+| `ENGRAM_EMBEDDING_CHUNK_MAX_CHARS` | `1440` | Max characters per ingestion chunk |
+| `ENGRAM_EMBEDDING_CHUNK_OVERLAP` | `160` | Overlap between chunks |
+| `ENGRAM_EMBEDDING_CHUNK_MAX_CHUNKS` | `6` | Max chunks per document |
 | `ENGRAM_RERANKER_ENABLED` | `1` | Set `0` to disable cross-encoder reranking |
 | `ENGRAM_RERANKER_TOP_K` | `12` | Rerank top K candidates |
 | `ENGRAM_USE_LANCE_INDEX` | `1` | Set `0` to disable the LanceDB vector backend |
 
-### LLM
+### LLM (Ollama)
 
-Set `LLM_URL`, `LLM_API_KEY`, and `LLM_MODEL` for any OpenAI-compatible provider. The LLM drives fact extraction, decomposition, consolidation, and growth reflection. The core memory pipeline runs without one.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OLLAMA_URL` | `http://127.0.0.1:11434/v1/chat/completions` | Ollama OpenAI-compatible endpoint |
+| `OLLAMA_MODEL` | `llama3.2:3b` | Default model name |
+| `OLLAMA_TIMEOUT_BG_MS` | `60000` | Background request timeout (ms) |
+| `OLLAMA_TIMEOUT_HOT_MS` | `5000` | Hot-path request timeout (ms) |
+| `OLLAMA_CONCURRENCY` | `1` | Max concurrent requests to Ollama |
+
+The LLM drives fact extraction, decomposition, consolidation, and growth reflection. The core memory pipeline runs without one.
 
 ### PageRank and Graph
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENGRAM_PAGERANK_ENABLED` | `1` | Set `0` to skip background PageRank refresh |
-| `ENGRAM_PAGERANK_REFRESH_INTERVAL_SECS` | `300` | Worker refresh cadence |
+| `ENGRAM_PAGERANK_REFRESH_INTERVAL` | `300` | Worker refresh cadence (seconds) |
 | `ENGRAM_PAGERANK_DIRTY_THRESHOLD` | `100` | Dirty-edge count that forces a refresh |
 | `ENGRAM_PAGERANK_MAX_CONCURRENT` | `2` | Max concurrent PageRank workers |
+
+### Backup
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENGRAM_BACKUP_ENABLED` | `false` | Enable auto-backup background task |
+| `ENGRAM_BACKUP_INTERVAL_SECS` | `21600` | Seconds between backups (default: 6 hours) |
+| `ENGRAM_BACKUP_DIR` | `backups` | Backup directory (relative to data_dir) |
+| `ENGRAM_BACKUP_RETENTION` | `14` | Max hourly backup files to retain |
+| `ENGRAM_BACKUP_RETENTION_DAILY` | `30` | Max daily backup files to retain |
 
 ### Encryption at Rest
 
@@ -448,7 +513,7 @@ Encryption is **off by default**. Engram runs with a plain SQLite database out o
 | `none` | No encryption (default). Database opens without `PRAGMA key`. |
 | `keyfile` | Read a 32-byte raw key from `~/.config/engram/dbkey`. File must be `chmod 600` on Unix. |
 | `env` | Read `ENGRAM_DB_KEY` environment variable (64 hex characters = 32 bytes). |
-| `yubikey` | Derive key from YubiKey HMAC-SHA1 challenge-response. Requires `engram-credd`. |
+| `yubikey` | Derive key from YubiKey HMAC-SHA1 challenge-response (slot 2) via Argon2id. |
 
 **Keyfile setup:**
 
@@ -467,22 +532,23 @@ ENGRAM_ENCRYPTION_MODE=env engram-server
 
 **YubiKey setup:**
 
-YubiKey mode uses HMAC-SHA1 challenge-response (slot 2) to derive the encryption key via Argon2id. The YubiKey must be present to unlock the database. This is the strongest option for single-user deployments.
+YubiKey mode uses HMAC-SHA1 challenge-response (slot 2) to derive the encryption key via Argon2id. The YubiKey must be present to unlock the database. Cold starts take about 1 second (64 MiB memory, 3 iterations). Once unlocked, the key stays in memory until the process exits.
 
 ```bash
-# Program YubiKey slot 2 with a secret (one-time setup)
 ykman otp chalresp --generate 2
-
-# Start the credential daemon (unlocks on first use)
 engram-credd --encryption-mode yubikey
-
-# Server connects to credd for key material
 ENGRAM_ENCRYPTION_MODE=yubikey engram-server
 ```
 
-The key derivation uses Argon2id (64 MiB memory, 3 iterations) so cold starts take ~1 second. Once unlocked, the key stays in memory until the process exits.
+### Security
 
-See `engram-lib/src/config.rs` for the full set, including decomposition tunables, search floors, and Eidolon integration flags.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENGRAM_TRUSTED_PROXIES` | unset | Comma-separated IPs of trusted reverse proxies (for X-Forwarded-For) |
+| `ENGRAM_ALLOWED_ORIGINS` | unset | Comma-separated origins for CORS (restricted by default) |
+| `ENGRAM_AUTH_KEY_ROTATION_GRACE_HOURS` | `24` | Grace period for old key after rotation |
+
+See `engram-lib/src/config.rs` for the full set, including Eidolon, gate, growth, sessions, and prompt configuration.
 
 </details>
 
@@ -498,19 +564,13 @@ cargo test -p engram-server             # server only
 cargo clippy --workspace -- -D warnings # lint
 ```
 
-[`CLAUDE.md`](CLAUDE.md) has the import-path reference, workspace conventions, and the patterns this codebase follows: async, ownership, error handling, route signatures.
-
----
-
-## Relationship to the Reference Engram
-
-This repo is the Rust port of the TypeScript engram. API shapes, database schemas, and behavior stay compatible so existing clients, MCP tools, and data migrate without rewrites. The reference implementation holds the design spec. New features land in Rust first once the runtime catches up.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and codebase patterns.
 
 ---
 
 <div align="center">
 
-[engram.syntheos.dev](https://engram.syntheos.dev) · [Reference implementation (GitHub)](https://github.com/Ghost-Frame/engram-ts)
+[Wiki](https://github.com/Ghost-Frame/Engram/wiki) · [Issues](https://github.com/Ghost-Frame/Engram/issues)
 
 Elastic License 2.0
 
