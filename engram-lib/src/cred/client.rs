@@ -6,28 +6,13 @@ use reqwest::Url;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+pub use super::types::SecretAccessMode;
+
 use crate::config::Config;
 use crate::cred::pattern::{has_secret_patterns, resolve_patterns, SecretPatternKind};
 use crate::db::Database;
 use crate::services::broca::{log_action, LogActionRequest};
 use crate::{EngError, Result};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecretAccessMode {
-    Resolved,
-    Raw,
-    Scrub,
-}
-
-impl SecretAccessMode {
-    fn tier(self) -> &'static str {
-        match self {
-            Self::Resolved => "resolved",
-            Self::Raw => "raw",
-            Self::Scrub => "scrub",
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 struct CachedSecret {
