@@ -129,3 +129,26 @@ pub struct GraphBuildResult {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunitiesResult {
+    pub communities: usize,
+    pub memories: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunityMember {
+    pub id: i64,
+    pub content: String,
+    pub category: String,
+    pub importance: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunityStats {
+    pub community_id: i64,
+    pub count: i64,
+    pub avg_importance: f64,
+    pub categories: String,
+}
