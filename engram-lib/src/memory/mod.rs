@@ -519,11 +519,13 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     param_values.push(rusqlite::types::Value::Integer(opts.limit as i64));
     param_values.push(rusqlite::types::Value::Integer(opts.offset as i64));
 
+    // 6.9 capacity hint: LIMIT bounds the row count.
+    let cap = opts.limit;
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let rusqlite_params = rusqlite::params_from_iter(param_values.iter().cloned());
         let mut rows = stmt.query(rusqlite_params).map_err(rusqlite_to_eng_error)?;
-        let mut memories = Vec::new();
+        let mut memories = Vec::with_capacity(cap);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             memories.push(row_to_memory(row)?);
         }
@@ -587,7 +589,8 @@ pub async fn list_trashed(db: &Database, user_id: i64, limit: usize) -> Result<V
         let mut rows = stmt
             .query(rusqlite::params![user_id, limit as i64])
             .map_err(rusqlite_to_eng_error)?;
-        let mut result = Vec::new();
+        // 6.9 capacity hint: LIMIT bounds the row count.
+        let mut result = Vec::with_capacity(limit);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             result.push(row_to_memory(row)?);
         }
@@ -1153,7 +1156,8 @@ pub async fn search_by_tags(
         let mut rows = stmt
             .query(param_refs.as_slice())
             .map_err(rusqlite_to_eng_error)?;
-        let mut memories = Vec::new();
+        // 6.9 capacity hint: LIMIT bounds the row count.
+        let mut memories = Vec::with_capacity(limit);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             memories.push(row_to_memory(row)?);
         }
@@ -1216,7 +1220,8 @@ pub async fn get_links_for(
             .query(rusqlite::params![memory_id, user_id])
             .map_err(rusqlite_to_eng_error)?;
 
-        let mut links = Vec::new();
+        // 6.9 capacity hint: link fanout typically small.
+        let mut links = Vec::with_capacity(16);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             if row.get::<_, i32>(5).map_err(rusqlite_to_eng_error)? != 0 {
                 continue;
@@ -1257,7 +1262,8 @@ pub async fn get_version_chain(
             .query(rusqlite::params![root_id, user_id])
             .map_err(rusqlite_to_eng_error)?;
 
-        let mut chain = Vec::new();
+        // 6.9 capacity hint: version chains are usually short.
+        let mut chain = Vec::with_capacity(8);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             chain.push(VersionChainEntry {
                 id: row.get(0).map_err(rusqlite_to_eng_error)?,
@@ -1318,7 +1324,8 @@ pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile
                 .query(rusqlite::params![user_id])
                 .map_err(rusqlite_to_eng_error)?;
 
-            let mut top_categories = Vec::new();
+            // 6.9 capacity hint: SQL caps at LIMIT 10.
+            let mut top_categories = Vec::with_capacity(10);
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 top_categories.push(CategoryCount {
                     category: row.get(0).map_err(rusqlite_to_eng_error)?,
