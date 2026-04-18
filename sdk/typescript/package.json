@@ -1,6 +1,6 @@
 {
   "name": "@ghost_frame/kleos",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "TypeScript SDK for Kleos memory server",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -1,6 +1,6 @@
 [package]
 name = "kleos-cli"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 rust-version.workspace = true
 description = "CLI client for Kleos -- persistent semantic memory for AI agents"
@@ -10,7 +10,7 @@ homepage = "https://kleos.lol"
 readme = "../README.md"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "0.1.0" }
+kleos-lib = { path = "../kleos-lib", version = "0.3.0" }
 clap = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
