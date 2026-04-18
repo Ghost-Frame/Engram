@@ -1,18 +1,9 @@
-use chrono::{DateTime, Duration, Utc};
-use serde::{Deserialize, Serialize};
+use super::types::TacticalEntry;
+use chrono::{Duration, Utc};
 use std::collections::HashMap;
 
 const TTL_HOURS: i64 = 24;
 const FAILURE_THRESHOLD: u32 = 3;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TacticalEntry {
-    pub key: String,
-    pub value: String,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
-    pub failure_count: u32,
-}
 
 /// Short-term memory for operational context with 24h TTL.
 #[derive(Debug, Clone)]

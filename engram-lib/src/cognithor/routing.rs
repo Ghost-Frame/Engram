@@ -1,12 +1,4 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RoutingDecision {
-    pub is_code_query: bool,
-    pub detected_language: Option<String>,
-    pub recommended_mode: String,
-    pub confidence: f64,
-}
+use super::types::RoutingDecision;
 
 /// Analyze a query to detect if it's code-related and recommend search mode.
 pub fn analyze_query(query: &str) -> RoutingDecision {
