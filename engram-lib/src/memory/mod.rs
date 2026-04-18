@@ -34,9 +34,10 @@ use types::{
     UpdateRequest, UserProfile, UserStats, VersionChainEntry,
 };
 
+pub use types::VectorSyncReplayReport;
 pub use vector_sync::{
     build_lance_index_from_existing, replay_vector_sync_pending,
-    replay_vector_sync_pending_for_user, vector_sync_pending_users, VectorSyncReplayReport,
+    replay_vector_sync_pending_for_user, vector_sync_pending_users,
 };
 
 // -- Constants ---
