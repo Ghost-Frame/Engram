@@ -306,6 +306,39 @@ pub async fn update_skill(
     get_skill(db, id, user_id).await
 }
 
+/// Bump a skill's version and clear running counters so analyzers and
+/// evolvers re-evaluate it from scratch. Returns the refreshed skill.
+///
+/// Recompute is per-tenant; a caller cannot recompute another user's
+/// skill. Execution history rows (`execution_analyses`) are kept for
+/// audit; only the rolled-up counters on `skill_records` are reset.
+#[tracing::instrument(skip(db))]
+pub async fn recompute_skill(db: &Database, id: i64, user_id: i64) -> Result<Skill> {
+    get_skill(db, id, user_id).await?;
+
+    let affected = db
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE skill_records SET \
+                    version = version + 1, \
+                    success_count = 0, \
+                    failure_count = 0, \
+                    execution_count = 0, \
+                    avg_duration_ms = NULL, \
+                    trust_score = 0.0, \
+                    updated_at = datetime('now') \
+                 WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!("skill {} not found", id)));
+    }
+    get_skill(db, id, user_id).await
+}
+
 #[tracing::instrument(skip(db))]
 pub async fn delete_skill(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db

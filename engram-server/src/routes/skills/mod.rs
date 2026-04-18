@@ -92,6 +92,7 @@ pub fn router() -> Router<AppState> {
             get(get_skill_handler).delete(delete_skill_handler),
         )
         .route("/skills/{id}/update", post(update_skill_handler))
+        .route("/skills/{id}/recompute", post(recompute_skill_handler))
         // Execution
         .route("/skills/{id}/execute", post(record_execution_handler))
         .route("/skills/{id}/executions", get(get_executions_handler))
@@ -192,6 +193,18 @@ async fn update_skill_handler(
 ) -> Result<Json<Value>, AppError> {
     let skill = skills::update_skill(&state.db, id, req, auth.user_id).await?;
     Ok(Json(json!(skill)))
+}
+
+async fn recompute_skill_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let skill = skills::recompute_skill(&state.db, id, auth.user_id).await?;
+    Ok(Json(json!({
+        "recomputed": true,
+        "skill": skill,
+    })))
 }
 
 // ---------------------------------------------------------------------------
