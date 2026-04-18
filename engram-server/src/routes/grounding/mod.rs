@@ -9,11 +9,13 @@ use axum::{
 };
 use kleos_lib::auth::Scope;
 use kleos_lib::grounding::{BackendType, GroundingClient, SessionConfig};
-use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::{CreateSessionBody, ExecuteBody, QualityQuery, ToolsQuery};
 
 /// Per-tenant grounding clients. Each tenant's sessions are isolated inside their
 /// own `GroundingClient`, so list/get/destroy cannot cross tenant boundaries.
@@ -81,15 +83,6 @@ pub fn router() -> Router<AppState> {
         .route("/grounding/execute", post(execute_tool))
         .route("/grounding/quality", get(get_quality))
         .route("/grounding/providers", get(list_providers))
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateSessionBody {
-    pub name: Option<String>,
-    pub backend: Option<String>,
-    pub timeout_ms: Option<u64>,
-    pub max_retries: Option<u32>,
-    pub metadata: Option<Value>,
 }
 
 async fn create_session(
@@ -171,12 +164,6 @@ async fn destroy_session(
     Ok(Json(json!({ "destroyed": true, "id": id })))
 }
 
-#[derive(Debug, Deserialize)]
-struct ToolsQuery {
-    #[allow(dead_code)]
-    pub refresh: Option<String>,
-}
-
 async fn list_tools(
     Auth(auth): Auth,
     Query(_params): Query<ToolsQuery>,
@@ -192,15 +179,6 @@ async fn list_tools(
     })
     .await;
     Ok(Json(json!({ "tools": tools_json, "count": count })))
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct ExecuteBody {
-    pub tool: String,
-    pub args: Option<Value>,
-    pub session_id: Option<String>,
-    pub timeout_ms: Option<u64>,
 }
 
 async fn execute_tool(
@@ -277,12 +255,6 @@ async fn get_quality(
         let count = records.len();
         Ok(Json(json!({ "records": records, "count": count })))
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct QualityQuery {
-    pub limit: Option<usize>,
-    pub degraded: Option<String>,
 }
 
 async fn list_providers(Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
