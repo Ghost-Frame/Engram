@@ -60,6 +60,9 @@ async fn main() {
         .await
         .expect("failed to connect to database");
 
+    // Wrap in Arc early so background tasks (reranker, embedder) can share it.
+    let db_arc = Arc::new(db);
+
     // Deferred embedder/reranker initialization -- server starts immediately, models load in background
     let embedder: Arc<tokio::sync::RwLock<Option<Arc<dyn EmbeddingProvider>>>> =
         Arc::new(tokio::sync::RwLock::new(None));
@@ -102,9 +105,10 @@ async fn main() {
     if config.reranker_enabled {
         let reranker = Arc::clone(&reranker);
         let config = config.clone();
+        let reranker_db = Arc::clone(&db_arc);
         tokio::spawn(async move {
             tracing::info!("loading reranker in background...");
-            match reranker::create_reranker(&config).await {
+            match reranker::create_reranker(&config, Some(reranker_db)).await {
                 Ok(Some(r)) => {
                     tracing::info!(backend = r.backend_name(), "reranker ready");
                     let mut guard = reranker.write().await;
@@ -135,8 +139,6 @@ async fn main() {
             None
         }
     };
-
-    let db_arc = Arc::new(db);
 
     // Initialize brain backend (Hopfield in-process or subprocess eidolon)
     let data_dir = config.data_dir.clone();
