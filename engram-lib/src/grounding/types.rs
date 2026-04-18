@@ -121,6 +121,16 @@ pub struct ParsedToolKey {
     pub server: String,
     pub tool_name: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub source: String,
+    pub title: String,
+    pub content: String,
+    pub url: Option<String>,
+    pub score: f64,
+    pub metadata: Option<serde_json::Value>,
+}
 pub fn parse_tool_key(key: &str) -> ParsedToolKey {
     let parts: Vec<&str> = key.splitn(3, ':').collect();
     match parts.len() {
