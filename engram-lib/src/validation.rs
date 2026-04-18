@@ -53,6 +53,28 @@ pub const MAX_COMMUNITY_ITERATIONS: usize = 100;
 /// Maximum iterations in per-tenant PageRank.
 pub const MAX_PAGERANK_ITERATIONS: usize = 25;
 
+/// Maximum nodes materialized in a single `build_graph` request.
+/// DoS bound: clamps caller-supplied node cap so one request cannot force the
+/// server to materialize an arbitrarily large graph.
+pub const MAX_GRAPH_BUILD_NODES: usize = 5_000;
+
+/// Maximum depth accepted for k-hop neighborhood traversal.
+/// DoS bound: neighborhood expansion is super-linear in depth; this cap
+/// prevents a single request from amplifying into a full graph traversal.
+pub const MAX_GRAPH_NEIGHBORHOOD_DEPTH: u32 = 5;
+
+/// Maximum entities returned for a single memory.
+/// DoS bound: caps entity fan-out per memory (i64 for direct rusqlite binding).
+pub const MAX_MEMORY_ENTITY_FANOUT: i64 = 1_000;
+
+// ---------------------------------------------------------------------------
+// Pagination
+// ---------------------------------------------------------------------------
+
+/// Maximum accepted pagination offset across list endpoints.
+/// Absurd offsets are rejected up-front to avoid needless SQL scans.
+pub const MAX_PAGINATION_OFFSET: usize = 1_000_000;
+
 // ---------------------------------------------------------------------------
 // Skills / sessions / conversations
 // ---------------------------------------------------------------------------
