@@ -1,29 +1,7 @@
+use super::types::{CausalAncestor, CausalChain, CausalLink};
 use crate::db::Database;
 use crate::{EngError, Result};
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CausalChain {
-    pub id: i64,
-    pub root_memory_id: Option<i64>,
-    pub description: Option<String>,
-    pub confidence: f64,
-    pub user_id: i64,
-    pub created_at: String,
-    pub links: Vec<CausalLink>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CausalLink {
-    pub id: i64,
-    pub chain_id: i64,
-    pub cause_memory_id: i64,
-    pub effect_memory_id: i64,
-    pub strength: f64,
-    pub order_index: i32,
-    pub created_at: String,
-}
 
 /// Create a causal chain.
 #[tracing::instrument(skip(db, description), fields(root_memory_id = ?root_memory_id, user_id))]
@@ -232,20 +210,6 @@ pub async fn list_chains(db: &Database, user_id: i64, limit: usize) -> Result<Ve
     }
 
     Ok(chains)
-}
-
-/// A memory discovered while walking backward from an effect.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CausalAncestor {
-    /// The cause memory's id.
-    pub memory_id: i64,
-    /// Number of causal hops from the original effect to this ancestor
-    /// (1 = direct cause, 2 = cause-of-cause, etc.).
-    pub depth: usize,
-    /// Minimum link strength observed along the shortest path from the
-    /// effect down to this ancestor; a rough "weakest link" score so
-    /// callers can filter low-confidence chains.
-    pub strength_min: f64,
 }
 
 /// Walk causal_links backward from `effect_memory_id`, visiting each
