@@ -1,5 +1,7 @@
 // Ingestion routes -- ported from ingestion/routes.ts
 
+mod types;
+
 use axum::{
     extract::{DefaultBodyLimit, Path as AxumPath, State},
     http::{HeaderMap, StatusCode},
@@ -13,7 +15,6 @@ use engram_lib::ingestion::{
     self,
     types::{FormatMeta, IngestMode, IngestOptions, IngestProgressEvent, SupportedFormat},
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::convert::Infallible;
@@ -26,6 +27,10 @@ use rusqlite::{params, OptionalExtension};
 use crate::{error::AppError, extractors::Auth, state::AppState};
 use engram_lib::validation::{
     MAX_IMPORT_BATCH, MAX_INGEST_TEXT_BYTES, MAX_UPLOAD_CHUNK_BYTES, MAX_UPLOAD_TOTAL_BYTES,
+};
+use types::{
+    ImportBulkBody, ImportJsonBody, IngestBody, UploadAbortBody, UploadChunkBody,
+    UploadCompleteBody, UploadInitBody, UploadSession,
 };
 
 pub fn router() -> Router<AppState> {
@@ -75,26 +80,6 @@ fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())
-}
-
-#[derive(Debug, Deserialize)]
-struct UploadInitBody {
-    /// Optional original filename -- used to detect format on complete.
-    pub filename: Option<String>,
-    /// Optional MIME type; used as a fallback format hint.
-    pub content_type: Option<String>,
-    /// Tag stamped on every ingested memory ("upload" by default).
-    pub source: Option<String>,
-    /// Client-declared total byte size. Server enforces the hard cap
-    /// regardless of what the client claims here.
-    pub total_size: Option<i64>,
-    /// Client-declared chunk count. Used only to short-circuit complete()
-    /// when all chunks have arrived; the client may also pass it to
-    /// complete() directly.
-    pub total_chunks: Option<i64>,
-    /// Advisory chunk size (bytes) the client intends to use. Recorded for
-    /// diagnostics; the server enforces only MAX_UPLOAD_CHUNK_BYTES.
-    pub chunk_size: Option<i64>,
 }
 
 async fn upload_init(
@@ -162,28 +147,6 @@ async fn upload_init(
             "source": source,
         })),
     ))
-}
-
-#[derive(Debug, Deserialize)]
-struct UploadChunkBody {
-    pub upload_id: String,
-    pub chunk_index: i64,
-    /// Hex-encoded SHA-256 of the decoded chunk bytes.
-    pub chunk_hash: String,
-    /// Base64-encoded chunk payload.
-    pub data: String,
-}
-
-/// Session row shape used by chunk / complete / status handlers.
-struct UploadSession {
-    user_id: i64,
-    status: String,
-    source: String,
-    filename: Option<String>,
-    content_type: Option<String>,
-    total_chunks: Option<i64>,
-    total_size: Option<i64>,
-    expires_at: String,
 }
 
 async fn load_session(
@@ -346,26 +309,6 @@ async fn upload_chunk(
         "bytes_received": total_bytes,
         "expected_chunks": session.total_chunks,
     })))
-}
-
-#[derive(Debug, Deserialize)]
-struct UploadCompleteBody {
-    pub upload_id: String,
-    /// Client-declared chunk count. When present it must match the stored
-    /// count; this catches the case where a chunk silently dropped and the
-    /// client never noticed.
-    pub total_chunks: Option<i64>,
-    /// Optional hex SHA-256 of the full reassembled payload for end-to-end
-    /// integrity verification.
-    pub final_sha256: Option<String>,
-    /// Ingest mode for the assembled payload. Defaults to "extract".
-    pub mode: Option<String>,
-    /// Optional format hint (overrides filename/content_type detection).
-    pub format: Option<String>,
-    /// Optional target category for generated memories.
-    pub category: Option<String>,
-    pub project_id: Option<i64>,
-    pub episode_id: Option<i64>,
 }
 
 async fn upload_complete(
@@ -544,11 +487,6 @@ async fn upload_complete(
     })))
 }
 
-#[derive(Debug, Deserialize)]
-struct UploadAbortBody {
-    pub upload_id: String,
-}
-
 async fn upload_abort(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -636,18 +574,6 @@ async fn upload_status(
     })))
 }
 
-#[derive(Debug, Deserialize)]
-struct ImportBulkBody {
-    text: Option<String>,
-    url: Option<String>,
-    format: Option<String>,
-    mode: Option<String>,
-    source: Option<String>,
-    category: Option<String>,
-    project_id: Option<i64>,
-    episode_id: Option<i64>,
-}
-
 async fn import_bulk(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -714,26 +640,6 @@ async fn import_bulk(
             "duration_ms": result.duration_ms,
         })),
     ))
-}
-
-#[derive(Debug, Deserialize)]
-struct ImportJsonBody {
-    version: Option<String>,
-    memories: Option<Vec<ImportMemory>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ImportMemory {
-    content: Option<String>,
-    category: Option<String>,
-    source: Option<String>,
-    session_id: Option<String>,
-    importance: Option<i32>,
-    tags: Option<serde_json::Value>,
-    confidence: Option<f64>,
-    is_static: Option<bool>,
-    created_at: Option<String>,
-    updated_at: Option<String>,
 }
 
 async fn import_json(
@@ -993,18 +899,6 @@ async fn import_supermemory(
     Ok(Json(
         json!({ "imported": imported, "skipped": skipped, "source": "supermemory" }),
     ))
-}
-
-#[derive(Debug, Deserialize)]
-struct IngestBody {
-    url: Option<String>,
-    text: Option<String>,
-    title: Option<String>,
-    source: Option<String>,
-    entity_ids: Option<Vec<i64>>,
-    #[allow(dead_code)]
-    project_ids: Option<Vec<i64>>,
-    episode_id: Option<i64>,
 }
 
 async fn ingest_text(
