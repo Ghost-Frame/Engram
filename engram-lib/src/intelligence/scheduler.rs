@@ -12,13 +12,13 @@
 //! -> consolidate_sweep -> {contradictions, temporal, reconsolidation} ->
 //! reflections. The HTTP handler at `POST /intelligence/run` invokes this.
 
+use super::types::{PipelineReport, TaskReport, TaskStatus};
 use crate::db::Database;
 use crate::intelligence::{
     consolidation, contradiction, duplicates, reconsolidation, reflections, temporal,
 };
 use crate::{EngError, Result};
 use async_trait::async_trait;
-use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -32,34 +32,6 @@ pub trait IntelligenceTask: Send + Sync {
         &[]
     }
     async fn run(&self, db: &Database, user_id: i64) -> Result<Value>;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TaskStatus {
-    Ok,
-    Failed,
-    Skipped,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TaskReport {
-    pub name: String,
-    pub status: TaskStatus,
-    pub duration_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PipelineReport {
-    pub reports: Vec<TaskReport>,
-    pub total_duration_ms: u64,
-    pub ok_count: usize,
-    pub failed_count: usize,
-    pub skipped_count: usize,
 }
 
 /// DAG scheduler for intelligence passes.
