@@ -196,7 +196,8 @@ async fn hydrate_candidates(
         let mut rows = stmt
             .query(param_refs.as_slice())
             .map_err(rusqlite_to_eng_error)?;
-        let mut hydrated = Vec::new();
+        // 6.9 capacity hint: upper bound is the input id set.
+        let mut hydrated = Vec::with_capacity(ids_owned.len());
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             hydrated.push(HydratedCandidateRow {
                 id: row.get(0).map_err(rusqlite_to_eng_error)?,
@@ -247,7 +248,8 @@ async fn fetch_graph_neighbors(
         let mut rows = stmt
             .query(rusqlite::params![seed_id, user_id])
             .map_err(rusqlite_to_eng_error)?;
-        let mut linked = Vec::new();
+        // 6.9 capacity hint: typical graph-neighbor fanout.
+        let mut linked = Vec::with_capacity(16);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             linked.push(GraphExpansionRow {
                 link_id: row.get(0).map_err(rusqlite_to_eng_error)?,
@@ -363,7 +365,8 @@ async fn fetch_links_for_search(
         let mut rows = stmt
             .query(rusqlite::params![memory_id, user_id])
             .map_err(rusqlite_to_eng_error)?;
-        let mut links = Vec::new();
+        // 6.9 capacity hint: typical link fanout.
+        let mut links = Vec::with_capacity(16);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             if row.get::<_, i32>(5).map_err(rusqlite_to_eng_error)? != 0 {
                 continue;
@@ -469,7 +472,8 @@ async fn fetch_version_chain_for_search(
         let mut rows = stmt
             .query(rusqlite::params![root_id, user_id])
             .map_err(rusqlite_to_eng_error)?;
-        let mut chain = Vec::new();
+        // 6.9 capacity hint: version chains are usually short.
+        let mut chain = Vec::with_capacity(8);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             chain.push(VersionChainEntry {
                 id: row.get(0).map_err(rusqlite_to_eng_error)?,
@@ -1351,7 +1355,8 @@ async fn faceted_db_scan(
         let mut rows = stmt
             .query(param_refs.as_slice())
             .map_err(rusqlite_to_eng_error)?;
-        let mut memories = Vec::new();
+        // 6.9 capacity hint: SQL over-fetches limit*3 for tag filtering.
+        let mut memories = Vec::with_capacity(limit.saturating_mul(3));
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             memories.push(row_to_memory(row)?);
         }

@@ -77,7 +77,8 @@ pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memo
         let mut rows = stmt
             .query(rusqlite::params![user_id])
             .map_err(rusqlite_to_eng_error)?;
-        let mut memories = Vec::new();
+        // 6.9 capacity hint: static-memory sets are typically small per-user.
+        let mut memories = Vec::with_capacity(16);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             memories.push(row_to_memory(row)?);
         }

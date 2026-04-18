@@ -53,7 +53,8 @@ pub async fn vector_search(
                 .query(rusqlite::params![embedding_json, limit as i64, user_id])
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-            let mut hits = Vec::new();
+            // 6.9 capacity hint: LIMIT bounds the row count.
+            let mut hits = Vec::with_capacity(limit);
             let mut rank: usize = 0;
             while let Some(row) = rows
                 .next()
