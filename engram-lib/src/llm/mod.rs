@@ -4,6 +4,9 @@
 // ============================================================================
 
 pub mod local;
+pub mod types;
+
+pub use types::*;
 
 /// Repair and parse JSON from LLM output that may have common formatting issues.
 ///

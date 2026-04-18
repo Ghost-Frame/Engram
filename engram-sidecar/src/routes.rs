@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use kleos_lib::llm::local::{CallOptions, Priority};
+use kleos_lib::llm::{CallOptions, Priority};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::info;

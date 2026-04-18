@@ -4,7 +4,7 @@ use kleos_lib::db::Database;
 use kleos_lib::embeddings::onnx::OnnxProvider;
 use kleos_lib::embeddings::EmbeddingProvider;
 use kleos_lib::jobs::pagerank_refresh::start_pagerank_refresh_job;
-use kleos_lib::llm::local::{LocalModelClient, OllamaConfig};
+use kleos_lib::llm::{local::LocalModelClient, OllamaConfig};
 use kleos_lib::reranker::{self, Reranker};
 use kleos_lib::services::brain::create_brain_backend;
 use kleos_server::background::{

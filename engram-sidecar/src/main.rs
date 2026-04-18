@@ -5,7 +5,7 @@ mod store;
 mod watcher;
 
 use clap::Parser;
-use kleos_lib::llm::local::{LocalModelClient, OllamaConfig};
+use kleos_lib::llm::{local::LocalModelClient, OllamaConfig};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
