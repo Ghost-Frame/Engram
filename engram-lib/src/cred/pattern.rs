@@ -1,22 +1,11 @@
+pub use super::types::{SecretPattern, SecretPatternKind};
+
 use std::future::Future;
 use std::sync::OnceLock;
 
 use regex::Regex;
 
 use crate::Result;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SecretPatternKind {
-    Secret,
-    Raw,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SecretPattern {
-    pub kind: SecretPatternKind,
-    pub service: String,
-    pub key: String,
-}
 
 fn secret_pattern_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();

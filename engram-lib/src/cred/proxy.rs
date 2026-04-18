@@ -1,34 +1,13 @@
+pub use super::types::{ProxyRequest, ProxyResponse};
+
 use std::collections::HashMap;
 
 use reqwest::Method;
-use serde::{Deserialize, Serialize};
 
 use crate::cred::client::{CreddClient, FetchSecretRequest, SecretAccessMode};
 use crate::db::Database;
 use crate::webhooks::resolve_and_validate_url;
 use crate::{EngError, Result};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProxyRequest {
-    pub url: String,
-    #[serde(default)]
-    pub method: Option<String>,
-    #[serde(default)]
-    pub headers: Option<HashMap<String, String>>,
-    #[serde(default)]
-    pub body: Option<String>,
-    #[serde(default)]
-    pub auth_header: Option<String>,
-    #[serde(default)]
-    pub auth_scheme: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProxyResponse {
-    pub status: u16,
-    pub headers: HashMap<String, String>,
-    pub body: String,
-}
 
 impl CreddClient {
     pub async fn proxy(
