@@ -194,9 +194,17 @@ fn ensure_session_owner(session: &UploadSession, user_id: i64) -> Result<(), App
             session.status
         ))));
     }
+    // Fail closed on parse errors: a corrupt or non-conforming timestamp must
+    // not be silently treated as "valid for another hour". Reject as Internal
+    // so the caller sees a 500 instead of being granted a false extension.
     let expires = chrono::NaiveDateTime::parse_from_str(&session.expires_at, "%Y-%m-%d %H:%M:%S")
         .map(|dt| dt.and_utc())
-        .unwrap_or_else(|_| chrono::Utc::now() + chrono::Duration::hours(1));
+        .map_err(|e| {
+            AppError(kleos_lib::EngError::Internal(format!(
+                "upload session has invalid expires_at: {}",
+                e
+            )))
+        })?;
     if chrono::Utc::now() > expires {
         return Err(AppError(kleos_lib::EngError::InvalidInput(
             "upload session expired".into(),

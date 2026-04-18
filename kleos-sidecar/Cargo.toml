@@ -3,6 +3,8 @@ name = "kleos-sidecar"
 version = "0.3.2"
 edition = "2021"
 rust-version.workspace = true
+license = "Elastic-2.0"
+description = "Outbound sidecar that batches and ships audit/metrics posts with retry"
 
 [[bin]]
 name = "kleos-sidecar"

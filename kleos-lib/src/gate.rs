@@ -221,7 +221,11 @@ pub fn check_blocked_patterns(command: &str, blocked_patterns: &[String]) -> Opt
     None
 }
 
-/// Update a gate request with approval decision.
+/// SECURITY (SEC-CRIT-2): atomically transition a gate from `pending` to
+/// `approved`/`denied`. Returns `EngError::Conflict` if the row is no longer
+/// pending (already decided by another responder or the timeout path). The DB
+/// row is the single source of truth; callers must not persist a decision
+/// outside this CAS.
 #[tracing::instrument(skip(db, reason), fields(gate_id, approved, user_id))]
 pub async fn respond_to_gate(
     db: &Database,
@@ -244,16 +248,33 @@ pub async fn respond_to_gate(
         let rows_affected = conn
             .execute(
                 "UPDATE gate_requests SET status = ?1, reason = ?2, updated_at = datetime('now')
-             WHERE id = ?3 AND user_id = ?4",
+             WHERE id = ?3 AND user_id = ?4 AND status = 'pending'",
                 rusqlite::params![status, reason_str, gate_id, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
 
         if rows_affected == 0 {
-            return Err(EngError::NotFound(format!(
-                "gate request {} not found",
-                gate_id
-            )));
+            // Distinguish "never existed" from "already decided" so the caller
+            // can return a meaningful status (404 vs 409) without a second
+            // query when the gate is still missing entirely.
+            let existing: Option<String> = conn
+                .query_row(
+                    "SELECT status FROM gate_requests WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![gate_id, user_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(rusqlite_to_eng_error)?;
+            return match existing {
+                None => Err(EngError::NotFound(format!(
+                    "gate request {} not found",
+                    gate_id
+                ))),
+                Some(s) => Err(EngError::Conflict(format!(
+                    "gate request {} is already {}",
+                    gate_id, s
+                ))),
+            };
         }
 
         if approved_copy {
@@ -270,6 +291,58 @@ pub async fn respond_to_gate(
         }
 
         Ok(serde_json::json!({ "ok": true, "approved": approved_copy }))
+    })
+    .await
+}
+
+/// Decision made on a previously-pending gate request, looked up from the DB.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GateDecision {
+    pub status: String,
+    pub reason: Option<String>,
+    pub command: Option<String>,
+}
+
+/// SECURITY (SEC-CRIT-2): atomically mark a gate as timed out. Returns `true`
+/// if this call performed the transition, `false` if the gate was already
+/// decided by another responder (in which case the caller should read the
+/// final decision via `read_gate_decision`).
+pub async fn mark_gate_timed_out(db: &Database, gate_id: i64, user_id: i64) -> Result<bool> {
+    let reason = "approval timed out";
+    db.write(move |conn| {
+        let rows_affected = conn
+            .execute(
+                "UPDATE gate_requests SET status = 'denied', reason = ?1, updated_at = datetime('now')
+             WHERE id = ?2 AND user_id = ?3 AND status = 'pending'",
+                rusqlite::params![reason, gate_id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(rows_affected > 0)
+    })
+    .await
+}
+
+/// Read the current persisted decision for a gate request. Returns `None` if
+/// the row does not exist (e.g. admin-deleted under the same user).
+pub async fn read_gate_decision(
+    db: &Database,
+    gate_id: i64,
+    user_id: i64,
+) -> Result<Option<GateDecision>> {
+    db.read(move |conn| {
+        conn.query_row(
+            "SELECT status, reason, command FROM gate_requests WHERE id = ?1 AND user_id = ?2",
+            rusqlite::params![gate_id, user_id],
+            |row| {
+                Ok(GateDecision {
+                    status: row.get(0)?,
+                    reason: row.get(1)?,
+                    command: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(rusqlite_to_eng_error)
     })
     .await
 }

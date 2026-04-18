@@ -74,6 +74,8 @@ impl TestApp {
             approval_notify: None,
             pending_approvals: Arc::new(Mutex::new(HashMap::new())),
             safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            dreamer_stats: kleos_server::dreamer::new_stats_handle(),
+            last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         let router = build_router(state);
 
@@ -359,6 +361,8 @@ async fn bootstrap_returns_api_key() {
         approval_notify: None,
         pending_approvals: Arc::new(Mutex::new(HashMap::new())),
         safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        dreamer_stats: kleos_server::dreamer::new_stats_handle(),
+        last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
     let router = build_router(state);
 

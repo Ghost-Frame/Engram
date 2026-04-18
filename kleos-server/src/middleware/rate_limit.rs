@@ -34,6 +34,21 @@ fn too_many_requests(retry_after: i64) -> Response {
 /// Return the cost multiplier for a given request path and method.
 /// Default cost is 1 for reads, 2 for writes.
 fn endpoint_cost(path: &str, method: &axum::http::Method) -> i64 {
+    // Admin table-scale operations. These walk the entire corpus or
+    // rebuild an ANN index; a single call can cost minutes of CPU +
+    // embedding + vector-index work. Charging the full budget prevents
+    // an admin-scoped API key from fire-hosing these endpoints.
+    if path.starts_with("/admin/reembed")
+        || path.starts_with("/admin/vector/rebuild-index")
+    {
+        return 100;
+    }
+    if path.starts_with("/admin/rebuild-fts")
+        || path.starts_with("/admin/pagerank/rebuild")
+    {
+        return 50;
+    }
+
     // Context assembly -- involves search + embedding + LLM inference
     if path.starts_with("/context") {
         return 5;

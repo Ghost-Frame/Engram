@@ -81,11 +81,61 @@ download() {
     fi
 }
 
+# ─── SHA-256 verification ────────────────────────────────────────────────────
+#
+# Every release publishes a SHASUMS256.txt file alongside the binaries.  Each
+# line is `<sha256>  <filename>`.  We download that manifest once, then verify
+# each binary after it lands.  A verification failure deletes the partial
+# download and aborts the installer so a MITM or tampered mirror cannot leave
+# a compromised executable on disk.
+
+pick_sha256_tool() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        SHA256_CMD="sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then
+        SHA256_CMD="shasum -a 256"
+    else
+        SHA256_CMD=""
+    fi
+}
+
+compute_sha256() {
+    # Prints only the hex digest on stdout.
+    # shellcheck disable=SC2086
+    $SHA256_CMD "$1" | awk '{print $1}'
+}
+
+verify_sha256() {
+    file="$1"
+    expected="$2"
+    if [ -z "$SHA256_CMD" ] || [ -z "$expected" ]; then
+        return 0
+    fi
+    actual="$(compute_sha256 "$file")"
+    if [ "$actual" != "$expected" ]; then
+        rm -f "$file"
+        echo ""
+        echo "error: SHA-256 mismatch for $(basename "$file")" >&2
+        echo "  expected: $expected" >&2
+        echo "  actual:   $actual" >&2
+        return 1
+    fi
+    return 0
+}
+
+lookup_expected_sha256() {
+    # $1 = filename as it appears in SHASUMS256.txt
+    file="$1"
+    [ -n "${SHASUMS_FILE:-}" ] && [ -f "$SHASUMS_FILE" ] || return 0
+    awk -v f="$file" '$2 == f || $2 == "*"f {print $1; exit}' "$SHASUMS_FILE"
+}
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 main() {
     detect_platform
     resolve_version
+    pick_sha256_tool
 
     echo "Installing Kleos v${VERSION} (${SUFFIX})"
     echo "  Binaries: ${BINARIES}"
@@ -97,25 +147,64 @@ main() {
     base_url="https://github.com/${REPO}/releases/download/v${VERSION}"
     failed=""
 
+    # Fetch the release's SHASUMS256.txt once.  We deliberately do NOT make
+    # the overall install depend on reaching it (a release may predate the
+    # SHA manifest), but if we have it we enforce strict verification below.
+    SHASUMS_FILE="$(mktemp -t kleos-shasums.XXXXXX)"
+    if download "${base_url}/SHASUMS256.txt" "$SHASUMS_FILE" 2>/dev/null \
+            && [ -s "$SHASUMS_FILE" ]; then
+        if [ -z "$SHA256_CMD" ]; then
+            echo "warn: no sha256sum/shasum available; skipping integrity check" >&2
+            rm -f "$SHASUMS_FILE"
+            SHASUMS_FILE=""
+        else
+            echo "  manifest: SHASUMS256.txt fetched; integrity will be verified"
+        fi
+    else
+        rm -f "$SHASUMS_FILE"
+        SHASUMS_FILE=""
+        echo "warn: SHASUMS256.txt not found for this release; integrity NOT verified" >&2
+    fi
+    echo ""
+
     for bin in $BINARIES; do
-        url="${base_url}/${bin}-${SUFFIX}"
+        fname="${bin}-${SUFFIX}"
+        url="${base_url}/${fname}"
         dest="${INSTALL_DIR}/${bin}"
 
         printf "  %-20s" "$bin"
-        if download "$url" "$dest" 2>/dev/null; then
-            chmod +x "$dest"
-            echo "OK"
-        else
-            echo "FAILED"
+        if ! download "$url" "$dest" 2>/dev/null; then
+            echo "FAILED (download)"
             failed="${failed} ${bin}"
+            continue
+        fi
+        expected="$(lookup_expected_sha256 "$fname")"
+        if [ -n "$SHASUMS_FILE" ] && [ -z "$expected" ]; then
+            echo "FAILED (no checksum entry)"
+            rm -f "$dest"
+            failed="${failed} ${bin}"
+            continue
+        fi
+        if ! verify_sha256 "$dest" "$expected"; then
+            echo "FAILED (sha256 mismatch)"
+            failed="${failed} ${bin}"
+            continue
+        fi
+        chmod +x "$dest"
+        if [ -n "$expected" ]; then
+            echo "OK (verified)"
+        else
+            echo "OK (unverified)"
         fi
     done
 
+    [ -n "$SHASUMS_FILE" ] && rm -f "$SHASUMS_FILE"
     echo ""
 
     if [ -n "$failed" ]; then
-        echo "Warning: failed to download:${failed}" >&2
+        echo "Warning: failed to install:${failed}" >&2
         echo "Check https://github.com/${REPO}/releases/tag/v${VERSION}" >&2
+        exit 1
     fi
 
     # Check if install dir is on PATH

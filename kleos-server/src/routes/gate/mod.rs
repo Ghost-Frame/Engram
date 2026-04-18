@@ -7,8 +7,9 @@ use crate::extractors::Auth;
 use crate::state::AppState;
 use kleos_lib::gate::{
     check_command_with_context, check_ssh_dns_rebind, cleanup_expired_approvals, complete_gate,
-    parse_ssh_target, respond_to_gate, store_gate_request, GateCheckRequest, GateCheckResult,
-    PendingApproval, APPROVAL_TIMEOUT_SECS, TOOLS_REQUIRING_APPROVAL,
+    mark_gate_timed_out, parse_ssh_target, read_gate_decision, respond_to_gate, store_gate_request,
+    GateCheckRequest, GateCheckResult, PendingApproval, APPROVAL_TIMEOUT_SECS,
+    TOOLS_REQUIRING_APPROVAL,
 };
 
 mod types;
@@ -180,26 +181,50 @@ async fn check_handler(
                 let _ = notify.send(());
             }
 
-            let approved = match tokio::time::timeout(
+            let wait_outcome = tokio::time::timeout(
                 std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS),
                 rx,
             )
-            .await
-            {
-                Ok(Ok(decision)) => decision,
-                _ => {
-                    // Timeout or channel dropped -- clean up and deny.
-                    let mut approvals = state.pending_approvals.lock().await;
-                    approvals.remove(&gate_id);
-                    false
-                }
-            };
+            .await;
 
-            // Ensure the entry is removed after a decision.
+            // SECURITY (SEC-CRIT-2): resolve the outcome against the DB, which
+            // is the single source of truth. The oneshot is a wake-up hint;
+            // regardless of which branch we hit, we consult the persisted
+            // status so the HTTP response always matches what was written.
             {
                 let mut approvals = state.pending_approvals.lock().await;
                 approvals.remove(&gate_id);
             }
+
+            let approved = match wait_outcome {
+                Ok(Ok(decision)) => decision,
+                _ => {
+                    // Timeout or channel dropped. Atomically CAS the row to
+                    // denied-timeout. If the CAS loses, a concurrent
+                    // respond_handler already decided; read and honour that.
+                    match mark_gate_timed_out(&state.db, gate_id, auth.user_id).await {
+                        Ok(true) => false,
+                        Ok(false) => match read_gate_decision(
+                            &state.db,
+                            gate_id,
+                            auth.user_id,
+                        )
+                        .await
+                        {
+                            Ok(Some(d)) => d.status == "approved",
+                            _ => false,
+                        },
+                        Err(e) => {
+                            tracing::error!(
+                                "gate: failed to mark gate_id={} timed out: {}",
+                                gate_id,
+                                e
+                            );
+                            false
+                        }
+                    }
+                }
+            };
 
             if approved {
                 tracing::info!(
@@ -240,14 +265,10 @@ async fn respond_handler(
     Auth(auth): Auth,
     Json(body): Json<RespondBody>,
 ) -> Result<Json<Value>, AppError> {
-    // Signal the waiting check_handler (if still waiting) through the oneshot channel.
-    {
-        let mut approvals = state.pending_approvals.lock().await;
-        if let Some((_, tx)) = approvals.remove(&body.gate_id) {
-            let _ = tx.send(body.approved);
-        }
-    }
-
+    // SECURITY (SEC-CRIT-2): the DB CAS in respond_to_gate is the authoritative
+    // transition. Persist first; only on success signal the waiter. If another
+    // responder or the timeout path already decided, respond_to_gate returns
+    // EngError::Conflict (-> 409) and we must not touch the map or the tx.
     let result = respond_to_gate(
         &state.db,
         body.gate_id,
@@ -256,6 +277,16 @@ async fn respond_handler(
         auth.user_id,
     )
     .await?;
+
+    // DB win: best-effort wake the waiting check_handler. Failure here is not
+    // fatal; the waiter's timeout path reads the persisted decision on fallback.
+    {
+        let mut approvals = state.pending_approvals.lock().await;
+        if let Some((_, tx)) = approvals.remove(&body.gate_id) {
+            let _ = tx.send(body.approved);
+        }
+    }
+
     Ok(Json(result))
 }
 
@@ -434,9 +465,7 @@ async fn brain_grounded_check(
     if !brain.is_ready() {
         return None;
     }
-    let embedder_guard = state.embedder.read().await;
-    let embedder = embedder_guard.as_ref()?.clone();
-    drop(embedder_guard);
+    let embedder = state.current_embedder().await?;
 
     let options = kleos_lib::services::brain::BrainQueryOptions {
         query: command.to_string(),
