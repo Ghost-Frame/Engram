@@ -2,7 +2,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -12,6 +11,9 @@ use engram_lib::services::chiasm::{
     create_task, delete_task, get_feed as get_task_feed, get_stats as get_task_stats, get_task,
     list_task_history, list_tasks, update_task, CreateTaskRequest, UpdateTaskRequest,
 };
+
+mod types;
+use types::{CreateTaskBody, HistoryParams, ListTasksParams, UpdateTaskBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -25,32 +27,6 @@ pub fn router() -> Router<AppState> {
         )
         .route("/tasks/{id}/history", get(get_task_history_handler))
         .route("/feed", get(get_feed))
-}
-
-#[derive(Debug, Deserialize)]
-struct ListTasksParams {
-    agent: Option<String>,
-    project: Option<String>,
-    status: Option<String>,
-    limit: Option<usize>,
-    offset: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateTaskBody {
-    title: String,
-    agent: String,
-    project: String,
-    status: Option<String>,
-    summary: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct UpdateTaskBody {
-    title: Option<String>,
-    summary: Option<String>,
-    status: Option<String>,
-    agent: Option<String>,
 }
 
 async fn list_tasks_handler(
@@ -125,11 +101,6 @@ async fn update_task_handler(
 
     let task = update_task(&state.db, id, req, auth.user_id).await?;
     Ok(Json(json!(task)))
-}
-
-#[derive(Debug, Deserialize)]
-struct HistoryParams {
-    limit: Option<usize>,
 }
 
 async fn get_task_history_handler(
