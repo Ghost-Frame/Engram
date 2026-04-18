@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "agent-forge"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "clap",
@@ -4711,7 +4711,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kleos-approval-tui"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "clap",
@@ -4727,7 +4727,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "clap",
  "kleos-lib",
@@ -4742,7 +4742,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-cred"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4775,7 +4775,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-credd"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4801,7 +4801,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-lib"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4850,7 +4850,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-mcp"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "axum 0.8.8",
  "clap",
@@ -4868,7 +4868,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-migrate"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4891,7 +4891,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-server"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "axum 0.8.8",
  "base64 0.22.1",
@@ -4925,7 +4925,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-sidecar"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "axum 0.8.8",
  "chrono",

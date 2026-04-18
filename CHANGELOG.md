@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.1.0] - 2026-04-13
 
-Initial public release. Ground-up Rust rewrite of the [TypeScript Kleos](https://github.com/Ghost-Frame/kleos).
+Initial public release. Ground-up Rust rewrite of the [TypeScript Kleos](https://github.com/Ghost-Frame/Kleos).
 
 ### Added
 

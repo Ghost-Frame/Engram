@@ -33,3 +33,4 @@ migration-test/
 test.py
 write_files.py
 _gen_memory.py
+__pycache__/

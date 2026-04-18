@@ -1,6 +1,6 @@
 # Kleos SDKs
 
-Client libraries for the [Kleos](https://github.com/Ghost-Frame/kleos) memory server.
+Client libraries for the [Kleos](https://github.com/Ghost-Frame/Kleos) memory server.
 
 ## Available SDKs
 
@@ -75,7 +75,7 @@ pip install kleos-client
 **Go**
 
 ```bash
-go get github.com/Ghost-Frame/kleos/sdk/go
+go get github.com/Ghost-Frame/Kleos/sdk/go
 ```
 
 ## Authentication
