@@ -1,19 +1,7 @@
+use super::types::Digest;
 use crate::db::Database;
 use crate::{EngError, Result};
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Digest {
-    pub id: i64,
-    pub period: String,
-    pub content: String,
-    pub memory_count: i32,
-    pub user_id: i64,
-    pub started_at: Option<String>,
-    pub ended_at: Option<String>,
-    pub created_at: String,
-}
 
 /// Generate a digest summarizing recent memory activity.
 #[tracing::instrument(skip(db))]
