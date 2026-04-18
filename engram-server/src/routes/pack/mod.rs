@@ -1,20 +1,15 @@
 use axum::{extract::State, routing::post, Json, Router};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 
+mod types;
+use types::PackBody;
+
 pub fn router() -> Router<AppState> {
     Router::new().route("/pack", post(pack_memories))
-}
-
-#[derive(Deserialize)]
-struct PackBody {
-    context: Option<String>,
-    token_budget: Option<usize>,
-    format: Option<String>,
 }
 
 async fn pack_memories(
