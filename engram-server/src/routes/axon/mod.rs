@@ -1,8 +1,9 @@
+mod types;
+
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -12,6 +13,10 @@ use engram_lib::services::axon::{
     consume, delete_subscription, ensure_channel, get_cursor, get_event,
     get_stats as get_axon_stats, list_channels, list_subscriptions_for_agent, publish_event,
     query_events, upsert_subscription, PublishEventRequest, SubscribeRequest,
+};
+use types::{
+    CreateChannelBody, GetCursorParams, ListSubscriptionsParams, PollBody, PublishBody,
+    QueryEventsParams, SubscribeBody, UnsubscribeBody,
 };
 
 pub fn router() -> Router<AppState> {
@@ -31,27 +36,6 @@ pub fn router() -> Router<AppState> {
         .route("/axon/poll", post(poll_handler))
         .route("/axon/cursor", get(get_cursor_handler))
         .route("/axon/stats", get(get_stats))
-}
-
-#[derive(Debug, Deserialize)]
-struct PublishBody {
-    channel: String,
-    /// The plan spec says event_type but the lib uses `action`
-    action: Option<String>,
-    event_type: Option<String>,
-    payload: Option<serde_json::Value>,
-    source: Option<String>,
-    agent: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct QueryEventsParams {
-    channel: Option<String>,
-    event_type: Option<String>,
-    action: Option<String>,
-    source: Option<String>,
-    since_id: Option<i64>,
-    limit: Option<usize>,
 }
 
 async fn publish_event_handler(
@@ -138,14 +122,6 @@ async fn get_stats(
 
 // --- New handlers for P0-0 Phase 27c ---
 
-#[derive(Debug, Deserialize)]
-struct CreateChannelBody {
-    name: String,
-    description: Option<String>,
-    #[allow(dead_code)]
-    retain_hours: Option<i64>,
-}
-
 async fn create_channel_handler(
     State(state): State<AppState>,
     Auth(_auth): Auth,
@@ -156,14 +132,6 @@ async fn create_channel_handler(
         StatusCode::CREATED,
         Json(json!({ "ok": true, "channel": body.name })),
     ))
-}
-
-#[derive(Debug, Deserialize)]
-struct SubscribeBody {
-    agent: String,
-    channel: String,
-    filter_type: Option<String>,
-    webhook_url: Option<String>,
 }
 
 async fn subscribe_handler(
@@ -185,12 +153,6 @@ async fn subscribe_handler(
     Ok((StatusCode::CREATED, Json(json!(sub))))
 }
 
-#[derive(Debug, Deserialize)]
-struct UnsubscribeBody {
-    agent: String,
-    channel: String,
-}
-
 async fn unsubscribe_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -200,11 +162,6 @@ async fn unsubscribe_handler(
     Ok(Json(json!({ "deleted": deleted })))
 }
 
-#[derive(Debug, Deserialize)]
-struct ListSubscriptionsParams {
-    agent: String,
-}
-
 async fn list_subscriptions_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -212,13 +169,6 @@ async fn list_subscriptions_handler(
 ) -> Result<Json<Value>, AppError> {
     let subs = list_subscriptions_for_agent(&state.db, &params.agent, auth.user_id).await?;
     Ok(Json(json!({ "subscriptions": subs, "count": subs.len() })))
-}
-
-#[derive(Debug, Deserialize)]
-struct PollBody {
-    agent: String,
-    channel: String,
-    limit: Option<usize>,
 }
 
 async fn poll_handler(
@@ -234,12 +184,6 @@ async fn poll_handler(
         "cursor": cursor.last_event_id,
         "count": events.len()
     })))
-}
-
-#[derive(Debug, Deserialize)]
-struct GetCursorParams {
-    agent: String,
-    channel: String,
 }
 
 async fn get_cursor_handler(
