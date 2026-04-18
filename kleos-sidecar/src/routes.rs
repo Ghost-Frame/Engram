@@ -277,8 +277,15 @@ async fn post_with_fallback(
     fallback: &str,
     body: &Value,
 ) -> Result<reqwest::Response, (StatusCode, Json<Value>)> {
-    let url = format!("{}{}", state.engram_url, primary);
-    let mut req = state.client.post(&url).json(body);
+    let url_str = format!("{}{}", state.engram_url, primary);
+    let url = kleos_lib::net::validate_outbound_url(&url_str).map_err(|e| {
+        tracing::error!(error = %e, "engram url rejected");
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "engram url invalid" })),
+        )
+    })?;
+    let mut req = state.client.post(url).json(body);
     if let Some(ref api_key) = state.engram_api_key {
         req = req.header("Authorization", format!("Bearer {}", api_key));
     }
@@ -294,8 +301,15 @@ async fn post_with_fallback(
     // If 404, try fallback path (supports both Node.js and Rust server)
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         tracing::debug!(primary = %primary, fallback = %fallback, "trying fallback path");
-        let url = format!("{}{}", state.engram_url, fallback);
-        let mut req = state.client.post(&url).json(body);
+        let url_str = format!("{}{}", state.engram_url, fallback);
+        let url = kleos_lib::net::validate_outbound_url(&url_str).map_err(|e| {
+            tracing::error!(error = %e, "engram fallback url rejected");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "engram url invalid" })),
+            )
+        })?;
+        let mut req = state.client.post(url).json(body);
         if let Some(ref api_key) = state.engram_api_key {
             req = req.header("Authorization", format!("Bearer {}", api_key));
         }
@@ -659,8 +673,15 @@ pub(crate) async fn flush_pending(state: &SidecarState, session_id: &str) -> usi
         .collect();
     let batch_req = json!({ "ops": ops });
 
-    let url = format!("{}/batch", state.engram_url);
-    let mut req = state.client.post(&url).json(&batch_req);
+    let url_str = format!("{}/batch", state.engram_url);
+    let url = match kleos_lib::net::validate_outbound_url(&url_str) {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::error!(error = %e, "batch flush: engram url rejected");
+            return 0;
+        }
+    };
+    let mut req = state.client.post(url).json(&batch_req);
     if let Some(ref api_key) = state.engram_api_key {
         req = req.header("Authorization", format!("Bearer {}", api_key));
     }
