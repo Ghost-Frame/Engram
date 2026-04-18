@@ -1,5 +1,7 @@
 //! Database backup, verification, and WAL checkpoint helpers.
 
+pub use super::types::{CheckpointMode, RestoreReport};
+
 use crate::{EngError, Result};
 use std::path::Path;
 
@@ -51,20 +53,6 @@ pub async fn integrity_check(path: &Path) -> Result<Vec<String>> {
     } else {
         Ok(messages)
     }
-}
-
-/// Outcome of a restore-test probe on a backup file.
-#[derive(Debug, Clone)]
-pub struct RestoreReport {
-    /// Value from `PRAGMA schema_version`.
-    pub schema_version: i64,
-    /// Row count of the `memories` table, or `None` if that table is absent.
-    /// Absence does not fail the probe -- a fresh database legitimately has
-    /// no `memories` yet -- but it is surfaced so callers can flag surprises.
-    pub memory_count: Option<i64>,
-    /// Count of tables reported by `sqlite_master`. Used as a liveness signal
-    /// even when `memories` hasn't been created yet.
-    pub table_count: i64,
 }
 
 /// Restore-test hook: opens the backup file as a live SQLite database and
@@ -145,25 +133,6 @@ pub async fn wal_checkpoint(
     })
     .await
     .or(Ok((0, 0, 0)))
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum CheckpointMode {
-    Passive,
-    Full,
-    Restart,
-    Truncate,
-}
-
-impl CheckpointMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Passive => "PASSIVE",
-            Self::Full => "FULL",
-            Self::Restart => "RESTART",
-            Self::Truncate => "TRUNCATE",
-        }
-    }
 }
 
 #[cfg(test)]

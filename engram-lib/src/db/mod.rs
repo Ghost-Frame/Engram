@@ -4,6 +4,7 @@ pub mod pitr;
 pub mod pool;
 pub mod schema;
 pub mod schema_sql;
+pub mod types;
 
 use crate::config::Config;
 use crate::vector::{LanceIndex, VectorIndex};
@@ -12,7 +13,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-pub use pool::{DatabasePools, DbPoolConfig};
+pub use pool::DatabasePools;
+pub use types::DbPoolConfig;
 
 pub struct Database {
     db_path: String,

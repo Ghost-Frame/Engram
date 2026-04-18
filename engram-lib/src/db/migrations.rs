@@ -1,3 +1,5 @@
+pub use super::types::PostImportValidation;
+
 use crate::EngError;
 use crate::Result;
 use tracing::info;
@@ -665,41 +667,6 @@ fn run_migration_upload_sessions(conn: &rusqlite::Connection) -> Result<()> {
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
-}
-
-/// Summary of post-import integrity checks. Each field is a row count for a
-/// condition that should be zero on a healthy import. A non-zero value means
-/// the migrate tool (or operator) has cleanup work before enabling live
-/// traffic.
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PostImportValidation {
-    /// Memories whose user_id does not resolve to a row in users.
-    pub memories_orphan_user: i64,
-    /// Memory rows marked latest that share a root with another latest row.
-    pub memories_duplicate_latest: i64,
-    /// Memories with a NULL active embedding column.
-    pub memories_missing_embedding: i64,
-    /// memory_links rows whose source or target memory no longer exists.
-    pub links_orphan: i64,
-    /// audit_log rows with NULL user_id (pre-tenant legacy rows).
-    pub audit_log_null_user: i64,
-    /// session_quality rows with user_id = 0 (pre-migration-6 drift).
-    pub session_quality_zero_user: i64,
-    /// behavioral_drift_events rows with user_id = 0.
-    pub behavioral_drift_zero_user: i64,
-}
-
-impl PostImportValidation {
-    /// True when every field is zero.
-    pub fn is_clean(&self) -> bool {
-        self.memories_orphan_user == 0
-            && self.memories_duplicate_latest == 0
-            && self.memories_missing_embedding == 0
-            && self.links_orphan == 0
-            && self.audit_log_null_user == 0
-            && self.session_quality_zero_user == 0
-            && self.behavioral_drift_zero_user == 0
-    }
 }
 
 /// Run a set of read-only integrity queries the migrate tool can surface in a

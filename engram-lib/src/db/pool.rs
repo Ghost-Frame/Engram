@@ -1,29 +1,8 @@
+pub use super::types::DbPoolConfig;
+
 use crate::{EngError, Result};
 use deadpool_sqlite::{Config as PoolManagerConfig, Hook, HookError, Pool, PoolConfig, Runtime};
 use std::time::Duration;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DbPoolConfig {
-    pub max_readers: usize,
-    pub writer_count: usize,
-    pub busy_timeout_ms: u64,
-    pub wal_autocheckpoint: u64,
-}
-
-impl Default for DbPoolConfig {
-    fn default() -> Self {
-        let cpu_count = std::thread::available_parallelism()
-            .map(|count| count.get())
-            .unwrap_or(1);
-
-        Self {
-            max_readers: cpu_count * 2,
-            writer_count: 1,
-            busy_timeout_ms: 5_000,
-            wal_autocheckpoint: 10_000,
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct DatabasePools {

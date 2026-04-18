@@ -17,40 +17,16 @@
 //! The WAL in SQLite is checkpointed into the main file by VACUUM INTO, so a
 //! single snapshot file is self-contained and does not need a sidecar -wal.
 
+pub use super::types::{PreparedRestore, Snapshot, SnapshotKind};
+
 use crate::db::backup::{integrity_check, restore_test};
 use crate::{EngError, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use serde::Serialize;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const HOURLY_PREFIX: &str = "kleos-backup-";
 const BACKUP_SUFFIX: &str = ".db";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SnapshotKind {
-    Hourly,
-    Daily,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Snapshot {
-    pub path: PathBuf,
-    pub created_at: DateTime<Utc>,
-    pub kind: SnapshotKind,
-    pub size_bytes: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PreparedRestore {
-    pub snapshot: Snapshot,
-    pub dest_path: PathBuf,
-    pub integrity_ok: bool,
-    pub schema_version: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub memory_count: Option<i64>,
-}
 
 /// Parse `kleos-backup-YYYYMMDD-HHMMSS.db` into a UTC timestamp. Returns
 /// `None` for any filename that does not match the expected shape.
@@ -143,6 +119,7 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use std::io::Write;
+    use std::path::PathBuf;
 
     fn write_snapshot_file(path: &Path, payload: &str) {
         let mut f = fs::File::create(path).expect("create snapshot file");
