@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -151,4 +152,16 @@ pub struct CommunityStats {
     pub count: i64,
     pub avg_importance: f64,
     pub categories: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageRankResult {
+    pub scores: HashMap<i64, f64>,
+    pub iterations: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageRankUpdateResult {
+    pub memories: usize,
+    pub iterations: u32,
 }
