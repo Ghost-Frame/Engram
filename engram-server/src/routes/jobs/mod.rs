@@ -9,17 +9,12 @@ use engram_lib::jobs::{
     self, cleanup_jobs, count_failed_jobs, list_failed_jobs, list_pending_jobs, list_running_jobs,
     purge_failed_jobs, retry_failed_job,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
-#[derive(Debug, Deserialize)]
-struct ListJobsQuery {
-    status: Option<String>,
-    limit: Option<i64>,
-    offset: Option<i64>,
-}
+mod types;
+use types::{CleanupBody, ListJobsQuery, PaginationQuery, PurgeBody, RetryBody};
 
 async fn list_jobs(
     State(state): State<AppState>,
@@ -90,11 +85,6 @@ async fn list_jobs(
     })))
 }
 
-#[derive(Debug, Deserialize)]
-struct RetryBody {
-    id: i64,
-}
-
 async fn retry_job_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -115,11 +105,6 @@ async fn retry_job_handler(
     }
 
     Ok(Json(json!({ "retried": true, "id": body.id })))
-}
-
-#[derive(Debug, Deserialize)]
-struct PurgeBody {
-    older_than_days: Option<i64>,
 }
 
 async fn purge_jobs_handler(
@@ -159,12 +144,6 @@ async fn job_stats_handler(
 }
 
 // --- New handlers for P0-0 Phase 27c ---
-
-#[derive(Debug, Deserialize)]
-struct PaginationQuery {
-    limit: Option<i64>,
-    offset: Option<i64>,
-}
 
 async fn list_pending_handler(
     State(state): State<AppState>,
@@ -279,11 +258,6 @@ async fn retry_job_by_id_handler(
         )));
     }
     Ok(Json(json!({ "retried": true, "id": id })))
-}
-
-#[derive(Debug, Deserialize)]
-struct CleanupBody {
-    older_than_days: Option<i64>,
 }
 
 async fn cleanup_jobs_handler(
