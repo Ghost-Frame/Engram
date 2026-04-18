@@ -7,10 +7,12 @@ use axum::{
 use engram_lib::personality::{
     detect_signals, get_profile, list_signals, store_signal, update_profile,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::{DetectBody, ListSignalsParams, StoreSignalBody};
 
 // ---------------------------------------------------------------------------
 // Router
@@ -26,32 +28,6 @@ pub fn router() -> Router<AppState> {
         .route("/personality/profile", get(get_profile_handler))
         .route("/personality/profile/update", post(update_profile_handler))
 }
-
-// ---------------------------------------------------------------------------
-// Body / query structs
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct DetectBody {
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct StoreSignalBody {
-    signal_type: String,
-    value: f64,
-    evidence: Option<String>,
-    agent: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListSignalsParams {
-    limit: Option<usize>,
-}
-
-// ---------------------------------------------------------------------------
-// Handlers
-// ---------------------------------------------------------------------------
 
 /// POST /personality/detect
 /// Detect personality signals from text content. No DB write.
