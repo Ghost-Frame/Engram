@@ -27,12 +27,12 @@
 //! returns malformed JSON, the heuristic output is used so the pipeline never
 //! blocks a caller on an optional model.
 
+use super::types::Reflection;
 use crate::db::Database;
 use crate::llm::{local::LocalModelClient, repair_and_parse_json};
 use crate::{EngError, Result};
 use async_trait::async_trait;
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
 
 /// Importance threshold at or above which an unused memory gets a reflection.
 pub const REFLECTION_MIN_IMPORTANCE: i32 = 6;
@@ -44,17 +44,6 @@ pub const REFLECTION_RECONSOLIDATE_IMPORTANCE: i32 = 8;
 /// Age (days) a memory must reach before it's eligible for a reflection --
 /// below this we can't tell whether it's simply fresh or genuinely unused.
 pub const REFLECTION_MIN_AGE_DAYS: i64 = 7;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Reflection {
-    pub id: i64,
-    pub content: String,
-    pub reflection_type: String,
-    pub source_memory_ids: Vec<i64>,
-    pub confidence: f64,
-    pub user_id: i64,
-    pub created_at: String,
-}
 
 /// Create a reflection from source memories.
 #[tracing::instrument(skip(db, content, source_memory_ids))]
