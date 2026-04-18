@@ -66,3 +66,11 @@ metrics-exporter-prometheus = { version = "0.16", default-features = false, feat
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# Faster build for production deploys where pull-on-prod rebuilds the world.
+# Thin LTO + parallel codegen cuts build time ~3-4x and target size materially,
+# at a small runtime cost that is invisible for the memory server's workload.
+[profile.release-prod]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
