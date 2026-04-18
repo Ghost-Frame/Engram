@@ -2,7 +2,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -11,6 +10,9 @@ use crate::state::AppState;
 use kleos_lib::episodes::{
     self, AssignMemoriesRequest, CreateEpisodeRequest, UpdateEpisodeRequest,
 };
+
+mod types;
+use types::ListEpisodesParams;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -36,14 +38,6 @@ async fn create_episode(
 }
 
 // GET /episodes
-#[derive(Debug, Deserialize)]
-struct ListEpisodesParams {
-    limit: Option<usize>,
-    query: Option<String>,
-    after: Option<String>,
-    before: Option<String>,
-}
-
 async fn list_episodes(
     State(state): State<AppState>,
     Auth(auth): Auth,
