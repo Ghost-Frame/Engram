@@ -3123,243 +3123,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
-name = "kleos-approval-tui"
-version = "0.3.1"
-dependencies = [
- "chrono",
- "clap",
- "crossterm 0.28.1",
- "ratatui 0.30.0",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "kleos-cli"
-version = "0.3.1"
-dependencies = [
- "clap",
- "kleos-lib",
- "reqwest",
- "rpassword",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "kleos-cred"
-version = "0.3.1"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "argon2",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "clap",
- "crossterm 0.28.1",
- "directories",
- "eframe",
- "kleos-lib",
- "hex",
- "hmac",
- "rand 0.9.3",
- "ratatui 0.29.0",
- "reqwest",
- "rpassword",
- "rusqlite",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "shellexpand",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "zeroize",
-]
-
-[[package]]
-name = "kleos-credd"
-version = "0.3.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum 0.8.8",
- "chrono",
- "clap",
- "kleos-cred",
- "kleos-lib",
- "hex",
- "http-body-util",
- "reqwest",
- "rpassword",
- "serde",
- "serde_json",
- "subtle",
- "thiserror 2.0.18",
- "tokio",
- "tower 0.5.3",
- "tower-http 0.6.8",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "kleos-lib"
-version = "0.3.1"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "async-trait",
- "axum 0.8.8",
- "base64 0.22.1",
- "chrono",
- "deadpool-sqlite",
- "dirs 6.0.0",
- "flate2",
- "futures",
- "hex",
- "hmac",
- "lancedb",
- "lru 0.12.5",
- "ndarray 0.16.1",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "ort",
- "pdf-extract",
- "protoc-bin-vendored-linux-x86_64",
- "rand 0.9.3",
- "regex",
- "reqwest",
- "rusqlite",
- "secrecy",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "thiserror 2.0.18",
- "tokenizers",
- "tokio",
- "tokio-rusqlite",
- "tokio-util",
- "toml",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "url",
- "uuid",
- "zeroize",
- "zip",
-]
-
-[[package]]
-name = "kleos-mcp"
-version = "0.3.1"
-dependencies = [
- "axum 0.8.8",
- "clap",
- "kleos-lib",
- "rusqlite",
- "serde",
- "serde_json",
- "subtle",
- "tokio",
- "tower 0.5.3",
- "tower-http 0.6.8",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "kleos-migrate"
-version = "0.3.1"
-dependencies = [
- "anyhow",
- "arrow",
- "arrow-array",
- "arrow-schema",
- "chrono",
- "clap",
- "kleos-lib",
- "futures",
- "indicatif",
- "lancedb",
- "libsql",
- "rusqlite",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "kleos-server"
-version = "0.3.1"
-dependencies = [
- "axum 0.8.8",
- "base64 0.22.1",
- "chrono",
- "clap",
- "kleos-cred",
- "kleos-lib",
- "futures",
- "hex",
- "hmac",
- "metrics",
- "metrics-exporter-prometheus",
- "mimalloc",
- "rand 0.9.3",
- "reqwest",
- "rusqlite",
- "secrecy",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tokio",
- "tokio-util",
- "tower 0.5.3",
- "tower-http 0.6.8",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "kleos-sidecar"
-version = "0.3.1"
-dependencies = [
- "axum 0.8.8",
- "chrono",
- "clap",
- "dirs 6.0.0",
- "kleos-lib",
- "notify",
- "notify-debouncer-mini",
- "rand 0.9.3",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "subtle",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "enumflags2"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4945,6 +4708,243 @@ name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
+
+[[package]]
+name = "kleos-approval-tui"
+version = "0.3.1"
+dependencies = [
+ "chrono",
+ "clap",
+ "crossterm 0.28.1",
+ "ratatui 0.30.0",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kleos-cli"
+version = "0.3.1"
+dependencies = [
+ "clap",
+ "kleos-lib",
+ "reqwest",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kleos-cred"
+version = "0.3.1"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "argon2",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "crossterm 0.28.1",
+ "directories",
+ "eframe",
+ "hex",
+ "hmac",
+ "kleos-lib",
+ "rand 0.9.3",
+ "ratatui 0.29.0",
+ "reqwest",
+ "rpassword",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "shellexpand",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "kleos-credd"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum 0.8.8",
+ "chrono",
+ "clap",
+ "hex",
+ "http-body-util",
+ "kleos-cred",
+ "kleos-lib",
+ "reqwest",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower 0.5.3",
+ "tower-http 0.6.8",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kleos-lib"
+version = "0.3.1"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "axum 0.8.8",
+ "base64 0.22.1",
+ "chrono",
+ "deadpool-sqlite",
+ "dirs 6.0.0",
+ "flate2",
+ "futures",
+ "hex",
+ "hmac",
+ "lancedb",
+ "lru 0.12.5",
+ "ndarray 0.16.1",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "ort",
+ "pdf-extract",
+ "protoc-bin-vendored-linux-x86_64",
+ "rand 0.9.3",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokenizers",
+ "tokio",
+ "tokio-rusqlite",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "zeroize",
+ "zip",
+]
+
+[[package]]
+name = "kleos-mcp"
+version = "0.3.1"
+dependencies = [
+ "axum 0.8.8",
+ "clap",
+ "kleos-lib",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tokio",
+ "tower 0.5.3",
+ "tower-http 0.6.8",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kleos-migrate"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "chrono",
+ "clap",
+ "futures",
+ "indicatif",
+ "kleos-lib",
+ "lancedb",
+ "libsql",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kleos-server"
+version = "0.3.1"
+dependencies = [
+ "axum 0.8.8",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "futures",
+ "hex",
+ "hmac",
+ "kleos-cred",
+ "kleos-lib",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "mimalloc",
+ "rand 0.9.3",
+ "reqwest",
+ "rusqlite",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tokio",
+ "tokio-util",
+ "tower 0.5.3",
+ "tower-http 0.6.8",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "kleos-sidecar"
+version = "0.3.1"
+dependencies = [
+ "axum 0.8.8",
+ "chrono",
+ "clap",
+ "dirs 6.0.0",
+ "kleos-lib",
+ "notify",
+ "notify-debouncer-mini",
+ "rand 0.9.3",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
 
 [[package]]
 name = "kqueue"

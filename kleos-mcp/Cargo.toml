@@ -9,6 +9,9 @@ repository = "https://github.com/Ghost-Frame/Kleos-rust"
 homepage = "https://kleos.lol"
 readme = "../README.md"
 
+[lib]
+name = "kleos_mcp"
+
 [features]
 default = []
 http = ["dep:axum", "dep:tower-http", "dep:subtle"]

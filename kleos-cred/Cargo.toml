@@ -8,6 +8,10 @@ license = "Elastic-2.0"
 repository = "https://github.com/Ghost-Frame/Kleos"
 homepage = "https://kleos.lol"
 
+[lib]
+name = "kleos_cred"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cred"
 path = "src/bin/cred.rs"
