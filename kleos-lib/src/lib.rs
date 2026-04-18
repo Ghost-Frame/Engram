@@ -7,7 +7,7 @@ pub mod approvals;
 pub mod artifacts;
 pub mod audit;
 pub mod auth;
-pub mod cognithor;
+pub mod cognitive;
 pub mod config;
 pub mod context;
 pub mod conversations;
