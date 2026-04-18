@@ -3,7 +3,6 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -11,14 +10,11 @@ use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::audit::{count_audit_entries, list_audit_entries};
 
+mod types;
+use types::AuditQueryParams;
+
 pub fn router() -> Router<AppState> {
     Router::new().route("/audit", get(get_audit))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AuditQueryParams {
-    pub limit: Option<i64>,
-    pub offset: Option<i64>,
 }
 
 async fn get_audit(
