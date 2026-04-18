@@ -26,7 +26,7 @@ You can expect an initial response within 72 hours. We'll work with you to under
 
 - All API endpoints require `Authorization: Bearer eg_...` tokens
 - Tokens are scoped per-user with role-based access control
-- Bootstrap endpoint is one-time only (returns 403 after first use)
+- Bootstrap requires a pre-shared `KLEOS_BOOTSTRAP_SECRET` and is one-time only (atomic claim via database sentinel)
 - Rate limiting is applied after auth resolution to prevent tenant enumeration
 
 ### Data Isolation
@@ -44,7 +44,7 @@ You can expect an initial response within 72 hours. We'll work with you to under
 
 ### Credential Management
 
-- `kleos-credd` handles secrets with ChaCha20-Poly1305 encryption
+- `kleos-credd` handles secrets with AES-256-GCM encryption
 - Master password never stored -- used to derive encryption key
 - Agent keys are scoped and rotatable
 - `allow_raw` flag is explicitly opt-in and logged
