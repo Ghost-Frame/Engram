@@ -1,6 +1,6 @@
 [package]
 name = "engram-cli"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version.workspace = true
 description = "CLI client for Engram -- persistent semantic memory for AI agents"
@@ -10,7 +10,7 @@ homepage = "https://engram.lol"
 readme = "../README.md"
 
 [dependencies]
-engram-lib = { path = "../engram-lib", version = "0.3.0" }
+engram-lib = { path = "../engram-lib", version = "0.3.1" }
 clap = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

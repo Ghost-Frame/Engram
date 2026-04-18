@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "agent-forge"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "clap",
@@ -3124,7 +3124,7 @@ checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
 name = "engram-approval-tui"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "clap",
@@ -3140,7 +3140,7 @@ dependencies = [
 
 [[package]]
 name = "engram-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
  "engram-lib",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "engram-cred"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3188,7 +3188,7 @@ dependencies = [
 
 [[package]]
 name = "engram-credd"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3214,7 +3214,7 @@ dependencies = [
 
 [[package]]
 name = "engram-lib"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -3263,7 +3263,7 @@ dependencies = [
 
 [[package]]
 name = "engram-mcp"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum 0.8.8",
  "clap",
@@ -3281,7 +3281,7 @@ dependencies = [
 
 [[package]]
 name = "engram-migrate"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -3304,7 +3304,7 @@ dependencies = [
 
 [[package]]
 name = "engram-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum 0.8.8",
  "base64 0.22.1",
@@ -3338,7 +3338,7 @@ dependencies = [
 
 [[package]]
 name = "engram-sidecar"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum 0.8.8",
  "chrono",

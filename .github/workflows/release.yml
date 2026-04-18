@@ -144,15 +144,16 @@ jobs:
               return 1
             fi
           }
+          # Only engram-lib and engram-cred publish to crates.io. The
+          # names engram-server, engram-cli, and engram-mcp are held by
+          # third-party squatters (see crates.io/crates/engram-server
+          # owner federicorinaldi, engram-mcp owner edg-l) whose
+          # publications postdate the original TypeScript Engram but
+          # preempt this Rust rewrite in the registry. Binaries ship
+          # through Docker Hub and the GitHub release artifacts instead.
           publish engram-lib
           sleep 30
           publish engram-cred
-          sleep 30
-          publish engram-server
-          sleep 15
-          publish engram-cli
-          sleep 15
-          publish engram-mcp
 
   publish-npm:
     permissions:
