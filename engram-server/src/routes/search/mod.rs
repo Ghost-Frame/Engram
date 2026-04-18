@@ -5,10 +5,12 @@ use axum::{
 };
 use engram_lib::fsrs::decay;
 use rusqlite::params;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::DecayScoresQuery;
 
 /// Search-adjacent routes: decay refresh and decay scores.
 /// Core search and recall are already in memory.rs.
@@ -75,12 +77,6 @@ async fn refresh_decay(
         .await?;
 
     Ok(Json(json!({ "refreshed": count })))
-}
-
-#[derive(Debug, Deserialize)]
-struct DecayScoresQuery {
-    pub limit: Option<usize>,
-    pub order: Option<String>,
 }
 
 async fn get_decay_scores(
