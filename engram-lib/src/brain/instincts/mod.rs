@@ -886,7 +886,9 @@ pub async fn check_ghost_replacement(
     let count = to_remove.len();
     for id in to_remove {
         network.remove(id);
-        let _ = pattern::delete_pattern(db, id, user_id).await;
+        if let Err(e) = pattern::delete_pattern(db, id, user_id).await {
+            tracing::warn!(pattern_id = id, error = %e, "delete_pattern (ghost replacement) failed");
+        }
     }
 
     Ok(count)
