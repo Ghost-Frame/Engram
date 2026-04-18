@@ -1,6 +1,6 @@
 [package]
 name = "kleos-server"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version.workspace = true
 description = "HTTP server for Kleos -- persistent semantic memory for AI agents"
@@ -10,8 +10,8 @@ homepage = "https://kleos.lol"
 readme = "../README.md"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "0.3.0", features = ["sqlcipher"] }
-kleos-cred = { path = "../kleos-cred", version = "0.3.0" }
+kleos-lib = { path = "../kleos-lib", version = "0.3.1", features = ["sqlcipher"] }
+kleos-cred = { path = "../kleos-cred", version = "0.3.1" }
 axum = { workspace = true, features = ["ws"] }
 hmac = { workspace = true }
 sha2 = { workspace = true }

@@ -144,15 +144,16 @@ jobs:
               return 1
             fi
           }
+          # Only kleos-lib and kleos-cred publish to crates.io. The
+          # names kleos-server, kleos-cli, and kleos-mcp are held by
+          # third-party squatters (see crates.io/crates/kleos-server
+          # owner federicorinaldi, kleos-mcp owner edg-l) whose
+          # publications postdate the original TypeScript Kleos but
+          # preempt this Rust rewrite in the registry. Binaries ship
+          # through Docker Hub and the GitHub release artifacts instead.
           publish kleos-lib
           sleep 30
           publish kleos-cred
-          sleep 30
-          publish kleos-server
-          sleep 15
-          publish kleos-cli
-          sleep 15
-          publish kleos-mcp
 
   publish-npm:
     permissions:
