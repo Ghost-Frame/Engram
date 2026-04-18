@@ -4,6 +4,7 @@ version = "0.3.2"
 edition = "2021"
 rust-version.workspace = true
 description = "Credential management daemon for Kleos"
+license = "Elastic-2.0"
 
 [lib]
 name = "kleos_credd"

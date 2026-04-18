@@ -17,14 +17,14 @@ pub async fn audit_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    // Record activity timestamp so the dreamer can gate heavy work behind idleness.
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // Record activity timestamp so the dreamer can gate heavy work behind
+    // idleness.  We use a monotonic millisecond counter rather than
+    // wall-clock seconds: NTP steps and DST transitions can move
+    // SystemTime backwards, which would make the dreamer either spin
+    // (elapsed < 0 wraps via saturating_sub) or skip cycles forever.
     state
         .last_request_time
-        .store(now_secs, std::sync::atomic::Ordering::Relaxed);
+        .store(crate::dreamer::monotonic_millis(), std::sync::atomic::Ordering::Relaxed);
 
     // Capture pre-request fields before the request is consumed.
     let auth_ctx = request.extensions().get::<AuthContext>().cloned();

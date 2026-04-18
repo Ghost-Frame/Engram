@@ -74,8 +74,7 @@ async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json
     // Test search
     if test_id.is_some() {
         let embedding = {
-            let embedder_guard = state.embedder.read().await;
-            if let Some(ref embedder) = *embedder_guard {
+            if let Some(embedder) = state.current_embedder().await {
                 embedder.embed("onboarding test").await.ok()
             } else {
                 None
@@ -303,15 +302,12 @@ async fn fetch_url(
             parent_memory_id: None,
         };
 
-        {
-            let embedder_guard = state.embedder.read().await;
-            if let Some(ref embedder) = *embedder_guard {
-                if let Ok(emb) = embedder
-                    .embed(&store_content[..store_content.len().min(8000)])
-                    .await
-                {
-                    req.embedding = Some(emb);
-                }
+        if let Some(embedder) = state.current_embedder().await {
+            if let Ok(emb) = embedder
+                .embed(&store_content[..store_content.len().min(8000)])
+                .await
+            {
+                req.embedding = Some(emb);
             }
         }
 

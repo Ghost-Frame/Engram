@@ -99,8 +99,7 @@ async fn store_memory(
 
     req.user_id = Some(auth.user_id);
     if req.embedding.is_none() {
-        let embedder_guard = state.embedder.read().await;
-        if let Some(ref embedder) = *embedder_guard {
+        if let Some(embedder) = state.current_embedder().await {
             match embedder.embed(&req.content).await {
                 Ok(emb) => req.embedding = Some(emb),
                 Err(e) => tracing::warn!("embedding failed for store: {}", e),
@@ -165,8 +164,7 @@ async fn search_memories(
     Json(body): Json<SearchBody>,
 ) -> Result<Json<Value>, AppError> {
     let embedding = {
-        let embedder_guard = state.embedder.read().await;
-        if let Some(ref embedder) = *embedder_guard {
+        if let Some(embedder) = state.current_embedder().await {
             match embedder.embed(&body.query).await {
                 Ok(emb) => Some(emb),
                 Err(e) => {
@@ -263,8 +261,7 @@ async fn explain_search(
 
     let embed_start = std::time::Instant::now();
     let embedding = {
-        let embedder_guard = state.embedder.read().await;
-        if let Some(ref embedder) = *embedder_guard {
+        if let Some(embedder) = state.current_embedder().await {
             match embedder.embed(&body.query).await {
                 Ok(emb) => Some(emb),
                 Err(e) => {
@@ -386,8 +383,7 @@ async fn recall(
     let static_memories: Vec<_> = all_list.into_iter().filter(|m| m.is_static).collect();
 
     let query_embedding = {
-        let embedder_guard = state.embedder.read().await;
-        if let Some(ref embedder) = *embedder_guard {
+        if let Some(embedder) = state.current_embedder().await {
             match embedder.embed(&query).await {
                 Ok(emb) => Some(emb),
                 Err(e) => {
@@ -619,8 +615,7 @@ async fn faceted_search_handler(
 
     // Embed query if present.
     if !body.query.is_empty() {
-        let embedder_guard = state.embedder.read().await;
-        if let Some(ref embedder) = *embedder_guard {
+        if let Some(embedder) = state.current_embedder().await {
             match embedder.embed(&body.query).await {
                 Ok(emb) => body.embedding = Some(emb),
                 Err(e) => tracing::warn!("embedding failed for faceted search: {}", e),

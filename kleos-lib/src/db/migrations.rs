@@ -232,6 +232,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_service_dead_letters),
         transactional: true,
     },
+    Migration {
+        version: 23,
+        description: "memories_list_covering_index",
+        up: run_migration_memories_list_covering_index,
+        down: Some(down_migration_memories_list_covering_index),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -260,6 +267,7 @@ const MIGRATION_API_KEY_HASH_VERSION: i64 = 19;
 const MIGRATION_LINK_COVERING_INDEXES: i64 = 20;
 const MIGRATION_UPLOAD_SESSIONS: i64 = 21;
 const MIGRATION_SERVICE_DEAD_LETTERS: i64 = 22;
+const MIGRATION_MEMORIES_LIST_COVERING_INDEX: i64 = 23;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -424,6 +432,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 22: service_dead_letters");
         run_migration_service_dead_letters(conn)?;
         record_migration(conn, MIGRATION_SERVICE_DEAD_LETTERS, "service_dead_letters")?;
+    }
+
+    if current_version < MIGRATION_MEMORIES_LIST_COVERING_INDEX {
+        info!("Running migration 23: memories_list_covering_index");
+        run_migration_memories_list_covering_index(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_MEMORIES_LIST_COVERING_INDEX,
+            "memories_list_covering_index",
+        )?;
     }
 
     Ok(())
@@ -1142,6 +1160,36 @@ fn down_migration_service_dead_letters(conn: &rusqlite::Connection) -> Result<()
     conn.execute_batch("DROP TABLE IF EXISTS service_dead_letters;")
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     info!("Dropped service_dead_letters table (migration 22 down)");
+    Ok(())
+}
+
+/// Migration 23: partial covering index for the /memory list hot path.
+///
+/// The list query always filters by `is_latest = 1 AND is_consolidated = 0`
+/// and nearly always by `user_id`, then orders by `id DESC` for
+/// most-recent-first pagination. Without a composite index the planner falls
+/// back to `idx_memories_user` (user_id only) plus a temp-table sort, which
+/// costs O(N log N) per page on high-fanout users.
+///
+/// The partial predicate keeps the index narrow (rows destined to be hidden
+/// by `is_latest = 0` or `is_consolidated = 1` are excluded entirely), and
+/// `(user_id, id DESC)` means the planner can satisfy ORDER BY via index
+/// walk with a simple seek + LIMIT k.
+fn run_migration_memories_list_covering_index(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_memories_list_user_id_desc \
+         ON memories(user_id, id DESC) \
+         WHERE is_latest = 1 AND is_consolidated = 0;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Created idx_memories_list_user_id_desc (migration 23)");
+    Ok(())
+}
+
+fn down_migration_memories_list_covering_index(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch("DROP INDEX IF EXISTS idx_memories_list_user_id_desc;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Dropped idx_memories_list_user_id_desc (migration 23 down)");
     Ok(())
 }
 
