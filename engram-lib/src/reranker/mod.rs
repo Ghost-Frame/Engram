@@ -1,5 +1,7 @@
 pub mod pool;
+mod types;
 
+use self::types::{HttpRerankRequest, HttpRerankResponse};
 use crate::config::Config;
 use crate::embeddings::download::ensure_reranker_model;
 use crate::resilience::{retry_with_backoff, BreakerConfig, CircuitBreaker, CircuitError};
@@ -260,25 +262,6 @@ impl HttpReranker {
     pub fn breaker_state(&self) -> &'static str {
         self.breaker.state()
     }
-}
-
-#[derive(serde::Serialize)]
-struct HttpRerankRequest<'a> {
-    model: &'a str,
-    query: &'a str,
-    documents: Vec<&'a str>,
-    top_n: usize,
-}
-
-#[derive(serde::Deserialize)]
-struct HttpRerankResponse {
-    results: Vec<HttpRerankResult>,
-}
-
-#[derive(serde::Deserialize)]
-struct HttpRerankResult {
-    index: usize,
-    relevance_score: f64,
 }
 
 #[async_trait]
