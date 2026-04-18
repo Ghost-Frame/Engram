@@ -5,23 +5,18 @@ use axum::{
 };
 use kleos_lib::fsrs;
 use rusqlite::{params, OptionalExtension};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::{ReviewBody, StateQuery};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/fsrs/review", post(review))
         .route("/fsrs/state", get(get_state))
         .route("/fsrs/init", post(init_backfill))
-}
-
-#[derive(Debug, Deserialize)]
-struct ReviewBody {
-    pub id: Option<i64>,
-    pub memory_id: Option<i64>,
-    pub grade: Option<u8>,
 }
 
 async fn review(
@@ -167,11 +162,6 @@ async fn review(
         .await?;
 
     Ok(Json(json!({ "id": id, "fsrs": new_state })))
-}
-
-#[derive(Debug, Deserialize)]
-struct StateQuery {
-    pub id: Option<i64>,
 }
 
 async fn get_state(
