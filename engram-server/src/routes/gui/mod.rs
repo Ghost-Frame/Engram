@@ -9,7 +9,6 @@ use axum::{
 };
 use hmac::{Hmac, Mac};
 use secrecy::{ExposeSecret, SecretString};
-use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
 use std::path::PathBuf;
@@ -21,6 +20,9 @@ use crate::error::AppError;
 use crate::state::AppState;
 use engram_lib::auth::{self, Scope};
 use engram_lib::memory;
+
+mod types;
+use types::{BulkArchiveBody, CreateMemoryBody, LoginForm, UpdateMemoryBody};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -330,11 +332,6 @@ fn cookie_attributes(_headers: &HeaderMap) -> &'static str {
     }
 }
 
-#[derive(serde::Deserialize)]
-pub struct LoginForm {
-    api_key: String,
-}
-
 /// POST /gui/auth - authenticate with API key
 async fn gui_auth(
     State(state): State<AppState>,
@@ -592,15 +589,6 @@ pub async fn gui_spa_middleware(
 // GUI Memory CRUD
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
-struct CreateMemoryBody {
-    content: String,
-    category: Option<String>,
-    importance: Option<i32>,
-    tags: Option<Vec<String>>,
-    is_static: Option<bool>,
-}
-
 async fn gui_create_memory(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -639,14 +627,6 @@ async fn gui_create_memory(
     ))
 }
 
-#[derive(Deserialize)]
-struct UpdateMemoryBody {
-    content: Option<String>,
-    category: Option<String>,
-    importance: Option<i32>,
-    is_static: Option<bool>,
-}
-
 async fn gui_update_memory(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -678,11 +658,6 @@ async fn gui_delete_memory(
 
     memory::delete(&state.db, id, user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
-}
-
-#[derive(Deserialize)]
-struct BulkArchiveBody {
-    ids: Vec<i64>,
 }
 
 async fn gui_bulk_archive(
