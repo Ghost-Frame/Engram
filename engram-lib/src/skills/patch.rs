@@ -1,3 +1,4 @@
+use super::types::DetectedPatchType;
 use crate::{EngError, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -86,13 +87,6 @@ pub fn compute_unified_diff(
         }
     }
     diff
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum DetectedPatchType {
-    Full,
-    SearchReplace,
-    MultiFile,
 }
 
 /// Detect what kind of patch content we have.

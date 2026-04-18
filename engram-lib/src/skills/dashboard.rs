@@ -1,7 +1,7 @@
+use super::types::{SkillOverview, SkillStats};
 use crate::db::Database;
 use crate::{EngError, Result};
 use rusqlite::{params, OptionalExtension};
-use serde::{Deserialize, Serialize};
 
 /// Compute a weighted skill score.
 /// 50% completion rate, 30% applied rate, 20% recency.
@@ -36,15 +36,6 @@ pub fn days_since(datetime_str: &str) -> f64 {
         .unwrap_or(999.0)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillOverview {
-    pub total_skills: i64,
-    pub active_skills: i64,
-    pub deprecated_skills: i64,
-    pub total_executions: i64,
-    pub avg_trust_score: f64,
-}
-
 /// Get dashboard overview stats.
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_overview(db: &Database, user_id: i64) -> Result<SkillOverview> {
@@ -72,17 +63,6 @@ pub async fn get_overview(db: &Database, user_id: i64) -> Result<SkillOverview> 
         total_executions: 0,
         avg_trust_score: 0.0,
     }))
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillStats {
-    pub id: i64,
-    pub name: String,
-    pub execution_count: i32,
-    pub success_count: i32,
-    pub failure_count: i32,
-    pub trust_score: f64,
-    pub computed_score: f64,
 }
 
 /// Get stats for all active skills.

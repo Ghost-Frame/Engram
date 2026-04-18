@@ -1,7 +1,7 @@
+use super::types::ExecutionAnalysis;
 use crate::db::Database;
 use crate::{EngError, Result};
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
 
 // -- Levenshtein edit distance --
 
@@ -74,17 +74,6 @@ pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result
         Ok(None)
     })
     .await
-}
-
-// -- Analysis types --
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecutionAnalysis {
-    pub skill_applied: bool,
-    pub skill_helpful: bool,
-    pub tool_calls: Vec<String>,
-    pub error_category: Option<String>,
-    pub improvement_notes: Option<String>,
 }
 
 pub const ANALYSIS_SYSTEM_PROMPT: &str = "You are a skill execution analyzer. Given a task, the skill that was applied, and the execution result, analyze whether the skill was helpful and provide structured feedback. Return JSON with fields: skill_applied (bool), skill_helpful (bool), tool_calls (string[]), error_category (string|null), improvement_notes (string|null).";
