@@ -1,38 +1,13 @@
 //! Connection pooling for per-tenant databases using deadpool-sqlite.
 //!
 //! Provides reader/writer separation for concurrent access to tenant SQLite databases.
-//! This module is only available when the `db_pool` feature is enabled.
 
+use super::types::TenantPoolConfig;
 use crate::{EngError, Result};
 use deadpool_sqlite::{Config as PoolManagerConfig, Hook, HookError, Pool, PoolConfig, Runtime};
 use std::path::Path;
 use std::time::Duration;
 use tracing::info;
-
-/// Configuration for tenant database connection pools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TenantPoolConfig {
-    /// Maximum number of reader connections per tenant.
-    pub max_readers: usize,
-    /// Number of writer connections (usually 1 for SQLite).
-    pub writer_count: usize,
-    /// Busy timeout in milliseconds.
-    pub busy_timeout_ms: u64,
-    /// WAL autocheckpoint interval.
-    pub wal_autocheckpoint: u64,
-}
-
-impl Default for TenantPoolConfig {
-    fn default() -> Self {
-        // Smaller pools per tenant since we may have many tenants
-        Self {
-            max_readers: 4,
-            writer_count: 1,
-            busy_timeout_ms: 5_000,
-            wal_autocheckpoint: 10_000,
-        }
-    }
-}
 
 /// Connection pools for a single tenant database.
 #[derive(Clone)]

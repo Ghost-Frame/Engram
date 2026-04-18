@@ -18,9 +18,9 @@ pub mod types;
 
 pub use database::TenantDatabase;
 pub use id::tenant_id_from_user;
-pub use pool::{TenantPoolConfig, TenantPools};
+pub use pool::TenantPools;
 pub use registry::TenantRegistry;
-pub use types::{TenantConfig, TenantHandle, TenantRow, TenantStatus};
+pub use types::{TenantConfig, TenantHandle, TenantPoolConfig, TenantRow, TenantStatus};
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> crate::EngError {
     crate::EngError::DatabaseMessage(err.to_string())
