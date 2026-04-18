@@ -2,9 +2,9 @@
 // COMMUNITY DETECTION via Louvain modularity optimization
 // ============================================================================
 
+use super::types::{CommunitiesResult, CommunityMember, CommunityStats};
 use crate::db::Database;
 use crate::{EngError, Result};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::info;
 
@@ -21,27 +21,6 @@ fn edge_weight(link_type: &str, similarity: f64) -> f64 {
         _ => 1.0,
     };
     similarity * tw
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommunitiesResult {
-    pub communities: usize,
-    pub memories: usize,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommunityMember {
-    pub id: i64,
-    pub content: String,
-    pub category: String,
-    pub importance: i64,
-    pub created_at: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommunityStats {
-    pub community_id: i64,
-    pub count: i64,
-    pub avg_importance: f64,
-    pub categories: String,
 }
 
 #[tracing::instrument(skip(db))]
