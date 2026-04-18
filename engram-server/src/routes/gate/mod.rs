@@ -1,6 +1,5 @@
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use rusqlite::params;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -10,6 +9,9 @@ use engram_lib::gate::{
     check_command_with_context, cleanup_expired_approvals, complete_gate, respond_to_gate,
     GateCheckRequest, PendingApproval, APPROVAL_TIMEOUT_SECS, TOOLS_REQUIRING_APPROVAL,
 };
+
+mod types;
+use types::{CompleteBody, GuardBody, RespondBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -135,13 +137,6 @@ async fn check_handler(
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
-#[derive(Deserialize)]
-struct RespondBody {
-    gate_id: i64,
-    approved: bool,
-    reason: Option<String>,
-}
-
 async fn respond_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -166,14 +161,6 @@ async fn respond_handler(
     Ok(Json(result))
 }
 
-#[derive(Deserialize)]
-struct CompleteBody {
-    gate_id: i64,
-    output: String,
-    #[serde(default)]
-    known_secrets: Vec<String>,
-}
-
 async fn complete_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -188,11 +175,6 @@ async fn complete_handler(
     )
     .await?;
     Ok(Json(json!({ "ok": true })))
-}
-
-#[derive(Deserialize)]
-struct GuardBody {
-    action: String,
 }
 
 /// Simple guard endpoint that checks if an action conflicts with high-importance static rules.
