@@ -34,6 +34,14 @@ impl EmbeddingProvider for OpenAiProvider {
         &'a self,
         text: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<f32>>> + Send + 'a>> {
+        use tracing::Instrument;
+        let span = tracing::info_span!(
+            "embed_openai",
+            backend = "openai",
+            model = %self.model,
+            text_len = text.len(),
+            dim = self.dim
+        );
         Box::pin(async move {
             let url = "https://api.openai.com/v1/embeddings";
             let resp = self
@@ -78,7 +86,7 @@ impl EmbeddingProvider for OpenAiProvider {
             }
 
             Ok(embedding)
-        })
+        }.instrument(span))
     }
 
     fn embed_batch<'a>(
@@ -86,6 +94,14 @@ impl EmbeddingProvider for OpenAiProvider {
         texts: &'a [String],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>
     {
+        use tracing::Instrument;
+        let span = tracing::info_span!(
+            "embed_openai_batch",
+            backend = "openai",
+            model = %self.model,
+            batch_size = texts.len(),
+            dim = self.dim
+        );
         Box::pin(async move {
             let url = "https://api.openai.com/v1/embeddings";
             let resp = self
@@ -140,6 +156,6 @@ impl EmbeddingProvider for OpenAiProvider {
             }
 
             Ok(results)
-        })
+        }.instrument(span))
     }
 }
