@@ -9,6 +9,14 @@ repository = "https://github.com/Ghost-Frame/Kleos-rust"
 homepage = "https://kleos.lol"
 readme = "../README.md"
 
+[[bin]]
+name = "kleos-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "kleos-server"
+path = "src/main.rs"
+
 [lib]
 name = "kleos_server"
 

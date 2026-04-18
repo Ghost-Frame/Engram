@@ -9,6 +9,10 @@ description = "ETL tool to migrate Kleos from libsql to rusqlite + LanceDB"
 name = "kleos-migrate"
 path = "src/main.rs"
 
+[[bin]]
+name = "kleos-migrate"
+path = "src/main.rs"
+
 [dependencies]
 kleos-lib = { path = "../kleos-lib" }
 libsql = { workspace = true }
