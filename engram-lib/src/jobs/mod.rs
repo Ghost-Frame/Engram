@@ -18,12 +18,13 @@
 pub mod pagerank_refresh;
 #[cfg(feature = "tenant-sharding")]
 pub mod pagerank_refresh_tenant;
+pub mod types;
+pub use types::*;
 
 // Durable job queue with retries (ported from TS jobs/index.ts + scheduler.ts)
 use crate::db::Database;
 use crate::Result;
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;
@@ -31,55 +32,6 @@ use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 use tracing::{debug, error, warn};
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum JobStatus {
-    Pending,
-    Running,
-    Completed,
-    Failed,
-}
-impl JobStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Running => "running",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-        }
-    }
-    pub fn from_str_loose(s: &str) -> Self {
-        match s {
-            "running" => Self::Running,
-            "completed" => Self::Completed,
-            "failed" => Self::Failed,
-            _ => Self::Pending,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Job {
-    pub id: i64,
-    pub job_type: String,
-    pub payload: String,
-    pub status: JobStatus,
-    pub attempts: i32,
-    pub max_attempts: i32,
-    pub error: Option<String>,
-    pub created_at: String,
-    pub claimed_at: Option<String>,
-    pub completed_at: Option<String>,
-    pub next_retry_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct JobStats {
-    pub pending: i64,
-    pub running: i64,
-    pub completed: i64,
-    pub failed: i64,
-}
 
 type JobFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 type JobHandler = Arc<dyn Fn(Value) -> JobFuture + Send + Sync>;
