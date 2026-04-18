@@ -1,11 +1,11 @@
 //! Memory feedback -- user ratings on memory recall quality.
 //! Adjusts importance based on feedback signals.
 
+use super::types::{FeedbackRequest, FeedbackStats};
 use crate::db::Database;
 use crate::memory;
 use crate::{EngError, Result};
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
@@ -13,22 +13,6 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 }
 
 const VALID_RATINGS: &[&str] = &["helpful", "irrelevant", "off-topic", "outdated"];
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FeedbackRequest {
-    pub memory_id: i64,
-    pub rating: String,
-    pub context: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FeedbackStats {
-    pub helpful: i64,
-    pub irrelevant: i64,
-    pub off_topic: i64,
-    pub outdated: i64,
-    pub total: i64,
-}
 
 /// Record user feedback on a memory and adjust its importance accordingly.
 #[tracing::instrument(skip(db, req), fields(memory_id = req.memory_id, rating = %req.rating))]
