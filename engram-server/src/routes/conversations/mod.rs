@@ -2,16 +2,18 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::conversations::{
-    self, AddMessageRequest, BulkInsertRequest, CreateConversationRequest, SearchMessagesRequest,
+    self, BulkInsertRequest, CreateConversationRequest, SearchMessagesRequest,
     UpdateConversationRequest, UpsertConversationRequest,
 };
+
+mod types;
+use types::{GetConversationParams, ListConversationsParams, ListMessagesParams, MessageBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -37,12 +39,6 @@ async fn create(
 }
 
 // GET /conversations
-#[derive(Debug, Deserialize)]
-struct ListConversationsParams {
-    limit: Option<usize>,
-    agent: Option<String>,
-}
-
 async fn list(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -58,12 +54,6 @@ async fn list(
 }
 
 // GET /conversations/{id}
-#[derive(Debug, Deserialize)]
-struct GetConversationParams {
-    limit: Option<usize>,
-    offset: Option<usize>,
-}
-
 async fn get_one(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -104,13 +94,6 @@ async fn remove(
 }
 
 // POST /conversations/{id}/messages
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum MessageBody {
-    Single(AddMessageRequest),
-    Batch(Vec<AddMessageRequest>),
-}
-
 async fn add_msg(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -139,12 +122,6 @@ async fn add_msg(
 }
 
 // GET /conversations/{id}/messages
-#[derive(Debug, Deserialize)]
-struct ListMessagesParams {
-    limit: Option<usize>,
-    offset: Option<usize>,
-}
-
 async fn list_msgs(
     State(state): State<AppState>,
     Auth(auth): Auth,
