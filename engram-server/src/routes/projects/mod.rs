@@ -3,12 +3,14 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
+
+mod types;
+use types::StatusQuery;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -58,11 +60,6 @@ async fn create_project(
     Ok(Json(
         json!({ "created": true, "id": id, "name": name, "status": status, "created_at": created_at }),
     ))
-}
-
-#[derive(Deserialize)]
-struct StatusQuery {
-    status: Option<String>,
 }
 
 async fn list_projects(
