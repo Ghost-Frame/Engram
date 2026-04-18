@@ -4,6 +4,8 @@ pub mod graph;
 pub mod intelligence;
 pub mod memory;
 pub mod services;
+pub mod skills;
+pub mod structural;
 
 use crate::App;
 use engram_lib::Result;
@@ -52,6 +54,8 @@ fn all_tools() -> Vec<ToolDef> {
     intelligence::register(&mut out);
     services::register(&mut out);
     admin::register(&mut out);
+    structural::register(&mut out);
+    skills::register(&mut out);
     out
 }
 
@@ -101,6 +105,22 @@ pub async fn dispatch(app: &App, name: &str, args: Value) -> Result<Value> {
         "admin.vector_sync_replay" => admin::vector_sync_replay(app, args).await,
         "admin.backup" => admin::backup(app, args).await,
         "admin.checkpoint" => admin::checkpoint(app, args).await,
+        "structural.analyze" => structural::analyze(app, args).await,
+        "structural.detail" => structural::detail(app, args).await,
+        "structural.between" => structural::between(app, args).await,
+        "structural.distance" => structural::distance(app, args).await,
+        "structural.trace" => structural::trace(app, args).await,
+        "structural.impact" => structural::impact(app, args).await,
+        "structural.diff" => structural::diff(app, args).await,
+        "structural.evolve" => structural::evolve(app, args).await,
+        "structural.categorize" => structural::categorize(app, args).await,
+        "structural.extract" => structural::extract(app, args).await,
+        "structural.compose" => structural::compose(app, args).await,
+        "structural.memory_graph" => structural::memory_graph(app, args).await,
+        "skill.search" => skills::skill_search(app, args).await,
+        "skill.fix" => skills::skill_fix(app, args).await,
+        "skill.upload" => skills::skill_upload(app, args).await,
+        "skill.execute" => skills::skill_execute(app, args).await,
         _ => Err(engram_lib::EngError::NotFound(format!(
             "unknown tool: {name}"
         ))),
