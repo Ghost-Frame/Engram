@@ -1,9 +1,9 @@
 //! Consolidation -- auto-summarize memory clusters by merging similar memories.
 
+use super::types::{ConsolidationRecord, SweepResult};
 use crate::db::Database;
 use crate::memory::types::Memory;
 use crate::{EngError, Result};
-use serde::Serialize;
 use tracing::info;
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
@@ -276,18 +276,6 @@ pub async fn find_consolidation_candidates(
     let result: Vec<Vec<String>> = clusters.into_values().filter(|c| c.len() >= 2).collect();
 
     Ok(result)
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ConsolidationRecord {
-    pub id: i64,
-    pub summary: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SweepResult {
-    pub pairs_found: i64,
-    pub consolidated: i64,
 }
 
 /// Run an automatic consolidation sweep: find candidate groups above the
