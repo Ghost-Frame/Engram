@@ -22,10 +22,15 @@ use engram_lib::validation::{
     MAX_MEMORY_ENTITY_FANOUT,
 };
 use rusqlite::{params, OptionalExtension};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::{
+    DeleteRelationshipBody, EntitySearchBody, FactsQuery, GraphQuery, GraphSearchBody, ListQuery,
+    NeighborhoodQuery, RelationshipQuery, UpdateEntityBody,
+};
 
 // ---------------------------------------------------------------------------
 // Router
@@ -132,45 +137,6 @@ async fn create_entity_handler(
 // ---------------------------------------------------------------------------
 // GET /entities
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct ListQuery {
-    pub limit: Option<i64>,
-    pub offset: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct UpdateEntityBody {
-    pub name: Option<String>,
-    pub entity_type: Option<String>,
-    pub description: Option<String>,
-    pub metadata: Option<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct EntitySearchBody {
-    pub query: String,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RelationshipQuery {
-    #[serde(rename = "type")]
-    pub relationship_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeleteRelationshipBody {
-    pub target_entity_id: i64,
-    #[serde(rename = "type")]
-    pub relationship_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FactsQuery {
-    pub limit: Option<usize>,
-    pub memory_id: Option<i64>,
-}
 
 async fn list_entities_handler(
     State(state): State<AppState>,
@@ -552,16 +518,6 @@ async fn create_relationship_handler(
 // GET /graph  (accepts ?limit=N or ?max=N for GUI compat, ?depth= is accepted but unused)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct GraphQuery {
-    pub limit: Option<i64>,
-    pub max: Option<i64>,
-    #[allow(dead_code)]
-    pub depth: Option<i64>,
-    #[allow(dead_code)]
-    pub offset: Option<i64>,
-}
-
 async fn graph_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -654,12 +610,6 @@ async fn build_graph_handler(
 // POST /graph/search
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct GraphSearchBody {
-    pub query: String,
-    pub limit: Option<usize>,
-}
-
 async fn graph_search_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -673,14 +623,6 @@ async fn graph_search_handler(
 // ---------------------------------------------------------------------------
 // GET /graph/neighborhood/{id}
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct NeighborhoodQuery {
-    pub depth: Option<u32>,
-    /// Comma-separated link types to filter traversal (e.g. "similarity,cite").
-    /// If omitted, all link types are traversed.
-    pub link_types: Option<String>,
-}
 
 async fn neighborhood_handler(
     State(state): State<AppState>,
