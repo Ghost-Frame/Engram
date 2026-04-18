@@ -114,6 +114,14 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         );
         CREATE INDEX IF NOT EXISTS idx_links_source ON memory_links(source_id);
         CREATE INDEX IF NOT EXISTS idx_links_target ON memory_links(target_id);
+        -- Covering indices for graph neighbor and link-fetch queries (plan 3.1).
+        -- user_id filtering happens through JOIN to memories, so the covering
+        -- columns (target_id/source_id, similarity, type) let the planner
+        -- satisfy the common UNION from the index alone.
+        CREATE INDEX IF NOT EXISTS idx_links_source_covering
+            ON memory_links(source_id, target_id, similarity, type);
+        CREATE INDEX IF NOT EXISTS idx_links_target_covering
+            ON memory_links(target_id, source_id, similarity, type);
 
         -- Ingestion dedup hashes -- prevents duplicate document ingestion.
         -- Keyed by SHA-256 of the raw input content, scoped per user.
