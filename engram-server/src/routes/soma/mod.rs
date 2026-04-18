@@ -2,7 +2,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -12,6 +11,12 @@ use engram_lib::services::soma::{
     add_agent_to_group, create_group, delete_agent, get_agent, get_stats as get_soma_stats,
     heartbeat, list_agent_logs, list_agents, list_groups, log_event, register_agent,
     remove_agent_from_group, set_status, RegisterAgentRequest,
+};
+
+mod types;
+use types::{
+    AddMemberBody, CreateAgentBody, CreateGroupBody, ListAgentsParams, ListLogsParams,
+    LogEventBody, UpdateAgentBody,
 };
 
 pub fn router() -> Router<AppState> {
@@ -42,34 +47,6 @@ pub fn router() -> Router<AppState> {
             axum::routing::delete(remove_member_handler),
         )
         .route("/soma/stats", get(get_stats))
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateAgentBody {
-    name: String,
-    #[serde(alias = "agent_type", alias = "category")]
-    r#type: Option<String>,
-    description: Option<String>,
-    capabilities: Option<serde_json::Value>,
-    config: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct UpdateAgentBody {
-    status: Option<String>,
-    #[serde(alias = "agent_type", alias = "category")]
-    r#type: Option<String>,
-    description: Option<String>,
-    capabilities: Option<serde_json::Value>,
-    config: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListAgentsParams {
-    #[serde(alias = "type")]
-    agent_type: Option<String>,
-    status: Option<String>,
-    limit: Option<usize>,
 }
 
 async fn create_agent_handler(
@@ -188,12 +165,6 @@ async fn get_stats(
 
 // --- New handlers for P0-0 Phase 27c: groups and logs ---
 
-#[derive(Debug, Deserialize)]
-struct CreateGroupBody {
-    name: String,
-    description: Option<String>,
-}
-
 async fn create_group_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -209,11 +180,6 @@ async fn list_groups_handler(
 ) -> Result<Json<Value>, AppError> {
     let groups = list_groups(&state.db, auth.user_id).await?;
     Ok(Json(json!({ "groups": groups, "count": groups.len() })))
-}
-
-#[derive(Debug, Deserialize)]
-struct AddMemberBody {
-    agent_id: i64,
 }
 
 async fn add_member_handler(
@@ -237,13 +203,6 @@ async fn remove_member_handler(
     Ok(Json(json!({ "removed": removed })))
 }
 
-#[derive(Debug, Deserialize)]
-struct LogEventBody {
-    level: String,
-    message: String,
-    data: Option<serde_json::Value>,
-}
-
 async fn log_event_handler(
     State(state): State<AppState>,
     Auth(_auth): Auth,
@@ -252,11 +211,6 @@ async fn log_event_handler(
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let id = log_event(&state.db, agent_id, &body.level, &body.message, body.data).await?;
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
-}
-
-#[derive(Debug, Deserialize)]
-struct ListLogsParams {
-    limit: Option<i64>,
 }
 
 async fn list_logs_handler(
