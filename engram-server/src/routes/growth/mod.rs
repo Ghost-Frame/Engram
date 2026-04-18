@@ -4,7 +4,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -14,6 +13,9 @@ use engram_lib::intelligence::{
     growth::{list_observations, materialize, reflect},
     types::{GrowthObservation, GrowthReflectRequest},
 };
+
+mod types;
+use types::{MaterializeBody, ObservationsQuery};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -31,11 +33,6 @@ async fn reflect_handler(
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
-#[derive(Deserialize)]
-struct ObservationsQuery {
-    limit: Option<usize>,
-}
-
 async fn observations_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -48,11 +45,6 @@ async fn observations_handler(
     Ok(Json(
         json!({ "observations": observations, "count": count }),
     ))
-}
-
-#[derive(Deserialize)]
-struct MaterializeBody {
-    observation_id: i64,
 }
 
 async fn materialize_handler(
