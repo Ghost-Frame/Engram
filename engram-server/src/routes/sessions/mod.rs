@@ -5,7 +5,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -16,6 +15,9 @@ use kleos_lib::sessions::{
     append_output, create_session, get_session, get_session_output, list_sessions,
     SessionCreateRequest,
 };
+
+mod types;
+use types::{AppendBody, ListSessionsParams};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -59,12 +61,6 @@ async fn create_session_handler(
     Ok((StatusCode::CREATED, Json(json!(session))))
 }
 
-#[derive(Deserialize)]
-struct ListSessionsParams {
-    limit: Option<u32>,
-    offset: Option<u32>,
-}
-
 async fn list_sessions_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -85,11 +81,6 @@ async fn get_session_handler(
     let session = get_session(&state.db, &id, auth.user_id).await?;
     let output = get_session_output(&state.db, &id, auth.user_id).await?;
     Ok(Json(json!({ "session": session, "output": output })))
-}
-
-#[derive(Deserialize)]
-struct AppendBody {
-    line: String,
 }
 
 async fn append_handler(
