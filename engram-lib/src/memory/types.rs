@@ -515,3 +515,18 @@ pub struct VectorSyncReplayReport {
     pub failed: usize,
     pub skipped: usize,
 }
+
+/// Result from FTS5 search -- id, rank position, and BM25 score
+#[derive(Debug, Clone)]
+pub struct FtsHit {
+    pub memory_id: i64,
+    pub rank: usize,
+    pub bm25_score: f64,
+}
+
+/// Result from vector ANN search -- id and its rank position (0-based, ascending similarity)
+#[derive(Debug, Clone)]
+pub struct VectorHit {
+    pub memory_id: i64,
+    pub rank: usize,
+}

@@ -1,14 +1,8 @@
+use super::types::VectorHit;
 use crate::db::Database;
 use crate::EngError;
 use crate::Result;
 use tracing::warn;
-
-/// Result from vector ANN search -- id and its rank position (0-based, ascending similarity)
-#[derive(Debug, Clone)]
-pub struct VectorHit {
-    pub memory_id: i64,
-    pub rank: usize,
-}
 
 /// Search for similar memories using SQLite's native vector index.
 /// Returns up to `limit` results ordered by vector similarity (most similar first).
