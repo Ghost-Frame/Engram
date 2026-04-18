@@ -4,70 +4,14 @@
 
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use engram_lib::memory::{self, types::StoreRequest};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
 use engram_lib::validation::MAX_BATCH_OPS;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub struct BatchRequest {
-    pub ops: Vec<BatchOp>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub enum BatchOp {
-    Store { body: StoreBody },
-    Update { body: UpdateBody },
-    Link { body: LinkBody },
-}
-
-#[derive(Debug, Deserialize)]
-pub struct StoreBody {
-    pub content: String,
-    pub category: Option<String>,
-    pub source: Option<String>,
-    pub tags: Option<Vec<String>>,
-    pub importance: Option<i32>,
-    pub is_static: Option<bool>,
-    pub session_id: Option<String>,
-    pub space_id: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateBody {
-    pub id: i64,
-    pub content: Option<String>,
-    pub category: Option<String>,
-    pub importance: Option<i32>,
-    pub tags: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LinkBody {
-    pub source_id: i64,
-    pub target_id: i64,
-    pub similarity: Option<f64>,
-    #[serde(rename = "type")]
-    pub link_type: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct BatchResult {
-    pub index: usize,
-    pub op: String,
-    pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
+mod types;
+use types::{BatchOp, BatchRequest, BatchResult, LinkBody, StoreBody, UpdateBody};
 
 // ---------------------------------------------------------------------------
 // Router
