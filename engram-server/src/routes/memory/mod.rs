@@ -11,12 +11,17 @@ use engram_lib::memory::{
     types::{FacetedSearchRequest, ListOptions, SearchRequest, StoreRequest, UpdateRequest},
 };
 use rusqlite::params;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::{
+    ForgetBody, ListQuery, RecallBody, SearchBody, SearchTagsBody, TrashListOptions,
+    UpdateTagsBody,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -152,25 +157,6 @@ async fn store_memory(
             "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
         })),
     ))
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchBody {
-    pub query: String,
-    pub limit: Option<usize>,
-    pub category: Option<String>,
-    pub source: Option<String>,
-    pub tags: Option<Vec<String>>,
-    pub threshold: Option<f32>,
-    pub tag: Option<String>,
-    pub space_id: Option<i64>,
-    pub include_forgotten: Option<bool>,
-    pub mode: Option<String>,
-    pub question_type: Option<engram_lib::memory::types::QuestionType>,
-    pub expand_relationships: Option<bool>,
-    pub include_links: Option<bool>,
-    pub latest_only: Option<bool>,
-    pub source_filter: Option<String>,
 }
 
 async fn search_memories(
@@ -373,14 +359,6 @@ async fn explain_search(
     })))
 }
 
-#[derive(Debug, Deserialize)]
-struct RecallBody {
-    pub context: Option<String>,
-    pub query: Option<String>,
-    pub limit: Option<usize>,
-    pub space_id: Option<i64>,
-}
-
 async fn recall(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -529,39 +507,6 @@ async fn recall(
                        "important": important_count, "recent": recent_count },
         "count": count,
     })))
-}
-
-#[derive(Debug, Deserialize)]
-struct ListQuery {
-    pub limit: Option<usize>,
-    pub offset: Option<usize>,
-    pub category: Option<String>,
-    pub source: Option<String>,
-    pub space_id: Option<i64>,
-    pub include_forgotten: Option<bool>,
-    pub include_archived: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TrashListOptions {
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchTagsBody {
-    pub tags: Vec<String>,
-    pub match_all: Option<bool>,
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct UpdateTagsBody {
-    pub tags: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ForgetBody {
-    pub reason: Option<String>,
 }
 
 async fn list_memories(
