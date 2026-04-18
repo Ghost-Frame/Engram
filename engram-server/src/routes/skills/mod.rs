@@ -2,7 +2,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -14,6 +13,13 @@ use engram_lib::skills::{
     UpdateSkillRequest,
 };
 use engram_lib::validation::MAX_PAGINATION_OFFSET;
+
+mod types;
+use types::{
+    CaptureBody, CloudSearchBody, CloudUploadBody, DeriveBody, ExecuteSkillsBody,
+    GetExecutionsParams, JudgeBody, ListSkillsParams, RecordExecutionBody, RecordToolQualityBody,
+    SearchSkillsBody, StatsParams, SyncSkillsBody, UploadSkillBody,
+};
 
 /// Clamp a caller-supplied `limit` into [1, max] with a default when absent.
 fn clamp_limit(raw: Option<usize>, default: usize, max: usize) -> Result<usize, AppError> {
@@ -115,85 +121,6 @@ pub fn router() -> Router<AppState> {
         .route("/skills/cloud/search", post(cloud_search_handler))
         .route("/skills/cloud/upload", post(cloud_upload_handler))
 }
-// ---------------------------------------------------------------------------
-// Query / body structs
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct ListSkillsParams {
-    limit: Option<usize>,
-    offset: Option<usize>,
-    agent: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchSkillsBody {
-    query: String,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RecordExecutionBody {
-    success: bool,
-    duration_ms: Option<f64>,
-    error_type: Option<String>,
-    error_message: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GetExecutionsParams {
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct JudgeBody {
-    judge_agent: String,
-    score: f64,
-    rationale: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RecordToolQualityBody {
-    tool_name: String,
-    agent: String,
-    success: bool,
-    latency_ms: Option<f64>,
-    error_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct StatsParams {
-    sort_by: Option<String>,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CaptureBody {
-    description: String,
-    agent: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeriveBody {
-    parent_ids: Vec<i64>,
-    direction: String,
-    agent: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CloudSearchBody {
-    query: String,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CloudUploadBody {
-    name: String,
-    description: String,
-    content: String,
-    category: String,
-    tags: Option<Vec<String>>,
-}
 
 // ---------------------------------------------------------------------------
 // CRUD handlers
@@ -266,6 +193,7 @@ async fn update_skill_handler(
     let skill = skills::update_skill(&state.db, id, req, auth.user_id).await?;
     Ok(Json(json!(skill)))
 }
+
 // ---------------------------------------------------------------------------
 // Execution handlers
 // ---------------------------------------------------------------------------
@@ -401,6 +329,7 @@ async fn get_tool_quality_handler(
     let quality = skills::get_tool_quality(&state.db, &tool_name).await?;
     Ok(Json(json!(quality)))
 }
+
 // ---------------------------------------------------------------------------
 // Dashboard handlers
 // ---------------------------------------------------------------------------
@@ -539,11 +468,6 @@ async fn cloud_upload_handler(
 // Sync, Execute, Upload handlers (parity with original engram)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct SyncSkillsBody {
-    dirs: Option<Vec<String>>,
-}
-
 /// Sync skills from filesystem directories.
 /// Note: In the Rust version, skills are primarily stored in the database.
 /// This endpoint scans specified directories for skill files and imports them.
@@ -636,15 +560,6 @@ async fn sync_skills_handler(
     })))
 }
 
-#[derive(Debug, Deserialize)]
-struct ExecuteSkillsBody {
-    task: String,
-    #[allow(dead_code)]
-    skill_dirs: Option<Vec<String>>,
-    #[allow(dead_code)]
-    search_scope: Option<String>,
-}
-
 /// Execute a task using relevant skills as context.
 /// This requires an LLM to be configured.
 async fn execute_skills_handler(
@@ -701,16 +616,6 @@ async fn execute_skills_handler(
         "response": response,
         "skills_used": skill_names,
     })))
-}
-
-#[derive(Debug, Deserialize)]
-struct UploadSkillBody {
-    skill_dir: String,
-    #[allow(dead_code)]
-    visibility: Option<String>,
-    #[allow(dead_code)]
-    origin: Option<String>,
-    tags: Option<Vec<String>>,
 }
 
 /// Upload a skill from a local directory to the cloud.
