@@ -7,7 +7,7 @@ use kleos_lib::llm::local::LocalModelClient;
 use kleos_lib::reranker::Reranker;
 use kleos_lib::services::brain::BrainBackend;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch, Mutex, RwLock};
 
@@ -59,4 +59,9 @@ pub struct AppState {
         Arc<Mutex<HashMap<i64, (PendingApproval, tokio::sync::oneshot::Sender<bool>)>>>,
     /// When true, write operations return 503 to prevent data corruption during crash loops.
     pub safe_mode: Arc<AtomicBool>,
+    /// Running stats from the background dreamer task.
+    pub dreamer_stats: crate::dreamer::DreamerStatsHandle,
+    /// Unix-seconds timestamp of the most recent HTTP request. Used by the
+    /// dreamer to gate heavy consolidation work behind a period of idleness.
+    pub last_request_time: Arc<AtomicU64>,
 }

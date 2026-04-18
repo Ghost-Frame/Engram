@@ -74,6 +74,7 @@ fn build_cors_layer() -> CorsLayer {
     }
 }
 
+use crate::middleware::audit::audit_middleware;
 use crate::middleware::auth::auth_middleware;
 use crate::middleware::json_depth::json_depth_middleware;
 use crate::middleware::rate_limit::{preauth_rate_limit_middleware, rate_limit_middleware};
@@ -136,6 +137,9 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             rate_limit_middleware,
         ))
+        // Audit runs after auth_middleware has set AuthContext so user_id/agent_id
+        // are captured. Logs are fire-and-forget so response latency is unaffected.
+        .layer(axum_mw::from_fn_with_state(state.clone(), audit_middleware))
         .layer(axum_mw::from_fn_with_state(state.clone(), auth_middleware))
         .layer(axum_mw::from_fn_with_state(
             state.clone(),

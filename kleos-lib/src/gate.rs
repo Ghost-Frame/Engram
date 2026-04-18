@@ -308,7 +308,7 @@ pub async fn complete_gate(
 
 // -- Internal helpers --
 
-async fn store_gate_request(
+pub async fn store_gate_request(
     db: &Database,
     user_id: i64,
     agent: &str,
@@ -763,6 +763,35 @@ fn is_ipv4_reserved(ip: std::net::Ipv4Addr) -> bool {
         || ip.is_unspecified()
         || ip.is_link_local()
         || ip == std::net::Ipv4Addr::new(169, 254, 169, 254)
+}
+
+/// Resolve a hostname and return Some(block_reason) if any resolved IP lands
+/// in a reserved/internal range. This catches DNS rebinding where the static
+/// hostname check passed but the resolved address is internal (127.0.0.1,
+/// 169.254.169.254 metadata, 10.0.0.0/8, etc). Callers should invoke this
+/// for any SSH target that passed the static SSRF check.
+pub async fn check_ssh_dns_rebind(host: &str, port: u16) -> Option<String> {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    let addr = format!("{}:{}", host, port);
+    let resolved = match tokio::net::lookup_host(addr).await {
+        Ok(iter) => iter.collect::<Vec<_>>(),
+        Err(e) => {
+            tracing::debug!(host, error = %e, "dns lookup failed for ssh target");
+            return None;
+        }
+    };
+    for sa in resolved {
+        if is_ip_reserved(sa.ip()) {
+            return Some(format!(
+                "SSH target {} resolves to reserved/internal address {} (DNS rebinding / SSRF prevention)",
+                host,
+                sa.ip()
+            ));
+        }
+    }
+    None
 }
 
 /// Validate an SSH command against static rules.

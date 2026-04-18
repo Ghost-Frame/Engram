@@ -6,8 +6,9 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use kleos_lib::gate::{
-    check_command_with_context, cleanup_expired_approvals, complete_gate, respond_to_gate,
-    GateCheckRequest, PendingApproval, APPROVAL_TIMEOUT_SECS, TOOLS_REQUIRING_APPROVAL,
+    check_command_with_context, check_ssh_dns_rebind, cleanup_expired_approvals, complete_gate,
+    parse_ssh_target, respond_to_gate, store_gate_request, GateCheckRequest, GateCheckResult,
+    PendingApproval, APPROVAL_TIMEOUT_SECS, TOOLS_REQUIRING_APPROVAL,
 };
 
 mod types;
@@ -27,6 +28,43 @@ async fn check_handler(
     Auth(auth): Auth,
     Json(body): Json<GateCheckRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    // Agent allowlist: if this API key is bound to an agent record, the body's
+    // declared agent must match that agent's name. Prevents one agent's key
+    // being used under another agent's identity.
+    if let Some(bound_id) = auth.key.agent_id {
+        let user_id = auth.user_id;
+        let expected: Option<String> = state
+            .db
+            .read(move |conn| {
+                conn.query_row(
+                    "SELECT name FROM agents WHERE id = ?1 AND user_id = ?2",
+                    params![bound_id, user_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .map(Some)
+                .or_else(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(kleos_lib::EngError::DatabaseMessage(other.to_string())),
+                })
+            })
+            .await?;
+        match expected {
+            Some(name) if name == body.agent => {}
+            Some(name) => {
+                return Err(AppError::from(kleos_lib::EngError::Forbidden(format!(
+                    "api key is bound to agent '{}' but request declared agent '{}'",
+                    name, body.agent
+                ))));
+            }
+            None => {
+                return Err(AppError::from(kleos_lib::EngError::Forbidden(format!(
+                    "api key bound to agent id {} which no longer exists",
+                    bound_id
+                ))));
+            }
+        }
+    }
+
     let resolved_command = state
         .credd
         .resolve_text(&state.db, auth.user_id, &body.agent, &body.command)
@@ -40,7 +78,7 @@ async fn check_handler(
                 .await?,
         );
     }
-    let result = check_command_with_context(
+    let mut result = check_command_with_context(
         &state.db,
         &body,
         auth.user_id,
@@ -49,6 +87,66 @@ async fn check_handler(
         &state.config,
     )
     .await?;
+
+    // Brain-grounded gate check: if the brain is loaded, embed the resolved
+    // command and ask the Hopfield network for the closest memories. If any
+    // high-activation recall contains a prohibition keyword, block the
+    // command and cite the rule. This mirrors the eidolon gate's semantic
+    // check -- static patterns cannot express every project-specific "never".
+    if result.allowed {
+        if let Some(reason) = brain_grounded_check(&state, auth.user_id, &resolved_command).await {
+            let gate_id = store_gate_request(
+                &state.db,
+                auth.user_id,
+                &body.agent,
+                &body.command,
+                body.context.as_deref(),
+                "blocked",
+                Some(&reason),
+            )
+            .await?;
+            let denied = GateCheckResult {
+                allowed: false,
+                reason: Some(reason),
+                resolved_command: Some(body.command.clone()),
+                gate_id,
+                requires_approval: false,
+                enrichment: None,
+            };
+            return Ok((StatusCode::CREATED, Json(json!(denied))));
+        }
+    }
+
+    // DNS rebinding / SSRF defense: if the static check allowed an SSH command,
+    // resolve the hostname and reject if any A/AAAA record is internal.
+    if result.allowed
+        && (resolved_command.contains("ssh ") || resolved_command.starts_with("ssh"))
+    {
+        if let Some(target) = parse_ssh_target(&resolved_command) {
+            let port = target.port.unwrap_or(22);
+            if let Some(block_reason) = check_ssh_dns_rebind(&target.host, port).await {
+                let gate_id = store_gate_request(
+                    &state.db,
+                    auth.user_id,
+                    &body.agent,
+                    &body.command,
+                    body.context.as_deref(),
+                    "blocked",
+                    Some(&block_reason),
+                )
+                .await?;
+                result = GateCheckResult {
+                    allowed: false,
+                    reason: Some(block_reason),
+                    resolved_command: Some(body.command.clone()),
+                    gate_id,
+                    requires_approval: false,
+                    enrichment: None,
+                };
+                return Ok((StatusCode::CREATED, Json(json!(result))));
+            }
+        }
+    }
 
     // If the command was allowed (not blocked, not pending secrets), and the tool
     // requires human approval, pause here and wait for a decision via /gate/respond.
@@ -166,6 +264,51 @@ async fn complete_handler(
     Auth(auth): Auth,
     Json(body): Json<CompleteBody>,
 ) -> Result<Json<Value>, AppError> {
+    // engram_stores enforcement: the agent must have stored at least one
+    // memory (i.e. written to engram) between gate-open and gate-complete.
+    // This is how we enforce "store outcomes after completing any task".
+    let gate_id = body.gate_id;
+    let user_id = auth.user_id;
+    let (agent, opened_at): (String, String) = state
+        .db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT agent, created_at FROM gate_requests WHERE id = ?1 AND user_id = ?2",
+                params![gate_id, user_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    kleos_lib::EngError::NotFound(format!("gate request {} not found", gate_id))
+                }
+                other => kleos_lib::EngError::DatabaseMessage(other.to_string()),
+            })
+        })
+        .await?;
+
+    let agent_filter = agent.clone();
+    let opened_at_filter = opened_at.clone();
+    let stored_count: i64 = state
+        .db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories
+                 WHERE user_id = ?1 AND source = ?2 AND created_at >= ?3",
+                params![user_id, agent_filter, opened_at_filter],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?;
+
+    if stored_count == 0 {
+        return Err(AppError::from(kleos_lib::EngError::InvalidInput(format!(
+            "gate {} cannot be completed: agent '{}' has not stored any memories \
+             since the gate was opened at {}. Store the outcome first.",
+            gate_id, agent, opened_at
+        ))));
+    }
+
     complete_gate(
         &state.db,
         body.gate_id,
@@ -174,7 +317,7 @@ async fn complete_handler(
         auth.user_id,
     )
     .await?;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(json!({ "ok": true, "engram_stores": stored_count })))
 }
 
 /// Simple guard endpoint that checks if an action conflicts with high-importance static rules.
@@ -275,4 +418,88 @@ async fn guard_handler(
         "rules": matched_rules,
         "message": message,
     })))
+}
+
+/// Semantic gate check grounded in the user's Hopfield memory. Embeds the
+/// command, asks the brain for nearest patterns, and returns a block reason
+/// if any high-activation recall contains a prohibition keyword that appears
+/// relevant to the command. Returns None if the brain/embedder is unavailable
+/// or no matching rule is found.
+async fn brain_grounded_check(
+    state: &AppState,
+    _user_id: i64,
+    command: &str,
+) -> Option<String> {
+    let brain = state.brain.as_ref()?;
+    if !brain.is_ready() {
+        return None;
+    }
+    let embedder_guard = state.embedder.read().await;
+    let embedder = embedder_guard.as_ref()?.clone();
+    drop(embedder_guard);
+
+    let options = kleos_lib::services::brain::BrainQueryOptions {
+        query: command.to_string(),
+        top_k: Some(8),
+        beta: None,
+        spread_hops: None,
+    };
+    let result = match brain.query(embedder.as_ref(), command, &options).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(error = %e, "brain_grounded_check: query failed");
+            return None;
+        }
+    };
+
+    const ACTIVATION_THRESHOLD: f64 = 0.6;
+    const PROHIBITIONS: &[&str] = &[
+        "never",
+        "do not",
+        "don't",
+        "must not",
+        "prohibited",
+        "forbidden",
+        "blocked",
+        "banned",
+    ];
+
+    let command_lower = command.to_lowercase();
+    let command_tokens: Vec<&str> = command_lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() > 3)
+        .collect();
+
+    for mem in &result.activated {
+        if mem.activation < ACTIVATION_THRESHOLD {
+            continue;
+        }
+        let content_lower = mem.content.to_lowercase();
+        let has_prohibition = PROHIBITIONS.iter().any(|k| content_lower.contains(k));
+        if !has_prohibition {
+            continue;
+        }
+        // Require at least one shared token to avoid tripping on rules that
+        // happen to contain "never" but talk about something unrelated.
+        let overlaps = command_tokens.iter().any(|t| content_lower.contains(t));
+        if !overlaps {
+            continue;
+        }
+        return Some(format!(
+            "Blocked by brain-grounded rule (memory #{}, activation {:.2}): {}",
+            mem.id,
+            mem.activation,
+            truncate(&mem.content, 200)
+        ));
+    }
+    None
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let end: String = s.chars().take(max).collect();
+        format!("{}...", end)
+    }
 }

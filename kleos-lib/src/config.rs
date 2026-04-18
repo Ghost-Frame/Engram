@@ -114,6 +114,18 @@ fn default_backup_retention_daily() -> usize {
     30
 }
 
+fn default_dreamer_enabled() -> bool {
+    true
+}
+
+fn default_dream_interval_secs() -> u64 {
+    300
+}
+
+fn default_dream_idle_threshold_secs() -> u64 {
+    60
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GateConfig {
@@ -388,6 +400,17 @@ pub struct Config {
     pub pagerank_dirty_threshold: u32,
     pub pagerank_max_concurrent: usize,
     pub pagerank_enabled: bool,
+    /// Whether to run the background dreamer/consolidation task.
+    #[serde(default = "default_dreamer_enabled")]
+    pub dreamer_enabled: bool,
+    /// Interval between dreamer cycles in seconds. Default: 300 (5 min).
+    #[serde(default = "default_dream_interval_secs")]
+    pub dream_interval_secs: u64,
+    /// Seconds of HTTP idle required before a dreamer tick actually runs.
+    /// Protects active request traffic from CPU contention with consolidation
+    /// work. Set to 0 to disable idle gating. Default: 60.
+    #[serde(default = "default_dream_idle_threshold_secs")]
+    pub dream_idle_threshold_secs: u64,
     /// Whether to run the auto-backup background task.
     pub backup_enabled: bool,
     /// Seconds between scheduled backups. Default: 6 hours.
@@ -457,6 +480,9 @@ impl Default for Config {
             pagerank_dirty_threshold: 100,
             pagerank_max_concurrent: 2,
             pagerank_enabled: true,
+            dreamer_enabled: default_dreamer_enabled(),
+            dream_interval_secs: default_dream_interval_secs(),
+            dream_idle_threshold_secs: default_dream_idle_threshold_secs(),
             backup_enabled: false,
             backup_interval_secs: 6 * 3600,
             backup_dir: "backups".to_string(),
@@ -708,6 +734,29 @@ impl Config {
         }
         if let Ok(v) = std::env::var("ENGRAM_PAGERANK_ENABLED") {
             config.pagerank_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = std::env::var("ENGRAM_DREAMER_ENABLED") {
+            config.dreamer_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = std::env::var("ENGRAM_DREAM_INTERVAL_SECS") {
+            match v.parse() {
+                Ok(n) => config.dream_interval_secs = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_DREAM_INTERVAL_SECS={}, using default {}",
+                    v,
+                    config.dream_interval_secs
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("ENGRAM_DREAM_IDLE_THRESHOLD_SECS") {
+            match v.parse() {
+                Ok(n) => config.dream_idle_threshold_secs = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_DREAM_IDLE_THRESHOLD_SECS={}, using default {}",
+                    v,
+                    config.dream_idle_threshold_secs
+                ),
+            }
         }
         if let Ok(v) = std::env::var("ENGRAM_BACKUP_ENABLED") {
             config.backup_enabled = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");

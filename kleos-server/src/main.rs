@@ -11,8 +11,9 @@ use kleos_server::background::{
     start_auto_backup_task, start_auto_checkpoint_task, start_job_cleanup_task,
     start_vector_sync_replay_task,
 };
+use kleos_server::dreamer::{new_stats_handle, start_dreamer_task};
 use kleos_server::state::AppState;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
 #[global_allocator]
@@ -176,6 +177,8 @@ async fn main() {
         approval_notify: Some(approval_tx),
         pending_approvals: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         safe_mode: Arc::new(AtomicBool::new(safe_mode_active)),
+        dreamer_stats: new_stats_handle(),
+        last_request_time: Arc::new(AtomicU64::new(0)),
     };
 
     // Start background PageRank refresh job if enabled.
@@ -186,6 +189,25 @@ async fn main() {
         Some((token, handle))
     } else {
         tracing::info!("pagerank disabled -- skipping refresh job");
+        None
+    };
+
+    // Start background dreamer (intelligence pipeline + brain dream cycle).
+    let dreamer_handles = if state.config.dreamer_enabled {
+        let (token, handle) = start_dreamer_task(
+            Arc::clone(&state.db),
+            Arc::clone(&state.config),
+            state.brain.clone(),
+            Arc::clone(&state.dreamer_stats),
+            Arc::clone(&state.last_request_time),
+        );
+        tracing::info!(
+            interval_secs = state.config.dream_interval_secs,
+            "dreamer background task started"
+        );
+        Some((token, handle))
+    } else {
+        tracing::info!("dreamer disabled -- skipping");
         None
     };
 
@@ -229,6 +251,7 @@ async fn main() {
         let _vector_sync_token = vector_sync_token;
         let _pagerank_token = pagerank_handles.as_ref().map(|(t, _)| t);
         let _backup_token = backup_handles.as_ref().map(|(t, _)| t);
+        let _dreamer_token = dreamer_handles.as_ref().map(|(t, _)| t);
 
         let mut tasks: Vec<(&str, tokio::task::JoinHandle<()>)> = vec![
             ("auto-checkpoint", checkpoint_handle),
@@ -240,6 +263,9 @@ async fn main() {
         }
         if let Some((_, handle)) = backup_handles {
             tasks.push(("auto-backup", handle));
+        }
+        if let Some((_, handle)) = dreamer_handles {
+            tasks.push(("dreamer", handle));
         }
 
         // Wait for ANY task to exit -- they should all run forever.

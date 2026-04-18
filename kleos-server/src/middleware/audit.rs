@@ -7,7 +7,6 @@ use kleos_lib::auth::AuthContext;
 
 use crate::state::AppState;
 
-#[allow(dead_code)]
 /// Axum middleware that logs every HTTP request to the audit trail.
 ///
 /// Runs after auth middleware so that `AuthContext` is available in extensions.
@@ -18,6 +17,15 @@ pub async fn audit_middleware(
     request: Request,
     next: Next,
 ) -> Response {
+    // Record activity timestamp so the dreamer can gate heavy work behind idleness.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    state
+        .last_request_time
+        .store(now_secs, std::sync::atomic::Ordering::Relaxed);
+
     // Capture pre-request fields before the request is consumed.
     let auth_ctx = request.extensions().get::<AuthContext>().cloned();
     let method = request.method().to_string();

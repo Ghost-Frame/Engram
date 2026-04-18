@@ -919,30 +919,22 @@ impl BrainBackend for HopfieldBrainManager {
     }
 
     async fn dream_cycle(&self) -> Result<BrainResponse> {
-        use crate::brain::hopfield::recall;
+        use crate::brain::dream::run_dream_cycle;
 
         let user_id = self.current_user_id();
         let mut network = self.network.lock().await;
 
-        // Dream cycle: decay, prune dead patterns, merge similar
-        let stats = recall::decay_tick(&self.db, &mut network, user_id, 1).await?;
-        let pruned =
-            recall::prune_weak(&self.db, &mut network, user_id, recall::DEATH_THRESHOLD).await?;
-        let merged = recall::merge_similar(&self.db, &mut network, user_id, 0.0).await?;
+        // Full 6-stage consolidation: replay, merge, prune, discover, decorrelate, resolve.
+        // Budget caps items processed per stage so a long idle period does not
+        // translate to an unbounded work burst.
+        const DREAM_BUDGET: u32 = 64;
+        let result = run_dream_cycle(&self.db, &mut network, user_id, DREAM_BUDGET).await?;
 
         Ok(BrainResponse {
             seq: None,
             ok: true,
             error: None,
-            data: Some(serde_json::json!({
-                "decay": {
-                    "patterns_decayed": stats.patterns_decayed,
-                    "patterns_removed": stats.patterns_removed,
-                },
-                "pruned": pruned,
-                "merged": merged.len(),
-                "merged_pairs": merged,
-            })),
+            data: Some(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)),
         })
     }
 

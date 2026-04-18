@@ -1,3 +1,8 @@
 # PROTOC configured via system install on Windows
 # Linux CI uses protoc-bin-vendored dependency
 [env]
+
+# Route build artifacts to the dedicated build-cache VHD so the NFS-mounted
+# repo doesn't see IO errors under linker write pressure.
+[build]
+target-dir = "/home/zan/build-cache/engram-rust-target"
