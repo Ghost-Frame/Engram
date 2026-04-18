@@ -7,23 +7,15 @@ use crate::config::Config;
 use crate::cred::{has_secret_patterns, CreddClient};
 use crate::db::Database;
 use crate::intelligence::llm::{call_llm, is_llm_available};
-use crate::intelligence::types::{GrowthReflectRequest, GrowthReflectResult, LlmOptions};
+use crate::intelligence::types::{
+    GrowthObservation, GrowthReflectRequest, GrowthReflectResult, LlmOptions,
+};
 use crate::{EngError, Result};
 use rusqlite::OptionalExtension;
-use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GrowthObservation {
-    pub id: i64,
-    pub content: String,
-    pub source: String,
-    pub importance: i64,
-    pub created_at: String,
 }
 
 #[tracing::instrument(skip(db), fields(user_id, limit))]
