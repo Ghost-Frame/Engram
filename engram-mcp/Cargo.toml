@@ -1,6 +1,6 @@
 [package]
 name = "engram-mcp"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 rust-version.workspace = true
 description = "MCP server for Engram -- Model Context Protocol integration for LLM tools"
@@ -14,7 +14,7 @@ default = []
 http = ["dep:axum", "dep:tower-http", "dep:subtle"]
 
 [dependencies]
-engram-lib = { path = "../engram-lib", version = "0.1.0" }
+engram-lib = { path = "../engram-lib", version = "0.3.0" }
 rusqlite = { workspace = true }
 axum = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }

@@ -1,6 +1,6 @@
 [package]
 name = "engram-cred"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 rust-version.workspace = true
 description = "Credential management CLI with encrypted vault and YubiKey support"
@@ -32,7 +32,7 @@ rpassword = "7"
 anyhow = "1"
 shellexpand = "3"
 directories = "6"
-engram-lib = { path = "../engram-lib", version = "0.1" }
+engram-lib = { path = "../engram-lib", version = "0.3" }
 
 # Crypto
 aes-gcm = "0.10"

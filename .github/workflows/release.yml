@@ -26,15 +26,30 @@ jobs:
       - name: Cache cargo registry and target dir
         uses: Swatinem/rust-cache@v2
 
-      - name: Build release binaries
+      # Serialized builds: the GitHub Actions runner has roughly 7 GiB of
+      # RAM. Compiling every release binary in a single cargo invocation
+      # runs out of memory at link time (exit 143 / SIGKILL). Splitting
+      # into staged invocations keeps peak memory well under the limit
+      # while still benefiting from the shared incremental cache.
+      - name: Build engram-server
         env:
           CARGO_BUILD_JOBS: "2"
-        run: cargo build --release -p engram-server -p engram-cli -p engram-sidecar -p engram-credd -p engram-cred -p engram-mcp
+        run: cargo build --release -p engram-server
+
+      - name: Build engram-cli and engram-sidecar
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: cargo build --release -p engram-cli -p engram-sidecar
+
+      - name: Build engram-credd, engram-cred, engram-mcp
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: cargo build --release -p engram-credd -p engram-cred -p engram-mcp
 
       - name: Collect binaries
         run: |
           mkdir -p release-artifacts
-          for bin in engram-server engram-cli engram-sidecar engram-credd engram-cred; do
+          for bin in engram-server engram-cli engram-sidecar engram-credd engram-cred engram-mcp; do
             if [ -f target/release/$bin ]; then
               cp target/release/$bin release-artifacts/${bin}-linux-x64
             fi
@@ -54,7 +69,10 @@ jobs:
       contents: read
       packages: write
     runs-on: ubuntu-latest
-    needs: build-and-release
+    # Independent of build-and-release: Docker builds from source inside
+    # its own multi-stage image, and crates/npm publishes do not consume
+    # the release binaries. Decoupling keeps a binary-build OOM from
+    # blocking the registry pushes.
 
     steps:
       - name: Checkout code
@@ -88,7 +106,10 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    needs: build-and-release
+    # Independent of build-and-release: Docker builds from source inside
+    # its own multi-stage image, and crates/npm publishes do not consume
+    # the release binaries. Decoupling keeps a binary-build OOM from
+    # blocking the registry pushes.
 
     steps:
       - name: Checkout code
@@ -103,27 +124,44 @@ jobs:
       - name: Publish to crates.io (dependency order)
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # publish() swallows only the specific "already uploaded"
+        # response so we keep the job idempotent across re-runs while
+        # still surfacing genuine publish failures (auth, size limit,
+        # unresolved deps, manifest errors).
         run: |
-          # engram-lib first (no internal deps)
-          cargo publish -p engram-lib --no-verify || echo "engram-lib already published"
+          set -euo pipefail
+          publish() {
+            local crate="$1"
+            local out
+            if out=$(cargo publish -p "$crate" --no-verify 2>&1); then
+              echo "$out"
+            else
+              echo "$out"
+              if echo "$out" | grep -qE 'already (uploaded|exists)|crate version .* is already uploaded'; then
+                echo "::warning::$crate already published, skipping"
+                return 0
+              fi
+              return 1
+            fi
+          }
+          publish engram-lib
           sleep 30
-
-          # engram-cred (no internal deps)
-          cargo publish -p engram-cred --no-verify || echo "engram-cred already published"
+          publish engram-cred
           sleep 30
-
-          # These depend on engram-lib and/or engram-cred
-          cargo publish -p engram-server --no-verify || echo "engram-server already published"
+          publish engram-server
           sleep 15
-          cargo publish -p engram-cli --no-verify || echo "engram-cli already published"
+          publish engram-cli
           sleep 15
-          cargo publish -p engram-mcp --no-verify || echo "engram-mcp already published"
+          publish engram-mcp
 
   publish-npm:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    needs: build-and-release
+    # Independent of build-and-release: Docker builds from source inside
+    # its own multi-stage image, and crates/npm publishes do not consume
+    # the release binaries. Decoupling keeps a binary-build OOM from
+    # blocking the registry pushes.
 
     steps:
       - name: Checkout code

@@ -1,6 +1,6 @@
 [package]
 name = "engram-server"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 rust-version.workspace = true
 description = "HTTP server for Engram -- persistent semantic memory for AI agents"
@@ -10,8 +10,8 @@ homepage = "https://engram.lol"
 readme = "../README.md"
 
 [dependencies]
-engram-lib = { path = "../engram-lib", version = "0.1.0", features = ["sqlcipher"] }
-engram-cred = { path = "../engram-cred", version = "0.1.0" }
+engram-lib = { path = "../engram-lib", version = "0.3.0", features = ["sqlcipher"] }
+engram-cred = { path = "../engram-cred", version = "0.3.0" }
 axum = { workspace = true, features = ["ws"] }
 hmac = { workspace = true }
 sha2 = { workspace = true }
