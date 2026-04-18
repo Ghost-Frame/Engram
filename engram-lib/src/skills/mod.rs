@@ -29,91 +29,10 @@ pub mod types;
 use crate::db::Database;
 use crate::{EngError, Result};
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
 
-// -- Types --
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Skill {
-    pub id: i64,
-    pub name: String,
-    pub agent: String,
-    pub description: Option<String>,
-    pub code: String,
-    pub language: String,
-    pub version: i32,
-    pub parent_skill_id: Option<i64>,
-    pub root_skill_id: Option<i64>,
-    pub trust_score: f64,
-    pub success_count: i32,
-    pub failure_count: i32,
-    pub execution_count: i32,
-    pub avg_duration_ms: Option<f64>,
-    pub is_active: bool,
-    pub is_deprecated: bool,
-    pub metadata: Option<String>,
-    pub user_id: i64,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateSkillRequest {
-    pub name: String,
-    pub agent: String,
-    pub description: Option<String>,
-    pub code: String,
-    pub language: Option<String>,
-    pub parent_skill_id: Option<i64>,
-    pub metadata: Option<String>,
-    pub user_id: Option<i64>,
-    pub tags: Option<Vec<String>>,
-    pub tool_deps: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdateSkillRequest {
-    pub code: Option<String>,
-    pub description: Option<String>,
-    pub is_active: Option<bool>,
-    pub is_deprecated: Option<bool>,
-    pub metadata: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecutionRecord {
-    pub id: i64,
-    pub skill_id: i64,
-    pub success: bool,
-    pub duration_ms: Option<f64>,
-    pub error_type: Option<String>,
-    pub error_message: Option<String>,
-    pub input_hash: Option<String>,
-    pub output_hash: Option<String>,
-    pub metadata: Option<String>,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillJudgment {
-    pub id: i64,
-    pub skill_id: i64,
-    pub judge_agent: String,
-    pub score: f64,
-    pub rationale: Option<String>,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolQuality {
-    pub id: i64,
-    pub tool_name: String,
-    pub agent: String,
-    pub success: bool,
-    pub latency_ms: Option<f64>,
-    pub error_type: Option<String>,
-    pub created_at: String,
-}
+pub use types::{
+    CreateSkillRequest, ExecutionRecord, Skill, SkillJudgment, ToolQuality, UpdateSkillRequest,
+};
 
 // -- Constants --
 
