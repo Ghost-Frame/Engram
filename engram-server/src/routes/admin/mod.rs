@@ -4,7 +4,6 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::params;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
@@ -14,8 +13,15 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::auth::{create_key, AuthContext, Scope};
-use engram_lib::cred::{ProxyRequest, ProxyResponse};
+use engram_lib::cred::ProxyResponse;
 use engram_lib::graph::{communities, cooccurrence};
+
+mod types;
+use types::{
+    AdminCredProxyBody, AdminCredResolveBody, AdminPageRankQuery, BootstrapBody, ColdStorageParams,
+    DeprovisionBody, GcBody, MaintenanceBody, PitrPrepareBody, ProvisionBody, ReembedBody,
+    VectorRebuildIndexBody, VectorSyncReplayBody,
+};
 
 fn require_admin(auth: &AuthContext) -> Result<(), AppError> {
     if !auth.has_scope(&Scope::Admin) {
@@ -119,12 +125,6 @@ async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, serde::Deserialize, Default)]
-struct BootstrapBody {
-    #[serde(default)]
-    secret: Option<String>,
-}
 
 /// SECURITY (SEC-HIGH-6): bootstrap has no upstream rate limiter because
 /// it bypasses auth entirely. Without a cooldown an attacker can brute-
@@ -363,12 +363,6 @@ async fn put_settings(
 // GC
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct GcBody {
-    user_id: Option<i64>,
-}
-
 async fn admin_gc(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -396,12 +390,6 @@ async fn admin_compact(
 // ---------------------------------------------------------------------------
 // Re-embed
 // ---------------------------------------------------------------------------
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct ReembedBody {
-    user_id: Option<i64>,
-}
 
 async fn admin_reembed(
     State(state): State<AppState>,
@@ -513,15 +501,6 @@ async fn scale_report_handler(
 // Cold storage stats
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
-struct ColdStorageParams {
-    #[serde(default = "default_cold_days")]
-    days: i64,
-}
-fn default_cold_days() -> i64 {
-    90
-}
-
 async fn cold_storage_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -569,15 +548,6 @@ async fn admin_tasks(
     require_admin(&auth)?;
     let stats = engram_lib::jobs::get_job_stats(&state.db).await?;
     to_json(stats)
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct AdminCredResolveBody {
-    text: Option<String>,
-    service: Option<String>,
-    key: Option<String>,
-    raw: bool,
 }
 
 async fn admin_cred_resolve(
@@ -633,13 +603,6 @@ async fn admin_cred_resolve(
     })))
 }
 
-#[derive(Deserialize)]
-struct AdminCredProxyBody {
-    service: String,
-    key: String,
-    request: ProxyRequest,
-}
-
 async fn admin_cred_proxy(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -671,12 +634,6 @@ async fn get_maintenance_handler(
     require_admin(&auth)?;
     let result = engram_lib::admin::get_maintenance(&state.db).await?;
     to_json(result)
-}
-
-#[derive(Deserialize)]
-struct MaintenanceBody {
-    enabled: bool,
-    message: Option<String>,
 }
 
 async fn post_maintenance_handler(
@@ -778,17 +735,6 @@ async fn admin_tenants(
 // Provision / Deprovision
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
-struct ProvisionBody {
-    username: String,
-    email: Option<String>,
-    #[serde(default = "default_role")]
-    role: String,
-}
-fn default_role() -> String {
-    "user".to_string()
-}
-
 async fn provision_tenant(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -804,11 +750,6 @@ async fn provision_tenant(
     .await?;
     let json_result = to_json(result)?;
     Ok((StatusCode::CREATED, json_result))
-}
-
-#[derive(Deserialize)]
-struct DeprovisionBody {
-    user_id: i64,
 }
 
 async fn deprovision_tenant(
@@ -911,12 +852,6 @@ async fn admin_pitr_snapshots(
     Ok(Json(json!({ "snapshots": snapshots })))
 }
 
-#[derive(Deserialize)]
-struct PitrPrepareBody {
-    target: String,
-    dest_path: String,
-}
-
 async fn admin_pitr_prepare(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -1011,17 +946,6 @@ async fn rebuild_cooccurrences_handler(
 // PageRank rebuild
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
-struct AdminPageRankQuery {
-    user_id: Option<i64>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct VectorSyncReplayBody {
-    limit: Option<usize>,
-}
-
 async fn admin_vector_sync_replay(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -1036,14 +960,6 @@ async fn admin_vector_sync_replay(
 // ---------------------------------------------------------------------------
 // Rebuild ANN index (IVF_HNSW_PQ)
 // ---------------------------------------------------------------------------
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct VectorRebuildIndexBody {
-    /// When true, drop any existing vector index before rebuilding.
-    /// Defaults to false so repeated calls are cheap.
-    replace: Option<bool>,
-}
 
 async fn admin_vector_rebuild_index(
     State(state): State<AppState>,
