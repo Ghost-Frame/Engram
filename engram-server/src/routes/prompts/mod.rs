@@ -3,7 +3,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use engram_lib::context::budget::estimate_tokens;
@@ -20,18 +19,14 @@ use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 
+mod types;
+use types::{GeneratePromptRequest, HeaderBody, PromptQuery};
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/prompt", get(get_prompt))
         .route("/prompt/generate", post(post_prompt_generate))
         .route("/header", post(post_header))
-}
-
-#[derive(Deserialize)]
-struct PromptQuery {
-    format: Option<String>,
-    tokens: Option<usize>,
-    context: Option<String>,
 }
 
 async fn get_prompt(
@@ -56,39 +51,6 @@ async fn get_prompt(
         "memories_included": result.memories_included,
         "tokens_estimated": result.tokens_estimated,
     })))
-}
-
-#[derive(Deserialize)]
-struct HeaderBody {
-    actor_model: Option<String>,
-    actor_role: Option<String>,
-    context: Option<String>,
-    limit: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct GeneratePromptRequest {
-    agent: String,
-    task: String,
-    #[serde(default)]
-    max_tokens: Option<usize>,
-    #[serde(default)]
-    include_personality: Option<bool>,
-    #[serde(default)]
-    include_memories: Option<bool>,
-    #[serde(default)]
-    memory_limit: Option<usize>,
-    // Living prompt sources
-    #[serde(default)]
-    include_brain: Option<bool>,
-    #[serde(default)]
-    include_growth: Option<bool>,
-    #[serde(default)]
-    include_instincts: Option<bool>,
-    #[serde(default)]
-    brain_limit: Option<usize>,
-    #[serde(default)]
-    growth_limit: Option<usize>,
 }
 
 async fn post_prompt_generate(
