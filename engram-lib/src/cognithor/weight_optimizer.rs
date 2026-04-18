@@ -1,30 +1,14 @@
-use serde::{Deserialize, Serialize};
+use super::types::{WeightState, WeightUpdate};
 use std::collections::HashMap;
 
 const ALPHA: f64 = 0.1;
 const MIN_WEIGHT: f64 = 0.05;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WeightState {
-    pub vector_weight: f64,
-    pub fts_weight: f64,
-    pub update_count: u64,
-}
 
 /// Tracks and auto-tunes search weights per mode based on feedback signals.
 #[derive(Debug, Clone)]
 pub struct SearchWeightOptimizer {
     pub weights: HashMap<String, WeightState>,
     pub history: Vec<WeightUpdate>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WeightUpdate {
-    pub mode: String,
-    pub old_vector: f64,
-    pub new_vector: f64,
-    pub signal: f64,
-    pub timestamp: String,
 }
 
 impl Default for SearchWeightOptimizer {

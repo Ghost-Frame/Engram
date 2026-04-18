@@ -1,19 +1,10 @@
+use super::types::CompressedEpisode;
 use crate::db::Database;
 use crate::{EngError, Result};
 use rusqlite::{params, OptionalExtension};
-use serde::{Deserialize, Serialize};
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompressedEpisode {
-    pub summary: String,
-    pub source_memory_ids: Vec<i64>,
-    pub result_memory_id: i64,
-    pub period_start: String,
-    pub period_end: String,
 }
 
 /// Compress memories from a weekly period into summary memories.
