@@ -313,6 +313,21 @@ pub struct FactContradiction {
 }
 
 // ---------------------------------------------------------------------------
+// Reflections
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reflection {
+    pub id: i64,
+    pub content: String,
+    pub reflection_type: String,
+    pub source_memory_ids: Vec<i64>,
+    pub confidence: f64,
+    pub user_id: i64,
+    pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
 // Contradiction detection
 // ---------------------------------------------------------------------------
 
