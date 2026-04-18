@@ -41,6 +41,13 @@ impl EmbeddingProvider for HttpProvider {
         &'a self,
         text: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<f32>>> + Send + 'a>> {
+        use tracing::Instrument;
+        let span = tracing::info_span!(
+            "embed_http",
+            backend = "http",
+            text_len = text.len(),
+            dim = self.dim
+        );
         Box::pin(async move {
             let mut req = self
                 .http
@@ -82,6 +89,6 @@ impl EmbeddingProvider for HttpProvider {
             }
 
             Ok(embedding)
-        })
+        }.instrument(span))
     }
 }
