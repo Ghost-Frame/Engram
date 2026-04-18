@@ -31,12 +31,11 @@ pub mod edges;
 pub mod network;
 pub mod pattern;
 pub mod recall;
+pub mod types;
 
 #[cfg(test)]
 mod tests;
 
 // Re-export the main types for convenience
-pub use edges::{BrainEdge, EdgeType};
 pub use network::{HopfieldNetwork, DEFAULT_BETA};
-pub use pattern::BrainPattern;
-pub use recall::{DecayStats, RecallResult};
+pub use types::{BrainEdge, BrainPattern, DecayStats, EdgeType, RecallResult};

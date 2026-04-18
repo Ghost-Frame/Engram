@@ -1,25 +1,10 @@
+pub use super::types::BrainPattern;
+
 use crate::db::Database;
 use crate::{EngError, Result};
-use serde::{Deserialize, Serialize};
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
-}
-
-/// A single pattern stored in the Hopfield substrate. Each pattern
-/// corresponds to a memory embedding projected into the brain's vector
-/// space. `strength` tracks how "alive" the pattern is (0.0 = dead,
-/// 1.0 = fully consolidated).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BrainPattern {
-    pub id: i64,
-    pub user_id: i64,
-    pub pattern: Vec<f32>,
-    pub strength: f32,
-    pub importance: i32,
-    pub access_count: i32,
-    pub last_activated_at: Option<String>,
-    pub created_at: String,
 }
 
 // ---------------------------------------------------------------------------

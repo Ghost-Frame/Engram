@@ -1,6 +1,7 @@
+pub use super::types::{DecayStats, RecallResult};
+
 use crate::db::Database;
 use crate::{EngError, Result};
-use serde::{Deserialize, Serialize};
 
 use super::edges::{self, EdgeType};
 use super::network::{self, HopfieldNetwork};
@@ -74,24 +75,6 @@ const EDGE_PRUNE_THRESHOLD: f32 = 0.01;
 
 /// Cosine similarity threshold for merge_similar.
 const MERGE_SIMILARITY_THRESHOLD: f32 = 0.92;
-
-// ---------------------------------------------------------------------------
-// Result types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecallResult {
-    pub pattern_id: i64,
-    pub activation: f32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DecayStats {
-    pub patterns_decayed: usize,
-    pub patterns_removed: usize,
-    pub edges_decayed: usize,
-    pub edges_removed: usize,
-}
 
 // ---------------------------------------------------------------------------
 // Operations -- the PLAN deliverables
