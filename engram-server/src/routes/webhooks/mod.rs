@@ -1,13 +1,15 @@
+mod types;
+
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     routing::post,
     Json, Router,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+use types::{CreateWebhookBody, DeadLetterQuery, TestWebhookBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -69,18 +71,6 @@ async fn delete_webhook_handler(
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
-#[derive(Debug, Deserialize)]
-struct CreateWebhookBody {
-    url: String,
-    events: Option<Vec<String>>,
-    secret: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TestWebhookBody {
-    event: Option<String>,
-}
-
 async fn test_webhook_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -101,11 +91,6 @@ async fn test_webhook_handler(
     let payload = json!({ "webhook_id": id, "test": true });
     engram_lib::webhooks::emit_webhook_event(&state.db, event, &payload, auth.user_id).await;
     Ok(Json(json!({ "dispatched": true, "event": event })))
-}
-
-#[derive(Debug, Deserialize)]
-struct DeadLetterQuery {
-    limit: Option<i64>,
 }
 
 async fn list_dead_letters_handler(
