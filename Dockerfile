@@ -32,7 +32,7 @@ RUN cargo build --release -p kleos-server -p kleos-cli
 FROM debian:bookworm-slim AS runtime
 
 LABEL org.opencontainers.image.source="https://github.com/Ghost-Frame/Kleos" \
-      org.opencontainers.image.description="Kleos memory server -- personal knowledge graph and semantic memory store" \
+      org.opencontainers.image.description="Kleos memory server (formerly Kleos) -- personal knowledge graph and semantic memory store" \
       org.opencontainers.image.licenses="Elastic-2.0"
 
 # Install runtime dependencies:
@@ -55,9 +55,14 @@ COPY --from=builder /build/target/release/kleos-cli     /usr/local/bin/kleos-cli
 
 RUN chmod 755 /usr/local/bin/kleos-server /usr/local/bin/kleos-cli
 
+# Legacy aliases for backward compatibility.
+RUN ln -s /usr/local/bin/kleos-server /usr/local/bin/kleos-server \
+    && ln -s /usr/local/bin/kleos-cli /usr/local/bin/kleos-cli
+
 USER kleos
 
 # Environment -- bind to all interfaces inside the container.
+# KLEOS_* vars are preferred. The env shim falls back to KLEOS_* automatically.
 ENV KLEOS_HOST=0.0.0.0
 ENV KLEOS_DATA_DIR=/data
 ENV KLEOS_DB_PATH=/data/kleos.db

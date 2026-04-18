@@ -91,7 +91,7 @@ jobs:
         id: tag
         run: echo "TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push Docker image
+      - name: Build and push Docker image (ghost-frame/kleos)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -101,6 +101,18 @@ jobs:
             ghost-frame/kleos:${{ steps.tag.outputs.TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Transition release: also push ghost-frame/kleos for one release so
+      # existing deployments pinned to ghost-frame/kleos continue to work.
+      # Remove this step after the transition period.
+      - name: Tag and push legacy ghost-frame/kleos image
+        run: |
+          VERSION="${{ steps.tag.outputs.TAG }}"
+          docker pull ghost-frame/kleos:${VERSION}
+          docker tag ghost-frame/kleos:${VERSION} ghost-frame/kleos:${VERSION}
+          docker tag ghost-frame/kleos:${VERSION} ghost-frame/kleos:latest
+          docker push ghost-frame/kleos:${VERSION}
+          docker push ghost-frame/kleos:latest
 
   publish-crates:
     permissions:
@@ -144,13 +156,10 @@ jobs:
               return 1
             fi
           }
-          # Only kleos-lib and kleos-cred publish to crates.io. The
-          # names kleos-server, kleos-cli, and kleos-mcp are held by
-          # third-party squatters (see crates.io/crates/kleos-server
-          # owner federicorinaldi, kleos-mcp owner edg-l) whose
-          # publications postdate the original TypeScript Kleos but
-          # preempt this Rust rewrite in the registry. Binaries ship
-          # through Docker Hub and the GitHub release artifacts instead.
+          # Publishing kleos-lib and kleos-cred to crates.io.
+          # The legacy kleos-lib and kleos-cred crates remain at 0.3.1
+          # as the last published versions under those names. New consumers
+          # should use kleos-lib and kleos-cred going forward.
           publish kleos-lib
           sleep 30
           publish kleos-cred
@@ -174,7 +183,7 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Build and publish TypeScript SDK
+      - name: Build and publish TypeScript SDK (@ghost_frame/kleos)
         working-directory: sdk/typescript
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

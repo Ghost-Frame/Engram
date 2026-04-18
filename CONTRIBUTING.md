@@ -1,4 +1,4 @@
-# Contributing to Kleos
+# Contributing to Kleos (formerly Kleos)
 
 ## Getting Started
 
@@ -29,15 +29,15 @@ SQLite is vendored via `rusqlite` (bundled feature). SQLCipher is vendored at co
 
 ```
 kleos/
-  kleos-lib/           Core library -- all domain logic lives here
-  kleos-server/        HTTP API server (Axum)
-  kleos-cli/           CLI client over the HTTP API
-  kleos-sidecar/       Session-scoped memory proxy
-  kleos-mcp/           MCP server (Model Context Protocol)
-  kleos-cred/          Credential management library
-  kleos-credd/         Credential management daemon
-  kleos-approval-tui/  Approval workflow TUI (WIP)
-  kleos-migrate/       libsql -> rusqlite ETL tool
+  kleos-lib/            Core library -- all domain logic lives here
+  kleos-server/         HTTP API server (Axum)
+  kleos-cli/            CLI client over the HTTP API
+  kleos-sidecar/        Session-scoped memory proxy
+  kleos-mcp/            MCP server (Model Context Protocol)
+  kleos-cred/           Credential management library
+  kleos-credd/          Credential management daemon
+  kleos-approval-tui/   Approval workflow TUI (WIP)
+  kleos-migrate/        libsql -> rusqlite ETL tool
   agent-forge/          Structured reasoning CLI
   sdk/                  Client SDKs (TypeScript)
   hooks/                Claude Code hook scripts
