@@ -313,6 +313,26 @@ pub struct FactContradiction {
 }
 
 // ---------------------------------------------------------------------------
+// Feedback
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackRequest {
+    pub memory_id: i64,
+    pub rating: String,
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackStats {
+    pub helpful: i64,
+    pub irrelevant: i64,
+    pub off_topic: i64,
+    pub outdated: i64,
+    pub total: i64,
+}
+
+// ---------------------------------------------------------------------------
 // Intelligence tier
 // ---------------------------------------------------------------------------
 

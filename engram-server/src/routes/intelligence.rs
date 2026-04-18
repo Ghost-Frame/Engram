@@ -13,7 +13,7 @@ use engram_lib::intelligence::{
     digests::{generate_digest, list_digests},
     duplicates::{deduplicate, find_duplicates},
     extraction::fast_extract_facts,
-    feedback::{self, FeedbackRequest},
+    feedback,
     health::memory_health,
     predictive::{detect_sequence_patterns, predictive_recall},
     reconsolidation::{reconsolidate_memory, run_reconsolidation_sweep},
@@ -23,6 +23,7 @@ use engram_lib::intelligence::{
     scheduler::default_pipeline,
     sentiment,
     temporal::{detect_patterns, list_patterns, store_pattern, time_travel},
+    types::FeedbackRequest,
     valence::{analyze_valence, get_emotional_profile, store_valence},
 };
 use engram_lib::memory;
