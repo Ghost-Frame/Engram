@@ -27,7 +27,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binaries
-        run: cargo build --release --workspace --exclude engram-migrate
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: cargo build --release -p engram-server -p engram-cli -p engram-sidecar -p engram-credd -p engram-cred -p engram-mcp
 
       - name: Collect binaries
         run: |
