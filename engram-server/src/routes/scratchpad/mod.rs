@@ -3,12 +3,14 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
+
+mod types;
+use types::{PromoteBody, ScratchQuery};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -16,13 +18,6 @@ pub fn router() -> Router<AppState> {
         .route("/scratch/{session}", delete(delete_session))
         .route("/scratch/{session}/{key}", delete(delete_key))
         .route("/scratch/{session}/promote", post(promote))
-}
-
-#[derive(Deserialize)]
-struct ScratchQuery {
-    agent: Option<String>,
-    model: Option<String>,
-    session: Option<String>,
 }
 
 async fn list_scratch(
@@ -91,13 +86,6 @@ async fn delete_key(
     Ok(Json(
         json!({ "deleted": true, "session": session, "key": key }),
     ))
-}
-
-#[derive(Deserialize)]
-struct PromoteBody {
-    keys: Option<Vec<String>>,
-    combine: Option<bool>,
-    category: Option<String>,
 }
 
 async fn promote(
