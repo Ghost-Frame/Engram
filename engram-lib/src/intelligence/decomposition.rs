@@ -6,8 +6,10 @@
 //! - Tier 3 (Template): Simple sentence-level splitting
 
 use crate::db::Database;
-use crate::intelligence::llm::{call_llm, is_llm_available, repair_and_parse_json, LlmOptions};
-use crate::intelligence::types::{DecompositionResult, DecompositionTier, DecompositionWithTier};
+use crate::intelligence::llm::{call_llm, is_llm_available, repair_and_parse_json};
+use crate::intelligence::types::{
+    DecompositionResult, DecompositionTier, DecompositionWithTier, LlmOptions,
+};
 use crate::validation::{
     MAX_DECOMPOSITION_FACTS as MAX_FACTS, MIN_DECOMPOSITION_LENGTH as MIN_LENGTH,
 };

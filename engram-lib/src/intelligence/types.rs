@@ -314,6 +314,26 @@ pub struct FactContradiction {
 }
 
 // ---------------------------------------------------------------------------
+// LLM options
+// ---------------------------------------------------------------------------
+
+/// Options for LLM calls.
+#[derive(Debug, Clone)]
+pub struct LlmOptions {
+    pub temperature: f64,
+    pub max_tokens: u32,
+}
+
+impl Default for LlmOptions {
+    fn default() -> Self {
+        Self {
+            temperature: 0.3,
+            max_tokens: 1024,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Scheduler reports
 // ---------------------------------------------------------------------------
 
