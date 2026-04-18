@@ -17,6 +17,10 @@ use engram_lib::graph::{
     search::{graph_search, neighborhood_filtered},
     types::{CreateEntityRequest, CreateRelationshipRequest, GraphBuildOptions},
 };
+use engram_lib::validation::{
+    MAX_ENTITY_RELATIONSHIPS, MAX_GRAPH_BUILD_NODES, MAX_GRAPH_NEIGHBORHOOD_DEPTH,
+    MAX_MEMORY_ENTITY_FANOUT,
+};
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -304,7 +308,6 @@ async fn entity_relationships_handler(
 ) -> Result<Json<Value>, AppError> {
     // SECURITY/DoS: cap the fan-out so a hot entity cannot return an unbounded
     // result set and starve server memory.
-    const MAX_RELATIONSHIPS: i64 = 1_000;
     let user_id = auth.user_id;
 
     let relationships = state
@@ -326,7 +329,7 @@ async fn entity_relationships_handler(
 
                 let rows = stmt
                     .query_map(
-                        params![id, user_id, relationship_type, MAX_RELATIONSHIPS],
+                        params![id, user_id, relationship_type, MAX_ENTITY_RELATIONSHIPS as i64],
                         row_to_relationship_json,
                     )
                     .map_err(engram_lib::EngError::Database)?;
@@ -347,7 +350,10 @@ async fn entity_relationships_handler(
                     .map_err(engram_lib::EngError::Database)?;
 
                 let rows = stmt
-                    .query_map(params![id, user_id, MAX_RELATIONSHIPS], row_to_relationship_json)
+                    .query_map(
+                        params![id, user_id, MAX_ENTITY_RELATIONSHIPS as i64],
+                        row_to_relationship_json,
+                    )
                     .map_err(engram_lib::EngError::Database)?;
 
                 rows.collect::<Result<Vec<_>, _>>()
@@ -631,15 +637,14 @@ async fn build_graph_handler(
     opts.user_id = auth.user_id;
     // SECURITY/DoS: clamp caller-supplied node cap so a single request cannot
     // force the server to materialize an arbitrarily large graph.
-    const MAX_GRAPH_NODES: usize = 5_000;
     opts.limit = Some(match opts.limit {
         Some(0) => {
             return Err(AppError::from(engram_lib::EngError::InvalidInput(
                 "limit must be >= 1".into(),
             )))
         }
-        Some(n) => n.min(MAX_GRAPH_NODES),
-        None => MAX_GRAPH_NODES,
+        Some(n) => n.min(MAX_GRAPH_BUILD_NODES),
+        None => MAX_GRAPH_BUILD_NODES,
     });
     let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
     Ok(Json(json!(result)))
@@ -686,8 +691,10 @@ async fn neighborhood_handler(
     // SECURITY/DoS: neighborhood expansion is super-linear in depth. Cap the
     // caller-supplied depth so a single request cannot amplify into a full
     // graph traversal.
-    const MAX_NEIGHBORHOOD_DEPTH: u32 = 5;
-    let depth = params.depth.unwrap_or(2).clamp(1, MAX_NEIGHBORHOOD_DEPTH);
+    let depth = params
+        .depth
+        .unwrap_or(2)
+        .clamp(1, MAX_GRAPH_NEIGHBORHOOD_DEPTH);
 
     let link_types: Option<Vec<String>> = params.link_types.map(|lt| {
         lt.split(',')
@@ -713,7 +720,6 @@ async fn memory_entities_handler(
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     // SECURITY/DoS: cap entity fan-out per memory to avoid unbounded result sets.
-    const MAX_MEMORY_ENTITIES: i64 = 1_000;
     let user_id = auth.user_id;
 
     let entities = state
@@ -732,7 +738,7 @@ async fn memory_entities_handler(
                 .map_err(engram_lib::EngError::Database)?;
 
             let rows = stmt
-                .query_map(params![id, user_id, MAX_MEMORY_ENTITIES], |row| {
+                .query_map(params![id, user_id, MAX_MEMORY_ENTITY_FANOUT], |row| {
                     let eid: i64 = row.get(0)?;
                     let name: String = row.get(1)?;
                     let entity_type: String = row.get(2)?;

@@ -13,6 +13,7 @@ use engram_lib::skills::{
     self, analyzer, cloud, dashboard, evolver, search::search_skills, CreateSkillRequest,
     UpdateSkillRequest,
 };
+use engram_lib::validation::MAX_PAGINATION_OFFSET;
 
 /// Clamp a caller-supplied `limit` into [1, max] with a default when absent.
 fn clamp_limit(raw: Option<usize>, default: usize, max: usize) -> Result<usize, AppError> {
@@ -27,12 +28,14 @@ fn clamp_limit(raw: Option<usize>, default: usize, max: usize) -> Result<usize, 
 
 /// Clamp a caller-supplied `offset`. No upper bound needed; just rejects absurd values.
 fn clamp_offset(raw: Option<usize>) -> Result<usize, AppError> {
-    const MAX_OFFSET: usize = 1_000_000;
     match raw {
         None => Ok(0),
-        Some(n) if n > MAX_OFFSET => Err(AppError::from(engram_lib::EngError::InvalidInput(
-            format!("offset must be <= {}", MAX_OFFSET),
-        ))),
+        Some(n) if n > MAX_PAGINATION_OFFSET => {
+            Err(AppError::from(engram_lib::EngError::InvalidInput(format!(
+                "offset must be <= {}",
+                MAX_PAGINATION_OFFSET
+            ))))
+        }
         Some(n) => Ok(n),
     }
 }
