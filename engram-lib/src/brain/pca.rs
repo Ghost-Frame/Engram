@@ -7,6 +7,8 @@
 //! Uses power iteration with deflation to compute principal components without
 //! requiring LAPACK or other heavy linear algebra dependencies.
 
+pub use super::types::PcaModelRow;
+
 use crate::db::Database;
 use crate::{EngError, Result};
 use ndarray::{Array1, Array2, Axis};
@@ -210,16 +212,6 @@ pub fn l2_normalize(v: &[f32]) -> Vec<f32> {
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
-}
-
-/// Stored PCA model metadata.
-#[derive(Debug, Clone)]
-pub struct PcaModelRow {
-    pub id: i64,
-    pub source_dim: i64,
-    pub target_dim: i64,
-    pub fit_at: String,
-    pub model_blob: Vec<u8>,
 }
 
 /// Store a PCA model to the database.

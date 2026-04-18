@@ -5,6 +5,8 @@
 // Persisted to brain_meta table as JSON.
 // ============================================================================
 
+pub use super::types::FeedbackSignal;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -18,16 +20,6 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 // ----------------------------------------------------------------------------
 // Core structs
 // ----------------------------------------------------------------------------
-
-/// A single feedback event from a caller indicating whether a set of memories
-/// and edges were useful or not.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FeedbackSignal {
-    pub memory_ids: Vec<i64>,
-    pub edge_pairs: Vec<(i64, i64)>,
-    pub useful: bool,
-    pub timestamp: f64,
-}
 
 /// Learned weight state for all nodes and edges observed so far.
 /// Serialized to brain_meta for persistence across restarts.
