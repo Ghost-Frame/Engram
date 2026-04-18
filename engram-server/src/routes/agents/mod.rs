@@ -6,13 +6,15 @@ use axum::{
 };
 use kleos_lib::agents;
 use hmac::{Hmac, Mac};
-use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
 use std::{fs, path::PathBuf, sync::OnceLock};
 use subtle::ConstantTimeEq;
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::{ExecutionsQuery, LinkKeyBody, RegisterBody, RevokeBody, VerifyBody};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -25,14 +27,6 @@ pub fn router() -> Router<AppState> {
         .route("/agents/{id}/link-key", post(link_key))
         .route("/agents/{id}/executions", get(get_executions))
         .route("/verify", post(verify))
-}
-
-#[derive(Debug, Deserialize)]
-struct RegisterBody {
-    pub name: String,
-    pub category: Option<String>,
-    pub description: Option<String>,
-    pub code_hash: Option<String>,
 }
 
 async fn register_agent(
@@ -120,11 +114,6 @@ async fn get_agent(
     })))
 }
 
-#[derive(Debug, Deserialize)]
-struct RevokeBody {
-    pub reason: Option<String>,
-}
-
 async fn revoke_agent(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -172,11 +161,6 @@ async fn get_passport(
     })))
 }
 
-#[derive(Debug, Deserialize)]
-struct LinkKeyBody {
-    pub key_id: i64,
-}
-
 async fn link_key(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -193,11 +177,6 @@ async fn link_key(
     ))
 }
 
-#[derive(Debug, Deserialize)]
-struct ExecutionsQuery {
-    pub limit: Option<i64>,
-}
-
 async fn get_executions(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -212,14 +191,6 @@ async fn get_executions(
     let limit = params.limit.unwrap_or(50).min(1000);
     let executions = agents::get_agent_executions(&state.db, agent.id, limit).await?;
     Ok(Json(json!({ "agent_id": id, "executions": executions })))
-}
-
-#[derive(Debug, Deserialize)]
-struct VerifyBody {
-    pub passport: Option<Value>,
-    pub execution: Option<Value>,
-    pub message: Option<Value>,
-    pub tool_manifest: Option<Value>,
 }
 
 async fn verify(Json(body): Json<VerifyBody>) -> Result<Json<Value>, AppError> {
