@@ -114,12 +114,12 @@ ENGRAM_MCP_BEARER_TOKEN=eg_... cargo run -p engram-mcp
 - **Reconsolidation**: update existing memory traces when new evidence arrives
 
 ### Developer Platform
-- **REST API**: 80+ endpoints across 40+ route modules
+- **REST API**: 80+ endpoints across 46 route modules
 - **Rust CLI**: `engram-cli` for store, search, context, recall, list, bootstrap, and credential management
-- **MCP Server**: `engram-mcp` for LLM tool integration via Model Context Protocol (stdio; HTTP behind feature flag)
+- **MCP Server**: `engram-mcp` for LLM tool integration via Model Context Protocol (stdio; HTTP behind feature flag). 57+ tools across memory, context, graph, intelligence, services, structural, skills, and admin.
 - **Sidecar**: `engram-sidecar` for session-scoped agent runs with batched observation flushing
 - **Credential Manager**: `engram-cred` library + `engram-credd` daemon for encrypted credential vault with YubiKey and agent key support
-- **TypeScript SDK**: `@engram/sdk` client library in `sdk/typescript/`
+- **Client SDKs**: TypeScript (`sdk/typescript/`, `@engram/sdk`), Python (`sdk/python/`, Pydantic v2 + httpx), Go (`sdk/go/`, stdlib-only)
 - **Multi-Tenant + RBAC**: isolated memory per user, role-based access, quota enforcement
 - **Webhooks & Digests**: event hooks and scheduled digests
 - **Audit Trail**: every mutation logged with who, what, when, from where
@@ -161,10 +161,10 @@ Ten Cargo crates:
 | Crate | Role |
 |-------|------|
 | `engram-lib` | Core library. Memory, search, embeddings, graph, intelligence, services, auth, jobs, 50+ modules. |
-| `engram-server` | Axum HTTP server. 40+ route modules, middleware (auth, rate limiting, safe mode, JSON depth, metrics), GUI. |
+| `engram-server` | Axum HTTP server. 46 route modules, middleware (auth, rate limiting, safe mode, JSON depth, metrics), GUI. |
 | `engram-cli` | Command-line client over the HTTP API. Memory ops and credential management via credd. |
 | `engram-sidecar` | Session-scoped memory proxy with file watcher, batched observation flushing, and persistent session store. |
-| `engram-mcp` | MCP (Model Context Protocol) server. 41 tools across memory, context, graph, intelligence, services, and admin. Stdio transport; HTTP behind feature flag. |
+| `engram-mcp` | MCP (Model Context Protocol) server. 57+ tools across memory, context, graph, intelligence, services, structural, skills, and admin. Stdio transport; HTTP behind feature flag. |
 | `engram-cred` | Credential management library. Crypto primitives, YubiKey challenge-response, key derivation. |
 | `engram-credd` | Credential management daemon. HTTP server with master key + agent key two-tier auth, ChaCha20-Poly1305 encryption. |
 | `engram-approval-tui` | Terminal UI for human approval workflow. Ratatui-based interactive review queue. (WIP) |
@@ -192,6 +192,7 @@ cargo clippy --workspace             # lint
 - **Reranker**: IBM granite-embedding-reranker-english-r2 INT8 cross-encoder (optional, deferred loading)
 - **Decay**: FSRS-6 with trained parameters and power-law forgetting
 - **LLM**: optional. Ollama (OpenAI-compatible endpoint) for fact extraction, decomposition, consolidation, growth reflection. Env vars: `OLLAMA_URL`, `OLLAMA_MODEL`. Circuit breaker with configurable threshold and cooldown.
+- **Resilience**: `resilience::ServiceGuard` wraps outbound calls to LLM and reranker with circuit breaker, exponential-backoff retry, and a SQLite-backed dead-letter queue (table `service_dead_letters`).
 - **Allocator**: mimalloc global allocator
 - **Observability**: OpenTelemetry tracing + Prometheus metrics endpoint
 
@@ -377,6 +378,8 @@ Every endpoint needs `Authorization: Bearer eg_...` unless the server runs with 
 | `POST` | `/admin/decompose-sweep` | Retroactively decompose memories |
 | `POST` | `/admin/compact` | VACUUM and ANALYZE |
 | `POST` | `/admin/safe-mode/exit` | Exit crash-loop safe mode |
+| `GET` | `/admin/migrations` | Current migration status (version, pending, revertible) |
+| `POST` | `/admin/migrations/down` | Roll the schema back to a target version (dry-run supported) |
 | `GET` | `/audit` | Query audit log |
 | `GET` | `/stats` | Detailed statistics |
 | `GET` | `/metrics` | Prometheus metrics |
