@@ -10,8 +10,29 @@ permissions:
   packages: write
 
 jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
+  # ─── Build binaries for each platform ─────────────────────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            suffix: linux-x64
+            ext: ""
+          - os: ubuntu-24.04-arm
+            suffix: linux-arm64
+            ext: ""
+          - os: macos-13
+            suffix: darwin-x64
+            ext: ""
+          - os: macos-14
+            suffix: darwin-arm64
+            ext: ""
+          - os: windows-latest
+            suffix: windows-x64
+            ext: ".exe"
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout code
@@ -20,17 +41,24 @@ jobs:
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install system dependencies
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc -y
 
       - name: Cache cargo registry and target dir
         uses: Swatinem/rust-cache@v2
 
-      # Serialized builds: the GitHub Actions runner has roughly 7 GiB of
-      # RAM. Compiling every release binary in a single cargo invocation
-      # runs out of memory at link time (exit 143 / SIGKILL). Splitting
-      # into staged invocations keeps peak memory well under the limit
-      # while still benefiting from the shared incremental cache.
+      # Serialized builds: GitHub Actions runners have limited RAM (7 GiB
+      # on Linux/Windows, 14 GiB on macOS). Splitting into staged builds
+      # keeps peak memory under the limit while sharing incremental cache.
       - name: Build kleos-server
         env:
           CARGO_BUILD_JOBS: "2"
@@ -47,32 +75,58 @@ jobs:
         run: cargo build --release -p kleos-credd -p kleos-cred -p kleos-mcp
 
       - name: Collect binaries
+        shell: bash
         run: |
           mkdir -p release-artifacts
           for bin in kleos-server kleos-cli kleos-sidecar kleos-credd kleos-cred kleos-mcp; do
-            if [ -f target/release/$bin ]; then
-              cp target/release/$bin release-artifacts/${bin}-linux-x64
+            src="target/release/${bin}${{ matrix.ext }}"
+            if [ -f "$src" ]; then
+              cp "$src" "release-artifacts/${bin}-${{ matrix.suffix }}${{ matrix.ext }}"
             fi
           done
           ls -lh release-artifacts/
 
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.suffix }}
+          path: release-artifacts/*
+          retention-days: 1
+
+  # ─── Collect all artifacts and create GitHub release ──────────────────────
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: all-artifacts
+        run: |
+          sha256sum * > checksums-sha256.txt
+          cat checksums-sha256.txt
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: release-artifacts/*
+          files: all-artifacts/*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ─── Docker image ─────────────────────────────────────────────────────────
   docker:
     permissions:
       contents: read
       packages: write
     runs-on: ubuntu-latest
-    # Independent of build-and-release: Docker builds from source inside
-    # its own multi-stage image, and crates/npm publishes do not consume
-    # the release binaries. Decoupling keeps a binary-build OOM from
-    # blocking the registry pushes.
 
     steps:
       - name: Checkout code
@@ -114,14 +168,11 @@ jobs:
           docker push ghost-frame/kleos:${VERSION}
           docker push ghost-frame/kleos:latest
 
+  # ─── Publish to crates.io ─────────────────────────────────────────────────
   publish-crates:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    # Independent of build-and-release: Docker builds from source inside
-    # its own multi-stage image, and crates/npm publishes do not consume
-    # the release binaries. Decoupling keeps a binary-build OOM from
-    # blocking the registry pushes.
 
     steps:
       - name: Checkout code
@@ -164,14 +215,11 @@ jobs:
           sleep 30
           publish kleos-cred
 
+  # ─── Publish TypeScript SDK to npm ────────────────────────────────────────
   publish-npm:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    # Independent of build-and-release: Docker builds from source inside
-    # its own multi-stage image, and crates/npm publishes do not consume
-    # the release binaries. Decoupling keeps a binary-build OOM from
-    # blocking the registry pushes.
 
     steps:
       - name: Checkout code
@@ -191,3 +239,30 @@ jobs:
           npm ci
           npm run build
           npm publish --access public
+
+  # ─── Publish Python SDK to PyPI ───────────────────────────────────────────
+  publish-pypi:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build and publish Python SDK (kleos-client)
+        working-directory: sdk/python
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          python -m build
+          twine upload dist/* --skip-existing

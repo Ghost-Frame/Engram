@@ -37,7 +37,27 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# Windows needs bundled SQLCipher since there's no system sqlite3.lib
+[target.'cfg(windows)'.dependencies]
+kleos-lib = { path = "../kleos-lib", features = ["sqlcipher"] }
+
 [dev-dependencies]
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true, features = ["util"] }
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-mcp-{ target }{ archive-suffix }"
+bin-dir = "kleos-mcp{ binary-ext }"
+pkg-fmt = "bin"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-mcp-linux-x64"
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-mcp-linux-arm64"
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-mcp-darwin-x64"
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-mcp-darwin-arm64"
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-mcp-windows-x64.exe"

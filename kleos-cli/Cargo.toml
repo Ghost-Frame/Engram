@@ -27,3 +27,23 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
 rpassword = "7"
+
+# Windows needs bundled SQLCipher since there's no system sqlite3.lib
+[target.'cfg(windows)'.dependencies]
+kleos-lib = { path = "../kleos-lib", features = ["sqlcipher"] }
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-cli-{ target }{ archive-suffix }"
+bin-dir = "kleos-cli{ binary-ext }"
+pkg-fmt = "bin"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-cli-linux-x64"
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-cli-linux-arm64"
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-cli-darwin-x64"
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-cli-darwin-arm64"
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-cli-windows-x64.exe"

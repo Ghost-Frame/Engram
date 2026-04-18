@@ -54,3 +54,19 @@ metrics-exporter-prometheus = { workspace = true }
 kleos-lib = { path = "../kleos-lib", features = ["test-utils"] }
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true }
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-server-{ target }{ archive-suffix }"
+bin-dir = "kleos-server{ binary-ext }"
+pkg-fmt = "bin"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-server-linux-x64"
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-server-linux-arm64"
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-server-darwin-x64"
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-server-darwin-arm64"
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/kleos-server-windows-x64.exe"
