@@ -1,18 +1,11 @@
-use super::types::{GraphBuildOptions, GraphEdge, GraphNode, LinkType};
+use super::types::{GraphBuildOptions, GraphBuildResult, GraphEdge, GraphNode, LinkType};
 use crate::db::Database;
 use crate::{EngError, Result};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::info;
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphBuildResult {
-    pub nodes: Vec<GraphNode>,
-    pub edges: Vec<GraphEdge>,
 }
 
 /// Build the full graph for the default user.

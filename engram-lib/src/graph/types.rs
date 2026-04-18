@@ -123,3 +123,9 @@ pub struct GraphBuildOptions {
     pub user_id: i64,
     pub limit: Option<usize>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphBuildResult {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
