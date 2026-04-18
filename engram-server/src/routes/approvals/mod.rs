@@ -4,16 +4,18 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
 use engram_lib::approvals::{
-    create_approval, decide, expire_stale_for_user, get_approval, list_pending, Approval,
-    ApprovalDecision, CreateApprovalRequest, DecideRequest,
+    create_approval, decide, expire_stale_for_user, get_approval, list_pending,
+    CreateApprovalRequest, DecideRequest,
 };
+
+mod types;
+use types::{ApprovalResponse, DecideBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -21,23 +23,6 @@ pub fn router() -> Router<AppState> {
         .route("/approvals/pending", get(list_pending_handler))
         .route("/approvals/{id}", get(get_handler))
         .route("/approvals/{id}/decide", post(decide_handler))
-}
-
-#[derive(Debug, Serialize)]
-struct ApprovalResponse {
-    #[serde(flatten)]
-    approval: Approval,
-    seconds_remaining: i64,
-}
-
-impl From<Approval> for ApprovalResponse {
-    fn from(approval: Approval) -> Self {
-        let seconds_remaining = approval.seconds_remaining();
-        Self {
-            approval,
-            seconds_remaining,
-        }
-    }
 }
 
 async fn create_handler(
@@ -82,13 +67,6 @@ async fn list_pending_handler(
         "count": responses.len(),
         "expired_count": expired_count,
     })))
-}
-
-#[derive(Debug, Deserialize)]
-struct DecideBody {
-    decision: ApprovalDecision,
-    decided_by: Option<String>,
-    reason: Option<String>,
 }
 
 async fn decide_handler(
