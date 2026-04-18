@@ -18,7 +18,7 @@
 
 ## Why Rust?
 
-Kleos started as a Node.js server. It worked. But a memory system that injects into every agent turn has to stay fast under load, and Node made that harder than it should have been.
+The original Node.js server worked, but keeping it fast under load was a constant battle. This ground-up Rust rewrite solves that.
 
 This is the ground-up Rust rewrite. Same cognitive model, same API surface, same data format. Different runtime.
 
@@ -40,18 +40,24 @@ cargo build --release
 ./target/release/kleos-server
 ```
 
-Server binds to `127.0.0.1:4200` by default. Bootstrap an admin key, then store and search:
+Server binds to `127.0.0.1:4200` by default. Set a bootstrap secret, start the server, then claim the admin key:
 
 ```bash
+# Start the server with a bootstrap secret
+KLEOS_BOOTSTRAP_SECRET=my-setup-secret ./target/release/kleos-server
+
+# Bootstrap the admin key (one-time only)
 curl -X POST http://localhost:4200/bootstrap \
   -H "Content-Type: application/json" \
-  -d '{"name": "admin"}'
+  -d '{"secret": "my-setup-secret"}'
 
+# Store a memory
 curl -X POST http://localhost:4200/store \
   -H "Authorization: Bearer eg_YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"content": "Production DB is PostgreSQL 16 on db.example.com:5432", "category": "reference"}'
 
+# Search
 curl -X POST http://localhost:4200/search \
   -H "Authorization: Bearer eg_YOUR_KEY" \
   -H "Content-Type: application/json" \
@@ -74,10 +80,10 @@ KLEOS_MCP_BEARER_TOKEN=eg_... cargo run -p kleos-mcp
 
 ## Features
 
-- **FSRS-6 Spaced Repetition.** Memories strengthen with use and fade when ignored. Power-law forgetting with trained parameters.
+- **FSRS-6 Spaced Repetition.** Memories strengthen with use and decay when ignored. Power-law forgetting with trained parameters.
 - **4-Channel Hybrid Search.** Vector similarity, FTS5 full-text, personality signals, and graph traversal fused via Reciprocal Rank Fusion.
 - **Knowledge Graph.** Auto-linking, Louvain community detection, weighted PageRank, cooccurrence, structural analysis.
-- **Personality Engine.** Preferences, values, motivations, identity. Every recall shapes around who the agent is talking to.
+- **Personality Engine.** Preferences, values, motivations, identity. Recall is shaped by the agent's current personality context.
 - **Self-Hosted.** One Rust binary. One SQLite database. Local ONNX embeddings. No cloud keys.
 - **Encryption at Rest.** SQLCipher database encryption with keyfile, environment variable, or YubiKey HMAC-SHA1 challenge-response.
 - **Atomic Fact Decomposition.** Long memories split into self-contained facts. Each fact links back to its parent via `has_fact`.
@@ -121,7 +127,7 @@ KLEOS_MCP_BEARER_TOKEN=eg_... cargo run -p kleos-mcp
 
 ### Coordination Services
 
-Kleos bundles a set of coordination services behind the same auth and database:
+Kleos includes seven coordination services that share the same auth and database:
 
 - **Axon**: event bus with channels, subscriptions, SSE streaming, cursor polling
 - **Brain**: cross-service orchestration primitives, Hopfield networks, spreading activation (feature-gated: `brain_hopfield`)
@@ -158,12 +164,12 @@ Ten Cargo crates:
 | `kleos-server` | Axum HTTP server. 40+ route modules, middleware (auth, rate limiting, safe mode, JSON depth, metrics), GUI. |
 | `kleos-cli` | Command-line client over the HTTP API. Memory ops and credential management via credd. |
 | `kleos-sidecar` | Session-scoped memory proxy with file watcher, batched observation flushing, and persistent session store. |
-| `kleos-mcp` | MCP (Model Context Protocol) server. 35 tools across memory, context, graph, intelligence, services, and admin. Stdio transport; HTTP behind feature flag. |
+| `kleos-mcp` | MCP (Model Context Protocol) server. 41 tools across memory, context, graph, intelligence, services, and admin. Stdio transport; HTTP behind feature flag. |
 | `kleos-cred` | Credential management library. Crypto primitives, YubiKey challenge-response, key derivation. |
 | `kleos-credd` | Credential management daemon. HTTP server with master key + agent key two-tier auth, ChaCha20-Poly1305 encryption. |
 | `kleos-approval-tui` | Terminal UI for human approval workflow. Ratatui-based interactive review queue. (WIP) |
 | `kleos-migrate` | ETL tool for migrating from libsql to rusqlite + LanceDB. One-shot utility. |
-| `agent-forge` | Structured reasoning CLI: spec-task, log-hypothesis, verify, challenge-code, repo-map, search-code. Tree-sitter AST parsing. |
+| `agent-forge` | Structured reasoning CLI: spec-task, consider-approaches, log-hypothesis, log-outcome, recall-errors, verify, challenge-code, checkpoint, rollback, session-learn, session-recall, session-diff, think, declare-unknowns, repo-map, search-code. Tree-sitter AST parsing. |
 
 ```bash
 cargo build --release --workspace   # build everything
@@ -242,6 +248,17 @@ The server initializes in a specific order:
 - Response hardening headers: nosniff, DENY framing, no-referrer, HSTS, no cross-domain policies
 - CORS restricted by default (explicit `KLEOS_ALLOWED_ORIGINS` required for cross-origin access)
 - Safe mode: automatic write-blocking after crash-loop detection
+
+### Safe Mode
+
+If the server detects 3+ restarts within 5 minutes, it enters safe mode. In safe mode all write operations are blocked -- reads and searches still work. This prevents a crashing mutation from looping indefinitely.
+
+When safe mode is active the server logs a warning at startup and all write requests return 503 with `"server is in safe mode due to crash loop"`. Reads and searches still work. To exit safe mode after fixing the underlying issue:
+
+```bash
+curl -X POST http://localhost:4200/admin/safe-mode/exit \
+  -H "Authorization: Bearer eg_YOUR_ADMIN_KEY"
+```
 
 ### ASCII Diagram
 
@@ -393,6 +410,7 @@ kleos-cli context "current infrastructure state" --limit 5
 kleos-cli recall 42
 kleos-cli list --limit 20
 kleos-cli delete 42
+kleos-cli guard "rm -rf /var/data"
 kleos-cli bootstrap
 ```
 
@@ -444,6 +462,26 @@ Configuration is layered: defaults -> TOML file -> environment variable override
 
 TOML config is loaded from (in order): `KLEOS_CONFIG_FILE` env var, `./kleos.toml` in CWD, or `~/.config/kleos/config.toml`.
 
+Example `kleos.toml`:
+
+```toml
+host = "0.0.0.0"
+port = 4200
+db_path = "/data/kleos.db"
+data_dir = "/data"
+backup_enabled = true
+backup_interval_secs = 21600
+pagerank_enabled = true
+
+[encryption]
+mode = "keyfile"
+
+[eidolon]
+enabled = false
+```
+
+Anything not specified falls back to its default. Secret fields (`api_key`, `gui_password`) must be set via env vars -- they cannot appear in the TOML file.
+
 ### Core
 
 | Variable | Default | Description |
@@ -454,6 +492,9 @@ TOML config is loaded from (in order): `KLEOS_CONFIG_FILE` env var, `./kleos.tom
 | `KLEOS_DATA_DIR` | `./data` | Data directory for models, LanceDB, artifacts |
 | `KLEOS_API_KEY` | unset | Bootstrap admin key override |
 | `KLEOS_GUI_PASSWORD` | unset | GUI login password |
+| `KLEOS_GUI_BUILD_DIR` | unset | Path to pre-built GUI static assets |
+| `KLEOS_DEFAULT_RETENTION` | `0.9` | Default FSRS retention target for new memories |
+| `KLEOS_CONFIG_FILE` | unset | Override TOML config file path |
 | `RUST_LOG` | `info` | `tracing-subscriber` filter: `debug`, `info`, `warn`, `error` |
 
 ### Embeddings and Reranker
@@ -471,7 +512,10 @@ TOML config is loaded from (in order): `KLEOS_CONFIG_FILE` env var, `./kleos.tom
 | `KLEOS_EMBEDDING_CHUNK_MAX_CHUNKS` | `6` | Max chunks per document |
 | `KLEOS_RERANKER_ENABLED` | `1` | Set `0` to disable cross-encoder reranking |
 | `KLEOS_RERANKER_TOP_K` | `12` | Rerank top K candidates |
+| `KLEOS_RERANKER_MODEL_DIR` | auto | Override reranker ONNX model directory |
 | `KLEOS_USE_LANCE_INDEX` | `1` | Set `0` to disable the LanceDB vector backend |
+| `KLEOS_LANCE_INDEX_PATH` | auto | Override LanceDB index directory |
+| `KLEOS_VECTOR_DIMENSIONS` | `1024` | Vector dimensions (must match embedding model) |
 
 ### LLM (Ollama)
 
@@ -544,6 +588,7 @@ KLEOS_ENCRYPTION_MODE=yubikey kleos-server
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `KLEOS_BOOTSTRAP_SECRET` | unset | Pre-shared secret required for `POST /bootstrap`. Disabled when unset. |
 | `KLEOS_TRUSTED_PROXIES` | unset | Comma-separated IPs of trusted reverse proxies (for X-Forwarded-For) |
 | `KLEOS_ALLOWED_ORIGINS` | unset | Comma-separated origins for CORS (restricted by default) |
 | `KLEOS_AUTH_KEY_ROTATION_GRACE_HOURS` | `24` | Grace period for old key after rotation |
