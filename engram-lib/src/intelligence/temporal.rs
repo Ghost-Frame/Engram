@@ -5,20 +5,14 @@
 // same subject+verb.
 // ============================================================================
 
+use super::types::{FactContradiction, TemporalPattern, TimeTravelResult};
 use crate::db::Database;
 use crate::{EngError, Result};
 use rusqlite::{params, OptionalExtension};
-use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TemporalPattern {
-    pub label: String,
-    pub detail: String,
 }
 
 #[tracing::instrument(skip(_db))]
@@ -242,17 +236,6 @@ pub fn resolve_relative_date(reference: &str, base_date: &str) -> Option<String>
 // ============================================================================
 // CONTRADICTION DETECTION ON STRUCTURED FACTS
 // ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FactContradiction {
-    pub new_fact_id: i64,
-    pub old_fact_id: i64,
-    pub old_memory_id: i64,
-    pub subject: String,
-    pub verb: String,
-    pub new_object: Option<String>,
-    pub old_object: Option<String>,
-}
 
 /// State-type verbs where only one value can be true at a time.
 const STATE_VERBS: &[&str] = &[
@@ -569,15 +552,6 @@ pub async fn backfill_fact_validity(db: &Database, user_id: i64) -> Result<i32> 
 // ============================================================================
 // TIME TRAVEL -- query memories as they existed at a given timestamp
 // ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TimeTravelResult {
-    pub id: i64,
-    pub content: String,
-    pub category: String,
-    pub importance: i32,
-    pub created_at: String,
-}
 
 /// Retrieve memories as they existed at or before a given timestamp.
 /// Optionally filter by content substring.
