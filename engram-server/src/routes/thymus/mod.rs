@@ -2,7 +2,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -14,6 +13,12 @@ use engram_lib::services::thymus::{
     record_drift_event, record_metric, record_session_quality, update_rubric, CreateRubricRequest,
     EvaluateRequest, RecordDriftEventRequest, RecordMetricRequest, RecordSessionQualityRequest,
     UpdateRubricRequest,
+};
+
+mod types;
+use types::{
+    DriftEventsParams, GetMetricsParams, ListEvaluationsParams, MetricSummaryParams,
+    SessionQualityParams,
 };
 
 pub fn router() -> Router<AppState> {
@@ -117,13 +122,6 @@ async fn evaluate_handler(
     Ok((StatusCode::CREATED, Json(json!(evaluation))))
 }
 
-#[derive(Debug, Deserialize)]
-struct ListEvaluationsParams {
-    agent: Option<String>,
-    rubric_id: Option<i64>,
-    limit: Option<usize>,
-}
-
 async fn list_evaluations_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -167,14 +165,6 @@ async fn record_metric_handler(
     Ok((StatusCode::CREATED, Json(json!(metric))))
 }
 
-#[derive(Debug, Deserialize)]
-struct GetMetricsParams {
-    agent: Option<String>,
-    metric: Option<String>,
-    since: Option<String>,
-    limit: Option<usize>,
-}
-
 async fn get_metrics_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -191,13 +181,6 @@ async fn get_metrics_handler(
     )
     .await?;
     Ok(Json(json!({ "metrics": metrics })))
-}
-
-#[derive(Debug, Deserialize)]
-struct MetricSummaryParams {
-    agent: Option<String>,
-    metric: Option<String>,
-    since: Option<String>,
 }
 
 async fn get_metric_summary_handler(
@@ -233,13 +216,6 @@ async fn record_session_quality_handler(
     Ok((StatusCode::CREATED, Json(json!(sq))))
 }
 
-#[derive(Debug, Deserialize)]
-struct SessionQualityParams {
-    agent: Option<String>,
-    since: Option<String>,
-    limit: Option<usize>,
-}
-
 async fn get_session_quality_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -270,12 +246,6 @@ async fn record_drift_event_handler(
     body.user_id = Some(auth.user_id);
     let event = record_drift_event(&state.db, body).await?;
     Ok((StatusCode::CREATED, Json(json!(event))))
-}
-
-#[derive(Debug, Deserialize)]
-struct DriftEventsParams {
-    agent: Option<String>,
-    limit: Option<usize>,
 }
 
 async fn get_drift_events_handler(
