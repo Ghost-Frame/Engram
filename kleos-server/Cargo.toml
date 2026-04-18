@@ -1,12 +1,12 @@
 [package]
 name = "kleos-server"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version.workspace = true
-description = "HTTP server for Engram -- persistent semantic memory for AI agents"
+description = "HTTP server for Kleos -- persistent semantic memory and cognitive infrastructure for AI agents"
 license = "Elastic-2.0"
-repository = "https://github.com/Ghost-Frame/Engram-rust"
-homepage = "https://engram.lol"
+repository = "https://github.com/Ghost-Frame/Kleos"
+homepage = "https://engram.syntheos.dev"
 readme = "../README.md"
 
 [[bin]]
@@ -21,8 +21,8 @@ path = "src/main.rs"
 name = "kleos_server"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "0.3.1", features = ["sqlcipher"] }
-kleos-cred = { path = "../kleos-cred", version = "0.3.1" }
+kleos-lib = { path = "../kleos-lib", version = "0.3.2", features = ["sqlcipher"] }
+kleos-cred = { path = "../kleos-cred", version = "0.3.2" }
 axum = { workspace = true, features = ["ws"] }
 hmac = { workspace = true }
 sha2 = { workspace = true }

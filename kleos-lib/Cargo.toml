@@ -1,12 +1,12 @@
 [package]
 name = "kleos-lib"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version.workspace = true
-description = "Core library for Engram -- persistent semantic memory for AI agents"
+description = "Core library for Kleos -- persistent semantic memory and cognitive infrastructure for AI agents"
 license = "Elastic-2.0"
-repository = "https://github.com/Ghost-Frame/Engram-rust"
-homepage = "https://engram.lol"
+repository = "https://github.com/Ghost-Frame/Kleos"
+homepage = "https://engram.syntheos.dev"
 readme = "../README.md"
 
 [lib]

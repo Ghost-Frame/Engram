@@ -1,6 +1,6 @@
 [package]
 name = "kleos-migrate"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version.workspace = true
 description = "ETL tool to migrate Engram from libsql to rusqlite + LanceDB"
