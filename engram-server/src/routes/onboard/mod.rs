@@ -6,10 +6,12 @@ use kleos_lib::memory::{
 };
 use kleos_lib::webhooks::resolve_and_validate_url;
 use rusqlite::params;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::FetchBody;
 
 /// Maximum response body size for /fetch (10 MiB).
 const FETCH_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
@@ -185,12 +187,6 @@ async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json
         "checks": checks_json,
         "next_steps": next_steps,
     })))
-}
-
-#[derive(Debug, Deserialize)]
-struct FetchBody {
-    pub url: String,
-    pub cache: Option<bool>,
 }
 
 async fn fetch_url(
