@@ -235,6 +235,8 @@ fn value_as_string(value: Option<&Value>) -> Option<String> {
 
 #[tokio::main]
 async fn main() {
+    kleos_lib::config::migrate_env_prefix();
+
     let _otel_guard = kleos_lib::observability::init_tracing("kleos-cli", "warn");
 
     let cli = Cli::parse();

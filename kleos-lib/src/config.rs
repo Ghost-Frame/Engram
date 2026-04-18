@@ -1,6 +1,58 @@
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
+/// Shim: for every `KLEOS_X` env var found, set `KLEOS_X` if not already set.
+///
+/// Call this once at binary startup (before any config loading) so that the
+/// new `KLEOS_*` prefix works transparently alongside existing `KLEOS_*` vars.
+pub fn migrate_env_prefix() {
+    let pairs: Vec<(String, String)> = std::env::vars()
+        .filter_map(|(k, v)| {
+            k.strip_prefix("KLEOS_").map(|suffix| {
+                (format!("KLEOS_{}", suffix), v)
+            })
+        })
+        .collect();
+
+    for (config_key, value) in pairs {
+        if std::env::var(&config_key).is_err() {
+            std::env::set_var(&config_key, &value);
+        }
+    }
+}
+
+/// Resolve the actual DB path to open, applying a legacy fallback.
+///
+/// Rules:
+/// 1. If `configured` path exists on disk, use it as-is.
+/// 2. If `configured` filename is `kleos.db` and that file does NOT exist,
+///    check whether `kleos.db` in the same directory exists. If so, warn and
+///    return that legacy path so existing deployments keep working without
+///    renaming anything.
+/// 3. Otherwise return `configured` unchanged (the caller will create it).
+pub fn resolve_db_path(configured: &std::path::Path) -> std::path::PathBuf {
+    if configured.exists() {
+        return configured.to_path_buf();
+    }
+
+    // Only attempt legacy fallback when the configured name is kleos.db.
+    if configured.file_name().and_then(|n| n.to_str()) == Some("kleos.db") {
+        let legacy = configured
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("kleos.db");
+        if legacy.exists() {
+            tracing::warn!(
+                legacy = %legacy.display(),
+                "kleos.db not found -- falling back to legacy kleos.db"
+            );
+            return legacy;
+        }
+    }
+
+    configured.to_path_buf()
+}
+
 /// How the at-rest encryption key is sourced.
 ///
 /// Default is `None` (no encryption). When set, every SQLite connection

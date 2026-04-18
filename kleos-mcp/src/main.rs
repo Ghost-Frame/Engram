@@ -11,6 +11,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    kleos_lib::config::migrate_env_prefix();
+
     let _otel_guard = kleos_lib::observability::init_tracing("kleos-mcp", "kleos_mcp=info");
 
     let args = Args::parse();

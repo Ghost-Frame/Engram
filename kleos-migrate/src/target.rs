@@ -14,7 +14,7 @@ pub struct TargetDb {
 /// Create target rusqlite database with schema
 pub async fn create(target_dir: &Path) -> Result<TargetDb> {
     std::fs::create_dir_all(target_dir)?;
-    let db_path = target_dir.join("kleos.db");
+    let db_path = kleos_lib::config::resolve_db_path(&target_dir.join("kleos.db"));
 
     info!("Creating target database at {:?}", db_path);
 

@@ -71,12 +71,15 @@ impl TenantLoader {
         // Evict if necessary before loading
         self.maybe_evict().await?;
 
-        // Load database
-        let db_path = self
-            .data_root
-            .join("tenants")
-            .join(tenant_id)
-            .join("kleos.db");
+        // Load database -- prefer kleos.db in the tenant dir, fall back to
+        // kleos.db in the same dir for existing deployments.
+        let db_path = crate::config::resolve_db_path(
+            &self
+                .data_root
+                .join("tenants")
+                .join(tenant_id)
+                .join("kleos.db"),
+        );
 
         let db = TenantDatabase::open(&db_path)?;
 

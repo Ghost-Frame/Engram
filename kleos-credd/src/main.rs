@@ -27,6 +27,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    kleos_lib::config::migrate_env_prefix();
+
     let _otel_guard = kleos_lib::observability::init_tracing(
         "kleos-credd",
         "kleos_credd=info,tower_http=debug",

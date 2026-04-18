@@ -32,6 +32,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    kleos_lib::config::migrate_env_prefix();
+
     let _otel_guard =
         kleos_lib::observability::init_tracing("kleos-migrate", "kleos_migrate=info");
 
