@@ -66,8 +66,7 @@ async fn query_handler(
             "brain not configured".into(),
         ))
     })?;
-    let embedder_guard = state.embedder.read().await;
-    let embedder = embedder_guard.as_ref().ok_or_else(|| {
+    let embedder = state.current_embedder().await.ok_or_else(|| {
         AppError(kleos_lib::EngError::Internal(
             "embedder not ready (still loading)".into(),
         ))
@@ -87,8 +86,7 @@ async fn absorb_handler(
             "brain not configured".into(),
         ))
     })?;
-    let embedder_guard = state.embedder.read().await;
-    let embedder = embedder_guard.as_ref().ok_or_else(|| {
+    let embedder = state.current_embedder().await.ok_or_else(|| {
         AppError(kleos_lib::EngError::Internal(
             "embedder not ready (still loading)".into(),
         ))

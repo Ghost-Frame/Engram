@@ -79,6 +79,9 @@ pub enum EngError {
     #[error("forbidden: {0}")]
     Forbidden(String),
 
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 
