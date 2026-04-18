@@ -313,6 +313,22 @@ pub struct FactContradiction {
 }
 
 // ---------------------------------------------------------------------------
+// Memory health
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHealthReport {
+    pub total_memories: i64,
+    pub without_embeddings: i64,
+    pub archived: i64,
+    pub superseded: i64,
+    pub with_links: i64,
+    pub avg_importance: f64,
+    pub oldest_memory: Option<String>,
+    pub embedding_coverage_pct: f64,
+}
+
+// ---------------------------------------------------------------------------
 // Digests
 // ---------------------------------------------------------------------------
 
