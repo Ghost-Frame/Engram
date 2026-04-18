@@ -6,74 +6,10 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use serde::{Deserialize, Serialize};
-
+use super::types::{ContradictionPair, Inference, InferenceKind, ReasoningConfig};
 use crate::brain::hopfield::edges::{BrainEdge, EdgeType};
 use crate::brain::hopfield::network::HopfieldNetwork;
 use crate::brain::hopfield::pattern::BrainPattern;
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/// The kind of inference produced by the reasoning engine.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InferenceKind {
-    Abductive,
-    Predictive,
-    Synthesis,
-    Rule,
-    Analogical,
-}
-
-/// A single inference produced by the reasoning engine.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Inference {
-    pub kind: InferenceKind,
-    pub description: String,
-    pub confidence: f32,
-    pub supporting_ids: Vec<i64>,
-}
-
-/// Configuration controlling which reasoning modes are active and their
-/// thresholds.
-#[derive(Debug, Clone)]
-pub struct ReasoningConfig {
-    pub enabled: bool,
-    pub abductive: bool,
-    pub predictive: bool,
-    pub synthesis: bool,
-    pub rule_extraction: bool,
-    pub analogical: bool,
-    pub max_inferences: usize,
-    pub min_confidence: f32,
-}
-
-impl Default for ReasoningConfig {
-    fn default() -> Self {
-        ReasoningConfig {
-            enabled: true,
-            abductive: true,
-            predictive: true,
-            synthesis: true,
-            rule_extraction: true,
-            analogical: false, // Most expensive, disabled by default
-            max_inferences: 5,
-            min_confidence: 0.3,
-        }
-    }
-}
-
-/// A contradiction pair: two patterns whose content conflicts.
-/// winner_id is the currently stronger/more-activated pattern.
-#[derive(Debug, Clone)]
-pub struct ContradictionPair {
-    pub winner_id: i64,
-    pub loser_id: i64,
-    pub winner_activation: f32,
-    pub loser_activation: f32,
-}
 
 // ---------------------------------------------------------------------------
 // Adjacency helpers (replaces ConnectionGraph)
