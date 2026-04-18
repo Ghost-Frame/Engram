@@ -14,6 +14,9 @@ use uuid::Uuid;
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
+#[allow(dead_code)]
+mod types;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/export", get(export_handler))
