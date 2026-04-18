@@ -190,66 +190,91 @@ pub fn assemble_context_string(
     }
 
     if !evolution_blocks.is_empty() {
-        let lines: Vec<String> = evolution_blocks
-            .iter()
-            .map(|b| wrap_user_content(&b.content))
-            .collect();
-        parts.push(format!(
-            "## Preference/Fact Evolution\n{}",
-            lines.join("\n\n")
-        ));
+        // 6.10: one growable buffer instead of Vec<String> + join.
+        let avg_len = evolution_blocks
+            .first()
+            .map(|b| b.content.len() + 24)
+            .unwrap_or(0);
+        let mut out = String::with_capacity(32 + avg_len * evolution_blocks.len());
+        out.push_str("## Preference/Fact Evolution");
+        for (i, b) in evolution_blocks.iter().enumerate() {
+            let sep = if i == 0 { "\n" } else { "\n\n" };
+            let _ = write!(out, "{}{}", sep, wrap_user_content(&b.content));
+        }
+        parts.push(out);
     }
 
     if !episode_blocks.is_empty() {
-        let lines: Vec<String> = episode_blocks
-            .iter()
-            .map(|b| {
-                format!(
-                    "- [{}] {}{}",
-                    b.created_at.as_deref().unwrap_or(""),
-                    wrap_user_content(&b.content),
-                    build_attribution(b)
-                )
-            })
-            .collect();
-        parts.push(format!("## Episode Context\n{}", lines.join("\n")));
+        // 6.10: one growable buffer instead of Vec<String> + join.
+        let avg_len = episode_blocks
+            .first()
+            .map(|b| b.content.len() + 48)
+            .unwrap_or(0);
+        let mut out = String::with_capacity(32 + avg_len * episode_blocks.len());
+        out.push_str("## Episode Context");
+        for b in episode_blocks.iter() {
+            let _ = write!(
+                out,
+                "\n- [{}] {}{}",
+                b.created_at.as_deref().unwrap_or(""),
+                wrap_user_content(&b.content),
+                build_attribution(b)
+            );
+        }
+        parts.push(out);
     }
 
     if !linked_blocks.is_empty() {
-        let lines: Vec<String> = linked_blocks
-            .iter()
-            .map(|b| {
-                format!(
-                    "- {}{}",
-                    wrap_user_content(&b.content),
-                    build_attribution(b)
-                )
-            })
-            .collect();
-        parts.push(format!("## Related Context\n{}", lines.join("\n")));
+        // 6.10: one growable buffer instead of Vec<String> + join.
+        let avg_len = linked_blocks
+            .first()
+            .map(|b| b.content.len() + 24)
+            .unwrap_or(0);
+        let mut out = String::with_capacity(32 + avg_len * linked_blocks.len());
+        out.push_str("## Related Context");
+        for b in linked_blocks.iter() {
+            let _ = write!(
+                out,
+                "\n- {}{}",
+                wrap_user_content(&b.content),
+                build_attribution(b)
+            );
+        }
+        parts.push(out);
     }
 
     if !recent_blocks.is_empty() {
-        let lines: Vec<String> = recent_blocks
-            .iter()
-            .map(|b| {
-                format!(
-                    "- [{}] {}{}",
-                    b.created_at.as_deref().unwrap_or(""),
-                    wrap_user_content(&b.content),
-                    build_attribution(b)
-                )
-            })
-            .collect();
-        parts.push(format!("## Recent Activity\n{}", lines.join("\n")));
+        // 6.10: one growable buffer instead of Vec<String> + join.
+        let avg_len = recent_blocks
+            .first()
+            .map(|b| b.content.len() + 48)
+            .unwrap_or(0);
+        let mut out = String::with_capacity(32 + avg_len * recent_blocks.len());
+        out.push_str("## Recent Activity");
+        for b in recent_blocks.iter() {
+            let _ = write!(
+                out,
+                "\n- [{}] {}{}",
+                b.created_at.as_deref().unwrap_or(""),
+                wrap_user_content(&b.content),
+                build_attribution(b)
+            );
+        }
+        parts.push(out);
     }
 
     if !inference_blocks.is_empty() {
-        let lines: Vec<String> = inference_blocks
-            .iter()
-            .map(|b| wrap_user_content(&b.content))
-            .collect();
-        parts.push(format!("## Implicit Connections\n{}", lines.join("\n")));
+        // 6.10: one growable buffer instead of Vec<String> + join.
+        let avg_len = inference_blocks
+            .first()
+            .map(|b| b.content.len() + 24)
+            .unwrap_or(0);
+        let mut out = String::with_capacity(32 + avg_len * inference_blocks.len());
+        out.push_str("## Implicit Connections");
+        for b in inference_blocks.iter() {
+            let _ = write!(out, "\n{}", wrap_user_content(&b.content));
+        }
+        parts.push(out);
     }
 
     parts.join("\n\n")
@@ -1313,4 +1338,80 @@ fn format_structured_fact(sf: &StructuredFact, is_stale: bool) -> String {
         line.push_str(" [possibly outdated]");
     }
     line
+}
+
+#[cfg(test)]
+mod assembly_tests {
+    use super::*;
+
+    fn mk(source: ContextBlockSource, content: &str) -> ContextBlock {
+        ContextBlock {
+            id: 0,
+            content: content.into(),
+            category: "note".into(),
+            score: 0.0,
+            source,
+            tokens: 0,
+            created_at: Some("2026-04-18T00:00:00Z".into()),
+            model: None,
+            origin: None,
+            parent_id: None,
+        }
+    }
+
+    #[test]
+    fn evolution_section_format_matches_legacy() {
+        let blocks = vec![
+            mk(ContextBlockSource::Evolution, "alpha"),
+            mk(ContextBlockSource::Evolution, "beta"),
+        ];
+        let got = assemble_context_string(&blocks, &[]);
+        let expected = "## Preference/Fact Evolution\n<user_memory>alpha</user_memory>\n\n<user_memory>beta</user_memory>";
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn episode_section_format_matches_legacy() {
+        let blocks = vec![mk(ContextBlockSource::Episode, "ep")];
+        let got = assemble_context_string(&blocks, &[]);
+        let expected = "## Episode Context\n- [2026-04-18T00:00:00Z] <user_memory>ep</user_memory>";
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn linked_section_format_matches_legacy() {
+        let blocks = vec![
+            mk(ContextBlockSource::Linked, "x"),
+            mk(ContextBlockSource::Linked, "y"),
+        ];
+        let got = assemble_context_string(&blocks, &[]);
+        let expected =
+            "## Related Context\n- <user_memory>x</user_memory>\n- <user_memory>y</user_memory>";
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn recent_section_format_matches_legacy() {
+        let blocks = vec![mk(ContextBlockSource::Recent, "r")];
+        let got = assemble_context_string(&blocks, &[]);
+        let expected = "## Recent Activity\n- [2026-04-18T00:00:00Z] <user_memory>r</user_memory>";
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn inference_section_format_matches_legacy() {
+        let blocks = vec![
+            mk(ContextBlockSource::Inference, "i1"),
+            mk(ContextBlockSource::Inference, "i2"),
+        ];
+        let got = assemble_context_string(&blocks, &[]);
+        let expected =
+            "## Implicit Connections\n<user_memory>i1</user_memory>\n<user_memory>i2</user_memory>";
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn empty_blocks_produce_empty_string() {
+        assert_eq!(assemble_context_string(&[], &[]), "");
+    }
 }
