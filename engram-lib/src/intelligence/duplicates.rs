@@ -1,29 +1,11 @@
 //! Duplicate detection and deduplication via memory_links similarity scores.
 
+use super::types::{DeduplicateResult, DuplicatePair};
 use crate::db::Database;
 use crate::{EngError, Result};
-use serde::{Deserialize, Serialize};
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DuplicatePair {
-    pub id_a: i64,
-    pub id_b: i64,
-    pub content_a: String,
-    pub content_b: String,
-    pub similarity: f64,
-    pub importance_a: i32,
-    pub importance_b: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeduplicateResult {
-    pub pairs_found: i64,
-    pub merged: i64,
-    pub dry_run: bool,
 }
 
 /// Find duplicate memory pairs based on similarity links.
