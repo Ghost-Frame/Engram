@@ -458,35 +458,6 @@ async fn fetch_links_batch(
     .await
 }
 
-async fn fetch_version_chain_for_search(
-    db: &Database,
-    root_id: i64,
-    user_id: i64,
-) -> Result<Vec<VersionChainEntry>> {
-    let chain_sql = "SELECT id, content, version, is_latest FROM memories \
-        WHERE (root_memory_id = ?1 OR id = ?1) AND user_id = ?2 \
-        ORDER BY version ASC";
-
-    db.read(move |conn| {
-        let mut stmt = conn.prepare(chain_sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query(rusqlite::params![root_id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        // 6.9 capacity hint: version chains are usually short.
-        let mut chain = Vec::with_capacity(8);
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            chain.push(VersionChainEntry {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                content: row.get(1).map_err(rusqlite_to_eng_error)?,
-                version: row.get(2).map_err(rusqlite_to_eng_error)?,
-                is_latest: row.get::<_, i32>(3).map_err(rusqlite_to_eng_error)? != 0,
-            });
-        }
-        Ok(chain)
-    })
-    .await
-}
-
 /// Batch-fetch version chains for multiple root IDs in a single query.
 /// Returns a HashMap keyed by root_memory_id.
 async fn fetch_version_chains_batch(

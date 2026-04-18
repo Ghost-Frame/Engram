@@ -3,6 +3,8 @@ name = "agent-forge"
 version = "0.3.2"
 edition = "2021"
 rust-version.workspace = true
+license = "Elastic-2.0"
+description = "Protocol CLI that gates agent coding work behind spec + hypothesis + verification steps"
 
 [[bin]]
 name = "agent-forge"

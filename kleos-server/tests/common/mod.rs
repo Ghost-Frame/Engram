@@ -59,6 +59,8 @@ pub async fn test_app() -> (Router, AppState) {
         approval_notify: None,
         pending_approvals: Arc::new(Mutex::new(HashMap::new())),
         safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        dreamer_stats: kleos_server::dreamer::new_stats_handle(),
+        last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
     let router = build_router(state.clone());
     (router, state)

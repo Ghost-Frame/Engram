@@ -65,3 +65,19 @@ pub struct AppState {
     /// dreamer to gate heavy consolidation work behind a period of idleness.
     pub last_request_time: Arc<AtomicU64>,
 }
+
+impl AppState {
+    /// Clone out the currently-loaded embedder without holding the RwLock
+    /// across an await. The inner value is an `Arc` so the clone is cheap,
+    /// and releasing the guard before `.embed()` means a concurrent reload
+    /// (write lock) is not blocked for the entire embedding round-trip.
+    pub async fn current_embedder(&self) -> Option<Arc<dyn EmbeddingProvider>> {
+        self.embedder.read().await.clone()
+    }
+
+    /// Clone out the currently-loaded reranker. Same rationale as
+    /// [`current_embedder`]: never hold the RwLock across an await.
+    pub async fn current_reranker(&self) -> Option<Arc<dyn Reranker>> {
+        self.reranker.read().await.clone()
+    }
+}

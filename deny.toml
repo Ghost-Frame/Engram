@@ -7,7 +7,13 @@ no-default-features = false
 [advisories]
 version = 2
 yanked = "warn"
-ignore = []
+ignore = [
+    # paste 1.0.15: upstream archived (unmaintained). No safe upgrade; pulled
+    # in transitively via datafusion -> lance -> lancedb and via ratatui.
+    # Track upstream replacement work; no code path in kleos consumes paste
+    # directly.
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained; transitive via datafusion/ratatui; no direct use" },
+]
 
 [licenses]
 version = 2
@@ -25,6 +31,8 @@ allow = [
     "MPL-2.0",
     "BSL-1.0",
     "0BSD",
+    "Elastic-2.0",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 

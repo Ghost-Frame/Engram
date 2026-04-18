@@ -6,7 +6,12 @@ members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-sidecar", "kleos-app
 rust-version = "1.94"
 
 [workspace.dependencies]
-libsql = "0.9"
+# libsql is used only by kleos-migrate for local-file -> rusqlite ETL.
+# We turn off default features (replication/remote/sync/tls) to drop the
+# transitive hyper-rustls 0.25 + rustls 0.22 + rustls-webpki 0.102.8 chain
+# (RUSTSEC-2026-0049/0098/0099). kleos-migrate opens files via
+# Builder::new_local only; no TLS path needed.
+libsql = { version = "0.9", default-features = false, features = ["core"] }
 rusqlite = "0.31"
 tokio-rusqlite = "0.5"
 deadpool-sqlite = "0.8"
@@ -55,7 +60,7 @@ base64 = "0.22"
 secrecy = { version = "0.8", features = ["serde"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 mimalloc = { version = "0.1", default-features = false }
-lru = "0.12"
+lru = "0.16"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
 # Note: Can't use bundled sqlite with libsql in same binary - they conflict.

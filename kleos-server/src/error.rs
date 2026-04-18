@@ -4,6 +4,7 @@ use axum::Json;
 use kleos_lib::EngError;
 use serde_json::json;
 
+#[derive(Debug)]
 pub struct AppError(pub EngError);
 
 impl From<EngError> for AppError {
@@ -43,6 +44,7 @@ impl IntoResponse for AppError {
             EngError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             EngError::Auth(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             EngError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
+            EngError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             EngError::NotImplemented(msg) => (StatusCode::NOT_IMPLEMENTED, msg.clone()),
             // Classify DB errors: constraint violations get 4xx, others get 500.
             EngError::Database(e) => {

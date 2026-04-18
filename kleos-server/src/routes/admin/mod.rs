@@ -844,6 +844,85 @@ async fn backup_handler(
 // Point-in-time recovery
 // ---------------------------------------------------------------------------
 
+/// Name of the jailed restore directory under `data_dir`. PITR prepared files
+/// land here and nowhere else.
+const PITR_RESTORE_SUBDIR: &str = "pitr-restore";
+/// Hard cap on caller-supplied filenames. Matches common filesystem NAME_MAX.
+const PITR_DEST_MAX_LEN: usize = 200;
+
+/// SECURITY (SEC-CRIT-1): Validate an admin-supplied `dest_path` for POST
+/// `/admin/pitr/prepare-restore` and resolve it to an absolute path inside a
+/// jailed directory under `data_dir`. Treats the caller input as a filename
+/// only (no directory components) and refuses to overwrite an existing file.
+///
+/// Rejects: empty, NUL, absolute paths, any `/` or `\\`, any `..`, leading `.`
+/// or `-`, anything above `PITR_DEST_MAX_LEN`, and characters outside
+/// `[A-Za-z0-9._-]`. Canonicalises the jail and asserts the joined candidate
+/// stays inside it (defence against a pre-existing symlink in the jail root).
+fn sanitize_pitr_dest(data_dir: &str, raw: &str) -> Result<std::path::PathBuf, AppError> {
+    let invalid = |msg: &str| -> AppError {
+        AppError(kleos_lib::EngError::InvalidInput(format!(
+            "dest_path {msg}; must be a bare filename restricted to \
+             [A-Za-z0-9._-], <= {PITR_DEST_MAX_LEN} chars, and must not exist"
+        )))
+    };
+
+    if raw.is_empty() {
+        return Err(invalid("is empty"));
+    }
+    if raw.len() > PITR_DEST_MAX_LEN {
+        return Err(invalid("too long"));
+    }
+    if raw.as_bytes().contains(&0) {
+        return Err(invalid("contains NUL"));
+    }
+    if raw.contains('/') || raw.contains('\\') {
+        return Err(invalid("contains path separator"));
+    }
+    if raw == "." || raw == ".." || raw.contains("..") {
+        return Err(invalid("contains traversal"));
+    }
+    if raw.starts_with('.') || raw.starts_with('-') {
+        return Err(invalid("must not start with '.' or '-'"));
+    }
+    if !raw
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
+        return Err(invalid("contains disallowed characters"));
+    }
+
+    let data_dir_path = std::path::PathBuf::from(data_dir);
+    if !data_dir_path.is_absolute() {
+        return Err(AppError(kleos_lib::EngError::Internal(
+            "data_dir is not absolute; refusing to resolve PITR restore path".into(),
+        )));
+    }
+    let jail = data_dir_path.join(PITR_RESTORE_SUBDIR);
+    std::fs::create_dir_all(&jail).map_err(|e| {
+        AppError(kleos_lib::EngError::Internal(format!(
+            "failed to create PITR restore dir {}: {e}",
+            jail.display()
+        )))
+    })?;
+    let jail_canon = std::fs::canonicalize(&jail).map_err(|e| {
+        AppError(kleos_lib::EngError::Internal(format!(
+            "failed to canonicalize PITR restore dir {}: {e}",
+            jail.display()
+        )))
+    })?;
+
+    let candidate = jail_canon.join(raw);
+    if !candidate.starts_with(&jail_canon) {
+        return Err(invalid("resolves outside restore jail"));
+    }
+    if candidate.symlink_metadata().is_ok() {
+        return Err(invalid("target already exists"));
+    }
+
+    Ok(candidate)
+}
+
 async fn admin_pitr_snapshots(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -870,9 +949,111 @@ async fn admin_pitr_prepare(
         .with_timezone(&chrono::Utc);
     let dir =
         crate::background::resolve_backup_dir(&state.config.data_dir, &state.config.backup_dir);
-    let dest = std::path::PathBuf::from(&body.dest_path);
+    // SECURITY (SEC-CRIT-1): sandbox dest_path into data_dir/pitr-restore.
+    // Previously any absolute path was accepted, letting an admin token write
+    // DB snapshots anywhere the process could reach.
+    let dest = sanitize_pitr_dest(&state.config.data_dir, &body.dest_path)?;
     let prepared = kleos_lib::db::pitr::prepare_restore(&dir, target, &dest).await?;
     Ok(Json(json!(prepared)))
+}
+
+#[cfg(test)]
+mod pitr_sandbox_tests {
+    use super::*;
+    use std::fs;
+
+    fn unique_data_dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("pitr-sandbox-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn rejects_empty() {
+        let dd = unique_data_dir();
+        let err = sanitize_pitr_dest(dd.to_str().unwrap(), "").unwrap_err();
+        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn rejects_absolute() {
+        let dd = unique_data_dir();
+        let err = sanitize_pitr_dest(dd.to_str().unwrap(), "/etc/passwd").unwrap_err();
+        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn rejects_traversal() {
+        let dd = unique_data_dir();
+        for bad in ["..", "../x", "a/../b", "..hidden", "a..b"] {
+            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
+            assert!(
+                matches!(err.0, kleos_lib::EngError::InvalidInput(_)),
+                "expected InvalidInput for {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_separators() {
+        let dd = unique_data_dir();
+        for bad in ["a/b", "a\\b", "foo/"] {
+            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
+            assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+        }
+    }
+
+    #[test]
+    fn rejects_unicode_and_exotic() {
+        let dd = unique_data_dir();
+        for bad in ["rm -rf", "a\0b", "name with space", "héllo"] {
+            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
+            assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+        }
+    }
+
+    #[test]
+    fn rejects_leading_dash_or_dot() {
+        let dd = unique_data_dir();
+        for bad in ["-rf", ".env", ".ssh"] {
+            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
+            assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+        }
+    }
+
+    #[test]
+    fn rejects_non_absolute_data_dir() {
+        let err = sanitize_pitr_dest("relative/dir", "restore.db").unwrap_err();
+        assert!(matches!(err.0, kleos_lib::EngError::Internal(_)));
+    }
+
+    #[test]
+    fn accepts_plain_filename_and_creates_jail() {
+        let dd = unique_data_dir();
+        let out = sanitize_pitr_dest(dd.to_str().unwrap(), "restore.db").unwrap();
+        let jail = dd.join(PITR_RESTORE_SUBDIR);
+        assert!(jail.is_dir(), "jail dir must be created");
+        assert!(out.starts_with(std::fs::canonicalize(&jail).unwrap()));
+        assert_eq!(out.file_name().unwrap(), "restore.db");
+    }
+
+    #[test]
+    fn rejects_overwrite_existing() {
+        let dd = unique_data_dir();
+        let jail = dd.join(PITR_RESTORE_SUBDIR);
+        fs::create_dir_all(&jail).unwrap();
+        fs::write(jail.join("already.db"), b"x").unwrap();
+        let err = sanitize_pitr_dest(dd.to_str().unwrap(), "already.db").unwrap_err();
+        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn rejects_too_long_name() {
+        let dd = unique_data_dir();
+        let long_name = "a".repeat(PITR_DEST_MAX_LEN + 1);
+        let err = sanitize_pitr_dest(dd.to_str().unwrap(), &long_name).unwrap_err();
+        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+    }
 }
 
 // ---------------------------------------------------------------------------

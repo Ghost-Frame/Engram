@@ -120,14 +120,12 @@ async fn execute_store(
     };
 
     // Embed if available
-    let embedder_guard = state.embedder.read().await;
-    if let Some(ref embedder) = *embedder_guard {
+    if let Some(embedder) = state.current_embedder().await {
         match embedder.embed(&req.content).await {
             Ok(emb) => req.embedding = Some(emb),
             Err(e) => tracing::warn!("batch store embed failed: {}", e),
         }
     }
-    drop(embedder_guard);
 
     match memory::store(&state.db, req).await {
         Ok(store_result) => {
