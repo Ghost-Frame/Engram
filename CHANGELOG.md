@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.1.0] - 2026-04-13
 
-Initial public release. Ground-up Rust rewrite of the [TypeScript Engram](https://github.com/Ghost-Frame/engram).
+Initial public release. Ground-up Rust rewrite of the [TypeScript Engram](https://github.com/GhostFrame/Kleos).
 
 ### Added
 
@@ -44,4 +44,4 @@ Initial public release. Ground-up Rust rewrite of the [TypeScript Engram](https:
 - Single static binary, single SQLite database, local embeddings
 - No cloud dependencies -- runs fully offline
 
-[0.1.0]: https://github.com/Ghost-Frame/Engram/releases/tag/v0.1.0
+[0.1.0]: https://github.com/GhostFrame/Kleos/releases/tag/v0.1.0

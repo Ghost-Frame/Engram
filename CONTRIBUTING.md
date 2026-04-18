@@ -3,7 +3,7 @@
 ## Getting Started
 
 ```bash
-git clone https://github.com/Ghost-Frame/Engram.git
+git clone https://github.com/GhostFrame/Kleos.git
 cd Engram
 cargo build --workspace
 cargo test --workspace
@@ -28,7 +28,7 @@ SQLite is vendored via `rusqlite` (bundled feature). SQLCipher is vendored at co
 ## Workspace Structure
 
 ```
-engram-rust/
+kleos/
   kleos-lib/            Core library -- all domain logic lives here
   kleos-server/         HTTP API server (Axum)
   kleos-cli/            CLI client over the HTTP API

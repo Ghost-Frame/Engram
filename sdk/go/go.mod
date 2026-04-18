@@ -1,3 +1,3 @@
-module github.com/Ghost-Frame/kleos/sdk/go
+module github.com/GhostFrame/Kleos/sdk/go
 
 go 1.22

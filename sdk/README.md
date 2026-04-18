@@ -1,6 +1,6 @@
 # Engram SDKs
 
-Client libraries for the [Engram](https://github.com/Ghost-Frame/engram-rust) memory server.
+Client libraries for the [Engram](https://github.com/GhostFrame/Kleos) memory server.
 
 ## Available SDKs
 
@@ -75,7 +75,7 @@ pip install kleos-client
 **Go**
 
 ```bash
-go get github.com/Ghost-Frame/kleos/sdk/go
+go get github.com/GhostFrame/Kleos/sdk/go
 ```
 
 ## Authentication
