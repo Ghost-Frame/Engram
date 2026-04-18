@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use engram_lib::llm::local::{CallOptions, Priority};
+use engram_lib::llm::{CallOptions, Priority};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::info;

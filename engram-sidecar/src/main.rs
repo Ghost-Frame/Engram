@@ -5,7 +5,7 @@ mod store;
 mod watcher;
 
 use clap::Parser;
-use engram_lib::llm::local::{LocalModelClient, OllamaConfig};
+use engram_lib::llm::{local::LocalModelClient, OllamaConfig};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 

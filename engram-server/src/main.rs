@@ -4,7 +4,7 @@ use engram_lib::db::Database;
 use engram_lib::embeddings::onnx::OnnxProvider;
 use engram_lib::embeddings::EmbeddingProvider;
 use engram_lib::jobs::pagerank_refresh::start_pagerank_refresh_job;
-use engram_lib::llm::local::{LocalModelClient, OllamaConfig};
+use engram_lib::llm::{local::LocalModelClient, OllamaConfig};
 use engram_lib::reranker::{self, Reranker};
 use engram_lib::services::brain::create_brain_backend;
 use engram_server::background::{
