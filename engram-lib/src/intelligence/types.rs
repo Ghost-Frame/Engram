@@ -241,6 +241,22 @@ pub struct ExtractionStats {
 }
 
 // ---------------------------------------------------------------------------
+// Consolidation
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConsolidationRecord {
+    pub id: i64,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SweepResult {
+    pub pairs_found: i64,
+    pub consolidated: i64,
+}
+
+// ---------------------------------------------------------------------------
 // Duplicates
 // ---------------------------------------------------------------------------
 
