@@ -2,10 +2,10 @@
 // PAGERANK -- iterative weighted PageRank for memory graph
 // ============================================================================
 
+use super::types::{PageRankResult, PageRankUpdateResult};
 use crate::db::Database;
 use crate::{EngError, Result};
 use rusqlite::OptionalExtension;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::info;
 
@@ -22,18 +22,6 @@ fn edge_weight(link_type: &str, similarity: f64) -> f64 {
         _ => 1.0,
     };
     similarity * tw
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PageRankResult {
-    pub scores: HashMap<i64, f64>,
-    pub iterations: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PageRankUpdateResult {
-    pub memories: usize,
-    pub iterations: u32,
 }
 
 #[tracing::instrument(skip(db))]
