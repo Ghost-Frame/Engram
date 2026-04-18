@@ -27,12 +27,19 @@ use kleos_lib::intelligence::{
     valence::{analyze_valence, get_emotional_profile, store_valence},
 };
 use kleos_lib::memory;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use rusqlite::params;
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::{
+    AddLinkBody, BackwardBody, CandidatesBody, ConsolidateBody, CorrectBody, CreateChainBody,
+    CreateReflectionBody, DeduplicateBody, DigestBody, DuplicatesQuery, ExtractBody, LimitQuery,
+    ReconsolidationCandidatesQuery, SentimentAnalyzeBody, SentimentHistoryQuery, SequencesBody,
+    SweepBody, TimeTravelBody, ValenceScoreBody,
+};
 
 // ---------------------------------------------------------------------------
 // Router
@@ -177,11 +184,6 @@ pub fn router() -> Router<AppState> {
 // Consolidation
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct ConsolidateBody {
-    pub memory_ids: Vec<i64>,
-}
-
 async fn consolidate_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -196,11 +198,6 @@ async fn consolidate_handler(
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
-#[derive(Debug, Deserialize)]
-struct CandidatesBody {
-    pub threshold: Option<f32>,
-}
-
 async fn candidates_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -209,11 +206,6 @@ async fn candidates_handler(
     let threshold = body.threshold.unwrap_or(0.7);
     let groups = find_consolidation_candidates(&state.db, threshold, auth.user_id).await?;
     Ok(Json(json!({ "groups": groups })))
-}
-
-#[derive(Debug, Deserialize)]
-struct LimitQuery {
-    pub limit: Option<usize>,
 }
 
 async fn list_consolidations_handler(
@@ -292,11 +284,6 @@ async fn list_temporal_handler(
 // Digests
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct DigestBody {
-    pub period: Option<String>,
-}
-
 async fn generate_digest_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -320,14 +307,6 @@ async fn list_digests_handler(
 // ---------------------------------------------------------------------------
 // Reflections
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct CreateReflectionBody {
-    pub content: String,
-    pub reflection_type: Option<String>,
-    pub source_memory_ids: Vec<i64>,
-    pub confidence: Option<f64>,
-}
 
 async fn create_reflection_handler(
     State(state): State<AppState>,
@@ -373,12 +352,6 @@ async fn generate_reflections_handler(
 // Causal
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct CreateChainBody {
-    pub root_memory_id: Option<i64>,
-    pub description: Option<String>,
-}
-
 async fn create_chain_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -413,15 +386,6 @@ async fn get_chain_handler(
     Ok(Json(json!(chain)))
 }
 
-#[derive(Debug, Deserialize)]
-struct AddLinkBody {
-    pub chain_id: i64,
-    pub cause_memory_id: i64,
-    pub effect_memory_id: i64,
-    pub strength: Option<f64>,
-    pub order_index: Option<i32>,
-}
-
 async fn add_link_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -442,11 +406,6 @@ async fn add_link_handler(
     Ok((StatusCode::CREATED, Json(json!(link))))
 }
 
-#[derive(Debug, Deserialize, Default)]
-struct BackwardBody {
-    pub max_depth: Option<usize>,
-}
-
 async fn causal_backward_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -463,12 +422,6 @@ async fn causal_backward_handler(
 // ---------------------------------------------------------------------------
 // Sentiment
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct SentimentAnalyzeBody {
-    pub content: Option<String>,
-    pub memory_id: Option<i64>,
-}
 
 async fn sentiment_analyze_handler(
     State(state): State<AppState>,
@@ -502,12 +455,6 @@ async fn sentiment_analyze_handler(
         "sum": sum,
         "word_count": count,
     })))
-}
-
-#[derive(Debug, Deserialize)]
-struct SentimentHistoryQuery {
-    pub limit: Option<i64>,
-    pub since: Option<String>,
 }
 
 async fn sentiment_history_handler(
@@ -557,12 +504,6 @@ async fn sentiment_history_handler(
 // ---------------------------------------------------------------------------
 // Valence
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct ValenceScoreBody {
-    pub memory_id: Option<i64>,
-    pub content: Option<String>,
-}
 
 async fn valence_score_handler(
     State(state): State<AppState>,
@@ -628,11 +569,6 @@ async fn predictive_patterns_handler(
     Ok(Json(json!({ "patterns": patterns })))
 }
 
-#[derive(Debug, Deserialize)]
-struct SequencesBody {
-    pub window_mins: Option<i64>,
-}
-
 async fn predictive_sequences_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -658,11 +594,6 @@ async fn reconsolidate_handler(
     Ok(Json(json!(result)))
 }
 
-#[derive(Debug, Deserialize)]
-struct ReconsolidationCandidatesQuery {
-    pub limit: Option<usize>,
-}
-
 async fn reconsolidation_candidates_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -676,12 +607,6 @@ async fn reconsolidation_candidates_handler(
 // ---------------------------------------------------------------------------
 // Extraction
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct ExtractBody {
-    pub content: Option<String>,
-    pub memory_id: Option<i64>,
-}
 
 async fn extract_handler(
     State(state): State<AppState>,
@@ -730,13 +655,6 @@ async fn extract_handler(
 // Time Travel
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct TimeTravelBody {
-    pub query: Option<String>,
-    pub timestamp: String,
-    pub limit: Option<i64>,
-}
-
 async fn time_travel_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -762,11 +680,6 @@ async fn time_travel_handler(
 // Sweep
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct SweepBody {
-    pub threshold: Option<f64>,
-}
-
 async fn sweep_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -780,13 +693,6 @@ async fn sweep_handler(
 // ---------------------------------------------------------------------------
 // Correct
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct CorrectBody {
-    pub memory_id: i64,
-    pub content: String,
-    pub reason: Option<String>,
-}
 
 async fn correct_handler(
     State(state): State<AppState>,
@@ -841,12 +747,6 @@ async fn feedback_stats_handler(
 // Duplicates
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct DuplicatesQuery {
-    pub threshold: Option<f64>,
-    pub limit: Option<i64>,
-}
-
 async fn duplicates_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -856,12 +756,6 @@ async fn duplicates_handler(
     let limit = params.limit.unwrap_or(50).min(200);
     let pairs = find_duplicates(&state.db, auth.user_id, threshold, limit).await?;
     Ok(Json(json!({ "duplicates": pairs, "count": pairs.len() })))
-}
-
-#[derive(Debug, Deserialize)]
-struct DeduplicateBody {
-    pub threshold: Option<f64>,
-    pub dry_run: Option<bool>,
 }
 
 async fn deduplicate_handler(
