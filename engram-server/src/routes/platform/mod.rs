@@ -3,26 +3,17 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::{SyncQuery, SyncReceiveBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/sync/changes", get(get_sync_changes))
         .route("/sync/receive", post(sync_receive))
-}
-
-#[derive(Debug, Deserialize)]
-struct SyncQuery {
-    since: Option<String>,
-    limit: Option<i64>,
-}
-
-#[derive(Deserialize)]
-struct SyncReceiveBody {
-    changes: Vec<engram_lib::sync::SyncReceiveChange>,
 }
 
 async fn sync_receive(
