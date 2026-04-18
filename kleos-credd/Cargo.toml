@@ -10,6 +10,10 @@ name = "engram_credd"
 path = "src/lib.rs"
 
 [[bin]]
+name = "kleos-credd"
+path = "src/main.rs"
+
+[[bin]]
 name = "engram-credd"
 path = "src/main.rs"
 

@@ -9,6 +9,14 @@ repository = "https://github.com/Ghost-Frame/Engram-rust"
 homepage = "https://engram.lol"
 readme = "../README.md"
 
+[[bin]]
+name = "kleos-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "engram-server"
+path = "src/main.rs"
+
 [lib]
 name = "engram_server"
 

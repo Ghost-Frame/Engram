@@ -4,6 +4,14 @@ version = "0.3.1"
 edition = "2021"
 rust-version.workspace = true
 
+[[bin]]
+name = "kleos-sidecar"
+path = "src/main.rs"
+
+[[bin]]
+name = "engram-sidecar"
+path = "src/main.rs"
+
 [dependencies]
 kleos-lib = { path = "../kleos-lib" }
 tokio = { workspace = true }

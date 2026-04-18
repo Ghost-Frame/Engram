@@ -6,6 +6,10 @@ rust-version.workspace = true
 description = "ETL tool to migrate Engram from libsql to rusqlite + LanceDB"
 
 [[bin]]
+name = "kleos-migrate"
+path = "src/main.rs"
+
+[[bin]]
 name = "engram-migrate"
 path = "src/main.rs"
 
