@@ -1,23 +1,11 @@
 //! Memory health diagnostics -- aggregate statistics about a user's memory store.
 
+use super::types::MemoryHealthReport;
 use crate::db::Database;
 use crate::{EngError, Result};
-use serde::{Deserialize, Serialize};
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemoryHealthReport {
-    pub total_memories: i64,
-    pub without_embeddings: i64,
-    pub archived: i64,
-    pub superseded: i64,
-    pub with_links: i64,
-    pub avg_importance: f64,
-    pub oldest_memory: Option<String>,
-    pub embedding_coverage_pct: f64,
 }
 
 /// Generate a health report for a user's memory store.
