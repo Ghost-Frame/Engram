@@ -1,37 +1,12 @@
 //! Centralised error event log stored in the database.
 
+pub mod types;
+pub use types::*;
+
 use crate::{db::Database, EngError, Result};
-use serde::{Deserialize, Serialize};
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorEvent {
-    pub id: i64,
-    pub source: String,
-    pub level: String,
-    pub message: String,
-    pub context: Option<String>,
-    pub created_at: String,
-    pub user_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct LogErrorRequest {
-    pub source: String,
-    pub level: String,
-    pub message: String,
-    pub context: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ListErrorsRequest {
-    pub level: Option<String>,
-    pub source: Option<String>,
-    pub limit: Option<i64>,
-    pub offset: Option<i64>,
 }
 
 /// Log an error event to the database. Returns the new row id.
