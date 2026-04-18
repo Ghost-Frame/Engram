@@ -6,12 +6,12 @@
 //! sites (`engram_lib::memory::replay_vector_sync_pending`, etc.) continue
 //! to resolve unchanged.
 
+use super::rusqlite_to_eng_error;
+use super::types::VectorSyncReplayReport;
 use crate::db::Database;
 use crate::Result;
 use rusqlite::params;
 use tracing::warn;
-
-use super::rusqlite_to_eng_error;
 
 /// Deserialize a BLOB (IEEE 754 LE f32 bytes) back into a Vec<f32>.
 fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
@@ -63,14 +63,6 @@ pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
     }
 
     Ok(count)
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize)]
-pub struct VectorSyncReplayReport {
-    pub processed: usize,
-    pub succeeded: usize,
-    pub failed: usize,
-    pub skipped: usize,
 }
 
 /// Drain the vector_sync_pending ledger. For each row, retry the failed

@@ -504,3 +504,14 @@ pub struct FacetedSearchResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag_cooccurrence: Option<Vec<TagCooccurrence>>,
 }
+
+/// Report from draining the vector_sync_pending ledger. Counts the rows
+/// processed, succeeded (retried LanceDB op completed), failed (retry
+/// errored), and skipped (underlying memory no longer has an embedding).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct VectorSyncReplayReport {
+    pub processed: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub skipped: usize,
+}
