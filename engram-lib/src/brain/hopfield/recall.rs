@@ -201,15 +201,22 @@ pub async fn store_pattern_with_causal_edges(
         if causal_score >= 3.0 {
             let edge_weight = sim * 0.5;
             // existing -> new: the new memory is the consequence.
-            let _ = edges::store_edge(db, ep.id, id, edge_weight, EdgeType::Causal, user_id).await;
+            if let Err(e) =
+                edges::store_edge(db, ep.id, id, edge_weight, EdgeType::Causal, user_id).await
+            {
+                tracing::warn!(source = ep.id, target = id, error = %e, "store_edge forward causal failed");
+            }
 
             // Also check the reverse direction using existing content alone.
             let existing_lower = existing_content.to_lowercase();
             let existing_words: Vec<&str> = existing_lower.split_whitespace().collect();
             let reverse_score = compute_causal_score(&existing_lower, &existing_words);
             if reverse_score >= 3.0 {
-                let _ =
-                    edges::store_edge(db, id, ep.id, edge_weight, EdgeType::Causal, user_id).await;
+                if let Err(e) =
+                    edges::store_edge(db, id, ep.id, edge_weight, EdgeType::Causal, user_id).await
+                {
+                    tracing::warn!(source = id, target = ep.id, error = %e, "store_edge reverse causal failed");
+                }
             }
         }
     }
@@ -404,7 +411,9 @@ pub async fn recall_pattern(
 
     // Touch each recalled pattern in the DB (update access tracking)
     for &(id, _) in &results {
-        let _ = pattern::touch_pattern(db, id, user_id).await;
+        if let Err(e) = pattern::touch_pattern(db, id, user_id).await {
+            tracing::warn!(pattern_id = id, error = %e, "touch_pattern failed");
+        }
     }
 
     Ok(results
@@ -488,7 +497,9 @@ pub async fn decay_tick(
     // Persist decayed strengths
     for &id in network.pattern_ids() {
         if let Some(s) = network.strength(id) {
-            let _ = pattern::update_strength(db, id, user_id, s).await;
+            if let Err(e) = pattern::update_strength(db, id, user_id, s).await {
+                tracing::warn!(pattern_id = id, strength = s, error = %e, "update_strength (decay persist) failed");
+            }
         }
     }
 
@@ -496,7 +507,9 @@ pub async fn decay_tick(
     let patterns_removed = dead_ids.len();
     for id in &dead_ids {
         network.remove(*id);
-        let _ = pattern::delete_pattern(db, *id, user_id).await;
+        if let Err(e) = pattern::delete_pattern(db, *id, user_id).await {
+            tracing::warn!(pattern_id = *id, error = %e, "delete_pattern (dead cleanup) failed");
+        }
     }
 
     // Decay edges
@@ -590,12 +603,17 @@ pub async fn merge_similar(
 
                 // Remove loser from network and DB
                 network.remove(loser);
-                let _ = pattern::delete_pattern(db, loser, user_id).await;
+                if let Err(e) = pattern::delete_pattern(db, loser, user_id).await {
+                    tracing::warn!(pattern_id = loser, error = %e, "delete_pattern (merge loser) failed");
+                }
 
                 // Boost winner strength to max of both
                 let winner_strength = s_a.max(s_b).min(1.0);
                 network.update_strength(winner, winner_strength);
-                let _ = pattern::update_strength(db, winner, user_id, winner_strength).await;
+                if let Err(e) = pattern::update_strength(db, winner, user_id, winner_strength).await
+                {
+                    tracing::warn!(pattern_id = winner, strength = winner_strength, error = %e, "update_strength (merge winner boost) failed");
+                }
 
                 removed.insert(loser);
                 merged.push((winner, loser));

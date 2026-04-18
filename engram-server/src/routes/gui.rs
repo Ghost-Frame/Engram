@@ -121,8 +121,10 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
         SecretString::new(out)
     };
 
-    // Ensure data dir exists
-    let _ = fs::create_dir_all(data_dir).await;
+    // Ensure data dir exists (6.8: surface genuine failures via warn log).
+    if let Err(e) = fs::create_dir_all(data_dir).await {
+        tracing::warn!(path = data_dir, error = %e, "failed to create hmac secret data dir");
+    }
 
     // Atomic write: write to .tmp then rename to avoid TOCTOU partial-write.
     // rename(2) is atomic on POSIX; on Windows this falls back to a replace.
