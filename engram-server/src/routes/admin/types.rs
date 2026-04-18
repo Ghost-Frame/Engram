@@ -93,3 +93,11 @@ pub(super) struct VectorRebuildIndexBody {
     /// Defaults to false so repeated calls are cheap.
     pub replace: Option<bool>,
 }
+
+/// Body for POST /admin/migrations/down.
+#[derive(Deserialize)]
+pub(super) struct MigrateDownBody {
+    pub target_version: u32,
+    #[serde(default)]
+    pub dry_run: bool,
+}

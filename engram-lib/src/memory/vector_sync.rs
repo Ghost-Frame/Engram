@@ -57,6 +57,7 @@ pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
         let embedding = blob_to_embedding(&emb_blob);
         index.insert(memory_id, user_id, &embedding).await?;
         count += 1;
+        #[allow(clippy::manual_is_multiple_of)]
         if count % 1000 == 0 {
             tracing::info!(count, "rebuilt LanceDB vector index rows");
         }

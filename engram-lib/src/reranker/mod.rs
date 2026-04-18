@@ -3,8 +3,9 @@ mod types;
 
 use self::types::{HttpRerankRequest, HttpRerankResponse};
 use crate::config::Config;
+use crate::db::Database;
 use crate::embeddings::download::ensure_reranker_model;
-use crate::resilience::{retry_with_backoff, BreakerConfig, CircuitBreaker, CircuitError};
+use crate::resilience::ServiceGuard;
 use crate::{EngError, Result};
 use async_trait::async_trait;
 use ort::session::Session;
@@ -219,19 +220,39 @@ impl Reranker for OnnxReranker {
 /// ```json
 /// { "results": [ { "index": 0, "relevance_score": 0.95 }, ... ] }
 /// ```
+///
+/// Uses a [`ServiceGuard`] for circuit-breaker, retry, and dead-letter
+/// support when a database is supplied via [`HttpReranker::new_with_db`].
 pub struct HttpReranker {
     client: reqwest::Client,
     endpoint: String,
     api_key: Option<String>,
     model: String,
     top_k: usize,
-    breaker: Arc<CircuitBreaker>,
+    /// Unified resilience guard (circuit breaker + retry + dead-letter).
+    /// `None` when constructed without a database (legacy path, no dead-lettering).
+    guard: Option<Arc<ServiceGuard>>,
 }
 
 impl HttpReranker {
+    /// Construct without a database. Uses an inline retry loop with no
+    /// dead-letter recording. Use [`HttpReranker::new_with_db`] for full
+    /// resilience coverage.
     pub fn new(endpoint: String, api_key: Option<String>, model: String, top_k: usize) -> Self {
+        Self::new_with_db(endpoint, api_key, model, top_k, None)
+    }
+
+    /// Construct with a database for circuit-breaker + retry + dead-letter
+    /// support via [`ServiceGuard`].
+    pub fn new_with_db(
+        endpoint: String,
+        api_key: Option<String>,
+        model: String,
+        top_k: usize,
+        db: Option<Arc<Database>>,
+    ) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default();
 
@@ -239,14 +260,11 @@ impl HttpReranker {
             endpoint = %endpoint,
             model = %model,
             top_k = top_k,
+            has_guard = db.is_some(),
             "HTTP reranker configured"
         );
 
-        // Open after 5 consecutive failures, probe again after 30s.
-        let breaker = Arc::new(CircuitBreaker::new(BreakerConfig {
-            failure_threshold: 5,
-            cooldown: Duration::from_secs(30),
-        }));
+        let guard = db.map(|database| Arc::new(ServiceGuard::with_defaults("reranker", database)));
 
         Self {
             client,
@@ -254,13 +272,19 @@ impl HttpReranker {
             api_key,
             model,
             top_k,
-            breaker,
+            guard,
         }
     }
 
-    /// Exposed for tests/metrics. Returns "closed", "open", or "half_open".
+    /// Current circuit state string for metrics/health checks.
+    /// Returns "closed", "open", or "half_open". Returns "closed" when no
+    /// guard is present (constructed without a database).
     pub fn breaker_state(&self) -> &'static str {
-        self.breaker.state()
+        match self.guard.as_ref().map(|g| g.circuit_state()) {
+            Some(crate::resilience::CircuitState::Open) => "open",
+            Some(crate::resilience::CircuitState::HalfOpen) => "half_open",
+            _ => "closed",
+        }
     }
 }
 
@@ -285,33 +309,45 @@ impl Reranker for HttpReranker {
         }
 
         let k = self.top_k.min(results.len());
-        let documents: Vec<&str> = results
+
+        // Build owned copies for the closure (must be Fn + Send + Sync).
+        let client = self.client.clone();
+        let endpoint = self.endpoint.clone();
+        let api_key = self.api_key.clone();
+        let model = self.model.clone();
+        let query_s = query.to_string();
+        let documents: Vec<String> = results
             .iter()
             .take(k)
-            .map(|r| r.memory.content.as_str())
+            .map(|r| r.memory.content.clone())
             .collect();
 
-        let body = HttpRerankRequest {
-            model: &self.model,
-            query,
-            documents,
-            top_n: k,
-        };
+        let http_call = {
+            let client = client.clone();
+            let endpoint = endpoint.clone();
+            let api_key = api_key.clone();
+            let model = model.clone();
+            let query_s = query_s.clone();
+            let documents = documents.clone();
 
-        // Retry transient failures 3x with exponential backoff, then guard
-        // the whole thing with a circuit breaker. If the breaker is open the
-        // reranker fails fast and the caller falls back to the base scores.
-        let client = &self.client;
-        let endpoint = &self.endpoint;
-        let api_key = self.api_key.as_deref();
-        let body_ref = &body;
+            move || {
+                let client = client.clone();
+                let endpoint = endpoint.clone();
+                let api_key = api_key.clone();
+                let model = model.clone();
+                let query_s = query_s.clone();
+                let documents = documents.clone();
 
-        let rerank_resp: HttpRerankResponse = match self
-            .breaker
-            .call(|| async move {
-                retry_with_backoff(3, Duration::from_millis(200), || async {
-                    let mut req = client.post(endpoint).json(body_ref);
-                    if let Some(key) = api_key {
+                async move {
+                    let doc_refs: Vec<&str> = documents.iter().map(|s| s.as_str()).collect();
+                    let body = HttpRerankRequest {
+                        model: &model,
+                        query: &query_s,
+                        documents: doc_refs,
+                        top_n: documents.len(),
+                    };
+                    let mut req = client.post(&endpoint).json(&body);
+                    if let Some(ref key) = api_key {
                         req = req.header("Authorization", format!("Bearer {}", key));
                     }
                     let resp = req.send().await.map_err(|e| {
@@ -319,26 +355,66 @@ impl Reranker for HttpReranker {
                     })?;
                     let status = resp.status();
                     if !status.is_success() {
-                        let body = resp.text().await.unwrap_or_default();
+                        let body_text = resp.text().await.unwrap_or_default();
                         return Err(EngError::Internal(format!(
                             "HTTP reranker returned {}: {}",
-                            status, body
+                            status, body_text
                         )));
                     }
                     resp.json::<HttpRerankResponse>().await.map_err(|e| {
                         EngError::Internal(format!("HTTP reranker response parse error: {}", e))
                     })
-                })
-                .await
-            })
-            .await
-        {
-            Ok(r) => r,
-            Err(CircuitError::Open) => {
-                warn!("HTTP reranker circuit open; skipping rerank, returning base scores");
-                return Ok(());
+                }
             }
-            Err(CircuitError::Inner(e)) => return Err(e),
+        };
+
+        // When a ServiceGuard is available, route through it for full
+        // circuit-breaker + retry + dead-letter coverage. Otherwise use a
+        // simple inline retry loop (no dead-lettering).
+        let rerank_resp: HttpRerankResponse = if let Some(ref guard) = self.guard {
+            let payload = serde_json::json!({
+                "query": query_s,
+                "document_count": documents.len(),
+            });
+            match guard.call("rerank", payload, http_call).await {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "HTTP reranker ServiceGuard failed; returning base scores"
+                    );
+                    return Ok(());
+                }
+            }
+        } else {
+            // Legacy inline retry: 3 attempts, 200 ms base, no dead-letter.
+            let mut last_err: Option<EngError> = None;
+            let mut resp_result: Option<HttpRerankResponse> = None;
+            for attempt in 0..3u32 {
+                if attempt > 0 {
+                    let delay_ms = 200u64.saturating_mul(1u64 << (attempt - 1));
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                }
+                match http_call().await {
+                    Ok(r) => {
+                        resp_result = Some(r);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = Some(e);
+                    }
+                }
+            }
+            match resp_result {
+                Some(r) => r,
+                None => {
+                    let e = last_err.unwrap_or_else(|| {
+                        EngError::Internal("HTTP reranker: all retries failed".into())
+                    });
+                    warn!(error = %e, "HTTP reranker retries exhausted; returning base scores");
+                    return Ok(());
+                }
+            }
         };
 
         // Apply scores: blend 70% remote score, 30% original
@@ -378,8 +454,14 @@ impl Reranker for HttpReranker {
 /// - `ENGRAM_RERANKER_HTTP_ENDPOINT` (required, e.g. https://api.cohere.ai/v1/rerank)
 /// - `ENGRAM_RERANKER_HTTP_API_KEY` (optional, for authenticated APIs)
 /// - `ENGRAM_RERANKER_HTTP_MODEL` (default: "rerank-v3.5")
-#[tracing::instrument(skip(config), fields(enabled = config.reranker_enabled))]
-pub async fn create_reranker(config: &Config) -> Result<Option<Arc<dyn Reranker>>> {
+///
+/// Pass `db` to enable dead-letter recording for the HTTP backend. When `None`
+/// the HTTP backend uses the inline retry path without dead-lettering.
+#[tracing::instrument(skip(config, db), fields(enabled = config.reranker_enabled))]
+pub async fn create_reranker(
+    config: &Config,
+    db: Option<Arc<Database>>,
+) -> Result<Option<Arc<dyn Reranker>>> {
     if !config.reranker_enabled {
         return Ok(None);
     }
@@ -402,7 +484,8 @@ pub async fn create_reranker(config: &Config) -> Result<Option<Arc<dyn Reranker>
             let api_key = std::env::var("ENGRAM_RERANKER_HTTP_API_KEY").ok();
             let model = std::env::var("ENGRAM_RERANKER_HTTP_MODEL")
                 .unwrap_or_else(|_| "rerank-v3.5".to_string());
-            let reranker = HttpReranker::new(endpoint, api_key, model, config.reranker_top_k);
+            let reranker =
+                HttpReranker::new_with_db(endpoint, api_key, model, config.reranker_top_k, db);
             Ok(Some(Arc::new(reranker) as Arc<dyn Reranker>))
         }
         "none" | "disabled" => Ok(None),

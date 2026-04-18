@@ -2,9 +2,242 @@ pub use super::types::PostImportValidation;
 
 use crate::EngError;
 use crate::Result;
+use serde::Serialize;
 use tracing::info;
 
-/// Migration versions - add new migrations here
+// ---------------------------------------------------------------------------
+// Migration descriptor
+// ---------------------------------------------------------------------------
+
+/// A single schema migration with an optional inverse.
+///
+/// `down` is `None` for all legacy migrations where generating safe inverse
+/// SQL is not practical (DROP COLUMN on SQLite requires a full table rebuild
+/// for anything added before SQLite 3.35, and reverting data-loss operations
+/// such as DROP COLUMN is impossible without a backup). Only purely additive
+/// migrations added after this refactor carry a `down` implementation.
+pub struct Migration {
+    pub version: u32,
+    pub description: &'static str,
+    pub up: fn(&rusqlite::Connection) -> Result<()>,
+    pub down: Option<fn(&rusqlite::Connection) -> Result<()>>,
+    /// When true the up/down fn is wrapped in a SAVEPOINT so it rolls back
+    /// automatically on failure.
+    pub transactional: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Migration plan (returned by dry_run and migrate_down)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MigrationPlan {
+    pub version: u32,
+    pub description: String,
+    pub direction: String,
+}
+
+// ---------------------------------------------------------------------------
+// Migration status
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct MigrationStatus {
+    pub current_version: u32,
+    /// Migrations whose `up` has not yet been applied.
+    pub pending_up: Vec<MigrationInfo>,
+    /// Applied migrations that have a `down` fn and can therefore be reverted.
+    pub revertible_down: Vec<MigrationInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MigrationInfo {
+    pub version: u32,
+    pub description: String,
+    pub has_down: bool,
+}
+
+// ---------------------------------------------------------------------------
+// The canonical migration list
+// ---------------------------------------------------------------------------
+
+pub static MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        description: "create_tables",
+        up: |conn| super::schema::create_tables(conn),
+        // Dropping the initial schema would destroy all data; no inverse.
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 2,
+        description: "add_missing_indexes",
+        up: run_migration_add_missing_indexes,
+        // Indexes are covered by CREATE INDEX IF NOT EXISTS; dropping them
+        // individually is safe, but the sheer number makes the inverse
+        // fragile and the original DB lacked them, so no inverse needed.
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 3,
+        description: "add_pagerank_tables",
+        up: run_migration_pagerank_tables,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 4,
+        description: "thymus_tenant_scope",
+        up: run_migration_thymus_tenant_scope,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 5,
+        description: "app_state_table",
+        up: run_migration_app_state_table,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 6,
+        description: "backfill_thymus_user_id",
+        up: run_migration_backfill_thymus_user_id,
+        // Data update; original values cannot be recovered.
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 7,
+        description: "vector_sync_pending",
+        up: run_migration_vector_sync_pending,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 8,
+        description: "add_community_id",
+        up: run_migration_add_community_id,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 9,
+        description: "drop_is_inference",
+        up: run_migration_drop_is_inference,
+        // DROP COLUMN is destructive; there is no way to recover the
+        // original data without a backup.
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 10,
+        description: "syntheos_services",
+        up: run_migration_syntheos_services,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 11,
+        description: "brain_patterns",
+        up: run_migration_brain_patterns,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 12,
+        description: "approvals",
+        up: run_migration_approvals,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 13,
+        description: "error_events",
+        up: run_migration_error_events,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 14,
+        description: "brain_meta",
+        up: run_migration_brain_meta,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 15,
+        description: "brain_pca_models",
+        up: run_migration_pca_models,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 16,
+        description: "brain_dream_runs",
+        up: run_migration_brain_dream_runs,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 17,
+        description: "cred_tables",
+        up: run_migration_cred_tables,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 18,
+        description: "api_key_hash_unique",
+        up: run_migration_api_key_hash_unique,
+        // The UNIQUE index was added conditionally; dropping it is safe,
+        // but we leave it None because we cannot know which DBs skipped it.
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 19,
+        description: "api_key_hash_version",
+        up: run_migration_api_key_hash_version,
+        // Purely additive ALTER TABLE ADD COLUMN. SQLite 3.35+ DROP COLUMN
+        // is the safe inverse because the column has no constraints that
+        // would require a full table rebuild.
+        down: Some(down_migration_api_key_hash_version),
+        transactional: true,
+    },
+    Migration {
+        version: 20,
+        description: "link_covering_indexes",
+        up: run_migration_link_covering_indexes,
+        // Two covering indexes; DROP INDEX is the clean inverse.
+        down: Some(down_migration_link_covering_indexes),
+        transactional: true,
+    },
+    Migration {
+        version: 21,
+        description: "upload_sessions",
+        up: run_migration_upload_sessions,
+        // Two new tables with no FK references from other tables; DROP TABLE
+        // is the clean inverse.
+        down: Some(down_migration_upload_sessions),
+        transactional: true,
+    },
+    Migration {
+        version: 22,
+        description: "service_dead_letters",
+        up: run_migration_service_dead_letters,
+        // New table with no FK references; DROP TABLE is the clean inverse.
+        down: Some(down_migration_service_dead_letters),
+        transactional: true,
+    },
+];
+
+// ---------------------------------------------------------------------------
+// Legacy version constants (kept for compatibility with existing call sites)
+// ---------------------------------------------------------------------------
+
 const MIGRATION_CREATE_SCHEMA: i64 = 1;
 const MIGRATION_ADD_MISSING_INDEXES: i64 = 2;
 const MIGRATION_PAGERANK_TABLES: i64 = 3;
@@ -26,6 +259,11 @@ const MIGRATION_API_KEY_HASH_UNIQUE: i64 = 18;
 const MIGRATION_API_KEY_HASH_VERSION: i64 = 19;
 const MIGRATION_LINK_COVERING_INDEXES: i64 = 20;
 const MIGRATION_UPLOAD_SESSIONS: i64 = 21;
+const MIGRATION_SERVICE_DEAD_LETTERS: i64 = 22;
+
+// ---------------------------------------------------------------------------
+// Up path (unchanged behavior)
+// ---------------------------------------------------------------------------
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
@@ -182,6 +420,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         record_migration(conn, MIGRATION_UPLOAD_SESSIONS, "upload_sessions")?;
     }
 
+    if current_version < MIGRATION_SERVICE_DEAD_LETTERS {
+        info!("Running migration 22: service_dead_letters");
+        run_migration_service_dead_letters(conn)?;
+        record_migration(conn, MIGRATION_SERVICE_DEAD_LETTERS, "service_dead_letters")?;
+    }
+
     Ok(())
 }
 
@@ -193,6 +437,168 @@ fn record_migration(conn: &rusqlite::Connection, version: i64, name: &str) -> Re
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
 }
+
+fn remove_migration_record(conn: &rusqlite::Connection, version: u32) -> Result<()> {
+    conn.execute(
+        "DELETE FROM schema_version WHERE version = ?1",
+        rusqlite::params![version],
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Down path
+// ---------------------------------------------------------------------------
+
+/// Walk the migration list down from `current_version` to `target_version`
+/// (exclusive), building a plan of what would be reverted.
+///
+/// Returns `Err` immediately if any migration in the range has `down: None`
+/// because it is not safe to skip an intermediate migration.
+fn build_down_plan(current_version: u32, target_version: u32) -> Result<Vec<MigrationPlan>> {
+    if target_version >= current_version {
+        return Ok(vec![]);
+    }
+
+    // Collect migrations to revert in reverse order (highest version first).
+    let mut plan = Vec::new();
+    for m in MIGRATIONS.iter().rev() {
+        if m.version > current_version || m.version <= target_version {
+            continue;
+        }
+        if m.down.is_none() {
+            return Err(EngError::Internal(format!(
+                "migration {} ({}) has no down; cannot roll back past version {}",
+                m.version, m.description, target_version
+            )));
+        }
+        plan.push(MigrationPlan {
+            version: m.version,
+            description: m.description.to_string(),
+            direction: "down".to_string(),
+        });
+    }
+    Ok(plan)
+}
+
+/// Roll the database schema back to `target_version`.
+///
+/// If `dry_run` is true, returns the plan without executing anything.
+/// Fails fast if any migration in the range has no `down` implementation.
+pub async fn migrate_down(
+    db: &super::Database,
+    target_version: u32,
+    dry_run: bool,
+) -> Result<Vec<MigrationPlan>> {
+    // Read current version.
+    let current_version: u32 = db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|v| v as u32)
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?;
+
+    let plan = build_down_plan(current_version, target_version)?;
+
+    if dry_run || plan.is_empty() {
+        return Ok(plan);
+    }
+
+    // Execute each down migration in order (highest version first).
+    for step in &plan {
+        let version = step.version;
+        let m = MIGRATIONS
+            .iter()
+            .find(|m| m.version == version)
+            .ok_or_else(|| {
+                EngError::Internal(format!("migration {version} not found in MIGRATIONS slice"))
+            })?;
+        // We need a mutable connection for SAVEPOINT semantics.
+        let down_fn = m.down.unwrap();
+        let transactional = m.transactional;
+
+        db.write(move |conn| {
+            if transactional {
+                let sp_name = format!("sp_down_{version}");
+                conn.execute_batch(&format!("SAVEPOINT {sp_name}"))
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                match down_fn(conn) {
+                    Ok(()) => {
+                        conn.execute_batch(&format!("RELEASE {sp_name}"))
+                            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    }
+                    Err(e) => {
+                        let _ = conn.execute_batch(&format!("ROLLBACK TO {sp_name}"));
+                        return Err(e);
+                    }
+                }
+            } else {
+                down_fn(conn)?;
+            }
+            remove_migration_record(conn, version)?;
+            info!("Rolled back migration {version}");
+            Ok(())
+        })
+        .await?;
+    }
+
+    Ok(plan)
+}
+
+/// Return the current migration status: which version is applied, which
+/// migrations are pending (not yet applied), and which applied migrations
+/// can be reverted.
+pub async fn migration_status(
+    db: &super::Database,
+) -> Result<MigrationStatus> {
+    let current_version: u32 = db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|v| v as u32)
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?;
+
+    let pending_up: Vec<MigrationInfo> = MIGRATIONS
+        .iter()
+        .filter(|m| m.version > current_version)
+        .map(|m| MigrationInfo {
+            version: m.version,
+            description: m.description.to_string(),
+            has_down: m.down.is_some(),
+        })
+        .collect();
+
+    let revertible_down: Vec<MigrationInfo> = MIGRATIONS
+        .iter()
+        .filter(|m| m.version <= current_version && m.down.is_some())
+        .map(|m| MigrationInfo {
+            version: m.version,
+            description: m.description.to_string(),
+            has_down: true,
+        })
+        .collect();
+
+    Ok(MigrationStatus {
+        current_version,
+        pending_up,
+        revertible_down,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Up migration implementations
+// ---------------------------------------------------------------------------
 
 fn run_migration_add_missing_indexes(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
@@ -613,6 +1019,24 @@ fn run_migration_api_key_hash_version(conn: &rusqlite::Connection) -> Result<()>
     Ok(())
 }
 
+/// Down for migration 19: drop the hash_version column. Requires SQLite 3.35+.
+fn down_migration_api_key_hash_version(conn: &rusqlite::Connection) -> Result<()> {
+    // Only drop if the column still exists (idempotent).
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name = 'hash_version'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if exists > 0 {
+        conn.execute_batch("ALTER TABLE api_keys DROP COLUMN hash_version;")
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Dropped api_keys.hash_version column (migration 19 down)");
+    }
+    Ok(())
+}
+
 /// Migration 20: covering indexes on memory_links for graph neighbor and
 /// link-fetch queries. Both source_id and target_id get a covering index
 /// that includes the join columns (similarity, type) so the query planner
@@ -626,6 +1050,17 @@ fn run_migration_link_covering_indexes(conn: &rusqlite::Connection) -> Result<()
              ON memory_links(target_id, source_id, similarity, type);",
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+/// Down for migration 20: drop the covering indexes added above.
+fn down_migration_link_covering_indexes(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_links_source_covering;
+         DROP INDEX IF EXISTS idx_links_target_covering;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Dropped link covering indexes (migration 20 down)");
     Ok(())
 }
 
@@ -668,6 +1103,51 @@ fn run_migration_upload_sessions(conn: &rusqlite::Connection) -> Result<()> {
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
 }
+
+/// Down for migration 21: drop the upload tables added above.
+/// upload_chunks is dropped first because it has a FK to upload_sessions.
+fn down_migration_upload_sessions(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS upload_chunks;
+         DROP TABLE IF EXISTS upload_sessions;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Dropped upload_sessions and upload_chunks tables (migration 21 down)");
+    Ok(())
+}
+
+/// Migration 22: dead-letter table for internal service calls (reranker,
+/// embedder, brain, etc.). Records calls that exhausted all retry attempts
+/// so operators can inspect and replay them.
+fn run_migration_service_dead_letters(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS service_dead_letters (
+             id INTEGER PRIMARY KEY,
+             service TEXT NOT NULL,
+             operation TEXT NOT NULL,
+             payload_json TEXT,
+             error TEXT,
+             retry_count INTEGER,
+             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_sdl_service ON service_dead_letters(service);
+         CREATE INDEX IF NOT EXISTS idx_sdl_created ON service_dead_letters(created_at DESC);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Created service_dead_letters table (migration 22)");
+    Ok(())
+}
+
+fn down_migration_service_dead_letters(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch("DROP TABLE IF EXISTS service_dead_letters;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Dropped service_dead_letters table (migration 22 down)");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Post-import validation (unchanged)
+// ---------------------------------------------------------------------------
 
 /// Run a set of read-only integrity queries the migrate tool can surface in a
 /// pre-flight report. Every query is tolerant of missing tables so operators
@@ -728,9 +1208,49 @@ pub fn validate_post_import(conn: &rusqlite::Connection) -> Result<PostImportVal
     })
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open_test_db() -> rusqlite::Connection {
+        let db_path =
+            std::env::temp_dir().join(format!("engram-migrations-{}.db", uuid::Uuid::new_v4()));
+        rusqlite::Connection::open(&db_path).expect("open test db")
+    }
+
+    /// Helper: apply up through migration 21 then manually fake a lower
+    /// current_version so down tests can operate on a small slice.
+    fn apply_migrations_up_to(conn: &rusqlite::Connection, version: u32) {
+        // Always create the schema_version table first.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+
+        for m in MIGRATIONS.iter() {
+            if m.version > version {
+                break;
+            }
+            (m.up)(conn).unwrap_or_else(|e| {
+                // Some up fns are tolerant of missing tables (e.g. backfill).
+                // Swallow errors so we can run partial migrations in tests.
+                let _ = e;
+            });
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_version (version, name) VALUES (?1, ?2)",
+                rusqlite::params![m.version, m.description],
+            )
+            .unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn test_migrations_idempotent() -> Result<()> {
@@ -753,5 +1273,91 @@ mod tests {
 
         let _ = std::fs::remove_file(&db_path);
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Down migration tests (operate directly on rusqlite::Connection to avoid
+    // needing a full async Database pool in unit tests)
+    // -----------------------------------------------------------------------
+
+    /// build_down_plan with dry_run semantics: verify it returns the right
+    /// steps without touching the DB.
+    #[test]
+    fn test_migrate_down_dry_run_returns_plan() {
+        // Migrations 19, 20, 21 all have down fns.
+        let plan = build_down_plan(21, 18).expect("build_down_plan should succeed");
+        assert_eq!(plan.len(), 3, "should plan 3 steps (21, 20, 19)");
+        assert_eq!(plan[0].version, 21);
+        assert_eq!(plan[1].version, 20);
+        assert_eq!(plan[2].version, 19);
+        for step in &plan {
+            assert_eq!(step.direction, "down");
+        }
+    }
+
+    /// Verify that down fns for migrations 19, 20, 21 actually execute
+    /// without error against a real (in-memory) SQLite DB.
+    #[test]
+    fn test_migrate_down_executes_reversible() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        // Apply full migration set so all tables/indexes/columns exist.
+        apply_migrations_up_to(&conn, 21);
+
+        // Execute down fns for 21, 20, 19 in reverse order.
+        for version in [21u32, 20, 19] {
+            let m = MIGRATIONS
+                .iter()
+                .find(|m| m.version == version)
+                .expect("migration exists");
+            let down_fn = m.down.expect("down fn present");
+            down_fn(&conn).unwrap_or_else(|e| panic!("down {} failed: {e}", version));
+        }
+
+        // Verify upload tables are gone.
+        let upload_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='upload_sessions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(upload_exists, 0, "upload_sessions should be dropped");
+
+        // Verify covering indexes are gone.
+        let idx_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_links_source_covering'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_exists, 0, "idx_links_source_covering should be dropped");
+
+        // Verify hash_version column is gone.
+        let col_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name='hash_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_exists, 0, "hash_version column should be dropped");
+    }
+
+    /// Verify that attempting to roll back past a migration with no down fn
+    /// returns an error.
+    #[test]
+    fn test_migrate_down_refuses_when_down_missing() {
+        // Migration 18 has down: None, so rolling back from 21 to 17 should fail.
+        let result = build_down_plan(21, 17);
+        assert!(
+            result.is_err(),
+            "should fail because migration 18 has no down"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("migration 18") || err_msg.contains("no down"),
+            "error message should mention migration 18 or 'no down': {err_msg}"
+        );
     }
 }

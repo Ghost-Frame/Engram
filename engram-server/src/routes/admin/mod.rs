@@ -19,8 +19,8 @@ use engram_lib::graph::{communities, cooccurrence};
 mod types;
 use types::{
     AdminCredProxyBody, AdminCredResolveBody, AdminPageRankQuery, BootstrapBody, ColdStorageParams,
-    DeprovisionBody, GcBody, MaintenanceBody, PitrPrepareBody, ProvisionBody, ReembedBody,
-    VectorRebuildIndexBody, VectorSyncReplayBody,
+    DeprovisionBody, GcBody, MaintenanceBody, MigrateDownBody, PitrPrepareBody, ProvisionBody,
+    ReembedBody, VectorRebuildIndexBody, VectorSyncReplayBody,
 };
 
 fn require_admin(auth: &AuthContext) -> Result<(), AppError> {
@@ -104,6 +104,9 @@ pub fn router() -> Router<AppState> {
         // Point-in-time recovery
         .route("/admin/pitr/snapshots", get(admin_pitr_snapshots))
         .route("/admin/pitr/prepare-restore", post(admin_pitr_prepare))
+        // Migrations
+        .route("/admin/migrations", get(admin_migration_status))
+        .route("/admin/migrations/down", post(admin_migrate_down))
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,4 +1030,32 @@ async fn admin_pagerank_rebuild(
             })))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Migrations
+// ---------------------------------------------------------------------------
+
+/// GET /admin/migrations -- return current migration status (version, pending, revertible).
+async fn admin_migration_status(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let status = engram_lib::db::migrations::migration_status(&state.db).await?;
+    to_json(status)
+}
+
+/// POST /admin/migrations/down -- roll the schema back to target_version.
+/// When dry_run is true, returns the plan without executing.
+async fn admin_migrate_down(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<MigrateDownBody>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let plan =
+        engram_lib::db::migrations::migrate_down(&state.db, body.target_version, body.dry_run)
+            .await?;
+    to_json(plan)
 }
