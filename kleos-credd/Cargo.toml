@@ -1,9 +1,9 @@
 [package]
 name = "kleos-credd"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version.workspace = true
-description = "Credential management daemon for Engram"
+description = "Credential management daemon for Kleos"
 
 [lib]
 name = "kleos_credd"

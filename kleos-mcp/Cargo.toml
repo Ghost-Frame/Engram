@@ -1,12 +1,12 @@
 [package]
 name = "kleos-mcp"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version.workspace = true
-description = "MCP server for Engram -- Model Context Protocol integration for LLM tools"
+description = "MCP server for Kleos -- Model Context Protocol integration for LLM tools"
 license = "Elastic-2.0"
-repository = "https://github.com/Ghost-Frame/Engram-rust"
-homepage = "https://engram.lol"
+repository = "https://github.com/Ghost-Frame/Kleos"
+homepage = "https://engram.syntheos.dev"
 readme = "../README.md"
 
 [[bin]]
@@ -25,7 +25,7 @@ default = []
 http = ["dep:axum", "dep:tower-http", "dep:subtle"]
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "0.3.1" }
+kleos-lib = { path = "../kleos-lib", version = "0.3.2" }
 rusqlite = { workspace = true }
 axum = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
