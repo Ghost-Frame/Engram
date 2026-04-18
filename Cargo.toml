@@ -6,7 +6,7 @@ members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-sidecar", "kleos-app
 rust-version = "1.94"
 
 [workspace.dependencies]
-libsql = "0.6"
+libsql = "0.9"
 rusqlite = "0.31"
 tokio-rusqlite = "0.5"
 deadpool-sqlite = "0.8"
