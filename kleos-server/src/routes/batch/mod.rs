@@ -44,7 +44,10 @@ async fn batch_handler(
     }
 
     let user_id = auth.user_id;
-    let mut results: Vec<BatchResult> = Vec::with_capacity(req.ops.len());
+    // Clamp the capacity hint to MAX_BATCH_OPS so the allocation can never
+    // exceed the enforced bound, even though the check above rejects larger
+    // inputs (defence-in-depth + explicit for static analysers).
+    let mut results: Vec<BatchResult> = Vec::with_capacity(req.ops.len().min(MAX_BATCH_OPS));
 
     for (i, op) in req.ops.into_iter().enumerate() {
         let res = execute_op(&state, user_id, i, op).await;
