@@ -220,9 +220,18 @@ impl LocalModelClient {
             "ollama request starting"
         );
 
+        let validated_url = match crate::net::validate_outbound_url(&self.config.url) {
+            Ok(u) => u,
+            Err(e) => {
+                return Err(EngError::InvalidInput(format!(
+                    "ollama url rejected: {}",
+                    e
+                )));
+            }
+        };
         let result = self
             .http
-            .post(&self.config.url)
+            .post(validated_url)
             .header("Content-Type", "application/json")
             .timeout(Duration::from_millis(timeout_ms))
             .body(body_str)

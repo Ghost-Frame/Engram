@@ -86,6 +86,22 @@ async fn get_hmac_secret(data_dir: &str) -> SecretString {
     HMAC_SECRET_CACHE.get().cloned().unwrap_or(secret)
 }
 
+/// Validate the configured data_dir before using it to build filesystem
+/// paths. Rejects empty strings, relative paths, and any component
+/// containing `..` so a tampered config value cannot escape the data dir.
+fn sanitize_data_dir(data_dir: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(data_dir);
+    if data_dir.is_empty() || !path.is_absolute() {
+        return None;
+    }
+    for component in path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return None;
+        }
+    }
+    Some(path)
+}
+
 /// Load the HMAC secret from env, disk, or generate a new one.
 /// Uses an atomic rename (write tmp + rename) to avoid partial-write corruption.
 async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
@@ -102,7 +118,25 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
         }
     }
 
-    let secret_path = PathBuf::from(data_dir).join(".hmac_secret");
+    let validated_dir = match sanitize_data_dir(data_dir) {
+        Some(p) => p,
+        None => {
+            tracing::error!(
+                path = data_dir,
+                "refusing to use non-absolute or traversing data_dir; falling back to ephemeral HMAC secret"
+            );
+            let mut raw = [0u8; 32];
+            use rand::Rng;
+            rand::rng().fill(&mut raw);
+            let mut out = String::with_capacity(64);
+            for byte in raw {
+                use std::fmt::Write;
+                let _ = write!(&mut out, "{:02x}", byte);
+            }
+            return SecretString::new(out);
+        }
+    };
+    let secret_path = validated_dir.join(".hmac_secret");
 
     // Try to read existing secret
     if let Ok(secret) = fs::read_to_string(&secret_path).await {
@@ -124,8 +158,8 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
     };
 
     // Ensure data dir exists (6.8: surface genuine failures via warn log).
-    if let Err(e) = fs::create_dir_all(data_dir).await {
-        tracing::warn!(path = data_dir, error = %e, "failed to create hmac secret data dir");
+    if let Err(e) = fs::create_dir_all(&validated_dir).await {
+        tracing::warn!(path = %validated_dir.display(), error = %e, "failed to create hmac secret data dir");
     }
 
     // Atomic write: write to .tmp then rename to avoid TOCTOU partial-write.

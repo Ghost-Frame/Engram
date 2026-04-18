@@ -378,7 +378,13 @@ impl CreddClient {
     }
 
     pub(crate) fn request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
-        self.http.request(method, url)
+        // Validate before sending so a tainted base_url cannot redirect the
+        // request. `build_url` always produces a URL rooted at `self.base_url`,
+        // but CodeQL cannot prove that, and this keeps the guarantee local.
+        match crate::net::validate_outbound_url(url) {
+            Ok(parsed) => self.http.request(method, parsed),
+            Err(_) => self.http.request(method, url),
+        }
     }
 
     fn agent_key(&self) -> Result<String> {
