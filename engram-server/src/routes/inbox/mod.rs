@@ -3,12 +3,14 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
 use crate::extractors::Auth;
 use crate::state::AppState;
+
+mod types;
+use types::{BulkBody, EditBody, PagingQuery, RejectBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -18,12 +20,6 @@ pub fn router() -> Router<AppState> {
         .route("/inbox/{id}/edit", post(edit))
         .route("/inbox/bulk", post(bulk_action))
         .route("/pending", get(list_pending_legacy))
-}
-
-#[derive(Deserialize)]
-struct PagingQuery {
-    limit: Option<i64>,
-    offset: Option<i64>,
 }
 
 async fn list_inbox(
@@ -49,11 +45,6 @@ async fn approve(
     Ok(Json(json!({ "approved": true, "id": id })))
 }
 
-#[derive(Deserialize)]
-struct RejectBody {
-    reason: Option<String>,
-}
-
 async fn reject(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -76,14 +67,6 @@ async fn reject(
     Ok(Json(json!({ "rejected": true, "id": id })))
 }
 
-#[derive(Deserialize)]
-struct EditBody {
-    content: Option<String>,
-    category: Option<String>,
-    importance: Option<i64>,
-    tags: Option<String>,
-}
-
 async fn edit(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -101,12 +84,6 @@ async fn edit(
     )
     .await?;
     Ok(Json(json!({ "approved": true, "edited": true, "id": id })))
-}
-
-#[derive(Deserialize)]
-struct BulkBody {
-    ids: Vec<i64>,
-    action: String,
 }
 
 async fn bulk_action(
