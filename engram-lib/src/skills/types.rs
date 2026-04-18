@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -390,6 +391,87 @@ pub struct ToolQuality {
     pub latency_ms: Option<f64>,
     pub error_type: Option<String>,
     pub created_at: String,
+}
+
+// -- Submodule DTOs --
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DetectedPatchType {
+    Full,
+    SearchReplace,
+    MultiFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudSearchResult {
+    pub skill_id: String,
+    pub name: String,
+    pub description: String,
+    pub category: String,
+    pub origin: String,
+    pub tags: Vec<String>,
+    pub score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillOverview {
+    pub total_skills: i64,
+    pub active_skills: i64,
+    pub deprecated_skills: i64,
+    pub total_executions: i64,
+    pub avg_trust_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillStats {
+    pub id: i64,
+    pub name: String,
+    pub execution_count: i32,
+    pub success_count: i32,
+    pub failure_count: i32,
+    pub trust_score: f64,
+    pub computed_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationMessage {
+    pub role: String,
+    pub content: String,
+    #[serde(default)]
+    pub priority: Option<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveredSkill {
+    pub skill_id: String,
+    pub path: PathBuf,
+    pub content: String,
+    pub meta: SkillMeta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionAnalysis {
+    pub skill_applied: bool,
+    pub skill_helpful: bool,
+    pub tool_calls: Vec<String>,
+    pub error_category: Option<String>,
+    pub improvement_notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionRequest {
+    pub evolution_type: String,
+    pub target_skill_ids: Vec<i64>,
+    pub category: Option<String>,
+    pub direction: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionResult {
+    pub success: bool,
+    pub skill_id: Option<i64>,
+    pub evolution_type: String,
+    pub message: String,
 }
 
 #[cfg(test)]

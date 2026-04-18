@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use super::types::ConversationMessage;
 
 // -- Priority levels --
 pub const P_USER_INSTRUCTION: u8 = 0;
@@ -9,14 +9,6 @@ pub const P_TOOL_RESULT: u8 = 4;
 pub const P_OLDER_USER: u8 = 5;
 pub const P_OLDER_ASSISTANT: u8 = 6;
 pub const P_SKIP: u8 = 99;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConversationMessage {
-    pub role: String,
-    pub content: String,
-    #[serde(default)]
-    pub priority: Option<u8>,
-}
 
 /// Assign priority to a message based on role and position.
 pub fn assign_priority(msg: &ConversationMessage, index: usize, total: usize) -> u8 {

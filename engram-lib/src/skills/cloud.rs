@@ -1,5 +1,5 @@
+use super::types::CloudSearchResult;
 use crate::Result;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const DEFAULT_OPENSPACE_API_URL: &str = "https://api.openspace.dev";
@@ -13,18 +13,6 @@ static CLOUD_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock:
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 });
-
-/// Stubbed cloud skill candidate.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CloudSearchResult {
-    pub skill_id: String,
-    pub name: String,
-    pub description: String,
-    pub category: String,
-    pub origin: String,
-    pub tags: Vec<String>,
-    pub score: f64,
-}
 
 /// Stub: Search skills in the cloud registry.
 #[tracing::instrument(skip(query), fields(query_len = query.len(), limit))]

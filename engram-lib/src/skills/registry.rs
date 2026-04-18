@@ -1,4 +1,4 @@
-use super::types::SkillMeta;
+use super::types::{DiscoveredSkill, SkillMeta};
 use regex::Regex;
 use std::path::{Path, PathBuf};
 
@@ -58,14 +58,6 @@ pub fn read_skill_id(skill_dir: &Path) -> Option<String> {
 
 pub fn write_skill_id(skill_dir: &Path, id: &str) -> std::io::Result<()> {
     std::fs::write(skill_dir.join(".skill_id"), format!("{}\n", id))
-}
-
-#[derive(Debug, Clone)]
-pub struct DiscoveredSkill {
-    pub skill_id: String,
-    pub path: PathBuf,
-    pub content: String,
-    pub meta: SkillMeta,
 }
 
 fn walk_skill_dirs(dir: &Path) -> Vec<PathBuf> {

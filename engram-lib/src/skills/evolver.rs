@@ -1,7 +1,8 @@
+pub use super::types::{EvolutionRequest, EvolutionResult};
+
 use crate::db::Database;
 use crate::{EngError, Result};
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
 
 pub const FIX_SYSTEM_PROMPT: &str =
     "You are a skill fixer. Analyze failures and improve skill content.";
@@ -41,22 +42,6 @@ pub fn generate_skill_id(base_name: &str) -> String {
     let slug = slug.trim_matches('-').to_string();
     let short_id = &uuid::Uuid::new_v4().to_string()[..8];
     format!("{}-{}", slug, short_id)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvolutionRequest {
-    pub evolution_type: String,
-    pub target_skill_ids: Vec<i64>,
-    pub category: Option<String>,
-    pub direction: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvolutionResult {
-    pub success: bool,
-    pub skill_id: Option<i64>,
-    pub evolution_type: String,
-    pub message: String,
 }
 
 /// Persist an evolved skill to the database.
