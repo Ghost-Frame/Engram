@@ -1,23 +1,15 @@
 //! Contradiction detection -- find memories that contradict each other
 //! using SVO (subject-verb-object) triple matching from structured_facts.
 
+use super::types::Contradiction;
 use crate::db::Database;
 use crate::memory::types::Memory;
 use crate::{EngError, Result};
 use rusqlite::params;
-use serde::Serialize;
 use tracing::info;
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Contradiction {
-    pub memory_a: String,
-    pub memory_b: String,
-    pub confidence: f32,
-    pub description: String,
 }
 
 /// Detect contradictions between a new memory and existing facts.

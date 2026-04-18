@@ -313,6 +313,18 @@ pub struct FactContradiction {
 }
 
 // ---------------------------------------------------------------------------
+// Contradiction detection
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Contradiction {
+    pub memory_a: String,
+    pub memory_b: String,
+    pub confidence: f32,
+    pub description: String,
+}
+
+// ---------------------------------------------------------------------------
 // Memory health
 // ---------------------------------------------------------------------------
 
