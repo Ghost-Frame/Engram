@@ -2,6 +2,7 @@
 //! Ported from intelligence/types.ts.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 // ---------------------------------------------------------------------------
 // Reflection types
@@ -310,6 +311,38 @@ pub struct FactContradiction {
     pub verb: String,
     pub new_object: Option<String>,
     pub old_object: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler reports
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskStatus {
+    Ok,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskReport {
+    pub name: String,
+    pub status: TaskStatus,
+    pub duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PipelineReport {
+    pub reports: Vec<TaskReport>,
+    pub total_duration_ms: u64,
+    pub ok_count: usize,
+    pub failed_count: usize,
+    pub skipped_count: usize,
 }
 
 // ---------------------------------------------------------------------------
