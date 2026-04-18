@@ -602,7 +602,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
             match index.search(embedding, candidate_target, user_id).await {
                 Ok(hits) => Ok(hits
                     .into_iter()
-                    .map(|hit| super::vector::VectorHit {
+                    .map(|hit| super::types::VectorHit {
                         memory_id: hit.memory_id,
                         rank: hit.rank,
                     })

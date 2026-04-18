@@ -1,15 +1,8 @@
+use super::types::FtsHit;
 use crate::db::Database;
 use crate::EngError;
 use crate::Result;
 use tracing::warn;
-
-/// Result from FTS5 search -- id, rank position, and BM25 score
-#[derive(Debug, Clone)]
-pub struct FtsHit {
-    pub memory_id: i64,
-    pub rank: usize,
-    pub bm25_score: f64,
-}
 
 /// Sanitize a query string for FTS5 (remove special chars that break FTS syntax).
 pub fn sanitize_fts_query(query: &str) -> String {
