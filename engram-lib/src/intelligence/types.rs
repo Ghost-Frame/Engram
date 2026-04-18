@@ -241,6 +241,28 @@ pub struct ExtractionStats {
 }
 
 // ---------------------------------------------------------------------------
+// Duplicates
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuplicatePair {
+    pub id_a: i64,
+    pub id_b: i64,
+    pub content_a: String,
+    pub content_b: String,
+    pub similarity: f64,
+    pub importance_a: i32,
+    pub importance_b: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeduplicateResult {
+    pub pairs_found: i64,
+    pub merged: i64,
+    pub dry_run: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Temporal
 // ---------------------------------------------------------------------------
 
