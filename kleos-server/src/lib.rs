@@ -1,5 +1,6 @@
 pub mod background;
 pub mod brain_absorber;
+pub mod dreamer;
 pub mod envelope;
 pub mod error;
 pub mod extractors;

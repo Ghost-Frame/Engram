@@ -178,6 +178,16 @@ pub fn router() -> Router<AppState> {
         .route("/intelligence/dream", post(dream_handler))
         // -- NEW: Pipeline DAG runner
         .route("/intelligence/run", post(run_pipeline_handler))
+        // -- Dreamer stats from the background task
+        .route("/intelligence/dreamer", get(dreamer_stats_handler))
+}
+
+async fn dreamer_stats_handler(
+    State(state): State<AppState>,
+    Auth(_auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    let stats = state.dreamer_stats.read().await;
+    Ok(Json(json!(*stats)))
 }
 
 // ---------------------------------------------------------------------------
