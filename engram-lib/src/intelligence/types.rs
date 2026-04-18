@@ -241,6 +241,25 @@ pub struct ExtractionStats {
 }
 
 // ---------------------------------------------------------------------------
+// Temporal
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemporalPattern {
+    pub label: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeTravelResult {
+    pub id: i64,
+    pub content: String,
+    pub category: String,
+    pub importance: i32,
+    pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
 // Fact contradiction
 // ---------------------------------------------------------------------------
 
