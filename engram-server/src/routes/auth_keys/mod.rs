@@ -6,10 +6,12 @@ use axum::{
 };
 use engram_lib::auth;
 use rusqlite::{params, OptionalExtension};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
+
+mod types;
+use types::{CreateKeyBody, CreateSpaceBody, CreateUserBody, RotateKeyBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -22,17 +24,6 @@ pub fn router() -> Router<AppState> {
 }
 
 // ---- Key Management ----
-
-#[derive(Debug, Deserialize)]
-struct CreateKeyBody {
-    pub name: Option<String>,
-    pub scopes: Option<String>,
-    pub user_id: Option<i64>,
-    pub rate_limit: Option<i64>,
-    pub expires_at: Option<String>,
-    /// Alternative to absolute `expires_at`: relative TTL in seconds.
-    pub ttl_secs: Option<i64>,
-}
 
 async fn create_key(
     State(state): State<AppState>,
@@ -175,14 +166,6 @@ async fn revoke_key(
     Ok(Json(json!({ "revoked": true, "id": id })))
 }
 
-#[derive(Debug, Deserialize)]
-struct RotateKeyBody {
-    pub key_id: i64,
-    /// Optional per-request override for the grace period applied to the
-    /// old key. When absent, falls back to `config.auth_key_rotation_grace_hours`.
-    pub grace_hours: Option<i64>,
-}
-
 async fn rotate_key(
     State(state): State<AppState>,
     Auth(auth_ctx): Auth,
@@ -255,13 +238,6 @@ async fn rotate_key(
 }
 
 // ---- User Management ----
-
-#[derive(Debug, Deserialize)]
-struct CreateUserBody {
-    pub username: String,
-    pub email: Option<String>,
-    pub role: Option<String>,
-}
 
 async fn create_user(
     State(state): State<AppState>,
@@ -379,12 +355,6 @@ async fn list_users(
 }
 
 // ---- Space Management ----
-
-#[derive(Debug, Deserialize)]
-struct CreateSpaceBody {
-    pub name: String,
-    pub description: Option<String>,
-}
 
 async fn create_space(
     State(state): State<AppState>,
