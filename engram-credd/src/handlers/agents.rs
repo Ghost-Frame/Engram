@@ -1,10 +1,11 @@
 //! Agent key management handlers.
 
+pub use super::types::{AgentKeyInfo, CreateKeyRequest};
+
 use axum::{
     extract::{Path, State},
     Json,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use engram_cred::agent_keys::{
@@ -15,16 +16,6 @@ use engram_cred::CredError;
 use crate::auth::Auth;
 use crate::handlers::AppError;
 use crate::state::AppState;
-
-#[derive(Serialize)]
-pub struct AgentKeyInfo {
-    pub name: String,
-    pub categories: Vec<String>,
-    pub allow_raw: bool,
-    pub created_at: String,
-    pub revoked_at: Option<String>,
-    pub is_valid: bool,
-}
 
 /// List agent keys.
 #[tracing::instrument(skip_all, fields(handler = "credd.agents.list"))]
@@ -55,15 +46,6 @@ pub async fn list_handler(
         .collect();
 
     Ok(Json(json!({ "keys": items })))
-}
-
-#[derive(Deserialize)]
-pub struct CreateKeyRequest {
-    pub name: String,
-    #[serde(default)]
-    pub categories: Vec<String>,
-    #[serde(default)]
-    pub allow_raw: bool,
 }
 
 /// Create a new agent key.

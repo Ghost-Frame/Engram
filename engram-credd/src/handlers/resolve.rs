@@ -4,8 +4,11 @@
 //! - Proxy: Inject credentials into HTTP request headers/body
 //! - Raw: Return decrypted secret data directly
 
+pub use super::types::{
+    ProxyRequest, ProxyResponse, RawRequest, ResolveTextRequest, ResolveTextResponse,
+};
+
 use axum::{extract::State, Json};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use engram_cred::audit::{log_audit, AccessTier, AuditAction};
@@ -54,17 +57,6 @@ fn find_placeholders(text: &str) -> Vec<(usize, usize, String, String, Option<St
     }
 
     results
-}
-
-#[derive(Deserialize)]
-pub struct ResolveTextRequest {
-    pub text: String,
-}
-
-#[derive(Serialize)]
-pub struct ResolveTextResponse {
-    pub text: String,
-    pub substitutions: usize,
 }
 
 /// Resolve secret placeholders in text.
@@ -149,30 +141,6 @@ pub async fn resolve_text_handler(
         text: result,
         substitutions,
     }))
-}
-
-#[derive(Deserialize)]
-pub struct ProxyRequest {
-    pub url: String,
-    #[serde(default)]
-    pub method: Option<String>,
-    #[serde(default)]
-    pub headers: Option<std::collections::HashMap<String, String>>,
-    #[serde(default)]
-    pub body: Option<String>,
-    pub secret_category: String,
-    pub secret_name: String,
-    #[serde(default)]
-    pub auth_header: Option<String>,
-    #[serde(default)]
-    pub auth_scheme: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct ProxyResponse {
-    pub status: u16,
-    pub headers: std::collections::HashMap<String, String>,
-    pub body: String,
 }
 
 /// Proxy HTTP request with injected credentials.
@@ -389,12 +357,6 @@ pub async fn raw_handler(
         "name": req.name,
         "value": data,
     })))
-}
-
-#[derive(Deserialize)]
-pub struct RawRequest {
-    pub category: String,
-    pub name: String,
 }
 
 #[cfg(test)]

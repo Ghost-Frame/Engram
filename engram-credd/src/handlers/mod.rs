@@ -3,6 +3,7 @@
 pub mod agents;
 pub mod resolve;
 pub mod secrets;
+pub mod types;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

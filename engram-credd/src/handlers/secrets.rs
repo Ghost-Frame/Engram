@@ -1,34 +1,20 @@
 //! Secret CRUD handlers.
 
+pub use super::types::{ListQuery, SecretListItem, StoreRequest};
+
 use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use engram_cred::audit::{log_audit, AccessTier, AuditAction};
 use engram_cred::storage::{delete_secret, get_secret, list_secrets, store_secret, update_secret};
-use engram_cred::types::SecretData;
 use engram_cred::CredError;
 
 use crate::auth::Auth;
 use crate::handlers::AppError;
 use crate::state::AppState;
-
-#[derive(Deserialize)]
-pub struct ListQuery {
-    category: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct SecretListItem {
-    service: String,
-    key: String,
-    secret_type: String,
-    created_at: String,
-    updated_at: String,
-}
 
 /// List secrets.
 #[tracing::instrument(skip_all, fields(handler = "credd.secrets.list"))]
@@ -52,11 +38,6 @@ pub async fn list_handler(
         .collect();
 
     Ok(Json(json!({ "secrets": items })))
-}
-
-#[derive(Deserialize)]
-pub struct StoreRequest {
-    pub data: SecretData,
 }
 
 /// Store a new secret.
