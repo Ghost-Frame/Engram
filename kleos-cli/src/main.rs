@@ -30,9 +30,9 @@ enum Commands {
         /// Category (task, discovery, decision, state, issue, general, reference)
         #[arg(short, long, default_value = "general")]
         category: String,
-        /// Importance score 0.0-1.0
+        /// Importance score 0-10 (integer)
         #[arg(short, long)]
-        importance: Option<f32>,
+        importance: Option<u8>,
         /// Comma-separated tags
         #[arg(short, long)]
         tags: Option<String>,
