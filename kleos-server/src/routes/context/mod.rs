@@ -114,14 +114,19 @@ async fn build_context_stream(
         let result = assemble_context_streaming(&db, body, user_id, embedder, llm, tx).await;
         match result {
             Ok(ctx) => {
-                let _ = sse_tx_clone
+                // R8 R-009: log rather than silently drop send errors --
+                // if the client disconnected we want that in traces.
+                if let Err(e) = sse_tx_clone
                     .send(
                         Event::default()
                             .event("result")
                             .json_data(json!(ctx))
                             .unwrap_or_else(|_| Event::default().data("{}")),
                     )
-                    .await;
+                    .await
+                {
+                    tracing::debug!(error = %e, "context SSE result send failed (client gone)");
+                }
             }
             Err(e) => {
                 let _ = sse_tx_clone

@@ -14,11 +14,15 @@ use std::sync::Arc;
 type HmacSha256 = Hmac<Sha256>;
 
 /// Shared HTTP client for webhook delivery -- no-redirect policy prevents
-/// signature header leakage via open redirect chains (SEC-H2).
+/// signature header leakage via open redirect chains (SEC-H2). R8-R-004:
+/// request + connect timeouts bound the delivery task so a hanging
+/// endpoint cannot keep the retry task alive forever.
 static WEBHOOK_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .pool_max_idle_per_host(4)
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 });
@@ -586,9 +590,20 @@ pub async fn emit_webhook_event(
     payload: &serde_json::Value,
     user_id: i64,
 ) {
+    // R8 R-011: log the DB read failure before bailing -- previously a
+    // query error meant every emit was silently a no-op and ops had no
+    // signal until the dead-letter tray stayed empty.
     let hooks = match list_webhooks_with_secrets(db, user_id).await {
         Ok(h) => h,
-        Err(_) => return,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                user_id,
+                event,
+                "emit_webhook_event: list_webhooks_with_secrets failed; dropping dispatch"
+            );
+            return;
+        }
     };
     for hook in hooks {
         if !hook.is_active {

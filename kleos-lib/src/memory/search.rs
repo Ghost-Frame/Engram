@@ -184,17 +184,18 @@ async fn hydrate_candidates(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
 
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+        // Borrow-only params (R8 P-005): ids_owned + user_id live for
+        // the whole closure, so push &i64 directly and skip the
+        // Box<dyn ToSql> + double-Vec allocation.
+        let mut params: Vec<&dyn rusqlite::types::ToSql> =
             Vec::with_capacity(ids_owned.len() + 1);
         for id in &ids_owned {
-            params.push(Box::new(*id));
+            params.push(id);
         }
-        params.push(Box::new(user_id));
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
+        params.push(&user_id);
 
         let mut rows = stmt
-            .query(param_refs.as_slice())
+            .query(params.as_slice())
             .map_err(rusqlite_to_eng_error)?;
         // 6.9 capacity hint: upper bound is the input id set.
         let mut hydrated = Vec::with_capacity(ids_owned.len());
@@ -321,18 +322,17 @@ async fn fetch_memories_batch(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&fetch_sql).map_err(rusqlite_to_eng_error)?;
 
-        // Build dynamic params: all IDs followed by user_id
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+        // Build dynamic params: all IDs followed by user_id. Borrow-only
+        // to avoid Box<dyn ToSql> allocation (R8 P-005).
+        let mut params: Vec<&dyn rusqlite::types::ToSql> =
             Vec::with_capacity(ids_owned.len() + 1);
         for id in &ids_owned {
-            params.push(Box::new(*id));
+            params.push(id);
         }
-        params.push(Box::new(user_id));
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
+        params.push(&user_id);
 
         let mut rows = stmt
-            .query(param_refs.as_slice())
+            .query(params.as_slice())
             .map_err(rusqlite_to_eng_error)?;
 
         let mut map = HashMap::new();
@@ -417,22 +417,21 @@ async fn fetch_links_batch(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&link_sql).map_err(rusqlite_to_eng_error)?;
 
-        // Params: [ids..., user_id, ids..., user_id]
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+        // Params: [ids..., user_id, ids..., user_id]. Borrow-only
+        // (R8 P-005).
+        let mut params: Vec<&dyn rusqlite::types::ToSql> =
             Vec::with_capacity(ids_owned.len() * 2 + 2);
         for id in &ids_owned {
-            params.push(Box::new(*id));
+            params.push(id);
         }
-        params.push(Box::new(user_id));
+        params.push(&user_id);
         for id in &ids_owned {
-            params.push(Box::new(*id));
+            params.push(id);
         }
-        params.push(Box::new(user_id));
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
+        params.push(&user_id);
 
         let mut rows = stmt
-            .query(param_refs.as_slice())
+            .query(params.as_slice())
             .map_err(rusqlite_to_eng_error)?;
 
         let mut map: HashMap<i64, Vec<LinkedMemory>> = HashMap::new();
@@ -481,21 +480,19 @@ async fn fetch_version_chains_batch(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&chain_sql).map_err(rusqlite_to_eng_error)?;
 
-        // Params: [ids..., ids..., user_id]
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+        // Params: [ids..., ids..., user_id]. Borrow-only (R8 P-005).
+        let mut params: Vec<&dyn rusqlite::types::ToSql> =
             Vec::with_capacity(ids_owned.len() * 2 + 1);
         for id in &ids_owned {
-            params.push(Box::new(*id));
+            params.push(id);
         }
         for id in &ids_owned {
-            params.push(Box::new(*id));
+            params.push(id);
         }
-        params.push(Box::new(user_id));
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
+        params.push(&user_id);
 
         let mut rows = stmt
-            .query(param_refs.as_slice())
+            .query(params.as_slice())
             .map_err(rusqlite_to_eng_error)?;
 
         let mut map: HashMap<i64, Vec<VersionChainEntry>> = HashMap::new();
@@ -900,16 +897,17 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     let mut final_results: Vec<SearchResult> = Vec::with_capacity(sorted.len());
 
     for c in &sorted {
-        // Build channel list
-        let mut channels = Vec::new();
+        // Build channel list. Capacity 3 avoids reallocs during push;
+        // static &str -> String is one 6-byte heap slot per hit (R8 P-006).
+        let mut channels: Vec<String> = Vec::with_capacity(3);
         if vector_set.contains(&c.id) {
-            channels.push("vector".to_string());
+            channels.push(String::from("vector"));
         }
         if fts_set.contains(&c.id) {
-            channels.push("fts".to_string());
+            channels.push(String::from("fts"));
         }
         if graph_set.contains(&c.id) {
-            channels.push("graph".to_string());
+            channels.push(String::from("graph"));
         }
 
         // Look up from pre-fetched batch
@@ -1381,15 +1379,20 @@ fn compute_string_facets<'a>(
     values: impl Iterator<Item = &'a str>,
     limit: usize,
 ) -> Vec<FacetBucket> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
+    // Borrow-keyed first pass: only unique values pay the String alloc
+    // when we build the output buckets (R8 P-007).
+    let mut counts: HashMap<&'a str, usize> = HashMap::new();
     for v in values {
         if !v.is_empty() {
-            *counts.entry(v.to_string()).or_insert(0) += 1;
+            *counts.entry(v).or_insert(0) += 1;
         }
     }
     let mut buckets: Vec<FacetBucket> = counts
         .into_iter()
-        .map(|(value, count)| FacetBucket { value, count })
+        .map(|(value, count)| FacetBucket {
+            value: value.to_string(),
+            count,
+        })
         .collect();
     buckets.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
     buckets.truncate(limit);

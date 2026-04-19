@@ -112,9 +112,12 @@ pub async fn compute_pagerank(
         let mut max_delta: f64 = 0.0;
         let mut new_pr: HashMap<i64, f64> = HashMap::new();
         for &id in &memory_ids {
-            let incoming = in_links.get(&id).cloned().unwrap_or_default();
+            // R8 P-002: borrow instead of cloning the Vec<(i64,f64)>
+            // every inner-loop pass. Converges in ~25 iters, so the
+            // clone ran 25*N times per call.
+            let incoming: &[(i64, f64)] = in_links.get(&id).map(|v| v.as_slice()).unwrap_or(&[]);
             let mut sum = 0.0;
-            for (from_id, weight) in &incoming {
+            for (from_id, weight) in incoming {
                 let from_rank = pr.get(from_id).copied().unwrap_or(0.0);
                 let from_out = out_w.get(from_id).copied().unwrap_or(1.0);
                 sum += (from_rank * weight) / from_out;
@@ -755,9 +758,12 @@ pub async fn compute_pagerank_for_community(
         let mut new_pr: HashMap<i64, f64> = HashMap::new();
 
         for &id in &memory_ids {
-            let incoming = in_links.get(&id).cloned().unwrap_or_default();
+            // R8 P-002: borrow instead of cloning the Vec<(i64,f64)>
+            // every inner-loop pass. Converges in ~25 iters, so the
+            // clone ran 25*N times per call.
+            let incoming: &[(i64, f64)] = in_links.get(&id).map(|v| v.as_slice()).unwrap_or(&[]);
             let mut sum = 0.0;
-            for (from_id, weight) in &incoming {
+            for (from_id, weight) in incoming {
                 let from_rank = pr.get(from_id).copied().unwrap_or(0.0);
                 let from_out = out_w.get(from_id).copied().unwrap_or(1.0);
                 sum += (from_rank * weight) / from_out;

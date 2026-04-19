@@ -36,12 +36,13 @@ async fn review(
             "grade must be 1-4".into(),
         )));
     }
+    // R8-R-005: grade_num is clamped to 1..=4 above; map by value so a
+    // future refactor of the guard cannot turn a bad grade into a panic.
     let grade = match grade_num {
         1 => fsrs::Rating::Again,
         2 => fsrs::Rating::Hard,
-        3 => fsrs::Rating::Good,
         4 => fsrs::Rating::Easy,
-        _ => unreachable!(),
+        _ => fsrs::Rating::Good,
     };
 
     // Verify memory belongs to user and fetch FSRS state

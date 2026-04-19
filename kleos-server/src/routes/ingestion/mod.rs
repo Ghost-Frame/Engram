@@ -1069,15 +1069,34 @@ async fn ingest_text_stream(
         // which the relay forwards as a `progress` event with type=done.
     });
 
-    // Spawn relay: progress -> SSE.
+    // Spawn relay: progress -> SSE. Bounded recv timeout (R8 R-006)
+    // so a stuck upstream cannot leave the relay blocked forever;
+    // on elapse we emit a heartbeat and continue to keep the SSE
+    // connection alive.
     tokio::spawn(async move {
-        while let Some(evt) = progress_rx.recv().await {
-            let sse_event = Event::default()
-                .event("progress")
-                .json_data(&evt)
-                .unwrap_or_else(|_| Event::default().data("{}"));
-            if sse_tx.send(sse_event).await.is_err() {
-                break;
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(300),
+                progress_rx.recv(),
+            )
+            .await
+            {
+                Ok(Some(evt)) => {
+                    let sse_event = Event::default()
+                        .event("progress")
+                        .json_data(&evt)
+                        .unwrap_or_else(|_| Event::default().data("{}"));
+                    if sse_tx.send(sse_event).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    let heartbeat = Event::default().event("heartbeat").data("{}");
+                    if sse_tx.send(heartbeat).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     });

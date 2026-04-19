@@ -81,7 +81,13 @@ pub async fn call_llm(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
+        // R8 R-007: surface body-read errors instead of silently
+        // returning an empty string -- the caller needs to know the
+        // error bucket (network vs decode) to pick a retry policy.
+        let body_text = match resp.text().await {
+            Ok(t) => t,
+            Err(e) => format!("<failed to read body: {e}>"),
+        };
         return Err(format!("LLM returned {}: {}", status, body_text));
     }
 
