@@ -79,7 +79,7 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "status": "ok",
         "service": "kleos",
-        "version": "0.1.0",
+        "version": env!("CARGO_PKG_VERSION"),
         "memories": memories,
         "entities": entities,
         "episodes": episodes,
@@ -95,7 +95,7 @@ async fn get_live() -> Json<Value> {
     Json(json!({
         "status": "ok",
         "service": "kleos",
-        "version": "0.1.0"
+        "version": env!("CARGO_PKG_VERSION")
     }))
 }
 
@@ -146,7 +146,7 @@ async fn get_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         Json(json!({
             "status": if all_ok { "ready" } else { "not_ready" },
             "service": "kleos",
-            "version": "0.1.0",
+            "version": env!("CARGO_PKG_VERSION"),
             "checks": checks,
             "failing": failing,
         })),
