@@ -224,5 +224,6 @@ pub enum ContextProgressEvent {
     Error { message: String },
 }
 
-/// Channel type for sending progress events during streaming assembly.
-pub type ProgressSender = tokio::sync::mpsc::UnboundedSender<ContextProgressEvent>;
+/// Bounded sender for streaming context progress events. Producers use
+/// `try_send` and drop on full (see [`super::emit_progress`]).
+pub type ProgressSender = tokio::sync::mpsc::Sender<ContextProgressEvent>;

@@ -28,6 +28,9 @@ You can expect an initial response within 72 hours. We'll work with you to under
 - Tokens are scoped per-user with role-based access control
 - Bootstrap requires a pre-shared `ENGRAM_BOOTSTRAP_SECRET` and is one-time only (atomic claim via database sentinel)
 - Rate limiting is applied after auth resolution to prevent tenant enumeration
+- Pre-auth throttles run before auth to bound unauthenticated load:
+  - `kleos-server`: 60 req / 60s / IP on public surface (`/auth/*`, GUI login, `/health`)
+  - `kleos-credd`: 10 req / 60s / IP on the cred socket (tighter because only pairing traffic should hit it)
 
 ### Data Isolation
 

@@ -264,8 +264,14 @@ fn verify_cookie(cookie: &str, secret: &SecretString) -> Option<GuiSession> {
     let ts: i64 = parts.next()?.parse().ok()?;
     let scopes = parts.next().map(decode_scopes).unwrap_or_default();
 
-    // Check expiration
+    // Check expiration and future timestamps (reject beyond 60s clock skew).
+    // R7-008: a cookie whose ts is in the future would otherwise survive the
+    // intended max-age window by an arbitrary offset. HMAC verification alone
+    // does not bound ts; we cap drift at 60s to tolerate normal clock skew.
     let now = chrono::Utc::now().timestamp();
+    if ts - now > 60 {
+        return None;
+    }
     if now - ts > GUI_COOKIE_MAX_AGE {
         return None;
     }

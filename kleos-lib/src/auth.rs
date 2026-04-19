@@ -193,8 +193,13 @@ fn normalize_key(raw_key: &str) -> Option<String> {
 /// advertised 128-bit strength.
 ///
 /// Returns `(full_key, key_prefix, key_hash, hash_version)`.
-/// Uses v2 (peppered) hashing if ENGRAM_API_KEY_PEPPER is set, otherwise v1.
-fn generate_key() -> (String, String, String, i32) {
+/// Uses v2 (peppered) hashing if ENGRAM_API_KEY_PEPPER is set.
+///
+/// R7-004: in release builds we fail-closed if the pepper is missing so new
+/// keys are never written with legacy v1 hashes. Existing v1 rows continue
+/// to validate via [`validate_key`]. Debug builds keep the v1 fallback for
+/// local development ergonomics.
+fn generate_key() -> Result<(String, String, String, i32)> {
     use rand::Rng;
     let mut raw = [0u8; 16];
     rand::rng().fill(&mut raw);
@@ -208,14 +213,26 @@ fn generate_key() -> (String, String, String, i32) {
     // key_prefix = first 8 chars of the hex portion (chars 7..15 of full_key)
     let key_prefix = raw_hex[..8].to_string();
 
-    // Use v2 if pepper is configured, otherwise v1
     let (key_hash, hash_version) = if let Some(hash) = hash_key_v2(&full_key) {
         (hash, HASH_VERSION_PEPPERED)
     } else {
-        (hash_key_v1(&full_key), HASH_VERSION_LEGACY)
+        #[cfg(not(debug_assertions))]
+        {
+            return Err(crate::EngError::Internal(
+                "ENGRAM_API_KEY_PEPPER is required to issue new API keys in release builds"
+                    .into(),
+            ));
+        }
+        #[cfg(debug_assertions)]
+        {
+            tracing::warn!(
+                "ENGRAM_API_KEY_PEPPER not set; falling back to v1 hashing (debug build only)"
+            );
+            (hash_key_v1(&full_key), HASH_VERSION_LEGACY)
+        }
     };
 
-    (full_key, key_prefix, key_hash, hash_version)
+    Ok((full_key, key_prefix, key_hash, hash_version))
 }
 
 /// Parse a comma-separated scopes string into a Vec<Scope>.
@@ -282,7 +299,7 @@ pub async fn create_key_with_expiry(
     rate_limit: Option<i64>,
     expires_at: Option<String>,
 ) -> Result<(ApiKey, String)> {
-    let (full_key, key_prefix, key_hash, hash_version) = generate_key();
+    let (full_key, key_prefix, key_hash, hash_version) = generate_key()?;
     let scopes_str = scopes_to_string(&scopes);
     let rate_limit_val = rate_limit.unwrap_or(1000).max(1);
     let name_owned = name.to_string();

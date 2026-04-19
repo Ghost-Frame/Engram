@@ -54,6 +54,33 @@ fn build_cors_layer() -> CorsLayer {
                 .split(',')
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
+                // R7-009: the Origin header "null" is emitted by browsers for
+                // sandboxed iframes, file:// origins, and various privacy
+                // modes. Accepting it bypasses the allowlist so we drop it
+                // unconditionally.
+                .filter(|s| {
+                    if s.eq_ignore_ascii_case("null") {
+                        tracing::warn!("ENGRAM_ALLOWED_ORIGINS contained 'null'; dropping");
+                        return false;
+                    }
+                    true
+                })
+                .inspect(|s| {
+                    // R7-010: plain http:// origins outside loopback are
+                    // almost always a deployment mistake; warn so operators
+                    // notice credentials traveling over plaintext.
+                    let lower = s.to_ascii_lowercase();
+                    if lower.starts_with("http://")
+                        && !(lower.starts_with("http://localhost")
+                            || lower.starts_with("http://127.0.0.1")
+                            || lower.starts_with("http://[::1]"))
+                    {
+                        tracing::warn!(
+                            "ENGRAM_ALLOWED_ORIGINS entry {} is plaintext http:// and not loopback",
+                            s
+                        );
+                    }
+                })
                 .filter_map(|s| HeaderValue::from_str(s).ok())
                 .collect();
             if origins.is_empty() {
@@ -196,6 +223,26 @@ pub fn build_router(state: AppState) -> Router {
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-permitted-cross-domain-policies"),
             HeaderValue::from_static("none"),
+        ))
+        // R7-006: baseline CSP. The login page currently ships inline <style>
+        // and <script>; 'unsafe-inline' is retained for both until those are
+        // externalised or nonce-bound. 'wasm-unsafe-eval' lets the GUI load
+        // WASM modules (ONNX wasm runtime, etc). frame-ancestors 'none' hard
+        // locks clickjacking (X-Frame-Options is a belt-and-braces duplicate).
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static(
+                "default-src 'self'; \
+                 script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'; \
+                 style-src 'self' 'unsafe-inline'; \
+                 img-src 'self' data: blob:; \
+                 font-src 'self' data:; \
+                 connect-src 'self'; \
+                 frame-ancestors 'none'; \
+                 base-uri 'none'; \
+                 form-action 'self'; \
+                 object-src 'none'",
+            ),
         ))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())

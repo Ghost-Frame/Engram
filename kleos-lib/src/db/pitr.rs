@@ -47,6 +47,13 @@ fn collect_from(dir: &Path, kind: SnapshotKind) -> Vec<Snapshot> {
     read_dir
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
+            // R7-007: reject symlinks to prevent out-of-directory exfiltration
+            // via prepare_restore's fs::copy. Only regular files are valid
+            // snapshot candidates.
+            let ft = entry.file_type().ok()?;
+            if !ft.is_file() {
+                return None;
+            }
             let path = entry.path();
             let created_at = parse_backup_time(&path)?;
             let size_bytes = entry.metadata().ok()?.len();

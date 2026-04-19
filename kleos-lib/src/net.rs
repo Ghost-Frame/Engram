@@ -1,8 +1,34 @@
 //! Outbound network helpers. Centralised URL validation so tainted
-//! environment/configuration values cannot target arbitrary hosts.
+//! environment/configuration values cannot target arbitrary hosts, plus
+//! a hardened reqwest client builder used for every outbound call.
 
 use crate::EngError;
+use std::time::Duration;
 use url::Url;
+
+/// R7-002: default response size cap for outbound HTTP responses.
+/// Call sites with different needs should pass their own value to
+/// [`response_within_limit`].
+pub const DEFAULT_MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// R7-002: hardened reqwest client builder. Applies a 5s connect timeout and
+/// limits redirect chains to 1 hop. Call sites add their own overall
+/// `.timeout(...)` appropriate to the workload before calling `.build()`.
+pub fn safe_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::limited(1))
+}
+
+/// R7-002: returns `false` when the response declares a Content-Length larger
+/// than `max_bytes`. When the header is missing we return `true` and leave the
+/// caller to cap via streaming; reqwest's own timeouts still bound the read.
+pub fn response_within_limit(resp: &reqwest::Response, max_bytes: u64) -> bool {
+    match resp.content_length() {
+        Some(len) => len <= max_bytes,
+        None => true,
+    }
+}
 
 /// Validate a URL intended for an outbound HTTP request. Accepts only
 /// http/https schemes and rejects URLs that embed credentials (userinfo),

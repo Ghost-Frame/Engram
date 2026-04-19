@@ -429,10 +429,12 @@ pub async fn assemble_context_streaming(
     .await
 }
 
-/// Emit a progress event if `tx` is Some, silently ignore closed channels.
+/// Emit a progress event if `tx` is Some; silently drop on full or closed.
+/// R7-003: bounded channels avoid unbounded memory growth if the SSE client
+/// stalls; progress loss is acceptable.
 fn emit_progress(tx: &Option<ProgressSender>, event: ContextProgressEvent) {
     if let Some(ref tx) = tx {
-        let _ = tx.send(event);
+        let _ = tx.try_send(event);
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::auth::resolve_auth;
+use crate::auth::{require_write, resolve_auth};
 use crate::tools::{with_auth_props, ToolDef};
 use crate::{invalid_input, App};
 use kleos_lib::skills::{self, create_skill, evolver, search::search_skills, CreateSkillRequest};
@@ -61,6 +61,7 @@ pub async fn skill_search(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "skill.fix"))]
 pub async fn skill_fix(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let skill_id = args
         .get("skill_id")
         .and_then(Value::as_i64)
@@ -74,6 +75,7 @@ pub async fn skill_fix(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "skill.upload"))]
 pub async fn skill_upload(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let name = args
         .get("name")
         .and_then(Value::as_str)

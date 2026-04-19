@@ -13,11 +13,87 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use rand::Rng;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{CredError, Result};
+
+/// R7-005: cap how many failed challenge-response attempts we will issue in
+/// a short window. The YubiKey itself rate-limits touch, but a local attacker
+/// running `cred` in a loop (e.g. trying to brute-force which slot is
+/// programmed, or spamming the user with touch prompts as a nuisance) can
+/// still force the subprocess repeatedly. Cooldown avoids that.
+const YUBIKEY_MAX_FAILURES: u32 = 5;
+const YUBIKEY_WINDOW: Duration = Duration::from_secs(60);
+const YUBIKEY_COOLDOWN: Duration = Duration::from_secs(30);
+
+struct FailureState {
+    count: u32,
+    first_failure: Option<Instant>,
+    locked_until: Option<Instant>,
+}
+
+static FAILURE_STATE: Mutex<FailureState> = Mutex::new(FailureState {
+    count: 0,
+    first_failure: None,
+    locked_until: None,
+});
+
+fn check_rate_limit() -> Result<()> {
+    let mut state = FAILURE_STATE
+        .lock()
+        .map_err(|_| CredError::YubiKey("yubikey rate-limit lock poisoned".into()))?;
+    let now = Instant::now();
+    if let Some(until) = state.locked_until {
+        if now < until {
+            let remaining = until.saturating_duration_since(now);
+            return Err(CredError::YubiKey(format!(
+                "yubikey attempts rate-limited; retry in {}s",
+                remaining.as_secs().max(1)
+            )));
+        } else {
+            state.locked_until = None;
+            state.count = 0;
+            state.first_failure = None;
+        }
+    }
+    if let Some(first) = state.first_failure {
+        if now.duration_since(first) > YUBIKEY_WINDOW {
+            state.count = 0;
+            state.first_failure = None;
+        }
+    }
+    Ok(())
+}
+
+fn record_failure() {
+    if let Ok(mut state) = FAILURE_STATE.lock() {
+        let now = Instant::now();
+        if state.first_failure.is_none() {
+            state.first_failure = Some(now);
+        }
+        state.count = state.count.saturating_add(1);
+        if state.count >= YUBIKEY_MAX_FAILURES {
+            state.locked_until = Some(now + YUBIKEY_COOLDOWN);
+            warn!(
+                "yubikey failed {} times in window; locking out for {}s",
+                state.count,
+                YUBIKEY_COOLDOWN.as_secs()
+            );
+        }
+    }
+}
+
+fn record_success() {
+    if let Ok(mut state) = FAILURE_STATE.lock() {
+        state.count = 0;
+        state.first_failure = None;
+        state.locked_until = None;
+    }
+}
 
 /// OTP slot used for HMAC-SHA1 challenge-response.
 pub const SLOT: u8 = 2;
@@ -39,19 +115,25 @@ const CHALLENGE_FILE: &str = "challenge";
 /// Unix uses `ykman otp calculate 2 <hex>`, with a Python fallback for
 /// distros where the ykman wrapper script refuses to take the HID.
 pub fn challenge_response(challenge: &[u8]) -> Result<[u8; RESPONSE_SIZE]> {
+    check_rate_limit()?;
+
     let challenge_hex = hex::encode(challenge);
 
     #[cfg(windows)]
-    let output = try_ykchallenge(&challenge_hex)?;
+    let output = try_ykchallenge(&challenge_hex).inspect_err(|_| record_failure())?;
 
     #[cfg(not(windows))]
     let output = try_ykman_calculate(&challenge_hex)
-        .or_else(|first| try_python_ykman_calculate(&challenge_hex).map_err(|_| first))?;
+        .or_else(|first| try_python_ykman_calculate(&challenge_hex).map_err(|_| first))
+        .inspect_err(|_| record_failure())?;
 
-    let decoded = hex::decode(output.trim())
-        .map_err(|e| CredError::YubiKey(format!("invalid hex response from YubiKey: {}", e)))?;
+    let decoded = hex::decode(output.trim()).map_err(|e| {
+        record_failure();
+        CredError::YubiKey(format!("invalid hex response from YubiKey: {}", e))
+    })?;
 
     if decoded.len() != RESPONSE_SIZE {
+        record_failure();
         return Err(CredError::YubiKey(format!(
             "unexpected HMAC response length: {} (expected {})",
             decoded.len(),
@@ -61,6 +143,7 @@ pub fn challenge_response(challenge: &[u8]) -> Result<[u8; RESPONSE_SIZE]> {
 
     let mut response = [0u8; RESPONSE_SIZE];
     response.copy_from_slice(&decoded);
+    record_success();
     debug!("YubiKey challenge-response ok ({} bytes)", RESPONSE_SIZE);
     Ok(response)
 }

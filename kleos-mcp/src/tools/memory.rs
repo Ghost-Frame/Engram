@@ -1,4 +1,4 @@
-use crate::auth::resolve_auth;
+use crate::auth::{require_write, resolve_auth};
 use crate::tools::{with_auth_props, ToolDef};
 use crate::{invalid_input, App};
 use kleos_lib::memory;
@@ -56,6 +56,7 @@ pub fn register(out: &mut Vec<ToolDef>) {
 #[tracing::instrument(skip(app, args), fields(tool = "memory.store"))]
 pub async fn store(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let req = StoreRequest {
         content: args
             .get("content")
@@ -188,6 +189,7 @@ pub async fn list(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "memory.update"))]
 pub async fn update(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let id = args
         .get("id")
         .and_then(Value::as_i64)
@@ -221,6 +223,7 @@ pub async fn update(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "memory.delete"))]
 pub async fn delete(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let id = args
         .get("id")
         .and_then(Value::as_i64)
@@ -232,6 +235,7 @@ pub async fn delete(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "memory.mark_forgotten"))]
 pub async fn mark_forgotten(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let id = args
         .get("id")
         .and_then(Value::as_i64)
@@ -243,6 +247,7 @@ pub async fn mark_forgotten(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "memory.mark_archived"))]
 pub async fn mark_archived(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let id = args
         .get("id")
         .and_then(Value::as_i64)
@@ -254,6 +259,7 @@ pub async fn mark_archived(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "memory.mark_unarchived"))]
 pub async fn mark_unarchived(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let id = args
         .get("id")
         .and_then(Value::as_i64)
@@ -265,6 +271,7 @@ pub async fn mark_unarchived(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "memory.update_forget_reason"))]
 pub async fn update_forget_reason(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let id = args
         .get("id")
         .and_then(Value::as_i64)
@@ -280,6 +287,7 @@ pub async fn update_forget_reason(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "memory.adjust_importance"))]
 pub async fn adjust_importance(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let id = args
         .get("id")
         .and_then(Value::as_i64)
@@ -295,6 +303,7 @@ pub async fn adjust_importance(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "memory.insert_link"))]
 pub async fn insert_link(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let source_id = args
         .get("source_id")
         .and_then(Value::as_i64)

@@ -251,7 +251,8 @@ impl HttpReranker {
         top_k: usize,
         db: Option<Arc<Database>>,
     ) -> Self {
-        let client = reqwest::Client::builder()
+        // R7-002: hardened builder (connect_timeout + redirect cap).
+        let client = crate::net::safe_client_builder()
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default();

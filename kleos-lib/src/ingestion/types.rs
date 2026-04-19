@@ -243,4 +243,7 @@ pub enum IngestProgressEvent {
     Error { job_id: String, message: String },
 }
 
-pub type IngestProgressSender = tokio::sync::mpsc::UnboundedSender<IngestProgressEvent>;
+/// Bounded sender for progress events. The bounded channel provides
+/// backpressure when a slow SSE client cannot keep up; producers use
+/// `try_send` and silently drop on full (see [`emit`]).
+pub type IngestProgressSender = tokio::sync::mpsc::Sender<IngestProgressEvent>;

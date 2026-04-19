@@ -7,7 +7,8 @@ const TIMEOUT_SECS: u64 = 10;
 
 /// Shared HTTP client for cloud skill registry calls.
 static CLOUD_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
-    reqwest::Client::builder()
+    // R7-002: hardened builder (connect_timeout + redirect cap).
+    crate::net::safe_client_builder()
         .timeout(std::time::Duration::from_secs(TIMEOUT_SECS + 5))
         .pool_max_idle_per_host(2)
         .build()

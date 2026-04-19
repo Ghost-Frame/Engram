@@ -1,4 +1,4 @@
-use crate::auth::resolve_auth;
+use crate::auth::{require_write, resolve_auth};
 use crate::tools::{with_auth_props, ToolDef};
 use crate::{invalid_input, App};
 use kleos_lib::intelligence::{
@@ -26,6 +26,7 @@ pub fn register(out: &mut Vec<ToolDef>) {
 #[tracing::instrument(skip(app, args), fields(tool = "intelligence.consolidate"))]
 pub async fn consolidate(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let ids: Vec<String> = serde_json::from_value::<Vec<i64>>(
         args.get("memory_ids")
             .cloned()
@@ -57,6 +58,7 @@ pub async fn detect_contradictions(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "intelligence.decompose"))]
 pub async fn decompose(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let memory_id = args
         .get("memory_id")
         .and_then(Value::as_i64)
@@ -83,6 +85,7 @@ pub async fn temporal_summary(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "intelligence.reflect"))]
 pub async fn reflect(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let content = args
         .get("content")
         .and_then(Value::as_str)
@@ -118,6 +121,7 @@ pub async fn reflect(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "intelligence.extract_facts"))]
 pub async fn extract_facts(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let memory_id = if let Some(id) = args.get("memory_id").and_then(Value::as_i64) {
         id
     } else {
@@ -181,6 +185,7 @@ pub async fn causal_trace(app: &App, args: Value) -> Result<Value> {
             causal::get_chain(&app.db, chain_id, auth.user_id).await?
         ));
     }
+    require_write(&auth)?;
     let chain = causal::create_chain(
         &app.db,
         args.get("root_memory_id").and_then(Value::as_i64),
