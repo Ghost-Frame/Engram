@@ -354,6 +354,19 @@ fn summarize_input(tool_name: &str, input: &serde_json::Value) -> String {
 }
 
 async fn store_observations(observations: Vec<FileObservation>, state: &SidecarState) {
+    // R8 S-003: validate kleos_url once per batch so a misconfigured value
+    // cannot redirect observations to an arbitrary host. Sidecar runs in a
+    // trusted env today, but the CLI will expose --kleos-url so we harden
+    // proactively.
+    let url = format!("{}/memory/store", state.kleos_url);
+    if let Err(e) = kleos_lib::net::validate_outbound_url(&url) {
+        tracing::warn!(
+            kleos_url = %state.kleos_url,
+            error = %e,
+            "file-watcher store: kleos_url failed outbound validation; dropping batch"
+        );
+        return;
+    }
     for obs in observations {
         let req = serde_json::json!({
             "content": format!("[file-watcher] [{}] {}", obs.tool_name, obs.content),
@@ -364,7 +377,6 @@ async fn store_observations(observations: Vec<FileObservation>, state: &SidecarS
             "user_id": state.user_id,
         });
 
-        let url = format!("{}/memory/store", state.kleos_url);
         let mut request = state.client.post(&url).json(&req);
         if let Some(ref api_key) = state.kleos_api_key {
             request = request.header("Authorization", format!("Bearer {}", api_key));

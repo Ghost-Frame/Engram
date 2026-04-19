@@ -191,7 +191,20 @@ async fn tighten_secret_perms(path: &std::path::Path) {
 }
 
 #[cfg(not(unix))]
-async fn tighten_secret_perms(_path: &std::path::Path) {}
+async fn tighten_secret_perms(path: &std::path::Path) {
+    // R8 S-004: on non-unix targets we cannot chmod. Warn once per process
+    // so operators notice that the HMAC secret on disk inherits default ACLs.
+    // The recommended hardening is an NTFS ACL restricting the file to the
+    // service account (icacls / windows-rs SetNamedSecurityInfo).
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            path = ?path,
+            "tighten_secret_perms is a no-op on this platform; restrict HMAC secret ACL manually (NTFS: icacls <path> /inheritance:r /grant:r SYSTEM:F Administrators:F <service-account>:F)"
+        );
+    }
+}
 
 /// Authenticated GUI session resolved from a signed cookie.
 #[derive(Debug, Clone)]

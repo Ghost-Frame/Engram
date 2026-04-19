@@ -4717,6 +4717,7 @@ dependencies = [
  "hmac",
  "lancedb",
  "lru 0.16.4",
+ "metrics",
  "ndarray 0.16.1",
  "opentelemetry",
  "opentelemetry-otlp",
