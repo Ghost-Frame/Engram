@@ -77,3 +77,34 @@ protoc-bin-vendored-linux-x86_64 = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 axum = { workspace = true }
+criterion = { workspace = true }
+tempfile = { workspace = true }
+
+# Criterion bench targets. Each must set harness = false so criterion
+# supplies its own main(). Keep these zero-cloud: ONNX embeddings run
+# against the locally cached model, DB benches use tempfile SQLite.
+
+[[bench]]
+name = "embeddings"
+harness = false
+required-features = ["test-utils"]
+
+[[bench]]
+name = "memory_search"
+harness = false
+required-features = ["test-utils"]
+
+[[bench]]
+name = "graph_traversal"
+harness = false
+required-features = ["test-utils"]
+
+[[bench]]
+name = "pitr_collect"
+harness = false
+required-features = ["test-utils"]
+
+[[bench]]
+name = "auth_middleware"
+harness = false
+required-features = ["test-utils"]

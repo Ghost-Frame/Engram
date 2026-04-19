@@ -63,6 +63,9 @@ mimalloc = { version = "0.1", default-features = false }
 lru = "0.16"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
+# Dev/bench shared deps.
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
 # Note: Can't use bundled sqlite with libsql in same binary - they conflict.
 # kleos-lib gates bundled-sqlcipher behind the "sqlcipher" feature so
 # kleos-migrate (which still uses libsql) compiles without collision.
@@ -79,3 +82,13 @@ strip = true
 inherits = "release"
 lto = "thin"
 codegen-units = 16
+
+# Criterion bench builds only need representative optimization, not full
+# fat LTO. Thin LTO keeps hot loops inlined across crates while cutting
+# the bench compile loop from ~5 min to ~1 min on WSL. Runtime numbers
+# are still within a few percent of fat-LTO.
+[profile.bench]
+lto = "thin"
+codegen-units = 16
+debug = false
+strip = "symbols"
