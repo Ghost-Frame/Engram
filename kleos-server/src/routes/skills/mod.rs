@@ -394,7 +394,8 @@ async fn evolve_handler(
     Auth(auth): Auth,
     Json(req): Json<evolver::EvolutionRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let result = evolver::evolve(&state.db, &req, "system", auth.user_id).await?;
+    let llm = state.llm.as_deref();
+    let result = evolver::evolve(&state.db, llm, &req, "system", auth.user_id).await?;
     Ok(Json(json!(result)))
 }
 
@@ -403,7 +404,8 @@ async fn fix_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let result = evolver::fix_skill(&state.db, id, "system", auth.user_id).await?;
+    let llm = state.llm.as_deref();
+    let result = evolver::fix_skill(&state.db, llm, id, "system", auth.user_id).await?;
     Ok(Json(json!(result)))
 }
 
@@ -413,8 +415,10 @@ async fn derive_handler(
     Json(body): Json<DeriveBody>,
 ) -> Result<Json<Value>, AppError> {
     let agent = body.agent.as_deref().unwrap_or("system");
+    let llm = state.llm.as_deref();
     let result = evolver::derive_skill(
         &state.db,
+        llm,
         &body.parent_ids,
         &body.direction,
         agent,
@@ -430,7 +434,9 @@ async fn capture_handler(
     Json(body): Json<CaptureBody>,
 ) -> Result<Json<Value>, AppError> {
     let agent = body.agent.as_deref().unwrap_or("system");
-    let result = evolver::capture_skill(&state.db, &body.description, agent, auth.user_id).await?;
+    let llm = state.llm.as_deref();
+    let result =
+        evolver::capture_skill(&state.db, llm, &body.description, agent, auth.user_id).await?;
     Ok(Json(json!(result)))
 }
 

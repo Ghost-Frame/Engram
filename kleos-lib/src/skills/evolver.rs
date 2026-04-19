@@ -1,6 +1,9 @@
 pub use super::types::{EvolutionRequest, EvolutionResult};
 
 use crate::db::Database;
+use crate::llm::local::LocalModelClient;
+use crate::llm::types::{CallOptions, Priority};
+use crate::skills;
 use crate::{EngError, Result};
 use rusqlite::params;
 
@@ -10,6 +13,10 @@ pub const DERIVE_SYSTEM_PROMPT: &str =
     "You are a skill deriver. Combine parent skills into a new derived skill.";
 pub const CAPTURE_SYSTEM_PROMPT: &str =
     "You are a skill capturer. Create a new skill from a workflow description.";
+
+const NAME_SHOT_SUFFIX: &str = "\n\nRespond with ONLY a short kebab-case slug (2 to 5 words, lowercase letters, digits, and hyphens). No punctuation, no quotes, no explanation, no code fences.";
+const DESC_SHOT_SUFFIX: &str = "\n\nRespond with ONLY a single-sentence description of this skill (under 200 characters). No quotes, no explanation, no prefix.";
+const CODE_SHOT_SUFFIX: &str = "\n\nRespond with ONLY the skill body as markdown. Start with a short heading. Include concrete steps, examples, and guardrails. Keep it under 4000 characters. Do not wrap the output in code fences.";
 
 /// Strip code fences from LLM output.
 pub fn strip_code_fences(s: &str) -> String {
@@ -23,25 +30,83 @@ pub fn strip_code_fences(s: &str) -> String {
             } else {
                 lines.len()
             };
-            return lines[start..end].join(
-                "
-",
-            );
+            return lines[start..end].join("\n");
         }
     }
     trimmed.to_string()
 }
 
-/// Generate a new unique skill ID.
-pub fn generate_skill_id(base_name: &str) -> String {
-    let slug: String = base_name
+/// Normalize a model-produced slug into a kebab-case id-safe string.
+fn sanitize_slug(raw: &str) -> String {
+    let cleaned = strip_code_fences(raw);
+    let first_line = cleaned.lines().next().unwrap_or("").trim();
+    let lowered: String = first_line
         .to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect();
-    let slug = slug.trim_matches('-').to_string();
+    let collapsed = lowered
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let bounded = if collapsed.len() > 80 {
+        collapsed[..80].to_string()
+    } else {
+        collapsed
+    };
+    if bounded.is_empty() {
+        "unnamed-skill".to_string()
+    } else {
+        bounded
+    }
+}
+
+/// Normalize a one-line description from the model.
+fn sanitize_description(raw: &str) -> String {
+    let cleaned = strip_code_fences(raw);
+    let first_line = cleaned.lines().next().unwrap_or("").trim();
+    let unquoted = first_line
+        .trim_matches(|c: char| c == '"' || c == '\'')
+        .trim();
+    if unquoted.len() > 500 {
+        unquoted[..500].to_string()
+    } else {
+        unquoted.to_string()
+    }
+}
+
+/// Generate a new unique skill ID.
+pub fn generate_skill_id(base_name: &str) -> String {
+    let slug = sanitize_slug(base_name);
     let short_id = &uuid::Uuid::new_v4().to_string()[..8];
     format!("{}-{}", slug, short_id)
+}
+
+/// Require a local LLM client, or produce a clear error.
+fn require_llm(llm: Option<&LocalModelClient>) -> Result<&LocalModelClient> {
+    llm.ok_or_else(|| {
+        EngError::Internal(
+            "skill evolution requires a local LLM (OLLAMA_URL/OLLAMA_MODEL) and none is configured"
+                .into(),
+        )
+    })
+}
+
+/// Run a single background-priority LLM call with a bounded response.
+async fn llm_shot(
+    llm: &LocalModelClient,
+    system_prompt: &str,
+    user_prompt: &str,
+    max_tokens: u32,
+) -> Result<String> {
+    let opts = CallOptions {
+        priority: Priority::Background,
+        temperature: Some(0.2),
+        max_tokens: Some(max_tokens),
+        ..Default::default()
+    };
+    llm.call(system_prompt, user_prompt, Some(opts)).await
 }
 
 /// Persist an evolved skill to the database.
@@ -136,118 +201,227 @@ pub async fn deactivate_skill(db: &Database, skill_id: i64) -> Result<()> {
     .await
 }
 
-/// Stub: fix a failing skill.
-#[tracing::instrument(skip(db, _agent), fields(skill_id, user_id = _user_id))]
+/// Fix a failing skill: read current content + recent failures, ask the local
+/// model to produce a new name, description, and body, and persist as a new
+/// version whose parent is the failing skill.
+#[tracing::instrument(skip(db, llm, agent), fields(skill_id, user_id))]
 pub async fn fix_skill(
     db: &Database,
+    llm: Option<&LocalModelClient>,
     skill_id: i64,
-    _agent: &str,
-    _user_id: i64,
+    agent: &str,
+    user_id: i64,
 ) -> Result<EvolutionResult> {
-    let name = db
-        .read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT name FROM skill_records WHERE id = ?1")
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            let mut rows = stmt
-                .query(params![skill_id])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            rows.next()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-                .map(|r| {
-                    r.get::<_, String>(0)
-                        .map_err(|e| EngError::DatabaseMessage(e.to_string()))
-                })
-                .transpose()?
-                .ok_or_else(|| EngError::NotFound(format!("skill {} not found", skill_id)))
-        })
-        .await?;
+    let llm = require_llm(llm)?;
+
+    let current = skills::get_skill(db, skill_id, user_id).await?;
+    let failures = skills::get_executions(db, skill_id, user_id, 5)
+        .await
+        .unwrap_or_default();
+
+    let mut failure_notes = String::new();
+    for rec in failures.iter().filter(|r| !r.success) {
+        let et = rec.error_type.as_deref().unwrap_or("");
+        let em = rec.error_message.as_deref().unwrap_or("");
+        failure_notes.push_str(&format!("- [{}] {}\n", et, em));
+    }
+    if failure_notes.is_empty() {
+        failure_notes
+            .push_str("(no recorded failures; treat the current body as the sole signal)\n");
+    }
+
+    let context = format!(
+        "Failing skill name: {}\nCurrent description: {}\nCurrent body:\n---\n{}\n---\nRecent failures:\n{}",
+        current.name,
+        current.description.clone().unwrap_or_default(),
+        current.code,
+        failure_notes,
+    );
+
+    let name_user = format!(
+        "Propose a new kebab-case slug for a fixed version of this skill.\n\n{}{}",
+        context, NAME_SHOT_SUFFIX
+    );
+    let desc_user = format!(
+        "Write a new one-sentence description for the fixed version.\n\n{}{}",
+        context, DESC_SHOT_SUFFIX
+    );
+    let code_user = format!(
+        "Rewrite the skill body so that the listed failures no longer occur. Preserve the intent, tighten the steps, and add guardrails for the observed errors.\n\n{}{}",
+        context, CODE_SHOT_SUFFIX
+    );
+
+    let name_raw = llm_shot(llm, FIX_SYSTEM_PROMPT, &name_user, 64).await?;
+    let desc_raw = llm_shot(llm, FIX_SYSTEM_PROMPT, &desc_user, 256).await?;
+    let code_raw = llm_shot(llm, FIX_SYSTEM_PROMPT, &code_user, 2000).await?;
+
+    let name = sanitize_slug(&name_raw);
+    let description = sanitize_description(&desc_raw);
+    let code = strip_code_fences(&code_raw);
+
+    let tags = vec!["fixed".to_string()];
+    let new_id = persist_evolved_skill(
+        db,
+        &name,
+        &description,
+        &code,
+        agent,
+        &[skill_id],
+        &tags,
+        user_id,
+    )
+    .await?;
 
     Ok(EvolutionResult {
-        success: false,
-        skill_id: Some(skill_id),
+        success: true,
+        skill_id: Some(new_id),
         evolution_type: "fix".into(),
-        message: format!("LLM not yet wired for fix of {} (id={})", name, skill_id),
+        message: format!("fixed {} -> new skill {} (id={})", current.name, name, new_id),
     })
 }
 
-/// Stub: derive a new skill from parents.
-#[tracing::instrument(skip(db, _agent), fields(parent_ids = ?parent_ids, direction = %direction, user_id = _user_id))]
+/// Derive a new skill from one or more parents plus a direction hint.
+#[tracing::instrument(skip(db, llm, agent), fields(parent_ids = ?parent_ids, direction = %direction, user_id))]
 pub async fn derive_skill(
     db: &Database,
+    llm: Option<&LocalModelClient>,
     parent_ids: &[i64],
     direction: &str,
-    _agent: &str,
-    _user_id: i64,
+    agent: &str,
+    user_id: i64,
 ) -> Result<EvolutionResult> {
     if parent_ids.is_empty() {
         return Err(EngError::InvalidInput(
             "derive requires at least one parent".into(),
         ));
     }
-    let parent_ids_owned = parent_ids.to_vec();
-    for pid in &parent_ids_owned {
-        let pid = *pid;
-        db.read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT id FROM skill_records WHERE id = ?1")
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            let mut rows = stmt
-                .query(params![pid])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            if rows
-                .next()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-                .is_none()
-            {
-                return Err(EngError::NotFound(format!(
-                    "parent skill {} not found",
-                    pid
-                )));
-            }
-            Ok(())
-        })
-        .await?;
+    let llm = require_llm(llm)?;
+
+    let mut parents = Vec::with_capacity(parent_ids.len());
+    for pid in parent_ids {
+        parents.push(skills::get_skill(db, *pid, user_id).await?);
     }
+
+    let mut parent_ctx = String::new();
+    for p in &parents {
+        parent_ctx.push_str(&format!(
+            "<parent id=\"{}\" name=\"{}\">\n{}\n</parent>\n\n",
+            p.id, p.name, p.code
+        ));
+    }
+
+    let context = format!(
+        "Direction:\n{}\n\nParents:\n{}",
+        direction.trim(),
+        parent_ctx
+    );
+
+    let name_user = format!(
+        "Propose a kebab-case slug for a skill derived from the parents, in the requested direction.\n\n{}{}",
+        context, NAME_SHOT_SUFFIX
+    );
+    let desc_user = format!(
+        "Write a one-sentence description for this derived skill.\n\n{}{}",
+        context, DESC_SHOT_SUFFIX
+    );
+    let code_user = format!(
+        "Write the body of the derived skill. Combine the best of the parent skills, apply the direction, and remove redundancy.\n\n{}{}",
+        context, CODE_SHOT_SUFFIX
+    );
+
+    let name_raw = llm_shot(llm, DERIVE_SYSTEM_PROMPT, &name_user, 64).await?;
+    let desc_raw = llm_shot(llm, DERIVE_SYSTEM_PROMPT, &desc_user, 256).await?;
+    let code_raw = llm_shot(llm, DERIVE_SYSTEM_PROMPT, &code_user, 2000).await?;
+
+    let name = sanitize_slug(&name_raw);
+    let description = sanitize_description(&desc_raw);
+    let code = strip_code_fences(&code_raw);
+
+    let tags = vec!["derived".to_string()];
+    let new_id = persist_evolved_skill(
+        db,
+        &name,
+        &description,
+        &code,
+        agent,
+        parent_ids,
+        &tags,
+        user_id,
+    )
+    .await?;
+
     Ok(EvolutionResult {
-        success: false,
-        skill_id: None,
+        success: true,
+        skill_id: Some(new_id),
         evolution_type: "derived".into(),
-        message: format!(
-            "LLM not yet wired. Derive {:?}, direction: {}",
-            parent_ids_owned, direction
-        ),
+        message: format!("derived {} from {:?} (id={})", name, parent_ids, new_id),
     })
 }
 
-/// Stub: capture a new skill from a description.
-#[tracing::instrument(skip(_db, description, _agent), fields(description_len = description.len(), user_id = _user_id))]
+/// Capture a brand-new skill from a freeform description.
+#[tracing::instrument(skip(db, llm, description, agent), fields(description_len = description.len(), user_id))]
 pub async fn capture_skill(
-    _db: &Database,
+    db: &Database,
+    llm: Option<&LocalModelClient>,
     description: &str,
-    _agent: &str,
-    _user_id: i64,
+    agent: &str,
+    user_id: i64,
 ) -> Result<EvolutionResult> {
-    if description.trim().is_empty() {
+    let trimmed = description.trim();
+    if trimmed.is_empty() {
         return Err(EngError::InvalidInput(
             "capture requires a non-empty description".into(),
         ));
     }
+    let llm = require_llm(llm)?;
+
+    let name_user = format!(
+        "A user wants a reusable skill captured from this workflow description:\n---\n{}\n---\nPropose a kebab-case slug.{}",
+        trimmed, NAME_SHOT_SUFFIX
+    );
+    let desc_user = format!(
+        "A user wants a reusable skill captured from this workflow description:\n---\n{}\n---\nWrite a one-sentence description of the skill.{}",
+        trimmed, DESC_SHOT_SUFFIX
+    );
+    let code_user = format!(
+        "A user wants a reusable skill captured from this workflow description:\n---\n{}\n---\nWrite the body of the skill: concrete steps, examples, and guardrails.{}",
+        trimmed, CODE_SHOT_SUFFIX
+    );
+
+    let name_raw = llm_shot(llm, CAPTURE_SYSTEM_PROMPT, &name_user, 64).await?;
+    let desc_raw = llm_shot(llm, CAPTURE_SYSTEM_PROMPT, &desc_user, 256).await?;
+    let code_raw = llm_shot(llm, CAPTURE_SYSTEM_PROMPT, &code_user, 2000).await?;
+
+    let name = sanitize_slug(&name_raw);
+    let description_final = sanitize_description(&desc_raw);
+    let code = strip_code_fences(&code_raw);
+
+    let tags = vec!["captured".to_string()];
+    let new_id = persist_evolved_skill(
+        db,
+        &name,
+        &description_final,
+        &code,
+        agent,
+        &[],
+        &tags,
+        user_id,
+    )
+    .await?;
+
     Ok(EvolutionResult {
-        success: false,
-        skill_id: None,
+        success: true,
+        skill_id: Some(new_id),
         evolution_type: "captured".into(),
-        message: format!(
-            "LLM not yet wired. Capture from: {}",
-            &description[..description.len().min(100)]
-        ),
+        message: format!("captured new skill {} (id={})", name, new_id),
     })
 }
 
 /// Main evolution dispatcher.
-#[tracing::instrument(skip(db, req), fields(evolution_type = %req.evolution_type, agent = %agent, user_id))]
+#[tracing::instrument(skip(db, llm, req), fields(evolution_type = %req.evolution_type, agent = %agent, user_id))]
 pub async fn evolve(
     db: &Database,
+    llm: Option<&LocalModelClient>,
     req: &EvolutionRequest,
     agent: &str,
     user_id: i64,
@@ -258,10 +432,12 @@ pub async fn evolve(
                 .target_skill_ids
                 .first()
                 .ok_or_else(|| EngError::InvalidInput("fix requires a target skill id".into()))?;
-            fix_skill(db, *sid, agent, user_id).await
+            fix_skill(db, llm, *sid, agent, user_id).await
         }
-        "derived" => derive_skill(db, &req.target_skill_ids, &req.direction, agent, user_id).await,
-        "captured" => capture_skill(db, &req.direction, agent, user_id).await,
+        "derived" => {
+            derive_skill(db, llm, &req.target_skill_ids, &req.direction, agent, user_id).await
+        }
+        "captured" => capture_skill(db, llm, &req.direction, agent, user_id).await,
         other => Err(EngError::InvalidInput(format!(
             "unknown evolution type: {}",
             other
@@ -278,14 +454,29 @@ mod tests {
     }
     #[test]
     fn test_strip_with_lang() {
-        let input = "```md
-content
-```";
+        let input = "```md\ncontent\n```";
         assert_eq!(strip_code_fences(input), "content");
     }
     #[test]
     fn test_gen_id() {
         let id = generate_skill_id("My Cool Skill");
         assert!(id.starts_with("my-cool-skill-"));
+    }
+    #[test]
+    fn test_sanitize_slug_strips_punct() {
+        assert_eq!(sanitize_slug("  Fix The Bug!!!  "), "fix-the-bug");
+    }
+    #[test]
+    fn test_sanitize_slug_collapses_dashes() {
+        assert_eq!(sanitize_slug("foo---bar"), "foo-bar");
+    }
+    #[test]
+    fn test_sanitize_slug_empty_fallback() {
+        assert_eq!(sanitize_slug("!!!"), "unnamed-skill");
+    }
+    #[test]
+    fn test_sanitize_description_single_line() {
+        let d = sanitize_description("\"This is a skill.\"\nExtra line.");
+        assert_eq!(d, "This is a skill.");
     }
 }
