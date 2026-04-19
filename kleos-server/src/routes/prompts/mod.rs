@@ -115,7 +115,7 @@ async fn post_prompt_generate(
         if let Ok(results) = hybrid_search(&state.db, personality_req).await {
             if !results.is_empty() {
                 let mut buf = String::from("## Personality\n");
-                for r in &results {
+                for r in results.iter() {
                     buf.push_str("- ");
                     buf.push_str(r.memory.content.trim());
                     buf.push('\n');
@@ -152,7 +152,7 @@ async fn post_prompt_generate(
         let results = hybrid_search(&state.db, memory_req).await?;
         if !results.is_empty() {
             let mut buf = String::from("## Relevant Memories\n");
-            for r in &results {
+            for r in results.iter() {
                 buf.push_str("- ");
                 buf.push_str(r.memory.content.trim());
                 buf.push('\n');
