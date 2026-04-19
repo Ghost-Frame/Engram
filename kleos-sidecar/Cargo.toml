@@ -15,7 +15,7 @@ name = "kleos-sidecar"
 path = "src/main.rs"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib" }
+kleos-lib = { path = "../kleos-lib", version = "0.3.2" }
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }

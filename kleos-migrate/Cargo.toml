@@ -15,7 +15,7 @@ name = "kleos-migrate"
 path = "src/main.rs"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib" }
+kleos-lib = { path = "../kleos-lib", version = "0.3.2" }
 libsql = { workspace = true }
 rusqlite = { workspace = true }
 lancedb = { workspace = true }

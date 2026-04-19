@@ -19,8 +19,8 @@ name = "kleos-credd"
 path = "src/main.rs"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", features = ["sqlcipher"] }
-kleos-cred = { path = "../kleos-cred" }
+kleos-lib = { path = "../kleos-lib", version = "0.3.2", features = ["sqlcipher"] }
+kleos-cred = { path = "../kleos-cred", version = "0.3.2" }
 
 # Web framework
 axum.workspace = true
