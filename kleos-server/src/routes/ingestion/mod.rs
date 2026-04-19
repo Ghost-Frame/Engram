@@ -1044,8 +1044,11 @@ async fn ingest_text_stream(
         .into_response());
     }
 
-    let (progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel::<IngestProgressEvent>();
-    let (sse_tx, sse_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    // R7-003: bounded channels prevent unbounded memory growth on stalled clients.
+    const CHANNEL_CAP: usize = 256;
+    let (progress_tx, mut progress_rx) =
+        tokio::sync::mpsc::channel::<IngestProgressEvent>(CHANNEL_CAP);
+    let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<Event>(CHANNEL_CAP);
 
     // Spawn ingestion task.
     let db = state.db.clone();
@@ -1053,12 +1056,14 @@ async fn ingest_text_stream(
     tokio::spawn(async move {
         let res = ingestion::ingest_streaming(&db, &raw_text, options, None, progress_tx).await;
         if let Err(e) = res {
-            let _ = sse_tx_clone.send(
-                Event::default()
-                    .event("error")
-                    .json_data(json!({"error": e.to_string()}))
-                    .unwrap_or_else(|_| Event::default().data("{}")),
-            );
+            let _ = sse_tx_clone
+                .send(
+                    Event::default()
+                        .event("error")
+                        .json_data(json!({"error": e.to_string()}))
+                        .unwrap_or_else(|_| Event::default().data("{}")),
+                )
+                .await;
         }
         // On success the pipeline already emitted IngestProgressEvent::Done,
         // which the relay forwards as a `progress` event with type=done.
@@ -1066,13 +1071,12 @@ async fn ingest_text_stream(
 
     // Spawn relay: progress -> SSE.
     tokio::spawn(async move {
-        let mut rx = progress_rx;
-        while let Some(evt) = rx.recv().await {
+        while let Some(evt) = progress_rx.recv().await {
             let sse_event = Event::default()
                 .event("progress")
                 .json_data(&evt)
                 .unwrap_or_else(|_| Event::default().data("{}"));
-            if sse_tx.send(sse_event).is_err() {
+            if sse_tx.send(sse_event).await.is_err() {
                 break;
             }
         }

@@ -42,3 +42,16 @@ pub fn require_admin(auth: &AuthContext) -> Result<()> {
         Err(EngError::Auth("admin scope required".into()))
     }
 }
+
+/// Require a write-capable scope (Write or Admin).
+///
+/// SECURITY (R7-001): MCP tools that mutate state must call this before
+/// performing writes. `has_scope(&Write)` treats Admin as a superset of Write,
+/// so admin-scoped keys pass.
+pub fn require_write(auth: &AuthContext) -> Result<()> {
+    if auth.has_scope(&Scope::Write) {
+        Ok(())
+    } else {
+        Err(EngError::Auth("write scope required".into()))
+    }
+}

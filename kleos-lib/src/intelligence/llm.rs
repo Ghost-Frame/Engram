@@ -8,7 +8,8 @@ use tracing::debug;
 /// Shared HTTP client for LLM calls -- avoids per-request TLS/connection-pool
 /// setup. 120s timeout matches the old per-call builder.
 static LLM_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
-    reqwest::Client::builder()
+    // R7-002: hardened builder (connect_timeout + redirect cap) + per-client timeout.
+    crate::net::safe_client_builder()
         .timeout(std::time::Duration::from_secs(120))
         .pool_max_idle_per_host(4)
         .build()

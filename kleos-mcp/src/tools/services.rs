@@ -1,4 +1,4 @@
-use crate::auth::resolve_auth;
+use crate::auth::{require_write, resolve_auth};
 use crate::tools::{with_auth_props, ToolDef};
 use crate::{invalid_input, App};
 use kleos_lib::services::{axon, broca, chiasm, soma, thymus};
@@ -35,6 +35,7 @@ pub fn register(out: &mut Vec<ToolDef>) {
 #[tracing::instrument(skip(app, args), fields(tool = "services.axon_publish"))]
 pub async fn axon_publish(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     Ok(json!(
         axon::publish_event(
             &app.db,
@@ -85,6 +86,7 @@ pub async fn axon_consume(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "services.broca_log"))]
 pub async fn broca_log(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     Ok(json!(
         broca::log_action(
             &app.db,
@@ -119,6 +121,7 @@ pub async fn broca_log(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "services.chiasm_create_task"))]
 pub async fn chiasm_create_task(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     Ok(json!(
         chiasm::create_task(
             &app.db,
@@ -156,6 +159,7 @@ pub async fn chiasm_create_task(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "services.chiasm_update_task"))]
 pub async fn chiasm_update_task(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let id = args
         .get("id")
         .and_then(Value::as_i64)
@@ -191,6 +195,7 @@ pub async fn chiasm_update_task(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "services.soma_register"))]
 pub async fn soma_register(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     Ok(json!(
         soma::register_agent(
             &app.db,
@@ -221,6 +226,7 @@ pub async fn soma_register(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "services.soma_heartbeat"))]
 pub async fn soma_heartbeat(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     let id = args
         .get("id")
         .and_then(Value::as_i64)
@@ -232,6 +238,7 @@ pub async fn soma_heartbeat(app: &App, args: Value) -> Result<Value> {
 #[tracing::instrument(skip(app, args), fields(tool = "services.thymus_review"))]
 pub async fn thymus_review(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
+    require_write(&auth)?;
     Ok(json!(
         thymus::evaluate(
             &app.db,

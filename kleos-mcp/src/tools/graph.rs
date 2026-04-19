@@ -1,4 +1,4 @@
-use crate::auth::resolve_auth;
+use crate::auth::{require_write, resolve_auth};
 use crate::tools::{with_auth_props, ToolDef};
 use crate::{invalid_input, App};
 use kleos_lib::graph::{communities, cooccurrence, pagerank, search};
@@ -48,6 +48,7 @@ pub async fn pagerank_top(app: &App, args: Value) -> Result<Value> {
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
+        require_write(&auth)?;
         let _ = pagerank::update_pagerank_scores(&app.db, auth.user_id).await?;
     }
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
@@ -60,6 +61,7 @@ pub async fn pagerank_top(app: &App, args: Value) -> Result<Value> {
 pub async fn louvain_communities(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     if args.get("run").and_then(Value::as_bool).unwrap_or(true) {
+        require_write(&auth)?;
         let result = communities::detect_communities(
             &app.db,
             auth.user_id,
@@ -89,6 +91,7 @@ pub async fn cooccurrence(app: &App, args: Value) -> Result<Value> {
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
+        require_write(&auth)?;
         return Ok(
             json!({"pairs": cooccurrence::rebuild_cooccurrences(&app.db, auth.user_id).await?}),
         );

@@ -97,14 +97,16 @@ async fn build_context_stream(
         .into_response());
     }
 
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ContextProgressEvent>();
+    // R7-003: bounded channels prevent unbounded memory growth on stalled clients.
+    const CHANNEL_CAP: usize = 256;
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ContextProgressEvent>(CHANNEL_CAP);
     let embedder = state.embedder.read().await.clone();
     let db = state.db.clone();
     let llm = state.llm.clone();
     let user_id = auth.user_id;
 
     // Output channel for SSE events (progress + final result).
-    let (sse_tx, sse_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<Event>(CHANNEL_CAP);
 
     // Spawn assembly task.
     let sse_tx_clone = sse_tx.clone();
@@ -112,33 +114,36 @@ async fn build_context_stream(
         let result = assemble_context_streaming(&db, body, user_id, embedder, llm, tx).await;
         match result {
             Ok(ctx) => {
-                let _ = sse_tx_clone.send(
-                    Event::default()
-                        .event("result")
-                        .json_data(json!(ctx))
-                        .unwrap_or_else(|_| Event::default().data("{}")),
-                );
+                let _ = sse_tx_clone
+                    .send(
+                        Event::default()
+                            .event("result")
+                            .json_data(json!(ctx))
+                            .unwrap_or_else(|_| Event::default().data("{}")),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = sse_tx_clone.send(
-                    Event::default()
-                        .event("error")
-                        .json_data(json!({"error": e.to_string()}))
-                        .unwrap_or_else(|_| Event::default().data("{}")),
-                );
+                let _ = sse_tx_clone
+                    .send(
+                        Event::default()
+                            .event("error")
+                            .json_data(json!({"error": e.to_string()}))
+                            .unwrap_or_else(|_| Event::default().data("{}")),
+                    )
+                    .await;
             }
         }
     });
 
     // Spawn relay: progress channel -> SSE events channel.
     tokio::spawn(async move {
-        let mut progress_rx = rx;
-        while let Some(evt) = progress_rx.recv().await {
+        while let Some(evt) = rx.recv().await {
             let sse_event = Event::default()
                 .event("progress")
                 .json_data(&evt)
                 .unwrap_or_else(|_| Event::default().data("{}"));
-            if sse_tx.send(sse_event).is_err() {
+            if sse_tx.send(sse_event).await.is_err() {
                 break;
             }
         }

@@ -60,10 +60,12 @@ async fn record_hash(db: &Database, hash: &str, user_id: i64, job_id: &str) {
         .await;
 }
 
-/// Emit a progress event if `tx` is Some; silently ignore closed channels.
+/// Emit a progress event if `tx` is Some; silently drop on full or closed.
+/// R7-003: bounded channels avoid unbounded memory growth from stalled SSE
+/// clients; progress loss is acceptable.
 fn emit(tx: &Option<IngestProgressSender>, event: IngestProgressEvent) {
     if let Some(ref tx) = tx {
-        let _ = tx.send(event);
+        let _ = tx.try_send(event);
     }
 }
 
