@@ -31,7 +31,8 @@ use crate::{EngError, Result};
 use rusqlite::params;
 
 pub use types::{
-    CreateSkillRequest, ExecutionRecord, Skill, SkillJudgment, ToolQuality, UpdateSkillRequest,
+    CreateSkillRequest, EvolutionFeedRow, ExecutionRecord, Skill, SkillJudgment, ToolQuality,
+    UpdateSkillRequest,
 };
 
 // -- Constants --
@@ -682,6 +683,74 @@ pub async fn get_tool_deps(db: &Database, skill_id: i64, user_id: i64) -> Result
 /// Check if all required tools for a skill are available.
 pub fn check_tool_safety(required_tools: &[String], available_tools: &[String]) -> bool {
     required_tools.iter().all(|t| available_tools.contains(t))
+}
+
+/// List recently-evolved skills for a user. An evolution is any
+/// `skill_records` row that carries a `skill_tags` entry of
+/// `fixed` | `derived` | `captured`. Parent ids come from
+/// `skill_lineage_parents` (empty for captured skills).
+#[tracing::instrument(skip(db), fields(user_id, since_hours, limit))]
+pub async fn list_recent_evolutions(
+    db: &Database,
+    user_id: i64,
+    since_hours: u32,
+    limit: usize,
+) -> Result<Vec<EvolutionFeedRow>> {
+    let since_clause = format!("-{} hours", since_hours as i64);
+    db.read(move |conn| {
+        let sql = "SELECT sr.id, sr.name, sr.version, st.tag, sr.agent, sr.created_at \
+                   FROM skill_records sr \
+                   INNER JOIN skill_tags st ON st.skill_id = sr.id \
+                   WHERE sr.user_id = ?1 \
+                     AND st.tag IN ('fixed', 'derived', 'captured') \
+                     AND sr.created_at > datetime('now', ?2) \
+                   ORDER BY sr.created_at DESC \
+                   LIMIT ?3";
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let raw: Vec<(i64, String, i32, String, String, String)> = stmt
+            .query_map(params![user_id, since_clause, limit as i64], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i32>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut parents_stmt = conn
+            .prepare(
+                "SELECT parent_id FROM skill_lineage_parents \
+                 WHERE skill_id = ?1 ORDER BY parent_id",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+        let mut out = Vec::with_capacity(raw.len());
+        for (skill_id, name, version, tag, agent, created_at) in raw {
+            let parent_ids: Vec<i64> = parents_stmt
+                .query_map(params![skill_id], |row| row.get::<_, i64>(0))
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .filter_map(|r| r.ok())
+                .collect();
+            out.push(EvolutionFeedRow {
+                skill_id,
+                name,
+                version,
+                origin: tag,
+                parent_ids,
+                agent,
+                created_at,
+            });
+        }
+        Ok(out)
+    })
+    .await
 }
 
 // -- Skill lineage --

@@ -16,9 +16,9 @@ use kleos_lib::validation::MAX_PAGINATION_OFFSET;
 
 mod types;
 use types::{
-    CaptureBody, CloudSearchBody, CloudUploadBody, DeriveBody, ExecuteSkillsBody,
-    GetExecutionsParams, JudgeBody, ListSkillsParams, RecordExecutionBody, RecordToolQualityBody,
-    SearchSkillsBody, StatsParams, SyncSkillsBody, UploadSkillBody,
+    CaptureBody, CloudSearchBody, CloudUploadBody, DeriveBody, EvolutionRecentParams,
+    ExecuteSkillsBody, GetExecutionsParams, JudgeBody, ListSkillsParams, RecordExecutionBody,
+    RecordToolQualityBody, SearchSkillsBody, StatsParams, SyncSkillsBody, UploadSkillBody,
 };
 
 /// Clamp a caller-supplied `limit` into [1, max] with a default when absent.
@@ -116,6 +116,7 @@ pub fn router() -> Router<AppState> {
         .route("/skills/{id}/fix", post(fix_handler))
         .route("/skills/derive", post(derive_handler))
         .route("/skills/capture", post(capture_handler))
+        .route("/skills/evolution/recent", get(evolution_recent_handler))
         // Analyzer
         .route("/skills/usage-stats", get(usage_stats_handler))
         // Cloud
@@ -438,6 +439,17 @@ async fn capture_handler(
     let result =
         evolver::capture_skill(&state.db, llm, &body.description, agent, auth.user_id).await?;
     Ok(Json(json!(result)))
+}
+
+async fn evolution_recent_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<EvolutionRecentParams>,
+) -> Result<Json<Value>, AppError> {
+    let hours = params.hours.unwrap_or(24).clamp(1, 24 * 30);
+    let limit = clamp_limit(params.limit, 50, 500)?;
+    let rows = skills::list_recent_evolutions(&state.db, auth.user_id, hours, limit).await?;
+    Ok(Json(json!({ "recent": rows, "count": rows.len() })))
 }
 
 // ---------------------------------------------------------------------------

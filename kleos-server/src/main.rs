@@ -198,6 +198,7 @@ async fn main() {
             Arc::clone(&state.db),
             Arc::clone(&state.config),
             state.brain.clone(),
+            state.llm.clone(),
             Arc::clone(&state.dreamer_stats),
             Arc::clone(&state.last_request_time),
         );

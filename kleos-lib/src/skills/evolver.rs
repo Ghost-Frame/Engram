@@ -276,7 +276,10 @@ pub async fn fix_skill(
         success: true,
         skill_id: Some(new_id),
         evolution_type: "fix".into(),
-        message: format!("fixed {} -> new skill {} (id={})", current.name, name, new_id),
+        message: format!(
+            "fixed {} -> new skill {} (id={})",
+            current.name, name, new_id
+        ),
     })
 }
 
@@ -297,6 +300,25 @@ pub async fn derive_skill(
     }
     let llm = require_llm(llm)?;
 
+    // R8-S-002: cap user-controlled direction so an adversary cannot feed a
+    // multi-MB prompt-injection payload into the local LLM. 2000 chars is
+    // generous for a one-line "make it do X instead" direction.
+    const MAX_DIRECTION: usize = 2000;
+    let direction_trimmed = direction.trim();
+    if direction_trimmed.is_empty() {
+        return Err(EngError::InvalidInput(
+            "derive requires a non-empty direction".into(),
+        ));
+    }
+    let direction_capped = if direction_trimmed.chars().count() > MAX_DIRECTION {
+        direction_trimmed
+            .chars()
+            .take(MAX_DIRECTION)
+            .collect::<String>()
+    } else {
+        direction_trimmed.to_string()
+    };
+
     let mut parents = Vec::with_capacity(parent_ids.len());
     for pid in parent_ids {
         parents.push(skills::get_skill(db, *pid, user_id).await?);
@@ -312,8 +334,7 @@ pub async fn derive_skill(
 
     let context = format!(
         "Direction:\n{}\n\nParents:\n{}",
-        direction.trim(),
-        parent_ctx
+        direction_capped, parent_ctx
     );
 
     let name_user = format!(
@@ -367,12 +388,20 @@ pub async fn capture_skill(
     agent: &str,
     user_id: i64,
 ) -> Result<EvolutionResult> {
-    let trimmed = description.trim();
-    if trimmed.is_empty() {
+    let trimmed_owned = description.trim();
+    if trimmed_owned.is_empty() {
         return Err(EngError::InvalidInput(
             "capture requires a non-empty description".into(),
         ));
     }
+    // R8-S-002: cap to keep LLM prompt size bounded regardless of caller.
+    const MAX_DESCRIPTION: usize = 2000;
+    let capped: String = if trimmed_owned.chars().count() > MAX_DESCRIPTION {
+        trimmed_owned.chars().take(MAX_DESCRIPTION).collect()
+    } else {
+        trimmed_owned.to_string()
+    };
+    let trimmed = capped.as_str();
     let llm = require_llm(llm)?;
 
     let name_user = format!(
@@ -435,7 +464,15 @@ pub async fn evolve(
             fix_skill(db, llm, *sid, agent, user_id).await
         }
         "derived" => {
-            derive_skill(db, llm, &req.target_skill_ids, &req.direction, agent, user_id).await
+            derive_skill(
+                db,
+                llm,
+                &req.target_skill_ids,
+                &req.direction,
+                agent,
+                user_id,
+            )
+            .await
         }
         "captured" => capture_skill(db, llm, &req.direction, agent, user_id).await,
         other => Err(EngError::InvalidInput(format!(

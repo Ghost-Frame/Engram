@@ -190,6 +190,222 @@ pub async fn get_usage_stats(db: &Database, user_id: i64) -> Result<serde_json::
     }).await
 }
 
+/// Skills whose success rate has fallen below `max_success_rate`, eligible
+/// for auto-fix. Excludes any parent whose most recent fixed child (a row in
+/// `skill_records` with `parent_skill_id = sr.id`) was created within
+/// `cooldown_secs`. Uses `skill_records.created_at` as the cooldown anchor
+/// because `skill_tags` has no timestamp column.
+#[tracing::instrument(
+    skip(db),
+    fields(user_id, min_executions, max_success_rate, cooldown_secs, limit)
+)]
+pub async fn get_failing_skill_candidates(
+    db: &Database,
+    user_id: i64,
+    min_executions: u32,
+    max_success_rate: f32,
+    cooldown_secs: u64,
+    limit: usize,
+) -> Result<Vec<i64>> {
+    let cooldown_clause = format!("-{} seconds", cooldown_secs as i64);
+    db.read(move |conn| {
+        let sql = "SELECT sr.id FROM skill_records sr \
+                   WHERE sr.user_id = ?1 \
+                     AND sr.is_active = 1 \
+                     AND sr.is_deprecated = 0 \
+                     AND sr.execution_count >= ?2 \
+                     AND CAST(sr.success_count AS REAL) / sr.execution_count < ?3 \
+                     AND NOT EXISTS ( \
+                         SELECT 1 FROM skill_records child \
+                         WHERE child.parent_skill_id = sr.id \
+                           AND child.user_id = sr.user_id \
+                           AND child.created_at > datetime('now', ?4) \
+                     ) \
+                   ORDER BY (CAST(sr.success_count AS REAL) / sr.execution_count) ASC, \
+                            sr.trust_score ASC \
+                   LIMIT ?5";
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let ids: Vec<i64> = stmt
+            .query_map(
+                params![
+                    user_id,
+                    min_executions as i64,
+                    max_success_rate as f64,
+                    cooldown_clause,
+                    limit as i64,
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    })
+    .await
+}
+
+/// Memories explicitly tagged as skill candidates that have not yet been
+/// captured. `capture_tag` is matched against the JSON-encoded
+/// `memories.tags` column via LIKE; duplicates by content are collapsed.
+/// Memories whose content is already the name or description of an existing
+/// active skill (case-insensitive substring) are excluded so we do not spam
+/// the LLM re-capturing the same idea.
+#[tracing::instrument(skip(db, capture_tag), fields(user_id, since_secs, limit))]
+pub async fn get_capture_candidates(
+    db: &Database,
+    user_id: i64,
+    capture_tag: &str,
+    since_secs: u64,
+    limit: usize,
+) -> Result<Vec<String>> {
+    let tag_needle = format!("%\"{}\"%", capture_tag.replace('"', ""));
+    let since_clause = format!("-{} seconds", since_secs as i64);
+    db.read(move |conn| {
+        let sql = "SELECT DISTINCT m.content FROM memories m \
+                   WHERE m.user_id = ?1 \
+                     AND m.is_forgotten = 0 \
+                     AND m.is_archived = 0 \
+                     AND m.is_latest = 1 \
+                     AND m.tags IS NOT NULL \
+                     AND m.tags LIKE ?2 \
+                     AND m.created_at > datetime('now', ?3) \
+                     AND NOT EXISTS ( \
+                         SELECT 1 FROM skill_records sr \
+                         WHERE sr.user_id = m.user_id \
+                           AND sr.is_active = 1 \
+                           AND ( \
+                               LOWER(m.content) LIKE '%' || LOWER(sr.name) || '%' \
+                               OR LOWER(m.content) LIKE '%' || LOWER(COALESCE(sr.description, '')) || '%' \
+                           ) \
+                     ) \
+                   ORDER BY m.created_at DESC \
+                   LIMIT ?4";
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let rows: Vec<String> = stmt
+            .query_map(
+                params![user_id, tag_needle, since_clause, limit as i64],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    })
+    .await
+}
+
+/// Pairs of active skills whose tag sets overlap at least `similarity`
+/// (Jaccard) and that do not already share a derived child. Each pair is
+/// returned as `(vec![a_id, b_id], direction_hint)` where the direction
+/// hint is a short natural-language phrase synthesised from the pair.
+#[tracing::instrument(skip(db), fields(user_id, similarity, limit))]
+pub async fn get_derive_candidates(
+    db: &Database,
+    user_id: i64,
+    similarity: f32,
+    limit: usize,
+) -> Result<Vec<(Vec<i64>, String)>> {
+    let similarity = similarity.clamp(0.0, 1.0) as f64;
+    db.read(move |conn| {
+        // Load tag sets for every active skill the user owns. Skills with no
+        // tags are excluded; there is nothing for Jaccard to work with.
+        let mut stmt = conn
+            .prepare(
+                "SELECT sr.id, sr.name, st.tag \
+                 FROM skill_records sr \
+                 INNER JOIN skill_tags st ON st.skill_id = sr.id \
+                 WHERE sr.user_id = ?1 AND sr.is_active = 1 AND sr.is_deprecated = 0",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut tags_by_skill: std::collections::BTreeMap<
+            i64,
+            (String, std::collections::BTreeSet<String>),
+        > = std::collections::BTreeMap::new();
+        for r in rows.flatten() {
+            let entry = tags_by_skill
+                .entry(r.0)
+                .or_insert_with(|| (r.1.clone(), std::collections::BTreeSet::new()));
+            entry.1.insert(r.2);
+        }
+
+        // Pull every (skill_id, parent_id) pair so we can reject pairs whose
+        // derived child already exists.
+        let mut parents_stmt = conn
+            .prepare(
+                "SELECT slp.skill_id, slp.parent_id FROM skill_lineage_parents slp \
+                 INNER JOIN skill_records child ON child.id = slp.skill_id \
+                 WHERE child.user_id = ?1",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let parent_rows = parents_stmt
+            .query_map(params![user_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut lineage: std::collections::HashMap<i64, std::collections::BTreeSet<i64>> =
+            std::collections::HashMap::new();
+        for r in parent_rows.flatten() {
+            lineage.entry(r.0).or_default().insert(r.1);
+        }
+
+        let ids: Vec<i64> = tags_by_skill.keys().copied().collect();
+        let mut scored: Vec<(f64, i64, i64, String, String)> = Vec::new();
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
+                let a = ids[i];
+                let b = ids[j];
+                let (name_a, tags_a) = &tags_by_skill[&a];
+                let (name_b, tags_b) = &tags_by_skill[&b];
+                let inter = tags_a.intersection(tags_b).count();
+                let union = tags_a.union(tags_b).count();
+                if union == 0 {
+                    continue;
+                }
+                let score = inter as f64 / union as f64;
+                if score < similarity {
+                    continue;
+                }
+                let already = lineage
+                    .values()
+                    .any(|parents| parents.contains(&a) && parents.contains(&b));
+                if already {
+                    continue;
+                }
+                scored.push((score, a, b, name_a.clone(), name_b.clone()));
+            }
+        }
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let out: Vec<(Vec<i64>, String)> = scored
+            .into_iter()
+            .take(limit)
+            .map(|(_, a, b, na, nb)| {
+                let direction = format!(
+                    "Combine the strengths of '{}' and '{}' into a single skill, \
+                     removing redundancy and preserving both workflows.",
+                    na, nb
+                );
+                (vec![a, b], direction)
+            })
+            .collect();
+        Ok(out)
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,5 +438,172 @@ mod tests {
         assert!(a.skill_applied);
         assert!(!a.skill_helpful);
         assert_eq!(a.tool_calls.len(), 1);
+    }
+
+    async fn memory_db() -> Database {
+        Database::connect_memory().await.expect("in-mem db")
+    }
+
+    async fn seed_skill(
+        db: &Database,
+        user_id: i64,
+        name: &str,
+        executions: i64,
+        successes: i64,
+        created_offset_secs: i64,
+    ) -> i64 {
+        let name = name.to_string();
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO skill_records \
+                    (name, agent, description, code, execution_count, success_count, \
+                     failure_count, is_active, is_deprecated, user_id, created_at) \
+                 VALUES (?1, 'test', '', '', ?2, ?3, ?4, 1, 0, ?5, \
+                         datetime('now', ?6))",
+                params![
+                    name,
+                    executions,
+                    successes,
+                    executions - successes,
+                    user_id,
+                    format!("-{} seconds", created_offset_secs),
+                ],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await
+        .expect("seed skill")
+    }
+
+    async fn seed_skill_tag(db: &Database, skill_id: i64, tag: &str) {
+        let tag = tag.to_string();
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO skill_tags (skill_id, tag) VALUES (?1, ?2)",
+                params![skill_id, tag],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .expect("seed tag");
+    }
+
+    async fn seed_lineage(db: &Database, child_id: i64, parent_id: i64) {
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO skill_lineage_parents (skill_id, parent_id) VALUES (?1, ?2)",
+                params![child_id, parent_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .expect("seed lineage");
+    }
+
+    #[tokio::test]
+    async fn failing_candidates_returns_failing_skill() {
+        let db = memory_db().await;
+        let id = seed_skill(&db, 1, "flaky", 20, 4, 7200).await;
+        let ids = get_failing_skill_candidates(&db, 1, 10, 0.5, 3600, 10)
+            .await
+            .expect("query");
+        assert_eq!(ids, vec![id]);
+    }
+
+    #[tokio::test]
+    async fn failing_candidates_ignores_underused() {
+        let db = memory_db().await;
+        seed_skill(&db, 1, "rarely-run", 3, 0, 7200).await;
+        let ids = get_failing_skill_candidates(&db, 1, 10, 0.5, 3600, 10)
+            .await
+            .expect("query");
+        assert!(ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failing_candidates_respects_cooldown() {
+        let db = memory_db().await;
+        let parent = seed_skill(&db, 1, "flaky", 20, 4, 7200).await;
+        // Recent child -> parent is in cooldown.
+        let child_id = {
+            let parent = parent;
+            db.write(move |conn| {
+                conn.execute(
+                    "INSERT INTO skill_records \
+                        (name, agent, description, code, execution_count, success_count, \
+                         failure_count, is_active, is_deprecated, user_id, \
+                         parent_skill_id, created_at) \
+                     VALUES ('flaky-v2', 'test', '', '', 0, 0, 0, 1, 0, 1, ?1, \
+                             datetime('now', '-60 seconds'))",
+                    params![parent],
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                Ok(conn.last_insert_rowid())
+            })
+            .await
+            .expect("seed child")
+        };
+        let _ = child_id;
+        let ids = get_failing_skill_candidates(&db, 1, 10, 0.5, 3600, 10)
+            .await
+            .expect("query");
+        assert!(ids.is_empty(), "cooldown should hide parent");
+    }
+
+    #[tokio::test]
+    async fn capture_candidates_dedupes() {
+        let db = memory_db().await;
+        db.write(|conn| {
+            conn.execute_batch(
+                "INSERT INTO memories (content, tags, user_id, is_latest) \
+                    VALUES ('use ripgrep over grep', '[\"skill_candidate\"]', 1, 1); \
+                 INSERT INTO memories (content, tags, user_id, is_latest) \
+                    VALUES ('use ripgrep over grep', '[\"skill_candidate\"]', 1, 1); \
+                 INSERT INTO memories (content, tags, user_id, is_latest) \
+                    VALUES ('unrelated note', '[\"other\"]', 1, 1);",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .expect("seed memories");
+        let rows = get_capture_candidates(&db, 1, "skill_candidate", 86_400, 10)
+            .await
+            .expect("query");
+        assert_eq!(rows, vec!["use ripgrep over grep".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn derive_candidates_finds_similar_pair() {
+        let db = memory_db().await;
+        let a = seed_skill(&db, 1, "shell-cheatsheet", 5, 5, 600).await;
+        let b = seed_skill(&db, 1, "shell-oneliners", 5, 5, 600).await;
+        for tag in ["shell", "bash", "cli"] {
+            seed_skill_tag(&db, a, tag).await;
+            seed_skill_tag(&db, b, tag).await;
+        }
+        let pairs = get_derive_candidates(&db, 1, 0.5, 5).await.expect("query");
+        assert_eq!(pairs.len(), 1, "should find one pair");
+        assert_eq!(pairs[0].0, vec![a, b]);
+        assert!(pairs[0].1.contains("shell-cheatsheet"));
+    }
+
+    #[tokio::test]
+    async fn derive_candidates_skip_already_derived() {
+        let db = memory_db().await;
+        let a = seed_skill(&db, 1, "alpha", 5, 5, 600).await;
+        let b = seed_skill(&db, 1, "beta", 5, 5, 600).await;
+        let child = seed_skill(&db, 1, "alpha-beta", 1, 1, 300).await;
+        for tag in ["x", "y", "z"] {
+            seed_skill_tag(&db, a, tag).await;
+            seed_skill_tag(&db, b, tag).await;
+        }
+        seed_lineage(&db, child, a).await;
+        seed_lineage(&db, child, b).await;
+        let pairs = get_derive_candidates(&db, 1, 0.5, 5).await.expect("query");
+        assert!(pairs.is_empty(), "existing derivation should suppress pair");
     }
 }

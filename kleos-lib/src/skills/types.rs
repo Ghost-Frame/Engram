@@ -474,6 +474,20 @@ pub struct EvolutionResult {
     pub message: String,
 }
 
+/// One row in the recent-evolution feed returned by
+/// `GET /skills/evolution/recent`. `origin` is one of
+/// `fixed` | `derived` | `captured`, sourced from `skill_tags`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionFeedRow {
+    pub skill_id: i64,
+    pub name: String,
+    pub version: i32,
+    pub origin: String,
+    pub parent_ids: Vec<i64>,
+    pub agent: String,
+    pub created_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

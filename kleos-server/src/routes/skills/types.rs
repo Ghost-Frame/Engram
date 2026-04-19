@@ -99,3 +99,9 @@ pub(super) struct UploadSkillBody {
     pub origin: Option<String>,
     pub tags: Option<Vec<String>>,
 }
+
+#[derive(Debug, Deserialize)]
+pub(super) struct EvolutionRecentParams {
+    pub hours: Option<u32>,
+    pub limit: Option<usize>,
+}

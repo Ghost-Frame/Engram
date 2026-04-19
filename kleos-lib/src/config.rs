@@ -125,6 +125,46 @@ fn default_dream_idle_threshold_secs() -> u64 {
     60
 }
 
+fn default_skill_evolution_enabled() -> bool {
+    true
+}
+
+fn default_skill_evolution_interval_secs() -> u64 {
+    1800
+}
+
+fn default_skill_evolution_max_fixes_per_tick() -> u32 {
+    3
+}
+
+fn default_skill_evolution_max_captures_per_tick() -> u32 {
+    2
+}
+
+fn default_skill_evolution_max_derives_per_tick() -> u32 {
+    1
+}
+
+fn default_skill_evolution_failure_threshold() -> f32 {
+    0.3
+}
+
+fn default_skill_evolution_min_executions() -> u32 {
+    5
+}
+
+fn default_skill_evolution_refix_cooldown_secs() -> u64 {
+    86_400
+}
+
+fn default_skill_evolution_capture_tag() -> String {
+    "skill_candidate".to_string()
+}
+
+fn default_skill_evolution_derive_similarity() -> f32 {
+    0.7
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GateConfig {
@@ -410,6 +450,43 @@ pub struct Config {
     /// work. Set to 0 to disable idle gating. Default: 60.
     #[serde(default = "default_dream_idle_threshold_secs")]
     pub dream_idle_threshold_secs: u64,
+    /// Run the hermes-style autonomous skill evolution phase inside the
+    /// dreamer tick. Gates fix/capture/derive passes together.
+    #[serde(default = "default_skill_evolution_enabled")]
+    pub skill_evolution_enabled: bool,
+    /// Minimum seconds between skill-evolution runs. The dreamer ticks more
+    /// often (dream_interval_secs); this sub-interval gates the evolution
+    /// phase independently. Default: 1800 (30 min).
+    #[serde(default = "default_skill_evolution_interval_secs")]
+    pub skill_evolution_interval_secs: u64,
+    /// Upper bound on fix_skill calls per tick per user.
+    #[serde(default = "default_skill_evolution_max_fixes_per_tick")]
+    pub skill_evolution_max_fixes_per_tick: u32,
+    /// Upper bound on capture_skill calls per tick per user.
+    #[serde(default = "default_skill_evolution_max_captures_per_tick")]
+    pub skill_evolution_max_captures_per_tick: u32,
+    /// Upper bound on derive_skill calls per tick per user.
+    #[serde(default = "default_skill_evolution_max_derives_per_tick")]
+    pub skill_evolution_max_derives_per_tick: u32,
+    /// Skills whose success_rate falls below this are eligible for auto-fix.
+    #[serde(default = "default_skill_evolution_failure_threshold")]
+    pub skill_evolution_failure_threshold: f32,
+    /// Skills with fewer executions than this are ignored by the fix pass.
+    #[serde(default = "default_skill_evolution_min_executions")]
+    pub skill_evolution_min_executions: u32,
+    /// Cooldown (seconds) after a fix to avoid re-fixing the same parent.
+    /// Tracked via child skill_records.created_at + parent_skill_id, since
+    /// skill_tags has no timestamp column.
+    #[serde(default = "default_skill_evolution_refix_cooldown_secs")]
+    pub skill_evolution_refix_cooldown_secs: u64,
+    /// Memory `tags` entry (JSON array element) that marks a memory as a
+    /// skill candidate the dreamer should capture.
+    #[serde(default = "default_skill_evolution_capture_tag")]
+    pub skill_evolution_capture_tag: String,
+    /// Minimum tag-Jaccard similarity between two skills before they become
+    /// candidates for derivation.
+    #[serde(default = "default_skill_evolution_derive_similarity")]
+    pub skill_evolution_derive_similarity: f32,
     /// Whether to run the auto-backup background task.
     pub backup_enabled: bool,
     /// Seconds between scheduled backups. Default: 6 hours.
@@ -482,6 +559,16 @@ impl Default for Config {
             dreamer_enabled: default_dreamer_enabled(),
             dream_interval_secs: default_dream_interval_secs(),
             dream_idle_threshold_secs: default_dream_idle_threshold_secs(),
+            skill_evolution_enabled: default_skill_evolution_enabled(),
+            skill_evolution_interval_secs: default_skill_evolution_interval_secs(),
+            skill_evolution_max_fixes_per_tick: default_skill_evolution_max_fixes_per_tick(),
+            skill_evolution_max_captures_per_tick: default_skill_evolution_max_captures_per_tick(),
+            skill_evolution_max_derives_per_tick: default_skill_evolution_max_derives_per_tick(),
+            skill_evolution_failure_threshold: default_skill_evolution_failure_threshold(),
+            skill_evolution_min_executions: default_skill_evolution_min_executions(),
+            skill_evolution_refix_cooldown_secs: default_skill_evolution_refix_cooldown_secs(),
+            skill_evolution_capture_tag: default_skill_evolution_capture_tag(),
+            skill_evolution_derive_similarity: default_skill_evolution_derive_similarity(),
             backup_enabled: false,
             backup_interval_secs: 6 * 3600,
             backup_dir: "backups".to_string(),
@@ -754,6 +841,115 @@ impl Config {
                     "invalid env KLEOS_DREAM_IDLE_THRESHOLD_SECS={}, using default {}",
                     v,
                     config.dream_idle_threshold_secs
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_ENABLED")
+            .or_else(|_| std::env::var("KLEOS_SKILL_EVOLUTION_ENABLED"))
+        {
+            config.skill_evolution_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_INTERVAL_SECS")
+            .or_else(|_| std::env::var("KLEOS_SKILL_EVOLUTION_INTERVAL_SECS"))
+        {
+            match v.parse() {
+                Ok(n) => config.skill_evolution_interval_secs = n,
+                Err(_) => tracing::warn!(
+                    "invalid env KLEOS_SKILL_EVOLUTION_INTERVAL_SECS={}, using default {}",
+                    v,
+                    config.skill_evolution_interval_secs
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_MAX_FIXES_PER_TICK")
+            .or_else(|_| std::env::var("KLEOS_SKILL_EVOLUTION_MAX_FIXES_PER_TICK"))
+        {
+            match v.parse() {
+                Ok(n) => config.skill_evolution_max_fixes_per_tick = n,
+                Err(_) => tracing::warn!(
+                    "invalid env KLEOS_SKILL_EVOLUTION_MAX_FIXES_PER_TICK={}, using default {}",
+                    v,
+                    config.skill_evolution_max_fixes_per_tick
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_MAX_CAPTURES_PER_TICK")
+            .or_else(|_| std::env::var("KLEOS_SKILL_EVOLUTION_MAX_CAPTURES_PER_TICK"))
+        {
+            match v.parse() {
+                Ok(n) => config.skill_evolution_max_captures_per_tick = n,
+                Err(_) => tracing::warn!(
+                    "invalid env KLEOS_SKILL_EVOLUTION_MAX_CAPTURES_PER_TICK={}, using default {}",
+                    v,
+                    config.skill_evolution_max_captures_per_tick
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_MAX_DERIVES_PER_TICK")
+            .or_else(|_| std::env::var("KLEOS_SKILL_EVOLUTION_MAX_DERIVES_PER_TICK"))
+        {
+            match v.parse() {
+                Ok(n) => config.skill_evolution_max_derives_per_tick = n,
+                Err(_) => tracing::warn!(
+                    "invalid env KLEOS_SKILL_EVOLUTION_MAX_DERIVES_PER_TICK={}, using default {}",
+                    v,
+                    config.skill_evolution_max_derives_per_tick
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_FAILURE_THRESHOLD")
+            .or_else(|_| std::env::var("KLEOS_SKILL_EVOLUTION_FAILURE_THRESHOLD"))
+        {
+            match v.parse() {
+                Ok(n) => config.skill_evolution_failure_threshold = n,
+                Err(_) => tracing::warn!(
+                    "invalid env KLEOS_SKILL_EVOLUTION_FAILURE_THRESHOLD={}, using default {}",
+                    v,
+                    config.skill_evolution_failure_threshold
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_MIN_EXECUTIONS")
+            .or_else(|_| std::env::var("KLEOS_SKILL_EVOLUTION_MIN_EXECUTIONS"))
+        {
+            match v.parse() {
+                Ok(n) => config.skill_evolution_min_executions = n,
+                Err(_) => tracing::warn!(
+                    "invalid env KLEOS_SKILL_EVOLUTION_MIN_EXECUTIONS={}, using default {}",
+                    v,
+                    config.skill_evolution_min_executions
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_REFIX_COOLDOWN_SECS")
+            .or_else(|_| std::env::var("KLEOS_SKILL_EVOLUTION_REFIX_COOLDOWN_SECS"))
+        {
+            match v.parse() {
+                Ok(n) => config.skill_evolution_refix_cooldown_secs = n,
+                Err(_) => tracing::warn!(
+                    "invalid env KLEOS_SKILL_EVOLUTION_REFIX_COOLDOWN_SECS={}, using default {}",
+                    v,
+                    config.skill_evolution_refix_cooldown_secs
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_CAPTURE_TAG")
+            .or_else(|_| std::env::var("KLEOS_SKILL_EVOLUTION_CAPTURE_TAG"))
+        {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                config.skill_evolution_capture_tag = trimmed.to_string();
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_DERIVE_SIMILARITY")
+            .or_else(|_| std::env::var("KLEOS_SKILL_EVOLUTION_DERIVE_SIMILARITY"))
+        {
+            match v.parse() {
+                Ok(n) => config.skill_evolution_derive_similarity = n,
+                Err(_) => tracing::warn!(
+                    "invalid env KLEOS_SKILL_EVOLUTION_DERIVE_SIMILARITY={}, using default {}",
+                    v,
+                    config.skill_evolution_derive_similarity
                 ),
             }
         }

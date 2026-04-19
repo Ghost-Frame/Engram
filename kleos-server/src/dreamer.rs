@@ -10,7 +10,9 @@ use kleos_lib::db::Database;
 use kleos_lib::intelligence::growth;
 use kleos_lib::intelligence::scheduler::default_pipeline;
 use kleos_lib::intelligence::types::GrowthReflectRequest;
+use kleos_lib::llm::local::LocalModelClient;
 use kleos_lib::services::brain::BrainBackend;
+use kleos_lib::skills::{analyzer, evolver};
 use kleos_lib::EngError;
 use serde::Serialize;
 use serde_json::Value;
@@ -55,6 +57,7 @@ pub struct DreamerStats {
     pub last_pipeline_failed: usize,
     pub last_brain_result: Option<Value>,
     pub last_pipeline_report: Option<Value>,
+    pub last_skill_evolution: Option<SkillEvolutionReport>,
     pub totals: DreamerTotals,
 }
 
@@ -67,6 +70,34 @@ pub struct DreamerTotals {
     pub evolution_trainings: u64,
     pub growth_reflections: u64,
     pub growth_observations_stored: u64,
+    pub skill_fixes_attempted: u64,
+    pub skill_fixes_succeeded: u64,
+    pub skill_fixes_failed: u64,
+    pub skill_captures_attempted: u64,
+    pub skill_captures_succeeded: u64,
+    pub skill_captures_failed: u64,
+    pub skill_derives_attempted: u64,
+    pub skill_derives_succeeded: u64,
+    pub skill_derives_failed: u64,
+    pub skill_evolution_skipped_no_llm: u64,
+}
+
+/// Per-tick report for the autonomous skill-evolution phase. Serialised into
+/// `DreamerStats.last_skill_evolution` so `/intelligence/dreamer` exposes the
+/// most recent fix/capture/derive activity without needing a second call.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SkillEvolutionReport {
+    pub ran_at: String,
+    pub users_scanned: usize,
+    pub fixes_attempted: u64,
+    pub fixes_succeeded: u64,
+    pub fixes_failed: u64,
+    pub captures_attempted: u64,
+    pub captures_succeeded: u64,
+    pub captures_failed: u64,
+    pub derives_attempted: u64,
+    pub derives_succeeded: u64,
+    pub derives_failed: u64,
 }
 
 pub type DreamerStatsHandle = Arc<RwLock<DreamerStats>>;
@@ -93,6 +124,7 @@ pub fn start_dreamer_task(
     db: Arc<Database>,
     config: Arc<Config>,
     brain: Option<Arc<dyn BrainBackend>>,
+    llm: Option<Arc<LocalModelClient>>,
     stats: DreamerStatsHandle,
     last_request_time: Arc<AtomicU64>,
 ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
@@ -109,6 +141,10 @@ pub fn start_dreamer_task(
             let mut s = stats.write().await;
             s.running = true;
         }
+
+        // Sub-interval gate for the skill evolution phase. `None` on startup
+        // forces the first eligible tick to run the evolution pass.
+        let mut last_evolution_run_at: Option<Instant> = None;
 
         loop {
             tokio::select! {
@@ -132,13 +168,31 @@ pub fn start_dreamer_task(
                         s.cycles_skipped_busy += 1;
                         continue;
                     }
-                    run_cycle(&db, brain.as_ref(), &stats).await;
+                    run_cycle(
+                        &db,
+                        brain.as_ref(),
+                        llm.as_ref(),
+                        &config,
+                        &stats,
+                        &mut last_evolution_run_at,
+                    )
+                    .await;
                 }
             }
         }
     });
 
     (token, handle)
+}
+
+fn should_run_evolution(last_run: &Option<Instant>, interval_secs: u64) -> bool {
+    if interval_secs == 0 {
+        return true;
+    }
+    match last_run {
+        None => true,
+        Some(t) => t.elapsed() >= Duration::from_secs(interval_secs),
+    }
 }
 
 fn is_idle(last_request_time: &AtomicU64, threshold_secs: u64) -> bool {
@@ -157,7 +211,10 @@ fn is_idle(last_request_time: &AtomicU64, threshold_secs: u64) -> bool {
 async fn run_cycle(
     db: &Arc<Database>,
     brain: Option<&Arc<dyn BrainBackend>>,
+    llm: Option<&Arc<LocalModelClient>>,
+    config: &Arc<Config>,
     stats: &DreamerStatsHandle,
+    last_evolution_run_at: &mut Option<Instant>,
 ) {
     let cycle_start = Instant::now();
     let started_at = chrono::Utc::now().to_rfc3339();
@@ -225,6 +282,35 @@ async fn run_cycle(
         }
     }
 
+    // Post-dream hook 1b: hermes-style autonomous skill evolution. Runs on a
+    // sub-interval (skill_evolution_interval_secs) independent from the
+    // dreamer tick so we do not slam the local LLM every 5 minutes. Silent
+    // skip when the local LLM is unavailable.
+    let mut skill_evolution_report: Option<SkillEvolutionReport> = None;
+    let mut evolution_skipped_no_llm = false;
+    if config.skill_evolution_enabled
+        && should_run_evolution(last_evolution_run_at, config.skill_evolution_interval_secs)
+    {
+        match llm {
+            None => {
+                warn!("dreamer: skill evolution skipped, local LLM unavailable");
+                evolution_skipped_no_llm = true;
+                *last_evolution_run_at = Some(Instant::now());
+            }
+            Some(llm_ref) => {
+                let report = run_skill_evolution(db, llm_ref.as_ref(), config, &users).await;
+                info!(
+                    fixes = report.fixes_succeeded,
+                    captures = report.captures_succeeded,
+                    derives = report.derives_succeeded,
+                    "dreamer: skill evolution phase complete",
+                );
+                skill_evolution_report = Some(report);
+                *last_evolution_run_at = Some(Instant::now());
+            }
+        }
+    }
+
     // Post-dream hook 2: probabilistic growth reflection per user.
     let mut growth_calls = 0u64;
     let mut growth_stored = 0u64;
@@ -288,6 +374,147 @@ async fn run_cycle(
     }
     s.totals.growth_reflections += growth_calls;
     s.totals.growth_observations_stored += growth_stored;
+    if evolution_skipped_no_llm {
+        s.totals.skill_evolution_skipped_no_llm += 1;
+    }
+    if let Some(ev) = &skill_evolution_report {
+        s.totals.skill_fixes_attempted += ev.fixes_attempted;
+        s.totals.skill_fixes_succeeded += ev.fixes_succeeded;
+        s.totals.skill_fixes_failed += ev.fixes_failed;
+        s.totals.skill_captures_attempted += ev.captures_attempted;
+        s.totals.skill_captures_succeeded += ev.captures_succeeded;
+        s.totals.skill_captures_failed += ev.captures_failed;
+        s.totals.skill_derives_attempted += ev.derives_attempted;
+        s.totals.skill_derives_succeeded += ev.derives_succeeded;
+        s.totals.skill_derives_failed += ev.derives_failed;
+        s.last_skill_evolution = Some(ev.clone());
+    }
+}
+
+/// Per-tick skill evolution driver. Iterates the active-user list, runs up
+/// to three bounded passes (fix -> capture -> derive) per user, and rolls
+/// the results up into a single report. Each sub-pass catches and logs
+/// errors individually so one failing LLM call never poisons the whole
+/// tick.
+async fn run_skill_evolution(
+    db: &Database,
+    llm: &LocalModelClient,
+    config: &Config,
+    users: &[i64],
+) -> SkillEvolutionReport {
+    let mut report = SkillEvolutionReport {
+        ran_at: chrono::Utc::now().to_rfc3339(),
+        users_scanned: users.len(),
+        ..Default::default()
+    };
+
+    for &user_id in users {
+        // --- Fix pass ---
+        let fix_ids = match analyzer::get_failing_skill_candidates(
+            db,
+            user_id,
+            config.skill_evolution_min_executions,
+            config.skill_evolution_failure_threshold,
+            config.skill_evolution_refix_cooldown_secs,
+            config.skill_evolution_max_fixes_per_tick as usize,
+        )
+        .await
+        {
+            Ok(ids) => ids,
+            Err(e) => {
+                warn!(user_id, error = %e, "dreamer: get_failing_skill_candidates failed");
+                Vec::new()
+            }
+        };
+        for sid in fix_ids {
+            report.fixes_attempted += 1;
+            match evolver::fix_skill(db, Some(llm), sid, "dreamer", user_id).await {
+                Ok(r) if r.success => {
+                    report.fixes_succeeded += 1;
+                    info!(user_id, source = sid, new = ?r.skill_id, "dreamer: fix_skill ok");
+                }
+                Ok(r) => {
+                    report.fixes_failed += 1;
+                    warn!(user_id, source = sid, message = %r.message, "dreamer: fix_skill reported failure");
+                }
+                Err(e) => {
+                    report.fixes_failed += 1;
+                    warn!(user_id, source = sid, error = %e, "dreamer: fix_skill errored");
+                }
+            }
+        }
+
+        // --- Capture pass ---
+        let cap_descriptions = match analyzer::get_capture_candidates(
+            db,
+            user_id,
+            &config.skill_evolution_capture_tag,
+            config.skill_evolution_interval_secs,
+            config.skill_evolution_max_captures_per_tick as usize,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(user_id, error = %e, "dreamer: get_capture_candidates failed");
+                Vec::new()
+            }
+        };
+        for description in cap_descriptions {
+            report.captures_attempted += 1;
+            match evolver::capture_skill(db, Some(llm), &description, "dreamer", user_id).await {
+                Ok(r) if r.success => {
+                    report.captures_succeeded += 1;
+                    info!(user_id, new = ?r.skill_id, "dreamer: capture_skill ok");
+                }
+                Ok(r) => {
+                    report.captures_failed += 1;
+                    warn!(user_id, message = %r.message, "dreamer: capture_skill reported failure");
+                }
+                Err(e) => {
+                    report.captures_failed += 1;
+                    warn!(user_id, error = %e, "dreamer: capture_skill errored");
+                }
+            }
+        }
+
+        // --- Derive pass ---
+        let derive_pairs = match analyzer::get_derive_candidates(
+            db,
+            user_id,
+            config.skill_evolution_derive_similarity,
+            config.skill_evolution_max_derives_per_tick as usize,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(user_id, error = %e, "dreamer: get_derive_candidates failed");
+                Vec::new()
+            }
+        };
+        for (parents, direction) in derive_pairs {
+            report.derives_attempted += 1;
+            match evolver::derive_skill(db, Some(llm), &parents, &direction, "dreamer", user_id)
+                .await
+            {
+                Ok(r) if r.success => {
+                    report.derives_succeeded += 1;
+                    info!(user_id, parents = ?parents, new = ?r.skill_id, "dreamer: derive_skill ok");
+                }
+                Ok(r) => {
+                    report.derives_failed += 1;
+                    warn!(user_id, parents = ?parents, message = %r.message, "dreamer: derive_skill reported failure");
+                }
+                Err(e) => {
+                    report.derives_failed += 1;
+                    warn!(user_id, parents = ?parents, error = %e, "dreamer: derive_skill errored");
+                }
+            }
+        }
+    }
+
+    report
 }
 
 async fn recent_memory_contents(
