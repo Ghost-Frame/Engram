@@ -637,9 +637,35 @@ pub async fn emit_webhook_event(
 
         let db_clone = Arc::clone(db);
         let event_s = event.to_string();
-        tokio::spawn(deliver_with_retry(
-            db_clone, hook, event_s, body_str, headers,
-        ));
+        let hook_id = hook.id;
+        let event_label = event.to_string();
+        // R8 R-003: wrap the fire-and-forget task so panics and final
+        // failures surface in metrics/logs instead of silently disappearing
+        // into a detached JoinHandle.
+        metrics::counter!("engram_webhooks_deliver_spawned_total").increment(1);
+        tokio::spawn(async move {
+            let fut = deliver_with_retry(db_clone, hook, event_s, body_str, headers);
+            match tokio::task::spawn(fut).await {
+                Ok(()) => {}
+                Err(join_err) if join_err.is_panic() => {
+                    metrics::counter!("engram_webhooks_deliver_panicked_total").increment(1);
+                    tracing::error!(
+                        hook_id,
+                        event = %event_label,
+                        "webhook deliver_with_retry panicked"
+                    );
+                }
+                Err(join_err) => {
+                    metrics::counter!("engram_webhooks_deliver_aborted_total").increment(1);
+                    tracing::warn!(
+                        hook_id,
+                        event = %event_label,
+                        error = %join_err,
+                        "webhook deliver_with_retry aborted"
+                    );
+                }
+            }
+        });
     }
 }
 

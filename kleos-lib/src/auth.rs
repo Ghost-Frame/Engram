@@ -430,6 +430,16 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
                 };
 
                 if matches {
+                    // R8 S-005: surface v1 (legacy, unpeppered) key acceptance
+                    // so operators can track migration progress. The reject
+                    // path for peppered deployments already logs at line 408.
+                    if hash_version != HASH_VERSION_PEPPERED {
+                        metrics::counter!("engram_auth_v1_key_accept_total").increment(1);
+                        tracing::warn!(
+                            key_prefix = %key_prefix,
+                            "v1 (unpeppered) api key accepted; configure ENGRAM_API_KEY_PEPPER and re-migrate keys"
+                        );
+                    }
                     // Found matching key -- reconstruct without key_hash column
                     return row_to_api_key_rusqlite_with_offset(row);
                 }
