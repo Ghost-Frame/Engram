@@ -29,6 +29,9 @@ migration-data/
 data/
 migration-test/
 
+# Local cargo config (per-machine target-dir overrides, etc.)
+.cargo/config.toml
+
 # Dev utility stubs
 test.py
 write_files.py
