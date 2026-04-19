@@ -439,10 +439,7 @@ fn resolve_gui_build_dir(state: &AppState) -> Option<PathBuf> {
     }
 
     // Try relative to current directory
-    let candidates = [
-        PathBuf::from("gui/build"),
-        PathBuf::from("../engram/gui/build"),
-    ];
+    let candidates = [PathBuf::from("gui/build")];
 
     candidates
         .into_iter()

@@ -523,7 +523,11 @@ async fn graph_handler(
     Auth(auth): Auth,
     Query(params): Query<GraphQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let cap = params.max.or(params.limit).unwrap_or(500).min(5000) as usize;
+    let cap = params
+        .max
+        .or(params.limit)
+        .map(|n| (n.max(1) as usize).min(MAX_GRAPH_BUILD_NODES))
+        .unwrap_or(MAX_GRAPH_BUILD_NODES);
     let opts = GraphBuildOptions {
         user_id: auth.user_id,
         limit: Some(cap),
