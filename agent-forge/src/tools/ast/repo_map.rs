@@ -74,7 +74,7 @@ pub fn repo_map(_db: &Database, input: RepoMapInput) -> ToolResult {
     }
 
     // Sort by references (importance)
-    symbols.sort_by(|a, b| b.references.cmp(&a.references));
+    symbols.sort_by_key(|s| std::cmp::Reverse(s.references));
 
     // Format output within token budget
     let mut output_lines: Vec<String> = Vec::new();
