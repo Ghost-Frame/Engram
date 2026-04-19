@@ -4,6 +4,8 @@ pub mod transport;
 
 use kleos_lib::config::Config;
 use kleos_lib::db::Database;
+use kleos_lib::llm::local::LocalModelClient;
+use kleos_lib::llm::OllamaConfig;
 use kleos_lib::{EngError, Result};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -12,15 +14,27 @@ use std::sync::Arc;
 pub struct App {
     pub db: Arc<Database>,
     pub config: Arc<Config>,
+    pub llm: Option<Arc<LocalModelClient>>,
 }
 
 impl App {
     pub async fn from_env() -> Result<Self> {
         let config = Config::from_env();
         let db = Database::connect_with_config(&config, None).await?;
+        let llm = {
+            let client = LocalModelClient::new(OllamaConfig::from_env());
+            if client.probe().await {
+                tracing::info!("local LLM client ready (mcp)");
+                Some(Arc::new(client))
+            } else {
+                tracing::warn!("local LLM unavailable (mcp). LLM-dependent tools disabled.");
+                None
+            }
+        };
         Ok(Self {
             db: Arc::new(db),
             config: Arc::new(config),
+            llm,
         })
     }
 
@@ -28,6 +42,7 @@ impl App {
         Ok(Self {
             db: Arc::new(Database::connect_memory().await?),
             config: Arc::new(Config::default()),
+            llm: None,
         })
     }
 }

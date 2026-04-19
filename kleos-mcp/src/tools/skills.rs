@@ -68,7 +68,8 @@ pub async fn skill_fix(app: &App, args: Value) -> Result<Value> {
         .ok_or_else(|| invalid_input("skill_id required"))?;
     // Verify ownership before calling fix.
     skills::get_skill(&app.db, skill_id, auth.user_id).await?;
-    let result = evolver::fix_skill(&app.db, skill_id, "mcp", auth.user_id).await?;
+    let llm = app.llm.as_deref();
+    let result = evolver::fix_skill(&app.db, llm, skill_id, "mcp", auth.user_id).await?;
     Ok(json!(result))
 }
 
