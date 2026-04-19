@@ -39,10 +39,7 @@ pub fn router() -> Router<AppState> {
                 .patch(update_task_handler)
                 .delete(delete_task_handler),
         )
-        .route(
-            "/chiasm/tasks/{id}/history",
-            get(get_task_history_handler),
-        )
+        .route("/chiasm/tasks/{id}/history", get(get_task_history_handler))
         .route("/chiasm/feed", get(get_feed))
 }
 

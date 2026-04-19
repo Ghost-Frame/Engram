@@ -1072,9 +1072,7 @@ async fn cmd_tui(db: &Database, master_key: &[u8; 32]) -> Result<()> {
                             add_key.clear();
                             app.status_msg = "enter service name".to_string();
                         }
-                        KeyCode::Char('d')
-                            if app.selected_secret().is_some() =>
-                        {
+                        KeyCode::Char('d') if app.selected_secret().is_some() => {
                             app.mode = TuiMode::Confirm;
                             app.status_msg = "delete? (y/n)".to_string();
                         }
@@ -1091,9 +1089,7 @@ async fn cmd_tui(db: &Database, master_key: &[u8; 32]) -> Result<()> {
                             app.input_buf = app.filter.clone();
                             app.status_msg = "filter:".to_string();
                         }
-                        KeyCode::Enter
-                            if app.selected_secret().is_some() =>
-                        {
+                        KeyCode::Enter if app.selected_secret().is_some() => {
                             app.mode = TuiMode::Detail;
                         }
                         KeyCode::Char('r') => {

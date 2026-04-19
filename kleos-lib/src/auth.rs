@@ -219,8 +219,7 @@ fn generate_key() -> Result<(String, String, String, i32)> {
         #[cfg(not(debug_assertions))]
         {
             return Err(crate::EngError::Internal(
-                "KLEOS_API_KEY_PEPPER is required to issue new API keys in release builds"
-                    .into(),
+                "KLEOS_API_KEY_PEPPER is required to issue new API keys in release builds".into(),
             ));
         }
         #[cfg(debug_assertions)]
