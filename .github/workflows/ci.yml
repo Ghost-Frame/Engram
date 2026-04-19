@@ -31,10 +31,10 @@ jobs:
         run: cargo check --workspace
 
       - name: Clippy
-        run: cargo clippy --workspace --exclude engram-migrate --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings
 
-      - name: Test workspace (excluding engram-migrate due to linker conflicts)
-        run: cargo test --workspace --exclude engram-migrate
+      - name: Test workspace (excluding kleos-migrate due to linker conflicts)
+        run: cargo test --workspace --exclude kleos-migrate
 
       - name: Check formatting
         run: cargo fmt --all -- --check
