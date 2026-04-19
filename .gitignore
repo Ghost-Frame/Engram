@@ -19,6 +19,7 @@ PLAN.md
 # Internal docs
 docs/plans/
 docs/specs/
+docs/benchmarks/
 
 # Node
 node_modules/
