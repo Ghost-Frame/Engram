@@ -23,8 +23,10 @@ fn cold_text() -> String {
 }
 
 fn try_load_provider(rt: &tokio::runtime::Runtime) -> Option<Arc<OnnxProvider>> {
-    let mut cfg = Config::default();
-    cfg.embedding_offline_only = true;
+    let cfg = Config {
+        embedding_offline_only: true,
+        ..Config::default()
+    };
     match rt.block_on(OnnxProvider::new(&cfg)) {
         Ok(p) => Some(Arc::new(p)),
         Err(e) => {

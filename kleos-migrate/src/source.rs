@@ -22,7 +22,7 @@ pub async fn analyze(db: &SourceDb) -> Result<HashMap<String, i64>> {
     let mut tables = HashMap::new();
 
     // Get all table names
-    let mut stmt = db
+    let stmt = db
         .conn
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         .await?;
@@ -64,7 +64,7 @@ pub async fn analyze(db: &SourceDb) -> Result<HashMap<String, i64>> {
 
 async fn try_max_rowid(db: &SourceDb, table: &str) -> Result<i64> {
     let query = format!("SELECT MAX(rowid) FROM \"{}\"", table);
-    let mut stmt = db.conn.prepare(&query).await?;
+    let stmt = db.conn.prepare(&query).await?;
     let mut rows = stmt.query(()).await?;
     if let Some(row) = rows.next().await? {
         Ok(row.get::<i64>(0).unwrap_or(0))
@@ -75,7 +75,7 @@ async fn try_max_rowid(db: &SourceDb, table: &str) -> Result<i64> {
 
 async fn try_count(db: &SourceDb, table: &str) -> Result<i64> {
     let query = format!("SELECT COUNT(*) FROM \"{}\"", table);
-    let mut stmt = db.conn.prepare(&query).await?;
+    let stmt = db.conn.prepare(&query).await?;
     let mut rows = stmt.query(()).await?;
     if let Some(row) = rows.next().await? {
         Ok(row.get::<i64>(0).unwrap_or(0))
@@ -87,7 +87,7 @@ async fn try_count(db: &SourceDb, table: &str) -> Result<i64> {
 /// Get column names for a table
 pub async fn get_columns(db: &SourceDb, table: &str) -> Result<Vec<String>> {
     let query = format!("PRAGMA table_info(\"{}\")", table);
-    let mut stmt = db.conn.prepare(&query).await?;
+    let stmt = db.conn.prepare(&query).await?;
     let mut rows = stmt.query(()).await?;
 
     let mut columns = Vec::new();
@@ -101,7 +101,7 @@ pub async fn get_columns(db: &SourceDb, table: &str) -> Result<Vec<String>> {
 
 /// Get all table names (excluding internal tables)
 pub async fn get_tables(db: &SourceDb) -> Result<Vec<String>> {
-    let mut stmt = db.conn.prepare(
+    let stmt = db.conn.prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
     ).await?;
 

@@ -28,7 +28,7 @@ pub async fn run(source: &SourceDb, target: &TargetDb, lance: Option<&LanceDb>) 
     for table in key_tables {
         let source_query = format!("SELECT COUNT(*) FROM \"{}\"", table);
         let source_count: i64 = {
-            let mut stmt = source.conn.prepare(&source_query).await?;
+            let stmt = source.conn.prepare(&source_query).await?;
             let mut rows = stmt.query(()).await?;
             if let Some(row) = rows.next().await? {
                 row.get(0).unwrap_or(0)
@@ -57,7 +57,7 @@ pub async fn run(source: &SourceDb, target: &TargetDb, lance: Option<&LanceDb>) 
 
     if let Some(lance) = lance {
         let source_vec_query = "SELECT COUNT(*) FROM memories WHERE embedding_vec_1024 IS NOT NULL";
-        let mut stmt = source.conn.prepare(source_vec_query).await?;
+        let stmt = source.conn.prepare(source_vec_query).await?;
         let mut rows = stmt.query(()).await?;
         let source_vec_count: i64 = if let Some(row) = rows.next().await? {
             row.get(0).unwrap_or(0)

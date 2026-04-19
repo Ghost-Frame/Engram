@@ -217,7 +217,7 @@ async fn copy_table(source: &SourceDb, target: &TargetDb, table: &str) -> Result
 
     // Count rows (using MAX(rowid) as proxy)
     let count_query = format!("SELECT COUNT(*) FROM \"{}\"", table);
-    let mut stmt = source.conn.prepare(&count_query).await?;
+    let stmt = source.conn.prepare(&count_query).await?;
     let mut rows = stmt.query(()).await?;
     let total: i64 = if let Some(row) = rows.next().await? {
         row.get(0).unwrap_or(0)
@@ -247,7 +247,7 @@ async fn copy_table(source: &SourceDb, target: &TargetDb, table: &str) -> Result
         .collect::<Vec<_>>()
         .join(", ");
     let query = format!("SELECT {} FROM \"{}\"", col_list, table);
-    let mut stmt = source.conn.prepare(&query).await?;
+    let stmt = source.conn.prepare(&query).await?;
     let mut rows = stmt.query(()).await?;
 
     let conn = target.conn.lock().await;
