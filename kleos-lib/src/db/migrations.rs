@@ -572,9 +572,7 @@ pub async fn migrate_down(
 /// Return the current migration status: which version is applied, which
 /// migrations are pending (not yet applied), and which applied migrations
 /// can be reverted.
-pub async fn migration_status(
-    db: &super::Database,
-) -> Result<MigrationStatus> {
+pub async fn migration_status(db: &super::Database) -> Result<MigrationStatus> {
     let current_version: u32 = db
         .read(|conn| {
             conn.query_row(

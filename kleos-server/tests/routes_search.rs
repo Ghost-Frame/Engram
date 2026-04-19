@@ -33,8 +33,14 @@ async fn search_returns_results_array() {
     .await;
     assert!(status.is_success(), "expected 2xx, got {status}: {body}");
     assert!(body["results"].is_array(), "expected results array: {body}");
-    assert!(body.get("abstained").is_some(), "missing abstained field: {body}");
-    assert!(body.get("top_score").is_some(), "missing top_score field: {body}");
+    assert!(
+        body.get("abstained").is_some(),
+        "missing abstained field: {body}"
+    );
+    assert!(
+        body.get("top_score").is_some(),
+        "missing top_score field: {body}"
+    );
 }
 
 // POST /search without auth returns 401
@@ -68,7 +74,10 @@ async fn memories_search_alias_works() {
         json!({ "query": "alias test", "limit": 3 }),
     )
     .await;
-    assert!(status.is_success(), "expected 2xx from alias, got {status}: {body}");
+    assert!(
+        status.is_success(),
+        "expected 2xx from alias, got {status}: {body}"
+    );
     assert!(body["results"].is_array(), "expected results array: {body}");
 }
 
@@ -86,7 +95,10 @@ async fn search_with_no_memories_returns_empty_results() {
     .await;
     assert!(status.is_success(), "expected 2xx, got {status}: {body}");
     let results = body["results"].as_array().expect("results array");
-    assert!(results.is_empty(), "expected no results for empty DB: {body}");
+    assert!(
+        results.is_empty(),
+        "expected no results for empty DB: {body}"
+    );
     assert_eq!(body["abstained"], true);
 }
 
@@ -103,7 +115,10 @@ async fn search_with_large_limit_is_accepted() {
         json!({ "query": "anything", "limit": 500 }),
     )
     .await;
-    assert!(status.is_success(), "expected 2xx even for large limit, got {status}: {body}");
+    assert!(
+        status.is_success(),
+        "expected 2xx even for large limit, got {status}: {body}"
+    );
 }
 
 // POST /search with invalid JSON body returns 422 (deserialization failure)

@@ -12,6 +12,11 @@
 //! ```
 //!
 //! so they are skipped in standard CI where the model files are absent.
+//
+// Each `tests/*.rs` file compiles as its own crate, so any helper not used by
+// that particular crate looks "dead" to clippy. Suppress that here rather
+// than scatter `#[allow(dead_code)]` across every helper.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -120,11 +125,7 @@ pub fn auth_header(key: &str) -> (HeaderName, HeaderValue) {
 
 /// Send a request through the router (single-shot) and return status + body.
 pub async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
-    let res = app
-        .clone()
-        .oneshot(request)
-        .await
-        .expect("request failed");
+    let res = app.clone().oneshot(request).await.expect("request failed");
     let status = res.status();
     let body = body_json(res).await;
     (status, body)
@@ -168,11 +169,7 @@ pub async fn delete(app: &Router, path: &str, key: &str) -> (StatusCode, Value) 
 /// Returns `(user_id, api_key_string)`.
 ///
 /// Requires an admin-scoped key (`admin_key`).
-pub async fn seed_user(
-    app: &Router,
-    admin_key: &str,
-    username: &str,
-) -> (i64, String) {
+pub async fn seed_user(app: &Router, admin_key: &str, username: &str) -> (i64, String) {
     let (status, body) = post(
         app,
         "/users",

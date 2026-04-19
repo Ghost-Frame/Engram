@@ -257,10 +257,7 @@ pub async fn compose(app: &App, args: Value) -> Result<Value> {
         .get("source_b")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid_input("source_b required"))?;
-    let links = args
-        .get("links")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let links = args.get("links").and_then(Value::as_str).unwrap_or("");
     Ok(json!(compose_systems(source_a, source_b, links)))
 }
 

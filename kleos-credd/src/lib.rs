@@ -15,11 +15,22 @@ use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use auth::auth_middleware;
+use auth::{auth_middleware, preauth_rate_limit};
 use handlers::{agents, resolve, secrets};
 use state::AppState;
 
-/// Build the credd router (for testing).
+/// Request body limit: 1 MiB. Prevents memory exhaustion from oversized
+/// secret payloads or proxy bodies.
+pub const CREDD_BODY_LIMIT: usize = 1024 * 1024;
+
+/// Per-request timeout: 30 seconds. Prevents slow-loris / hung upstream
+/// from tying up handler tasks indefinitely.
+pub const CREDD_REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// Build the credd router used by both the binary server and integration
+/// tests. Tests previously used a slimmed-down version that bypassed the
+/// preauth rate limiter; sharing this builder keeps brute-force regressions
+/// covered.
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         // Secret management
@@ -42,16 +53,20 @@ pub fn build_router(state: AppState) -> Router {
         .route("/agents/{name}/revoke", post(agents::revoke_handler))
         // Health check (no auth)
         .route("/health", get(health_handler))
-        // Apply middleware
+        // Apply middleware (outermost layer executes first)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
         ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            preauth_rate_limit,
+        ))
         // SECURITY: request hardening -- same limits as the binary server.
-        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(DefaultBodyLimit::max(CREDD_BODY_LIMIT))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(30),
+            Duration::from_secs(CREDD_REQUEST_TIMEOUT_SECS),
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)

@@ -1,12 +1,12 @@
 use axum::{
-    extract::{ConnectInfo, Request, State},
+    extract::{Request, State},
     middleware::Next,
     response::Response,
 };
 use kleos_lib::auth::AuthContext;
 use kleos_lib::ratelimit;
-use std::net::SocketAddr;
 
+use crate::middleware::client_ip::client_ip_key;
 use crate::state::AppState;
 
 const OPEN_PATHS: &[&str] = &["/health", "/live", "/ready", "/bootstrap"];
@@ -38,14 +38,10 @@ fn endpoint_cost(path: &str, method: &axum::http::Method) -> i64 {
     // rebuild an ANN index; a single call can cost minutes of CPU +
     // embedding + vector-index work. Charging the full budget prevents
     // an admin-scoped API key from fire-hosing these endpoints.
-    if path.starts_with("/admin/reembed")
-        || path.starts_with("/admin/vector/rebuild-index")
-    {
+    if path.starts_with("/admin/reembed") || path.starts_with("/admin/vector/rebuild-index") {
         return 100;
     }
-    if path.starts_with("/admin/rebuild-fts")
-        || path.starts_with("/admin/pagerank/rebuild")
-    {
+    if path.starts_with("/admin/rebuild-fts") || path.starts_with("/admin/pagerank/rebuild") {
         return 50;
     }
 
@@ -84,50 +80,6 @@ fn endpoint_cost(path: &str, method: &axum::http::Method) -> i64 {
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS => 1,
         _ => 2,
     }
-}
-
-/// SECURITY: extract client IP for rate-limit keying.
-///
-/// 1. Always read the real TCP peer address from ConnectInfo.
-/// 2. Only honour X-Forwarded-For when the peer IP is in the configured
-///    trusted_proxies list. This prevents direct clients from spoofing
-///    arbitrary rate-limit keys via XFF headers.
-/// 3. If ConnectInfo is unavailable (should not happen after the serve
-///    fix), fall back to "unknown" -- but never trust XFF in that case.
-fn client_ip_key(request: &Request, trusted_proxies: &[String]) -> String {
-    let peer_ip = request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0.ip().to_string());
-
-    let ip = match &peer_ip {
-        Some(peer)
-            if !trusted_proxies.is_empty() && trusted_proxies.iter().any(|tp| tp == peer) =>
-        {
-            // Peer is a trusted reverse proxy -- use first XFF hop.
-            request
-                .headers()
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.split(',').next())
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(String::from)
-                .unwrap_or_else(|| peer.clone())
-        }
-        Some(peer) => {
-            // Direct client or untrusted proxy -- use real peer IP.
-            peer.clone()
-        }
-        None => {
-            tracing::warn!(
-                "ConnectInfo<SocketAddr> not available; rate-limit key will be \"unknown\""
-            );
-            "unknown".to_string()
-        }
-    };
-
-    format!("ip:{}", ip)
 }
 
 #[tracing::instrument(skip_all, fields(middleware = "server.preauth_rate_limit"))]

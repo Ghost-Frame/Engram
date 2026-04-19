@@ -213,12 +213,11 @@ async fn fetch_url(
     let parsed = url::Url::parse(&body.url)
         .map_err(|_| AppError(kleos_lib::EngError::InvalidInput("Invalid URL".into())))?;
 
-    let resp = FETCH_CLIENT.get(&body.url).send().await.map_err(|e| {
-        AppError(kleos_lib::EngError::Internal(format!(
-            "Fetch error: {}",
-            e
-        )))
-    })?;
+    let resp = FETCH_CLIENT
+        .get(&body.url)
+        .send()
+        .await
+        .map_err(|e| AppError(kleos_lib::EngError::Internal(format!("Fetch error: {}", e))))?;
 
     if !resp.status().is_success() {
         return Err(AppError(kleos_lib::EngError::Internal(format!(

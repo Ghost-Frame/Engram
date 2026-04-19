@@ -117,40 +117,52 @@ async fn upload_artifact(
                 file_data = Some(bytes.to_vec());
             }
             "name" => {
-                name =
-                    Some(field.text().await.map_err(|e| {
-                        AppError(kleos_lib::EngError::InvalidInput(e.to_string()))
-                    })?);
+                name = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(kleos_lib::EngError::InvalidInput(e.to_string())))?,
+                );
             }
             "artifact_type" => {
-                artifact_type =
-                    Some(field.text().await.map_err(|e| {
-                        AppError(kleos_lib::EngError::InvalidInput(e.to_string()))
-                    })?);
+                artifact_type = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(kleos_lib::EngError::InvalidInput(e.to_string())))?,
+                );
             }
             "source_url" => {
-                source_url =
-                    Some(field.text().await.map_err(|e| {
-                        AppError(kleos_lib::EngError::InvalidInput(e.to_string()))
-                    })?);
+                source_url = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(kleos_lib::EngError::InvalidInput(e.to_string())))?,
+                );
             }
             "agent" => {
-                agent =
-                    Some(field.text().await.map_err(|e| {
-                        AppError(kleos_lib::EngError::InvalidInput(e.to_string()))
-                    })?);
+                agent = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(kleos_lib::EngError::InvalidInput(e.to_string())))?,
+                );
             }
             "session_id" => {
-                session_id =
-                    Some(field.text().await.map_err(|e| {
-                        AppError(kleos_lib::EngError::InvalidInput(e.to_string()))
-                    })?);
+                session_id = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(kleos_lib::EngError::InvalidInput(e.to_string())))?,
+                );
             }
             "metadata" => {
-                metadata =
-                    Some(field.text().await.map_err(|e| {
-                        AppError(kleos_lib::EngError::InvalidInput(e.to_string()))
-                    })?);
+                metadata = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError(kleos_lib::EngError::InvalidInput(e.to_string())))?,
+                );
             }
             _ => {
                 // skip unknown fields
@@ -253,11 +265,7 @@ async fn download_artifact(
     // Get artifact data (inline storage only for now)
     let data = artifacts::get_artifact_data(&state.db, id, auth.user_id)
         .await?
-        .ok_or_else(|| {
-            AppError(kleos_lib::EngError::Internal(
-                "Artifact has no data".into(),
-            ))
-        })?;
+        .ok_or_else(|| AppError(kleos_lib::EngError::Internal("Artifact has no data".into())))?;
 
     Ok((
         StatusCode::OK,

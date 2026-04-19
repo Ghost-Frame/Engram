@@ -13,18 +13,6 @@ pub struct Observation {
     pub timestamp: DateTime<Utc>,
 }
 
-/// Wire-format snapshot of a session. Used by the persistent store to
-/// reassemble a `Session` after a sidecar restart.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionSnapshot {
-    pub id: String,
-    pub started_at: DateTime<Utc>,
-    pub observation_count: usize,
-    pub stored_count: usize,
-    pub pending: Vec<Observation>,
-    pub ended: bool,
-}
-
 pub struct Session {
     pub id: String,
     pub started_at: DateTime<Utc>,
@@ -33,9 +21,10 @@ pub struct Session {
     pub pending: Vec<Observation>,
     pub ended: bool,
     /// When the oldest pending observation was enqueued. Drives the time-based
-    /// flush trigger in the sidecar's background batcher. Not persisted --
-    /// restored sessions reset the clock so their backlog flushes promptly.
+    /// flush trigger in the sidecar's background batcher.
     pub pending_since: Option<Instant>,
+    /// Updated on every observation add or append. Used by the idle-expiry sweep.
+    pub last_activity: Instant,
 }
 
 impl Session {
@@ -48,11 +37,13 @@ impl Session {
             pending: Vec::new(),
             ended: false,
             pending_since: None,
+            last_activity: Instant::now(),
         }
     }
 
     pub fn add_observation(&mut self, obs: Observation) -> usize {
         self.observation_count += 1;
+        self.last_activity = Instant::now();
         if self.pending.is_empty() {
             self.pending_since = Some(Instant::now());
         }
@@ -60,44 +51,40 @@ impl Session {
         self.pending.len()
     }
 
+    /// Drain the pending queue. Does NOT bump stored_count -- callers must
+    /// invoke `record_stored(n)` only after the upstream confirms how many
+    /// observations were actually persisted. This split lets a partial-failure
+    /// response restore the failed suffix via `requeue(...)` without the
+    /// counter temporarily over-reporting.
     pub fn drain_pending(&mut self) -> Vec<Observation> {
         let drained: Vec<Observation> = self.pending.drain(..).collect();
-        self.stored_count += drained.len();
         self.pending_since = None;
         drained
     }
 
+    /// Bump stored_count by `n`. Call after the upstream confirms the count.
+    pub fn record_stored(&mut self, n: usize) {
+        self.stored_count = self.stored_count.saturating_add(n);
+    }
+
+    /// Prepend `observations` back to the front of the pending queue. Used to
+    /// requeue a failed flush batch ahead of any observations that arrived
+    /// while the flush was in flight. Re-arms `pending_since` if needed so the
+    /// time-based flush trigger fires again for the restored batch.
+    pub fn requeue(&mut self, mut observations: Vec<Observation>) {
+        if observations.is_empty() {
+            return;
+        }
+        observations.append(&mut self.pending);
+        self.pending = observations;
+        if self.pending_since.is_none() {
+            self.pending_since = Some(Instant::now());
+        }
+        self.last_activity = Instant::now();
+    }
+
     pub fn end(&mut self) {
         self.ended = true;
-    }
-
-    pub fn snapshot(&self) -> SessionSnapshot {
-        SessionSnapshot {
-            id: self.id.clone(),
-            started_at: self.started_at,
-            observation_count: self.observation_count,
-            stored_count: self.stored_count,
-            pending: self.pending.clone(),
-            ended: self.ended,
-        }
-    }
-
-    pub fn from_snapshot(s: SessionSnapshot) -> Self {
-        let pending_since = if s.pending.is_empty() {
-            None
-        } else {
-            // Backlog loaded from disk -- flush on the next time-based tick.
-            Some(Instant::now())
-        };
-        Self {
-            id: s.id,
-            started_at: s.started_at,
-            observation_count: s.observation_count,
-            stored_count: s.stored_count,
-            pending: s.pending,
-            ended: s.ended,
-            pending_since,
-        }
     }
 }
 
@@ -218,21 +205,19 @@ impl SessionManager {
         self.sessions.len()
     }
 
-    /// Snapshot every session for persistent-store flushing.
-    pub fn snapshot_all(&self) -> Vec<SessionSnapshot> {
-        self.sessions.values().map(Session::snapshot).collect()
-    }
-
-    /// Restore a snapshot into the manager. If a session with the same id
-    /// already exists, the in-memory copy wins (caller should prefer the
-    /// live state over a stale on-disk copy).
-    pub fn restore_snapshot(&mut self, snap: SessionSnapshot) -> bool {
-        if self.sessions.contains_key(&snap.id) {
-            return false;
-        }
-        self.sessions
-            .insert(snap.id.clone(), Session::from_snapshot(snap));
-        true
+    /// Remove sessions that have been idle longer than `idle_ttl`. Active sessions
+    /// with pending observations are skipped even if idle -- they will be swept
+    /// on the next cycle after their queue drains. Returns the count removed.
+    pub fn expire_idle(&mut self, idle_ttl: std::time::Duration) -> usize {
+        let before = self.sessions.len();
+        self.sessions.retain(|id, session| {
+            // Never expire the default session or sessions with pending observations.
+            if id == &self.default_session_id || !session.pending.is_empty() {
+                return true;
+            }
+            session.last_activity.elapsed() < idle_ttl
+        });
+        before - self.sessions.len()
     }
 }
 
@@ -287,6 +272,10 @@ mod tests {
         let drained = s.drain_pending();
         assert_eq!(drained.len(), 2);
         assert!(s.pending.is_empty());
+        // drain_pending no longer inflates stored_count. The caller increments
+        // it via record_stored() only after the upstream confirms success.
+        assert_eq!(s.stored_count, 0);
+        s.record_stored(drained.len());
         assert_eq!(s.stored_count, 2);
     }
 
@@ -311,12 +300,10 @@ mod tests {
         let mut mgr = SessionManager::new("default".to_string());
         assert_eq!(mgr.active_count(), 1);
 
-        // Auto-create a new session
         let s = mgr.get_or_create("session-2");
         assert_eq!(s.id, "session-2");
         assert_eq!(mgr.active_count(), 2);
 
-        // Getting it again returns the same session, not a new one
         let s = mgr.get_or_create("session-2");
         assert_eq!(s.id, "session-2");
         assert_eq!(mgr.active_count(), 2);
@@ -326,16 +313,13 @@ mod tests {
     fn test_session_manager_start_session() {
         let mut mgr = SessionManager::new("default".to_string());
 
-        // Start a new session
         let result = mgr.start_session("new-session".to_string());
         assert!(result.is_ok());
         assert_eq!(mgr.active_count(), 2);
 
-        // Starting the same session again should fail
         let result = mgr.start_session("new-session".to_string());
         assert!(result.is_err());
 
-        // End the session, then restart it
         mgr.end_session("new-session").unwrap();
         let result = mgr.start_session("new-session".to_string());
         assert!(result.is_ok());
@@ -352,13 +336,11 @@ mod tests {
         assert_eq!(info.id, "s1");
         assert!(info.ended);
         assert_eq!(mgr.active_count(), 2);
-        assert_eq!(mgr.total_count(), 3); // ended session still in map
+        assert_eq!(mgr.total_count(), 3);
 
-        // Ending again should fail
         let result = mgr.end_session("s1");
         assert!(result.is_err());
 
-        // Ending nonexistent should fail
         let result = mgr.end_session("nope");
         assert!(result.is_err());
     }
@@ -386,32 +368,6 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_round_trip_preserves_state() {
-        let mut mgr = SessionManager::new("root".to_string());
-        let s = mgr.get_or_create("s1");
-        s.add_observation(Observation {
-            tool_name: "read".into(),
-            content: "hello".into(),
-            importance: 4,
-            category: "discovery".into(),
-            timestamp: Utc::now(),
-        });
-        assert_eq!(s.pending.len(), 1);
-
-        let snaps = mgr.snapshot_all();
-        assert!(snaps.iter().any(|s| s.id == "s1" && !s.pending.is_empty()));
-
-        // Fresh manager: restoring brings the session back with its pending obs.
-        let mut fresh = SessionManager::new("root-2".to_string());
-        for snap in snaps {
-            fresh.restore_snapshot(snap);
-        }
-        let restored = fresh.get("s1").expect("s1 restored");
-        assert_eq!(restored.pending.len(), 1);
-        assert_eq!(restored.observation_count, 1);
-    }
-
-    #[test]
     fn add_observation_sets_pending_since_on_first_only() {
         let mut s = Session::new("t".into());
         assert!(s.pending_since.is_none());
@@ -424,12 +380,58 @@ mod tests {
         };
         s.add_observation(obs.clone());
         let first = s.pending_since.expect("set on first add");
-        // Second add must NOT bump pending_since -- it tracks the OLDEST
-        // pending observation, not the newest.
         std::thread::sleep(std::time::Duration::from_millis(5));
         s.add_observation(obs);
         let after = s.pending_since.expect("still set");
         assert_eq!(first, after, "pending_since tracks oldest, not newest");
+    }
+
+    #[test]
+    fn record_stored_bumps_count_saturating() {
+        let mut s = Session::new("t".into());
+        assert_eq!(s.stored_count, 0);
+        s.record_stored(3);
+        s.record_stored(4);
+        assert_eq!(s.stored_count, 7);
+        s.record_stored(usize::MAX);
+        assert_eq!(s.stored_count, usize::MAX);
+    }
+
+    #[test]
+    fn requeue_prepends_failed_and_rearms_pending_since() {
+        let mut s = Session::new("t".into());
+        let obs = |n: u32| Observation {
+            tool_name: format!("t{}", n),
+            content: format!("c{}", n),
+            importance: 1,
+            category: "d".into(),
+            timestamp: Utc::now(),
+        };
+
+        // Add two, drain (which clears pending_since), add one more that
+        // arrived while the flush was in flight.
+        s.add_observation(obs(1));
+        s.add_observation(obs(2));
+        let failed = s.drain_pending();
+        assert!(s.pending_since.is_none());
+        s.add_observation(obs(3));
+
+        // Requeue the failed drain. The restored entries must land ahead of
+        // the newer observation and pending_since must be set again.
+        s.requeue(failed);
+        assert_eq!(s.pending.len(), 3);
+        assert_eq!(s.pending[0].tool_name, "t1");
+        assert_eq!(s.pending[1].tool_name, "t2");
+        assert_eq!(s.pending[2].tool_name, "t3");
+        assert!(s.pending_since.is_some());
+    }
+
+    #[test]
+    fn requeue_empty_is_noop() {
+        let mut s = Session::new("t".into());
+        s.requeue(Vec::new());
+        assert!(s.pending.is_empty());
+        assert!(s.pending_since.is_none());
     }
 
     #[test]
@@ -446,58 +448,5 @@ mod tests {
         let drained = s.drain_pending();
         assert_eq!(drained.len(), 1);
         assert!(s.pending_since.is_none(), "drain clears the timer");
-    }
-
-    #[test]
-    fn from_snapshot_restores_pending_since_when_backlog_exists() {
-        let snap_with = SessionSnapshot {
-            id: "s".into(),
-            started_at: Utc::now(),
-            observation_count: 2,
-            stored_count: 0,
-            pending: vec![Observation {
-                tool_name: "t".into(),
-                content: "c".into(),
-                importance: 1,
-                category: "d".into(),
-                timestamp: Utc::now(),
-            }],
-            ended: false,
-        };
-        let s = Session::from_snapshot(snap_with);
-        assert!(
-            s.pending_since.is_some(),
-            "restored backlog must start the flush clock"
-        );
-
-        let snap_empty = SessionSnapshot {
-            id: "s".into(),
-            started_at: Utc::now(),
-            observation_count: 0,
-            stored_count: 0,
-            pending: vec![],
-            ended: false,
-        };
-        let s = Session::from_snapshot(snap_empty);
-        assert!(s.pending_since.is_none());
-    }
-
-    #[test]
-    fn restore_snapshot_does_not_overwrite_existing() {
-        let mut mgr = SessionManager::new("root".to_string());
-        mgr.get_or_create("live");
-        let snap = SessionSnapshot {
-            id: "live".into(),
-            started_at: Utc::now(),
-            observation_count: 99,
-            stored_count: 99,
-            pending: vec![],
-            ended: true,
-        };
-        let inserted = mgr.restore_snapshot(snap);
-        assert!(!inserted, "should not replace existing live session");
-        let live = mgr.get("live").unwrap();
-        assert_eq!(live.observation_count, 0);
-        assert!(!live.ended);
     }
 }

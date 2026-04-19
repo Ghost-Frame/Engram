@@ -46,7 +46,6 @@ jobs:
 
   audit:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -55,14 +54,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
-        run: cargo install --locked cargo-audit || true
+        run: cargo install --locked cargo-audit
 
       - name: Audit dependencies for known advisories
-        run: cargo audit || true
+        run: cargo audit
 
   deny:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -71,12 +69,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-deny
-        run: cargo install --locked cargo-deny || true
+        run: cargo install --locked cargo-deny
 
       - name: Check licenses, sources, and advisories
         run: |
-          if [ -f deny.toml ]; then
-            cargo deny check || true
-          else
-            echo "deny.toml not present -- skipping"
+          if [ ! -f deny.toml ]; then
+            echo "deny.toml missing -- CI policy requires it"
+            exit 1
           fi
+          cargo deny check

@@ -48,47 +48,50 @@ impl EmbeddingProvider for HttpProvider {
             text_len = text.len(),
             dim = self.dim
         );
-        Box::pin(async move {
-            let mut req = self
-                .http
-                .post(&self.url)
-                .json(&serde_json::json!({"text": text}));
+        Box::pin(
+            async move {
+                let mut req = self
+                    .http
+                    .post(&self.url)
+                    .json(&serde_json::json!({"text": text}));
 
-            if let Some(ref auth) = self.auth_header {
-                req = req.header("Authorization", auth.as_str());
+                if let Some(ref auth) = self.auth_header {
+                    req = req.header("Authorization", auth.as_str());
+                }
+
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|e| EngError::Internal(format!("http embed network: {}", e)))?;
+
+                if !resp.status().is_success() {
+                    return Err(EngError::Internal(format!(
+                        "http embed returned {}",
+                        resp.status()
+                    )));
+                }
+
+                let body: serde_json::Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| EngError::Internal(format!("http embed parse: {}", e)))?;
+
+                let embedding: Vec<f32> = serde_json::from_value(body["embedding"].clone())
+                    .map_err(|e| {
+                        EngError::Internal(format!("http embed: embedding field invalid: {}", e))
+                    })?;
+
+                if embedding.len() != self.dim {
+                    return Err(EngError::Internal(format!(
+                        "http embed dimension mismatch: expected {}, got {}",
+                        self.dim,
+                        embedding.len()
+                    )));
+                }
+
+                Ok(embedding)
             }
-
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| EngError::Internal(format!("http embed network: {}", e)))?;
-
-            if !resp.status().is_success() {
-                return Err(EngError::Internal(format!(
-                    "http embed returned {}",
-                    resp.status()
-                )));
-            }
-
-            let body: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| EngError::Internal(format!("http embed parse: {}", e)))?;
-
-            let embedding: Vec<f32> =
-                serde_json::from_value(body["embedding"].clone()).map_err(|e| {
-                    EngError::Internal(format!("http embed: embedding field invalid: {}", e))
-                })?;
-
-            if embedding.len() != self.dim {
-                return Err(EngError::Internal(format!(
-                    "http embed dimension mismatch: expected {}, got {}",
-                    self.dim,
-                    embedding.len()
-                )));
-            }
-
-            Ok(embedding)
-        }.instrument(span))
+            .instrument(span),
+        )
     }
 }

@@ -3,7 +3,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{bootstrap_admin_key, delete, get, post, test_app};
+use common::{bootstrap_admin_key, get, post, test_app};
 use serde_json::json;
 
 // POST /agents happy-path: returns agent_id and name
@@ -19,7 +19,10 @@ async fn register_agent_happy_path() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "expected 201: {body}");
-    assert!(body["agent_id"].as_i64().is_some(), "expected agent_id: {body}");
+    assert!(
+        body["agent_id"].as_i64().is_some(),
+        "expected agent_id: {body}"
+    );
     assert_eq!(body["name"], "test-agent-alpha");
 }
 
@@ -28,22 +31,14 @@ async fn register_agent_happy_path() {
 async fn register_agent_duplicate_name_returns_400() {
     let (app, _state) = test_app().await;
     let key = bootstrap_admin_key(&app).await;
-    post(
-        &app,
-        "/agents",
-        &key,
-        json!({ "name": "duplicate-agent" }),
-    )
-    .await;
+    post(&app, "/agents", &key, json!({ "name": "duplicate-agent" })).await;
     // Second registration with same name
-    let (status, _body) = post(
-        &app,
-        "/agents",
-        &key,
-        json!({ "name": "duplicate-agent" }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400 on duplicate agent");
+    let (status, _body) = post(&app, "/agents", &key, json!({ "name": "duplicate-agent" })).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected 400 on duplicate agent"
+    );
 }
 
 // GET /agents returns { agents: [...] }

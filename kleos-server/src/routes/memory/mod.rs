@@ -19,8 +19,7 @@ use crate::{error::AppError, extractors::Auth, state::AppState};
 
 mod types;
 use types::{
-    ForgetBody, ListQuery, RecallBody, SearchBody, SearchTagsBody, TrashListOptions,
-    UpdateTagsBody,
+    ForgetBody, ListQuery, RecallBody, SearchBody, SearchTagsBody, TrashListOptions, UpdateTagsBody,
 };
 
 pub fn router() -> Router<AppState> {
@@ -687,8 +686,7 @@ async fn synthesize_profile(
         .await?;
     }
 
-    let _ =
-        kleos_lib::personality::synthesize_personality_profile(&state.db, auth.user_id).await?;
+    let _ = kleos_lib::personality::synthesize_personality_profile(&state.db, auth.user_id).await?;
     let profile = memory::get_user_profile(&state.db, auth.user_id).await?;
     Ok(Json(json!(profile)))
 }

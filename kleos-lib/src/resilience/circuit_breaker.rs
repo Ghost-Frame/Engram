@@ -160,7 +160,9 @@ impl CircuitBreaker {
                                 opened_at: Instant::now(),
                             };
                         }
-                        State::Closed { consecutive_failures } => {
+                        State::Closed {
+                            consecutive_failures,
+                        } => {
                             let new_failures = consecutive_failures + 1;
                             if new_failures >= self.failure_threshold {
                                 *guard = State::Open {
@@ -259,7 +261,11 @@ impl LegacyCircuitBreaker {
     {
         // Check open state first using internal state directly.
         {
-            let guard = self.0.state.read().expect("circuit_breaker RwLock poisoned");
+            let guard = self
+                .0
+                .state
+                .read()
+                .expect("circuit_breaker RwLock poisoned");
             if let State::Open { opened_at } = &*guard {
                 if opened_at.elapsed() < self.0.reset_timeout {
                     return Err(CircuitError::Open);
@@ -269,7 +275,11 @@ impl LegacyCircuitBreaker {
 
         // Transition logic (duplicate of CircuitBreaker::call but for E != EngError).
         {
-            let mut guard = self.0.state.write().expect("circuit_breaker RwLock poisoned");
+            let mut guard = self
+                .0
+                .state
+                .write()
+                .expect("circuit_breaker RwLock poisoned");
             match &*guard {
                 State::Open { opened_at } => {
                     if opened_at.elapsed() >= self.0.reset_timeout {
@@ -294,7 +304,11 @@ impl LegacyCircuitBreaker {
         let result = f().await;
 
         {
-            let mut guard = self.0.state.write().expect("circuit_breaker RwLock poisoned");
+            let mut guard = self
+                .0
+                .state
+                .write()
+                .expect("circuit_breaker RwLock poisoned");
             match &result {
                 Ok(_) => {
                     *guard = State::Closed {
@@ -307,7 +321,9 @@ impl LegacyCircuitBreaker {
                             opened_at: Instant::now(),
                         };
                     }
-                    State::Closed { consecutive_failures } => {
+                    State::Closed {
+                        consecutive_failures,
+                    } => {
                         let new_failures = consecutive_failures + 1;
                         if new_failures >= self.0.failure_threshold {
                             *guard = State::Open {
@@ -350,13 +366,17 @@ mod tests {
         assert_eq!(cb.state(), CircuitState::Closed);
 
         for _ in 0..2 {
-            let r: Result<()> = cb.call(|| async { Err(EngError::Internal("boom".into())) }).await;
+            let r: Result<()> = cb
+                .call(|| async { Err(EngError::Internal("boom".into())) })
+                .await;
             assert!(r.is_err());
             assert_eq!(cb.state(), CircuitState::Closed);
         }
 
         // Third failure -- should trip open.
-        let r: Result<()> = cb.call(|| async { Err(EngError::Internal("boom".into())) }).await;
+        let r: Result<()> = cb
+            .call(|| async { Err(EngError::Internal("boom".into())) })
+            .await;
         assert!(r.is_err());
         assert_eq!(cb.state(), CircuitState::Open);
     }
@@ -365,7 +385,9 @@ mod tests {
     async fn open_rejects_without_calling_op() {
         let cb = make_breaker(1, 10_000);
         // Trip the breaker.
-        let _: Result<()> = cb.call(|| async { Err(EngError::Internal("x".into())) }).await;
+        let _: Result<()> = cb
+            .call(|| async { Err(EngError::Internal("x".into())) })
+            .await;
         assert_eq!(cb.state(), CircuitState::Open);
 
         let called = Arc::new(AtomicU32::new(0));
@@ -377,7 +399,11 @@ mod tests {
             })
             .await;
         assert!(r.is_err());
-        assert_eq!(called.load(Ordering::SeqCst), 0, "op must not be called while open");
+        assert_eq!(
+            called.load(Ordering::SeqCst),
+            0,
+            "op must not be called while open"
+        );
     }
 
     // -- Open -> HalfOpen after reset timeout --------------------------------
@@ -385,7 +411,9 @@ mod tests {
     #[tokio::test]
     async fn open_transitions_to_half_open_after_timeout() {
         let cb = make_breaker(1, 50);
-        let _: Result<()> = cb.call(|| async { Err(EngError::Internal("x".into())) }).await;
+        let _: Result<()> = cb
+            .call(|| async { Err(EngError::Internal("x".into())) })
+            .await;
         assert_eq!(cb.state(), CircuitState::Open);
 
         tokio::time::sleep(Duration::from_millis(80)).await;
@@ -409,7 +437,9 @@ mod tests {
     #[tokio::test]
     async fn half_open_success_closes_breaker() {
         let cb = make_breaker(1, 30);
-        let _: Result<()> = cb.call(|| async { Err(EngError::Internal("x".into())) }).await;
+        let _: Result<()> = cb
+            .call(|| async { Err(EngError::Internal("x".into())) })
+            .await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let r: Result<i32> = cb.call(|| async { Ok(7) }).await;
@@ -422,7 +452,9 @@ mod tests {
     #[tokio::test]
     async fn half_open_failure_reopens_breaker() {
         let cb = make_breaker(1, 30);
-        let _: Result<()> = cb.call(|| async { Err(EngError::Internal("x".into())) }).await;
+        let _: Result<()> = cb
+            .call(|| async { Err(EngError::Internal("x".into())) })
+            .await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let r: Result<()> = cb
@@ -440,7 +472,9 @@ mod tests {
 
         // Two failures -- still Closed.
         for _ in 0..2 {
-            let _: Result<()> = cb.call(|| async { Err(EngError::Internal("x".into())) }).await;
+            let _: Result<()> = cb
+                .call(|| async { Err(EngError::Internal("x".into())) })
+                .await;
         }
         assert_eq!(cb.state(), CircuitState::Closed);
 
@@ -450,7 +484,9 @@ mod tests {
 
         // Now 3 more failures needed to trip (counter was reset).
         for _ in 0..2 {
-            let _: Result<()> = cb.call(|| async { Err(EngError::Internal("x".into())) }).await;
+            let _: Result<()> = cb
+                .call(|| async { Err(EngError::Internal("x".into())) })
+                .await;
         }
         assert_eq!(cb.state(), CircuitState::Closed);
     }

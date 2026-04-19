@@ -1,5 +1,15 @@
 // ============================================================================
-// POST /batch -- execute multiple memory ops in a single transaction
+// POST /batch -- execute multiple memory ops sequentially, stopping on first
+// failure.
+//
+// NOTE: this route is NOT transactional. Each op writes independently via the
+// memory module. If op N fails, ops 0..N have already committed and remain
+// visible; ops N+1.. are skipped. On any failure the response is 207
+// Multi-Status and the `results` array is truncated at the first failing
+// index. Callers that need to retry must inspect `results[i].success` per op
+// and resubmit only the failed suffix. A future revision may add a true
+// transactional wrapper; until then, clients must not rely on all-or-nothing
+// semantics.
 // ============================================================================
 
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
@@ -54,7 +64,9 @@ async fn batch_handler(
         let failed = !res.success;
         results.push(res);
 
-        // Abort remaining ops on first failure (atomic batch semantics).
+        // Stop on first failure. Earlier ops stay committed (there is no
+        // transactional wrapper); remaining ops are reported as omitted by
+        // the truncated results array and the 207 status.
         if failed {
             break;
         }

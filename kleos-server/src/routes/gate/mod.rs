@@ -120,8 +120,7 @@ async fn check_handler(
 
     // DNS rebinding / SSRF defense: if the static check allowed an SSH command,
     // resolve the hostname and reject if any A/AAAA record is internal.
-    if result.allowed
-        && (resolved_command.contains("ssh ") || resolved_command.starts_with("ssh"))
+    if result.allowed && (resolved_command.contains("ssh ") || resolved_command.starts_with("ssh"))
     {
         if let Some(target) = parse_ssh_target(&resolved_command) {
             let port = target.port.unwrap_or(22);
@@ -181,11 +180,9 @@ async fn check_handler(
                 let _ = notify.send(());
             }
 
-            let wait_outcome = tokio::time::timeout(
-                std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS),
-                rx,
-            )
-            .await;
+            let wait_outcome =
+                tokio::time::timeout(std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx)
+                    .await;
 
             // SECURITY (SEC-CRIT-2): resolve the outcome against the DB, which
             // is the single source of truth. The oneshot is a wake-up hint;
@@ -204,16 +201,12 @@ async fn check_handler(
                     // respond_handler already decided; read and honour that.
                     match mark_gate_timed_out(&state.db, gate_id, auth.user_id).await {
                         Ok(true) => false,
-                        Ok(false) => match read_gate_decision(
-                            &state.db,
-                            gate_id,
-                            auth.user_id,
-                        )
-                        .await
-                        {
-                            Ok(Some(d)) => d.status == "approved",
-                            _ => false,
-                        },
+                        Ok(false) => {
+                            match read_gate_decision(&state.db, gate_id, auth.user_id).await {
+                                Ok(Some(d)) => d.status == "approved",
+                                _ => false,
+                            }
+                        }
                         Err(e) => {
                             tracing::error!(
                                 "gate: failed to mark gate_id={} timed out: {}",
@@ -456,11 +449,7 @@ async fn guard_handler(
 /// if any high-activation recall contains a prohibition keyword that appears
 /// relevant to the command. Returns None if the brain/embedder is unavailable
 /// or no matching rule is found.
-async fn brain_grounded_check(
-    state: &AppState,
-    _user_id: i64,
-    command: &str,
-) -> Option<String> {
+async fn brain_grounded_check(state: &AppState, _user_id: i64, command: &str) -> Option<String> {
     let brain = state.brain.as_ref()?;
     if !brain.is_ready() {
         return None;
