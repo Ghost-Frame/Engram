@@ -1429,7 +1429,7 @@ fn compute_tag_cooccurrence(results: &[SearchResult], limit: usize) -> Vec<TagCo
             count,
         })
         .collect();
-    pairs.sort_by(|a, b| b.count.cmp(&a.count));
+    pairs.sort_by_key(|b| std::cmp::Reverse(b.count));
     pairs.truncate(limit);
     pairs
 }

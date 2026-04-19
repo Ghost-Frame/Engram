@@ -30,7 +30,7 @@ pub async fn replay(
 
     // Sort by access_count descending -- most recently active patterns first
     let mut candidates: Vec<_> = db_patterns.iter().filter(|p| p.access_count > 0).collect();
-    candidates.sort_by(|a, b| b.access_count.cmp(&a.access_count));
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.access_count));
     candidates.truncate(budget as usize);
 
     let mut items_changed = 0usize;

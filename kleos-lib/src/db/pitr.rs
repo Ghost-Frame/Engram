@@ -65,7 +65,7 @@ fn collect_from(dir: &Path, kind: SnapshotKind) -> Vec<Snapshot> {
 pub fn list_snapshots(backup_dir: &Path) -> Vec<Snapshot> {
     let mut snapshots = collect_from(backup_dir, SnapshotKind::Hourly);
     snapshots.extend(collect_from(&backup_dir.join("daily"), SnapshotKind::Daily));
-    snapshots.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    snapshots.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     snapshots
 }
 

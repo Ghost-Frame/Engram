@@ -140,7 +140,7 @@ fn build_summary(contents: &[(String, i32)], max_chars: usize) -> String {
     }
 
     // Sort by importance descending
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     let mut summary = String::new();
     for (sentence, _) in scored {

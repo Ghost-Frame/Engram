@@ -179,11 +179,7 @@ pub async fn pack_memories(
         }
     };
 
-    let util = if token_budget > 0 {
-        tokens_used * 100 / token_budget
-    } else {
-        0
-    };
+    let util = (tokens_used * 100).checked_div(token_budget).unwrap_or(0);
     Ok(PackResult {
         packed: output,
         memories_included: packed.len(),

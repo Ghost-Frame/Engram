@@ -175,7 +175,7 @@ impl TenantLoader {
                 .collect();
 
             // Sort by idle duration (longest idle first)
-            candidates.sort_by(|a, b| b.1.cmp(&a.1));
+            candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
 
             // Take enough to get under the limit
             let excess = current_count.saturating_sub(self.config.max_resident) + 1;

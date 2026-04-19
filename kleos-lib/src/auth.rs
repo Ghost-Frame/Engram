@@ -170,10 +170,8 @@ fn hash_key_versioned(raw_key: &str, version: i32) -> Option<String> {
 fn normalize_key(raw_key: &str) -> Option<String> {
     let hex_portion = if let Some(rest) = raw_key.strip_prefix("kleos_") {
         rest
-    } else if let Some(rest) = raw_key.strip_prefix("eg_") {
-        rest
     } else {
-        return None;
+        raw_key.strip_prefix("eg_")?
     };
 
     // Accept both 32-char (new format) and 64-char (legacy TS format) keys

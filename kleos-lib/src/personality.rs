@@ -767,7 +767,7 @@ pub fn synthesize_profile_rule_based(input: &SynthesisInput) -> String {
         }
     }
 
-    clusters.sort_by(|a, b| b.signal_indices.len().cmp(&a.signal_indices.len()));
+    clusters.sort_by_key(|b| std::cmp::Reverse(b.signal_indices.len()));
 
     sections.push(format!(
         "Personality profile based on {} signals across {} themes. Generated {}.",
