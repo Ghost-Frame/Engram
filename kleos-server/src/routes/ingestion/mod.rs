@@ -1075,11 +1075,8 @@ async fn ingest_text_stream(
     // connection alive.
     tokio::spawn(async move {
         loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(300),
-                progress_rx.recv(),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_secs(300), progress_rx.recv())
+                .await
             {
                 Ok(Some(evt)) => {
                     let sse_event = Event::default()

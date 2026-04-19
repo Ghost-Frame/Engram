@@ -51,7 +51,7 @@ pub async fn extract_and_insert(source: &SourceDb, lance: &LanceDb) -> Result<()
     info!("Extracting memory vectors...");
 
     // Query memories with embeddings
-    let mut stmt = source
+    let stmt = source
         .conn
         .prepare(
             "SELECT id, user_id, embedding_vec_1024 FROM memories WHERE embedding_vec_1024 IS NOT NULL",
