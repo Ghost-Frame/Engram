@@ -646,8 +646,7 @@ async fn post_maintenance_handler(
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
     let result =
-        kleos_lib::admin::set_maintenance(&state.db, body.enabled, body.message.as_deref())
-            .await?;
+        kleos_lib::admin::set_maintenance(&state.db, body.enabled, body.message.as_deref()).await?;
     to_json(result)
 }
 
@@ -957,105 +956,6 @@ async fn admin_pitr_prepare(
     Ok(Json(json!(prepared)))
 }
 
-#[cfg(test)]
-mod pitr_sandbox_tests {
-    use super::*;
-    use std::fs;
-
-    fn unique_data_dir() -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("pitr-sandbox-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&d).unwrap();
-        d
-    }
-
-    #[test]
-    fn rejects_empty() {
-        let dd = unique_data_dir();
-        let err = sanitize_pitr_dest(dd.to_str().unwrap(), "").unwrap_err();
-        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
-    }
-
-    #[test]
-    fn rejects_absolute() {
-        let dd = unique_data_dir();
-        let err = sanitize_pitr_dest(dd.to_str().unwrap(), "/etc/passwd").unwrap_err();
-        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
-    }
-
-    #[test]
-    fn rejects_traversal() {
-        let dd = unique_data_dir();
-        for bad in ["..", "../x", "a/../b", "..hidden", "a..b"] {
-            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
-            assert!(
-                matches!(err.0, kleos_lib::EngError::InvalidInput(_)),
-                "expected InvalidInput for {bad}"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_separators() {
-        let dd = unique_data_dir();
-        for bad in ["a/b", "a\\b", "foo/"] {
-            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
-            assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
-        }
-    }
-
-    #[test]
-    fn rejects_unicode_and_exotic() {
-        let dd = unique_data_dir();
-        for bad in ["rm -rf", "a\0b", "name with space", "héllo"] {
-            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
-            assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
-        }
-    }
-
-    #[test]
-    fn rejects_leading_dash_or_dot() {
-        let dd = unique_data_dir();
-        for bad in ["-rf", ".env", ".ssh"] {
-            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
-            assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
-        }
-    }
-
-    #[test]
-    fn rejects_non_absolute_data_dir() {
-        let err = sanitize_pitr_dest("relative/dir", "restore.db").unwrap_err();
-        assert!(matches!(err.0, kleos_lib::EngError::Internal(_)));
-    }
-
-    #[test]
-    fn accepts_plain_filename_and_creates_jail() {
-        let dd = unique_data_dir();
-        let out = sanitize_pitr_dest(dd.to_str().unwrap(), "restore.db").unwrap();
-        let jail = dd.join(PITR_RESTORE_SUBDIR);
-        assert!(jail.is_dir(), "jail dir must be created");
-        assert!(out.starts_with(std::fs::canonicalize(&jail).unwrap()));
-        assert_eq!(out.file_name().unwrap(), "restore.db");
-    }
-
-    #[test]
-    fn rejects_overwrite_existing() {
-        let dd = unique_data_dir();
-        let jail = dd.join(PITR_RESTORE_SUBDIR);
-        fs::create_dir_all(&jail).unwrap();
-        fs::write(jail.join("already.db"), b"x").unwrap();
-        let err = sanitize_pitr_dest(dd.to_str().unwrap(), "already.db").unwrap_err();
-        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
-    }
-
-    #[test]
-    fn rejects_too_long_name() {
-        let dd = unique_data_dir();
-        let long_name = "a".repeat(PITR_DEST_MAX_LEN + 1);
-        let err = sanitize_pitr_dest(dd.to_str().unwrap(), &long_name).unwrap_err();
-        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Export (user-scoped, any authenticated user)
 // ---------------------------------------------------------------------------
@@ -1239,4 +1139,103 @@ async fn admin_migrate_down(
         kleos_lib::db::migrations::migrate_down(&state.db, body.target_version, body.dry_run)
             .await?;
     to_json(plan)
+}
+
+#[cfg(test)]
+mod pitr_sandbox_tests {
+    use super::*;
+    use std::fs;
+
+    fn unique_data_dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("pitr-sandbox-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn rejects_empty() {
+        let dd = unique_data_dir();
+        let err = sanitize_pitr_dest(dd.to_str().unwrap(), "").unwrap_err();
+        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn rejects_absolute() {
+        let dd = unique_data_dir();
+        let err = sanitize_pitr_dest(dd.to_str().unwrap(), "/etc/passwd").unwrap_err();
+        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn rejects_traversal() {
+        let dd = unique_data_dir();
+        for bad in ["..", "../x", "a/../b", "..hidden", "a..b"] {
+            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
+            assert!(
+                matches!(err.0, kleos_lib::EngError::InvalidInput(_)),
+                "expected InvalidInput for {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_separators() {
+        let dd = unique_data_dir();
+        for bad in ["a/b", "a\\b", "foo/"] {
+            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
+            assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+        }
+    }
+
+    #[test]
+    fn rejects_unicode_and_exotic() {
+        let dd = unique_data_dir();
+        for bad in ["rm -rf", "a\0b", "name with space", "héllo"] {
+            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
+            assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+        }
+    }
+
+    #[test]
+    fn rejects_leading_dash_or_dot() {
+        let dd = unique_data_dir();
+        for bad in ["-rf", ".env", ".ssh"] {
+            let err = sanitize_pitr_dest(dd.to_str().unwrap(), bad).unwrap_err();
+            assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+        }
+    }
+
+    #[test]
+    fn rejects_non_absolute_data_dir() {
+        let err = sanitize_pitr_dest("relative/dir", "restore.db").unwrap_err();
+        assert!(matches!(err.0, kleos_lib::EngError::Internal(_)));
+    }
+
+    #[test]
+    fn accepts_plain_filename_and_creates_jail() {
+        let dd = unique_data_dir();
+        let out = sanitize_pitr_dest(dd.to_str().unwrap(), "restore.db").unwrap();
+        let jail = dd.join(PITR_RESTORE_SUBDIR);
+        assert!(jail.is_dir(), "jail dir must be created");
+        assert!(out.starts_with(std::fs::canonicalize(&jail).unwrap()));
+        assert_eq!(out.file_name().unwrap(), "restore.db");
+    }
+
+    #[test]
+    fn rejects_overwrite_existing() {
+        let dd = unique_data_dir();
+        let jail = dd.join(PITR_RESTORE_SUBDIR);
+        fs::create_dir_all(&jail).unwrap();
+        fs::write(jail.join("already.db"), b"x").unwrap();
+        let err = sanitize_pitr_dest(dd.to_str().unwrap(), "already.db").unwrap_err();
+        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn rejects_too_long_name() {
+        let dd = unique_data_dir();
+        let long_name = "a".repeat(PITR_DEST_MAX_LEN + 1);
+        let err = sanitize_pitr_dest(dd.to_str().unwrap(), &long_name).unwrap_err();
+        assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
+    }
 }

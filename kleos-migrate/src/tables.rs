@@ -93,10 +93,37 @@ pub async fn copy_all(source: &SourceDb, target: &TargetDb) -> Result<()> {
         copy_table(source, target, table).await?;
     }
 
-    // Re-enable FK checks
+    // Re-enable FK checks and verify the copied data is still referentially
+    // consistent. PRAGMA foreign_key_check surfaces orphans that survived the
+    // OFF window; failing loud here prevents a stamped-but-broken target from
+    // reaching production.
     {
         let conn = target.conn.lock().await;
         conn.execute("PRAGMA foreign_keys = ON", [])?;
+
+        let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+        let mut rows = stmt.query([])?;
+        let mut violations: Vec<String> = Vec::new();
+        while let Some(row) = rows.next()? {
+            let table: String = row.get::<_, Option<String>>(0)?.unwrap_or_default();
+            let rowid: Option<i64> = row.get(1).ok();
+            let parent: String = row.get::<_, Option<String>>(2)?.unwrap_or_default();
+            let fkid: Option<i64> = row.get(3).ok();
+            violations.push(format!(
+                "child={} rowid={:?} parent={} fkid={:?}",
+                table, rowid, parent, fkid
+            ));
+            if violations.len() >= 10 {
+                break;
+            }
+        }
+        if !violations.is_empty() {
+            anyhow::bail!(
+                "foreign_key_check reported {} violation(s) after copy (showing up to 10): {}",
+                violations.len(),
+                violations.join("; ")
+            );
+        }
     }
 
     Ok(())

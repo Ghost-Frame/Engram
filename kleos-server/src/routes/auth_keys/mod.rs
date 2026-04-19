@@ -172,9 +172,7 @@ async fn rotate_key(
     Json(body): Json<RotateKeyBody>,
 ) -> Result<Json<Value>, AppError> {
     if !auth_ctx.has_scope(&auth::Scope::Admin) {
-        return Err(AppError(kleos_lib::EngError::Auth(
-            "Admin required".into(),
-        )));
+        return Err(AppError(kleos_lib::EngError::Auth("Admin required".into())));
     }
 
     // Verify old key exists and belongs to user
@@ -245,9 +243,7 @@ async fn create_user(
     Json(body): Json<CreateUserBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     if !auth_ctx.has_scope(&auth::Scope::Admin) {
-        return Err(AppError(kleos_lib::EngError::Auth(
-            "Admin required".into(),
-        )));
+        return Err(AppError(kleos_lib::EngError::Auth("Admin required".into())));
     }
 
     let valid_roles = ["admin", "writer", "reader"];
@@ -307,9 +303,7 @@ async fn list_users(
     Auth(auth_ctx): Auth,
 ) -> Result<Json<Value>, AppError> {
     if !auth_ctx.has_scope(&auth::Scope::Admin) {
-        return Err(AppError(kleos_lib::EngError::Auth(
-            "Admin required".into(),
-        )));
+        return Err(AppError(kleos_lib::EngError::Auth("Admin required".into())));
     }
 
     let users: Vec<Value> = state

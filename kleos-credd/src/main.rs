@@ -29,10 +29,8 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     kleos_lib::config::migrate_env_prefix();
 
-    let _otel_guard = kleos_lib::observability::init_tracing(
-        "engram-credd",
-        "kleos_credd=info,tower_http=debug",
-    );
+    let _otel_guard =
+        kleos_lib::observability::init_tracing("engram-credd", "kleos_credd=info,tower_http=debug");
 
     let args = Args::parse();
 

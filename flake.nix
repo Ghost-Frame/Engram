@@ -16,7 +16,9 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        # Pin the toolchain to the workspace's declared rust-version so Nix
+        # builds cannot silently drift above/below the MSRV in Cargo.toml.
+        rustToolchain = pkgs.rust-bin.stable."1.94.0".default.override {
           extensions = [ "rust-src" "clippy" "rustfmt" ];
         };
 
@@ -47,7 +49,7 @@
         packages = {
           kleos-server = pkgs.rustPlatform.buildRustPackage {
             pname = "kleos-server";
-            version = "0.3.1";
+            version = "0.3.2";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             inherit nativeBuildInputs buildInputs;
@@ -63,7 +65,7 @@
 
           kleos-cli = pkgs.rustPlatform.buildRustPackage {
             pname = "kleos-cli";
-            version = "0.3.1";
+            version = "0.3.2";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             inherit nativeBuildInputs buildInputs;
@@ -79,7 +81,7 @@
 
           kleos-mcp = pkgs.rustPlatform.buildRustPackage {
             pname = "kleos-mcp";
-            version = "0.3.1";
+            version = "0.3.2";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             inherit nativeBuildInputs buildInputs;

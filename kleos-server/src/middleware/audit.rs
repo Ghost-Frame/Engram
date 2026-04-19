@@ -5,6 +5,7 @@ use axum::{
 };
 use kleos_lib::auth::AuthContext;
 
+use crate::middleware::client_ip::client_ip;
 use crate::state::AppState;
 
 /// Axum middleware that logs every HTTP request to the audit trail.
@@ -22,20 +23,19 @@ pub async fn audit_middleware(
     // wall-clock seconds: NTP steps and DST transitions can move
     // SystemTime backwards, which would make the dreamer either spin
     // (elapsed < 0 wraps via saturating_sub) or skip cycles forever.
-    state
-        .last_request_time
-        .store(crate::dreamer::monotonic_millis(), std::sync::atomic::Ordering::Relaxed);
+    state.last_request_time.store(
+        crate::dreamer::monotonic_millis(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
 
     // Capture pre-request fields before the request is consumed.
     let auth_ctx = request.extensions().get::<AuthContext>().cloned();
     let method = request.method().to_string();
     let path = request.uri().path().to_string();
-    let ip = request
-        .headers()
-        .get("x-forwarded-for")
-        .or_else(|| request.headers().get("x-real-ip"))
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    // SECURITY: share the rate-limiter's trusted-proxy resolver so we
+    // don't log attacker-controlled XFF/X-Real-IP values as if they were
+    // the caller's real address.
+    let ip = client_ip(&request, &state.config.trusted_proxies);
 
     let response = next.run(request).await;
     let status = response.status().as_u16();

@@ -43,8 +43,7 @@ async fn fetch_embeddings_batch(
         sql.push(')');
 
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(owned.len() * 2);
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(owned.len() * 2);
         for (mid, uid) in &owned {
             params.push(Box::new(*mid));
             params.push(Box::new(*uid));

@@ -19,6 +19,68 @@ use crate::SidecarState;
 /// Tracks file read positions to only process new content.
 type FilePositions = Arc<RwLock<HashMap<PathBuf, u64>>>;
 
+/// Flush the in-memory position map to the checkpoint file every N successful parses.
+const CHECKPOINT_FLUSH_EVERY: usize = 10;
+
+/// Load checkpoint from disk. Missing or unreadable file is logged and treated as empty.
+fn load_checkpoint(path: &Path) -> HashMap<PathBuf, u64> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str::<HashMap<PathBuf, u64>>(&text) {
+            Ok(map) => {
+                tracing::debug!(path = %path.display(), entries = map.len(), "loaded watcher checkpoint");
+                map
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "watcher checkpoint corrupt, starting empty");
+                HashMap::new()
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "cannot read watcher checkpoint, starting empty");
+            HashMap::new()
+        }
+    }
+}
+
+/// Atomically write the position map to disk via tempfile + rename.
+pub fn flush_checkpoint(path: &Path, positions: &HashMap<PathBuf, u64>) {
+    // Ensure parent directory exists.
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(error = %e, "watcher checkpoint: could not create parent dir");
+            return;
+        }
+    }
+
+    let tmp = path.with_extension("tmp");
+    match serde_json::to_string(positions) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&tmp, &json) {
+                tracing::warn!(error = %e, "watcher checkpoint: write tmp failed");
+                return;
+            }
+            if let Err(e) = std::fs::rename(&tmp, path) {
+                tracing::warn!(error = %e, "watcher checkpoint: rename failed");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "watcher checkpoint: serialize failed");
+        }
+    }
+}
+
+/// Resolve the checkpoint path: env var > default.
+pub fn checkpoint_path() -> PathBuf {
+    if let Ok(p) = std::env::var("ENGRAM_SIDECAR_WATCHER_STATE_PATH") {
+        return PathBuf::from(p);
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".kleos")
+        .join("sidecar-watcher-state.json")
+}
+
 /// Start the file watcher in a background task.
 /// Returns a JoinHandle that can be used to await completion.
 pub fn start(state: SidecarState) -> tokio::task::JoinHandle<()> {
@@ -44,7 +106,10 @@ async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Erro
         }
     }
 
-    let positions: FilePositions = Arc::new(RwLock::new(HashMap::new()));
+    // Load persisted positions so restarts don't re-ingest already-processed lines.
+    let cp_path = checkpoint_path();
+    let initial = load_checkpoint(&cp_path);
+    let positions: FilePositions = Arc::new(RwLock::new(initial));
 
     // Channel for debounced events
     let (tx, mut rx) = mpsc::channel(100);
@@ -66,6 +131,8 @@ async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Erro
         .watch(&watch_dir, RecursiveMode::Recursive)?;
     tracing::info!(path = %watch_dir.display(), "file watcher started");
 
+    let mut parse_count: usize = 0;
+
     // Process events
     while let Some(event) = rx.recv().await {
         if event.kind != DebouncedEventKind::Any {
@@ -86,9 +153,27 @@ async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Erro
 
         tracing::debug!(path = %path.display(), "processing changed file");
 
-        if let Err(e) = process_file(path, &positions, &state).await {
-            tracing::warn!(path = %path.display(), error = %e, "failed to process file");
+        match process_file(path, &positions, &state).await {
+            Ok(parsed) => {
+                if parsed > 0 {
+                    parse_count += parsed;
+                    if parse_count >= CHECKPOINT_FLUSH_EVERY {
+                        let map = positions.read().await;
+                        flush_checkpoint(&cp_path, &map);
+                        parse_count = 0;
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "failed to process file");
+            }
         }
+    }
+
+    // Best-effort checkpoint flush on normal watcher exit.
+    {
+        let map = positions.read().await;
+        flush_checkpoint(&cp_path, &map);
     }
 
     Ok(())
@@ -106,11 +191,13 @@ fn get_watch_dir() -> PathBuf {
         .join("projects")
 }
 
+/// Returns the number of successfully parsed observations (used by caller for checkpoint
+/// flush cadence). Position is always updated even when no observations were extracted.
 async fn process_file(
     path: &Path,
     positions: &FilePositions,
     state: &SidecarState,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     let path_buf = path.to_path_buf();
 
     // Get last read position
@@ -158,13 +245,15 @@ async fn process_file(
         pos_map.insert(path_buf, new_pos);
     }
 
+    let parsed = observations.len();
+
     // Store observations
     if !observations.is_empty() {
         tracing::debug!(count = observations.len(), "storing observations from file");
         store_observations(observations, state).await;
     }
 
-    Ok(())
+    Ok(parsed)
 }
 
 struct FileObservation {

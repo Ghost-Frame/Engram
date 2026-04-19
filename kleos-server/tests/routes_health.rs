@@ -21,7 +21,10 @@ async fn health_does_not_require_auth() {
     let (app, _state) = test_app().await;
     // No Authorization header at all
     let (status, _body) = send(&app, req("GET", "/health")).await;
-    assert!(status.is_success(), "health must not require auth, got {status}");
+    assert!(
+        status.is_success(),
+        "health must not require auth, got {status}"
+    );
 }
 
 // GET /health/ready -- returns 200 and { status: "ready" } when DB is healthy
@@ -29,7 +32,11 @@ async fn health_does_not_require_auth() {
 async fn health_ready_returns_200_when_db_ok() {
     let (app, _state) = test_app().await;
     let (status, body) = send(&app, req("GET", "/health/ready")).await;
-    assert_eq!(status, StatusCode::OK, "/health/ready should be 200 with live DB");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "/health/ready should be 200 with live DB"
+    );
     assert_eq!(body["status"], "ready");
     assert_eq!(body["checks"]["database"], "ok");
 }
@@ -43,7 +50,10 @@ async fn health_ready_optional_components_absent_still_ready() {
     assert_eq!(body["checks"]["embedder"], "disabled");
     assert_eq!(body["checks"]["reranker"], "disabled");
     assert!(
-        body["failing"].as_array().map(|a| a.is_empty()).unwrap_or(true),
+        body["failing"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
         "failing array should be empty when only optional components are absent"
     );
 }

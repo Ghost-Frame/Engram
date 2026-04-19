@@ -138,7 +138,8 @@ impl ServiceGuard {
         // Fast-path: circuit already open -- dead-letter immediately.
         if self.breaker.state() == CircuitState::Open {
             let err_msg = format!("circuit open for service '{}'", self.service_name);
-            self.write_dead_letter(operation, payload, "circuit_open", 0).await;
+            self.write_dead_letter(operation, payload, "circuit_open", 0)
+                .await;
             return Err(EngError::Internal(err_msg));
         }
 
@@ -170,7 +171,8 @@ impl ServiceGuard {
                             "exhausted"
                         };
                         let err_str = e.to_string();
-                        self.write_dead_letter(operation, payload, &err_str, attempt).await;
+                        self.write_dead_letter(operation, payload, &err_str, attempt)
+                            .await;
                         tracing::warn!(
                             service = %service_name,
                             operation,

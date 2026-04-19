@@ -8,9 +8,8 @@ use serde::{Deserialize, Serialize};
 pub fn migrate_env_prefix() {
     let pairs: Vec<(String, String)> = std::env::vars()
         .filter_map(|(k, v)| {
-            k.strip_prefix("KLEOS_").map(|suffix| {
-                (format!("ENGRAM_{}", suffix), v)
-            })
+            k.strip_prefix("KLEOS_")
+                .map(|suffix| (format!("ENGRAM_{}", suffix), v))
         })
         .collect();
 

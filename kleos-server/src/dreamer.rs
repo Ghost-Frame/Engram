@@ -252,11 +252,15 @@ async fn run_cycle(
                             );
                         }
                     }
-                    Err(e) => warn!(user_id = *user_id, error = %e, "dreamer: growth::reflect failed"),
+                    Err(e) => {
+                        warn!(user_id = *user_id, error = %e, "dreamer: growth::reflect failed")
+                    }
                 }
             }
             Ok(_) => {}
-            Err(e) => warn!(user_id = *user_id, error = %e, "dreamer: failed to load growth context"),
+            Err(e) => {
+                warn!(user_id = *user_id, error = %e, "dreamer: failed to load growth context")
+            }
         }
     }
 

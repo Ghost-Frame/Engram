@@ -63,7 +63,10 @@ impl RetryPolicy {
 /// Returns `true` for errors that are likely transient network/infrastructure
 /// issues. Returns `false` for deterministic client errors.
 pub fn is_transient_error(e: &EngError) -> bool {
-    matches!(e, EngError::Internal(_) | EngError::Database(_) | EngError::DatabaseMessage(_))
+    matches!(
+        e,
+        EngError::Internal(_) | EngError::Database(_) | EngError::DatabaseMessage(_)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -108,8 +111,9 @@ where
                 let backoff_ms = base_ms.saturating_mul(1u64 << exp);
                 let capped_ms = backoff_ms.min(policy.max_delay.as_millis() as u64);
 
-                // Add up to 25% jitter.
-                let jitter_ms = (capped_ms / 4).saturating_mul(pseudo_rand_fraction(attempt));
+                // Add up to 25% jitter. pseudo_rand_percent returns 0..=100, so
+                // (capped_ms / 4) * percent / 100 yields 0..=capped_ms/4.
+                let jitter_ms = (capped_ms / 4).saturating_mul(pseudo_rand_percent(attempt)) / 100;
                 let sleep_ms = capped_ms.saturating_add(jitter_ms);
 
                 tracing::debug!(
@@ -124,13 +128,12 @@ where
     }
 }
 
-/// Deterministic pseudo-random fraction 0..=1 based on attempt number.
-/// Not crypto-quality -- only used for jitter spread.
-fn pseudo_rand_fraction(attempt: u32) -> u64 {
-    // Mix the attempt number with a constant to spread values.
-    let v = attempt.wrapping_mul(2_654_435_761).wrapping_add(1_013_904_223);
-    // Return a value 0..=100 and divide by 100 later for simplicity.
-    // Caller uses this as a multiplier on capped_ms/4, so the max jitter is 25%.
+/// Deterministic pseudo-random integer percent (0..=100) based on attempt
+/// number. Not crypto-quality; only used for jitter spread.
+fn pseudo_rand_percent(attempt: u32) -> u64 {
+    let v = attempt
+        .wrapping_mul(2_654_435_761)
+        .wrapping_add(1_013_904_223);
     (v % 101) as u64
 }
 
@@ -216,7 +219,11 @@ mod tests {
         })
         .await;
         assert!(r.is_err());
-        assert_eq!(counter.load(Ordering::SeqCst), 1, "auth errors must not be retried");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "auth errors must not be retried"
+        );
     }
 
     #[tokio::test]
@@ -238,6 +245,40 @@ mod tests {
             policy.max_attempts,
             "should have tried exactly max_attempts times"
         );
+    }
+
+    #[test]
+    fn pseudo_rand_percent_is_bounded() {
+        for attempt in 0u32..256 {
+            let p = pseudo_rand_percent(attempt);
+            assert!(
+                p <= 100,
+                "percent {} exceeded 100 at attempt {}",
+                p,
+                attempt
+            );
+        }
+    }
+
+    #[test]
+    fn jitter_never_exceeds_quarter_of_capped() {
+        // Walk a range of capped_ms values and every attempt index that
+        // exercises the full 0..=100 output of pseudo_rand_percent. The
+        // computed jitter must never exceed capped_ms / 4.
+        for capped_ms in [0u64, 1, 4, 100, 500, 5_000, 1_000_000] {
+            let limit = capped_ms / 4;
+            for attempt in 0u32..1024 {
+                let jitter = (capped_ms / 4).saturating_mul(pseudo_rand_percent(attempt)) / 100;
+                assert!(
+                    jitter <= limit,
+                    "jitter {} exceeded capped_ms/4 ({}) at capped_ms={} attempt={}",
+                    jitter,
+                    limit,
+                    capped_ms,
+                    attempt
+                );
+            }
+        }
     }
 
     #[tokio::test]

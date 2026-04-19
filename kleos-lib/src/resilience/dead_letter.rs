@@ -93,10 +93,7 @@ pub async fn list_dead_letters(
                  FROM service_dead_letters \
                  WHERE service = ?1 \
                  ORDER BY created_at DESC LIMIT ?2",
-                vec![
-                    Box::new(svc.clone().unwrap()),
-                    Box::new(limit),
-                ],
+                vec![Box::new(svc.clone().unwrap()), Box::new(limit)],
             )
         } else {
             (
@@ -109,7 +106,9 @@ pub async fn list_dead_letters(
 
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng)?;
         let mut rows = stmt
-            .query(rusqlite::params_from_iter(params_vec.iter().map(|b| b.as_ref())))
+            .query(rusqlite::params_from_iter(
+                params_vec.iter().map(|b| b.as_ref()),
+            ))
             .map_err(rusqlite_to_eng)?;
 
         let mut result = Vec::new();
@@ -164,9 +163,16 @@ mod tests {
     async fn list_all_services() {
         let db = Database::connect_memory().await.unwrap();
 
-        record_dead_letter(&db, "embedder", "embed", serde_json::Value::Null, "timeout", 3)
-            .await
-            .unwrap();
+        record_dead_letter(
+            &db,
+            "embedder",
+            "embed",
+            serde_json::Value::Null,
+            "timeout",
+            3,
+        )
+        .await
+        .unwrap();
         record_dead_letter(&db, "reranker", "rerank", serde_json::Value::Null, "503", 3)
             .await
             .unwrap();

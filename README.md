@@ -73,9 +73,9 @@ KLEOS_MCP_BEARER_TOKEN=eg_... cargo run -p kleos-mcp
 
 ---
 
-![Engram CLI demo](tools/cli-demo.gif)
+![Kleos CLI demo](tools/cli-demo.gif)
 
-![Engram memory graph visualization](tools/gui-demo-v3.gif)
+![Kleos memory graph visualization](tools/gui-demo-v3.gif)
 
 ---
 
