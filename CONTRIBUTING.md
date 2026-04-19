@@ -69,7 +69,6 @@ cargo clippy --workspace -- -D warnings
 ### Code Style
 
 - Follow existing patterns in the codebase
-- No em dashes in comments, docs, or commit messages -- use `--` or rewrite the sentence
 - Prefer surgical edits over large rewrites
 - Don't add features beyond what's asked
 - Don't add speculative abstractions
