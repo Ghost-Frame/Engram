@@ -14,6 +14,9 @@ use tokio::sync::{broadcast, watch, Mutex, RwLock};
 pub struct SessionBroadcast {
     pub buffer: VecDeque<String>,
     pub tx: broadcast::Sender<String>,
+    /// Monotonic-milliseconds timestamp of the most recent append. Used by
+    /// the session reaper to evict idle entries (R8 R-010).
+    pub last_activity: Arc<AtomicU64>,
 }
 
 impl SessionBroadcast {
@@ -22,6 +25,7 @@ impl SessionBroadcast {
         SessionBroadcast {
             buffer: VecDeque::new(),
             tx,
+            last_activity: Arc::new(AtomicU64::new(crate::dreamer::monotonic_millis())),
         }
     }
 }

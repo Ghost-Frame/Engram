@@ -255,7 +255,11 @@ pub fn build_router(state: AppState) -> Router {
 /// Listen for SIGTERM / SIGINT so the server can drain in-flight requests
 /// before exiting. Without this the process dies hard on signal and any
 /// in-flight writes to SQLite can be cut mid-statement.
-async fn shutdown_signal() {
+///
+/// Exposed publicly so `main` can wire the same signal into the background-task
+/// supervisor (R8 R-008): propagating shutdown to child tasks avoids partial
+/// SQLite writes during process tear-down.
+pub async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             tracing::error!("failed to install ctrl-c handler: {}", e);
@@ -286,8 +290,11 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received, draining connections");
 }
 
-#[tracing::instrument(skip(state), fields(host = %state.config.host, port = state.config.port))]
-pub async fn run(state: AppState) -> Result<(), Box<dyn std::error::Error>> {
+#[tracing::instrument(skip(state, shutdown), fields(host = %state.config.host, port = state.config.port))]
+pub async fn run(
+    state: AppState,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", state.config.host, state.config.port);
     let app = build_router(state);
     tracing::info!("engram-server listening on {}", addr);
@@ -298,7 +305,7 @@ pub async fn run(state: AppState) -> Result<(), Box<dyn std::error::Error>> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async move { shutdown.cancelled().await })
     .await?;
     Ok(())
 }

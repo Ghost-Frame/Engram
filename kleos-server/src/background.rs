@@ -426,6 +426,74 @@ fn promote_and_prune_daily(
     (promoted, pruned)
 }
 
+/// R8 R-010: evict idle SessionBroadcast entries once per minute.
+///
+/// A tenant can create up to `MAX_SESSIONS_PER_USER=64` sessions; without a
+/// time-based reaper they live in the map until the process restarts. We
+/// consider an entry stale when it has not been appended to for `ttl_ms` AND
+/// has zero live websocket subscribers, so active streams are never evicted
+/// out from under a consumer.
+///
+/// Returns the number of entries removed so callers (and tests) can verify.
+pub async fn reap_stale_sessions(
+    sessions: &crate::state::SessionMap,
+    now_ms: u64,
+    ttl_ms: u64,
+) -> usize {
+    let stale: Vec<(i64, String)> = {
+        let map = sessions.read().await;
+        let mut out = Vec::new();
+        for (key, bcast) in map.iter() {
+            let b = bcast.lock().await;
+            let idle =
+                now_ms.saturating_sub(b.last_activity.load(std::sync::atomic::Ordering::Relaxed));
+            if idle > ttl_ms && b.tx.receiver_count() == 0 {
+                out.push(key.clone());
+            }
+        }
+        out
+    };
+    if stale.is_empty() {
+        return 0;
+    }
+    let count = stale.len();
+    let mut map = sessions.write().await;
+    for k in &stale {
+        map.remove(k);
+    }
+    count
+}
+
+pub fn start_session_reaper_task(
+    sessions: crate::state::SessionMap,
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+
+    let handle = tokio::spawn(async move {
+        const SCAN_INTERVAL: Duration = Duration::from_secs(60);
+        const TTL_MS: u64 = 60 * 60 * 1000; // 1 hour idle
+
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    info!("session reaper task shutting down");
+                    break;
+                }
+                _ = tokio::time::sleep(SCAN_INTERVAL) => {
+                    let now = crate::dreamer::monotonic_millis();
+                    let removed = reap_stale_sessions(&sessions, now, TTL_MS).await;
+                    if removed > 0 {
+                        info!(count = removed, "session reaper evicted stale entries");
+                    }
+                }
+            }
+        }
+    });
+
+    (token, handle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,5 +612,58 @@ mod tests {
         assert!(remaining[0].ends_with("engram-backup-20260103-000000.db"));
         assert!(remaining[1].ends_with("engram-backup-20260104-000000.db"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// R8 R-010: reaper must evict idle, zero-subscriber entries and leave
+    /// both fresh entries and entries with live subscribers alone.
+    #[tokio::test]
+    async fn reap_stale_sessions_evicts_only_idle_and_unsubscribed() {
+        use crate::state::SessionBroadcast;
+        use std::collections::HashMap;
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+        use tokio::sync::{Mutex, RwLock};
+
+        let sessions: crate::state::SessionMap = Arc::new(RwLock::new(HashMap::new()));
+
+        // Stale + no subscribers -> should be removed.
+        let stale_idle = SessionBroadcast::new();
+        stale_idle.last_activity.store(0, Ordering::Relaxed);
+
+        // Stale + live subscriber -> keep (someone is streaming).
+        let stale_busy = SessionBroadcast::new();
+        stale_busy.last_activity.store(0, Ordering::Relaxed);
+        let subscriber = stale_busy.tx.subscribe();
+        assert_eq!(stale_busy.tx.receiver_count(), 1);
+
+        // Fresh entry -> keep. last_activity is 30s ago, well under the 1h TTL.
+        let fresh = SessionBroadcast::new();
+        fresh.last_activity.store(9_970_000, Ordering::Relaxed);
+
+        {
+            let mut map = sessions.write().await;
+            map.insert(
+                (1, "stale-idle".to_string()),
+                Arc::new(Mutex::new(stale_idle)),
+            );
+            map.insert(
+                (1, "stale-busy".to_string()),
+                Arc::new(Mutex::new(stale_busy)),
+            );
+            map.insert((1, "fresh".to_string()), Arc::new(Mutex::new(fresh)));
+        }
+
+        let now_ms = 10_000_000;
+        let ttl_ms = 60 * 60 * 1000;
+        let removed = reap_stale_sessions(&sessions, now_ms, ttl_ms).await;
+        assert_eq!(removed, 1);
+
+        let map = sessions.read().await;
+        assert!(!map.contains_key(&(1, "stale-idle".to_string())));
+        assert!(map.contains_key(&(1, "stale-busy".to_string())));
+        assert!(map.contains_key(&(1, "fresh".to_string())));
+        // Keep the subscriber alive past the reaper scan so its presence is
+        // actually reflected in tx.receiver_count().
+        drop(subscriber);
     }
 }

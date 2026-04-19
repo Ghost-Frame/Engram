@@ -9,12 +9,15 @@ use kleos_lib::reranker::{self, Reranker};
 use kleos_lib::services::brain::create_brain_backend;
 use kleos_server::background::{
     start_auto_backup_task, start_auto_checkpoint_task, start_job_cleanup_task,
-    start_vector_sync_replay_task,
+    start_session_reaper_task, start_vector_sync_replay_task,
 };
 use kleos_server::dreamer::{new_stats_handle, start_dreamer_task};
 use kleos_server::state::AppState;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -181,119 +184,231 @@ async fn main() {
         last_request_time: Arc::new(AtomicU64::new(0)),
     };
 
-    // Start background PageRank refresh job if enabled.
-    let pagerank_handles = if state.config.pagerank_enabled {
-        let (token, handle) =
-            start_pagerank_refresh_job(Arc::clone(&state.db), Arc::clone(&state.config));
+    // R8 R-008: every background task is described by a factory so the
+    // supervisor can respawn it after a panic. Each factory captures the Arc
+    // state it needs and returns a fresh (CancellationToken, JoinHandle) on
+    // each invocation.
+    let mut supervised: Vec<Supervised> = Vec::new();
+
+    if state.config.pagerank_enabled {
+        let db = Arc::clone(&state.db);
+        let cfg = Arc::clone(&state.config);
+        supervised.push(Supervised::spawn("pagerank-refresh", move || {
+            start_pagerank_refresh_job(Arc::clone(&db), Arc::clone(&cfg))
+        }));
         tracing::info!("background pagerank refresh job started");
-        Some((token, handle))
     } else {
         tracing::info!("pagerank disabled -- skipping refresh job");
-        None
-    };
+    }
 
-    // Start background dreamer (intelligence pipeline + brain dream cycle).
-    let dreamer_handles = if state.config.dreamer_enabled {
-        let (token, handle) = start_dreamer_task(
-            Arc::clone(&state.db),
-            Arc::clone(&state.config),
-            state.brain.clone(),
-            state.llm.clone(),
-            Arc::clone(&state.dreamer_stats),
-            Arc::clone(&state.last_request_time),
-        );
+    if state.config.dreamer_enabled {
+        let db = Arc::clone(&state.db);
+        let cfg = Arc::clone(&state.config);
+        let brain = state.brain.clone();
+        let llm = state.llm.clone();
+        let stats = Arc::clone(&state.dreamer_stats);
+        let last_req = Arc::clone(&state.last_request_time);
+        supervised.push(Supervised::spawn("dreamer", move || {
+            start_dreamer_task(
+                Arc::clone(&db),
+                Arc::clone(&cfg),
+                brain.clone(),
+                llm.clone(),
+                Arc::clone(&stats),
+                Arc::clone(&last_req),
+            )
+        }));
         tracing::info!(
             interval_secs = state.config.dream_interval_secs,
             "dreamer background task started"
         );
-        Some((token, handle))
     } else {
         tracing::info!("dreamer disabled -- skipping");
-        None
-    };
+    }
 
-    // Start infrastructure background tasks.
-    let (checkpoint_token, checkpoint_handle) = start_auto_checkpoint_task(Arc::clone(&state.db));
-    tracing::info!("auto-checkpoint background task started");
+    {
+        let db = Arc::clone(&state.db);
+        supervised.push(Supervised::spawn("auto-checkpoint", move || {
+            start_auto_checkpoint_task(Arc::clone(&db))
+        }));
+        tracing::info!("auto-checkpoint background task started");
+    }
 
-    let (job_cleanup_token, job_cleanup_handle) = start_job_cleanup_task(Arc::clone(&state.db));
-    tracing::info!("job-cleanup background task started");
+    {
+        let db = Arc::clone(&state.db);
+        supervised.push(Supervised::spawn("job-cleanup", move || {
+            start_job_cleanup_task(Arc::clone(&db))
+        }));
+        tracing::info!("job-cleanup background task started");
+    }
 
-    let (vector_sync_token, vector_sync_handle) =
-        start_vector_sync_replay_task(Arc::clone(&state.db));
-    tracing::info!("vector-sync-replay background task started");
+    {
+        let db = Arc::clone(&state.db);
+        supervised.push(Supervised::spawn("vector-sync-replay", move || {
+            start_vector_sync_replay_task(Arc::clone(&db))
+        }));
+        tracing::info!("vector-sync-replay background task started");
+    }
 
-    let backup_handles = if state.config.backup_enabled {
-        let (token, handle) = start_auto_backup_task(
-            Arc::clone(&state.db),
-            state.config.data_dir.clone(),
-            state.config.backup_dir.clone(),
-            state.config.backup_interval_secs,
-            state.config.backup_retention,
-            state.config.backup_retention_daily,
-        );
+    if state.config.backup_enabled {
+        let db = Arc::clone(&state.db);
+        let data_dir = state.config.data_dir.clone();
+        let backup_dir = state.config.backup_dir.clone();
+        let interval = state.config.backup_interval_secs;
+        let retention = state.config.backup_retention;
+        let retention_daily = state.config.backup_retention_daily;
+        supervised.push(Supervised::spawn("auto-backup", move || {
+            start_auto_backup_task(
+                Arc::clone(&db),
+                data_dir.clone(),
+                backup_dir.clone(),
+                interval,
+                retention,
+                retention_daily,
+            )
+        }));
         tracing::info!(
             interval_secs = state.config.backup_interval_secs,
             retention = state.config.backup_retention,
             retention_daily = state.config.backup_retention_daily,
             "auto-backup background task started"
         );
-        Some((token, handle))
     } else {
         tracing::info!("auto-backup disabled -- skipping");
-        None
+    }
+
+    {
+        let sessions = Arc::clone(&state.sessions);
+        supervised.push(Supervised::spawn("session-reaper", move || {
+            start_session_reaper_task(Arc::clone(&sessions))
+        }));
+        tracing::info!("session-reaper background task started");
+    }
+
+    // R8 R-008: share one CancellationToken between the HTTP server and the
+    // supervisor so SIGTERM propagates through both. Without this the
+    // background tasks keep writing to SQLite as axum tears down.
+    let shutdown = CancellationToken::new();
+    {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            kleos_server::server::shutdown_signal().await;
+            shutdown.cancel();
+        });
+    }
+
+    let supervisor_handle = {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { supervise(supervised, shutdown).await })
     };
 
-    // Monitor background tasks -- log if any exit unexpectedly (panic/abort).
-    tokio::spawn(async move {
-        // Keep tokens alive so tasks aren't cancelled.
-        let _checkpoint_token = checkpoint_token;
-        let _job_cleanup_token = job_cleanup_token;
-        let _vector_sync_token = vector_sync_token;
-        let _pagerank_token = pagerank_handles.as_ref().map(|(t, _)| t);
-        let _backup_token = backup_handles.as_ref().map(|(t, _)| t);
-        let _dreamer_token = dreamer_handles.as_ref().map(|(t, _)| t);
-
-        let mut tasks: Vec<(&str, tokio::task::JoinHandle<()>)> = vec![
-            ("auto-checkpoint", checkpoint_handle),
-            ("job-cleanup", job_cleanup_handle),
-            ("vector-sync-replay", vector_sync_handle),
-        ];
-        if let Some((_, handle)) = pagerank_handles {
-            tasks.push(("pagerank-refresh", handle));
-        }
-        if let Some((_, handle)) = backup_handles {
-            tasks.push(("auto-backup", handle));
-        }
-        if let Some((_, handle)) = dreamer_handles {
-            tasks.push(("dreamer", handle));
-        }
-
-        // Wait for ANY task to exit -- they should all run forever.
-        loop {
-            if tasks.is_empty() {
-                break;
-            }
-            let (idx, result) = {
-                let mut futs: Vec<_> = tasks.iter_mut().map(|(_, h)| h).collect();
-                // Select the first task that completes.
-                let (result, index, _) = futures::future::select_all(&mut futs).await;
-                (index, result)
-            };
-            let (name, _) = tasks.remove(idx);
-            match result {
-                Ok(()) => {
-                    tracing::error!(task = name, "background task exited unexpectedly");
-                }
-                Err(e) => {
-                    tracing::error!(task = name, error = %e, "background task panicked");
-                }
-            }
-        }
-    });
-
-    if let Err(e) = kleos_server::server::run(state).await {
+    if let Err(e) = kleos_server::server::run(state, shutdown.clone()).await {
         tracing::error!("server error: {}", e);
+        shutdown.cancel();
+        let _ = supervisor_handle.await;
         std::process::exit(1);
+    }
+
+    // Graceful path: axum shutdown already observed the same token, so we
+    // just need to wait for the supervisor to drain its children.
+    shutdown.cancel();
+    if let Err(e) = supervisor_handle.await {
+        tracing::error!(error = %e, "supervisor task exit error");
+    }
+}
+
+/// R8 R-008: one respawnable background task.
+///
+/// `factory` constructs a fresh `(CancellationToken, JoinHandle)` each time it
+/// is invoked so the supervisor can restart the task after a panic without
+/// carrying over the cancelled token from the previous generation.
+struct Supervised {
+    name: &'static str,
+    factory: Box<dyn FnMut() -> (CancellationToken, JoinHandle<()>) + Send>,
+    cancel: CancellationToken,
+    handle: JoinHandle<()>,
+    consecutive_failures: u32,
+}
+
+impl Supervised {
+    fn spawn<F>(name: &'static str, mut factory: F) -> Self
+    where
+        F: FnMut() -> (CancellationToken, JoinHandle<()>) + Send + 'static,
+    {
+        let (cancel, handle) = factory();
+        Self {
+            name,
+            factory: Box::new(factory),
+            cancel,
+            handle,
+            consecutive_failures: 0,
+        }
+    }
+}
+
+/// R8 R-008: supervise background tasks with exponential-backoff respawn and
+/// a shared shutdown token. Exits cleanly only after every child's
+/// CancellationToken has been signalled and its JoinHandle awaited.
+async fn supervise(mut tasks: Vec<Supervised>, shutdown: CancellationToken) {
+    const MAX_BACKOFF: Duration = Duration::from_secs(300);
+
+    loop {
+        if tasks.is_empty() {
+            return;
+        }
+        if shutdown.is_cancelled() {
+            for t in &tasks {
+                t.cancel.cancel();
+            }
+            for t in tasks {
+                let _ = t.handle.await;
+            }
+            return;
+        }
+
+        let (idx, result) = {
+            let mut futs: Vec<_> = tasks.iter_mut().map(|t| &mut t.handle).collect();
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    continue;
+                }
+                (r, i, _) = futures::future::select_all(&mut futs) => (i, r),
+            }
+        };
+
+        {
+            let t = &tasks[idx];
+            match &result {
+                Ok(()) => tracing::error!(task = t.name, "background task exited unexpectedly"),
+                Err(e) => {
+                    tracing::error!(task = t.name, error = %e, "background task panicked")
+                }
+            }
+        }
+
+        let backoff = {
+            let t = &mut tasks[idx];
+            t.consecutive_failures = t.consecutive_failures.saturating_add(1);
+            let exp = t.consecutive_failures.min(8).saturating_sub(1);
+            Duration::from_secs(2u64.pow(exp)).min(MAX_BACKOFF)
+        };
+        let name = tasks[idx].name;
+        let attempts = tasks[idx].consecutive_failures;
+        tracing::warn!(
+            task = name,
+            secs = backoff.as_secs(),
+            attempts,
+            "respawning after backoff"
+        );
+
+        tokio::select! {
+            _ = shutdown.cancelled() => continue,
+            _ = tokio::time::sleep(backoff) => {}
+        }
+
+        let (new_cancel, new_handle) = (tasks[idx].factory)();
+        tasks[idx].cancel = new_cancel;
+        tasks[idx].handle = new_handle;
+        tracing::info!(task = name, attempts, "background task respawned");
     }
 }

@@ -593,7 +593,7 @@ async fn assemble_context_inner(
 
     let now_ms = chrono::Utc::now().timestamp_millis();
 
-    for r in &semantic_results {
+    for r in semantic_results.iter() {
         if seen_ids.contains(&r.memory.id) {
             continue;
         }
