@@ -113,6 +113,10 @@ async fn append_handler(
             }
             b.buffer.push_back(body.line.clone());
             let _ = b.tx.send(body.line);
+            b.last_activity.store(
+                crate::dreamer::monotonic_millis(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
     }
 

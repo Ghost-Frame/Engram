@@ -15,7 +15,7 @@ use lru::LruCache;
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::num::NonZeroUsize;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -33,28 +33,37 @@ const MAX_LIMIT: usize = MAX_SEARCH_LIMIT;
 // TTL provides a secondary eviction policy.
 // ---------------------------------------------------------------------------
 
-const CACHE_CAPACITY: usize = 512;
+const CACHE_CAPACITY: usize = 2048;
 const CACHE_TTL_SECS: u64 = 15;
+const N_SHARDS: usize = 32;
 
 struct CacheEntry {
-    results: Vec<SearchResult>,
+    results: Arc<Vec<SearchResult>>,
     inserted: Instant,
 }
 
-/// Cache key: (user_id, generation, query_param_hash)
 type CacheKey = (i64, u64, u64);
 
-struct SearchCache {
-    entries: LruCache<CacheKey, CacheEntry>,
-    generations: HashMap<i64, u64>,
+struct SearchCacheShards {
+    shards: [Mutex<LruCache<CacheKey, CacheEntry>>; N_SHARDS],
+    generations: RwLock<HashMap<i64, u64>>,
 }
 
-static SEARCH_CACHE: LazyLock<Mutex<SearchCache>> = LazyLock::new(|| {
-    Mutex::new(SearchCache {
-        entries: LruCache::new(NonZeroUsize::new(CACHE_CAPACITY).unwrap()),
-        generations: HashMap::new(),
-    })
+static SEARCH_CACHE: LazyLock<SearchCacheShards> = LazyLock::new(|| {
+    let per_shard_cap = NonZeroUsize::new(CACHE_CAPACITY / N_SHARDS).unwrap();
+    SearchCacheShards {
+        shards: std::array::from_fn(|_| Mutex::new(LruCache::new(per_shard_cap))),
+        generations: RwLock::new(HashMap::new()),
+    }
 });
+
+#[inline]
+fn shard_idx(user_id: i64, param_hash: u64) -> usize {
+    let h = param_hash
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(user_id as u64);
+    (h as usize) & (N_SHARDS - 1)
+}
 
 /// Hash the search parameters that affect results.
 fn hash_search_params(req: &SearchRequest) -> u64 {
@@ -70,28 +79,37 @@ fn hash_search_params(req: &SearchRequest) -> u64 {
     h.finish()
 }
 
-fn cache_get(user_id: i64, param_hash: u64) -> Option<Vec<SearchResult>> {
-    let mut cache = SEARCH_CACHE.lock().ok()?;
-    let gen = *cache.generations.get(&user_id).unwrap_or(&0);
+fn cache_get(user_id: i64, param_hash: u64) -> Option<Arc<Vec<SearchResult>>> {
+    let gen = {
+        let gens = SEARCH_CACHE.generations.read().ok()?;
+        *gens.get(&user_id).unwrap_or(&0)
+    };
     let key = (user_id, gen, param_hash);
-    if let Some(entry) = cache.entries.get(&key) {
+    let shard = &SEARCH_CACHE.shards[shard_idx(user_id, param_hash)];
+    let mut s = shard.lock().ok()?;
+    if let Some(entry) = s.get(&key) {
         if entry.inserted.elapsed().as_secs() < CACHE_TTL_SECS {
-            return Some(entry.results.clone());
+            return Some(Arc::clone(&entry.results));
         }
-        // Expired -- remove
-        cache.entries.pop(&key);
+        s.pop(&key);
     }
     None
 }
 
-fn cache_put(user_id: i64, param_hash: u64, results: &[SearchResult]) {
-    if let Ok(mut cache) = SEARCH_CACHE.lock() {
-        let gen = *cache.generations.get(&user_id).unwrap_or(&0);
-        let key = (user_id, gen, param_hash);
-        cache.entries.put(
+fn cache_put(user_id: i64, param_hash: u64, results: Arc<Vec<SearchResult>>) {
+    let gen = {
+        let Ok(gens) = SEARCH_CACHE.generations.read() else {
+            return;
+        };
+        *gens.get(&user_id).unwrap_or(&0)
+    };
+    let key = (user_id, gen, param_hash);
+    let shard = &SEARCH_CACHE.shards[shard_idx(user_id, param_hash)];
+    if let Ok(mut s) = shard.lock() {
+        s.put(
             key,
             CacheEntry {
-                results: results.to_vec(),
+                results,
                 inserted: Instant::now(),
             },
         );
@@ -99,9 +117,11 @@ fn cache_put(user_id: i64, param_hash: u64, results: &[SearchResult]) {
 }
 
 /// Invalidate all cached search results for a user. Call on any memory write.
+/// Entries become unreachable via the generation mismatch and age out of their
+/// shard naturally; no full sweep needed.
 pub fn invalidate_search_cache(user_id: i64) {
-    if let Ok(mut cache) = SEARCH_CACHE.lock() {
-        let gen = cache.generations.entry(user_id).or_insert(0);
+    if let Ok(mut gens) = SEARCH_CACHE.generations.write() {
+        let gen = gens.entry(user_id).or_insert(0);
         *gen += 1;
     }
 }
@@ -164,15 +184,14 @@ struct GraphExpansionRow {
 
 async fn hydrate_candidates(
     db: &Database,
-    ids: &[i64],
+    ids: Arc<[i64]>,
     user_id: i64,
 ) -> Result<Vec<HydratedCandidateRow>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    let ids_owned: Vec<i64> = ids.to_vec();
-    let placeholders = ids_owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
         "SELECT id, created_at, importance, is_static, source_count, \
          version, is_latest, source, model, access_count, pagerank_score, \
@@ -184,12 +203,8 @@ async fn hydrate_candidates(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
 
-        // Borrow-only params (R8 P-005): ids_owned + user_id live for
-        // the whole closure, so push &i64 directly and skip the
-        // Box<dyn ToSql> + double-Vec allocation.
-        let mut params: Vec<&dyn rusqlite::types::ToSql> =
-            Vec::with_capacity(ids_owned.len() + 1);
-        for id in &ids_owned {
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(ids.len() + 1);
+        for id in ids.iter() {
             params.push(id);
         }
         params.push(&user_id);
@@ -198,7 +213,7 @@ async fn hydrate_candidates(
             .query(params.as_slice())
             .map_err(rusqlite_to_eng_error)?;
         // 6.9 capacity hint: upper bound is the input id set.
-        let mut hydrated = Vec::with_capacity(ids_owned.len());
+        let mut hydrated = Vec::with_capacity(ids.len());
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             hydrated.push(HydratedCandidateRow {
                 id: row.get(0).map_err(rusqlite_to_eng_error)?,
@@ -303,15 +318,14 @@ async fn fetch_memory_for_search(
 /// keyed by memory ID for O(1) lookup during result assembly.
 async fn fetch_memories_batch(
     db: &Database,
-    ids: &[i64],
+    ids: Arc<[i64]>,
     user_id: i64,
 ) -> Result<HashMap<i64, crate::memory::types::Memory>> {
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let ids_owned: Vec<i64> = ids.to_vec();
-    let placeholders = ids_owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let fetch_sql = format!(
         "SELECT {} FROM memories \
          WHERE id IN ({}) AND user_id = ? AND is_forgotten = 0 AND is_latest = 1 \
@@ -322,11 +336,8 @@ async fn fetch_memories_batch(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&fetch_sql).map_err(rusqlite_to_eng_error)?;
 
-        // Build dynamic params: all IDs followed by user_id. Borrow-only
-        // to avoid Box<dyn ToSql> allocation (R8 P-005).
-        let mut params: Vec<&dyn rusqlite::types::ToSql> =
-            Vec::with_capacity(ids_owned.len() + 1);
-        for id in &ids_owned {
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(ids.len() + 1);
+        for id in ids.iter() {
             params.push(id);
         }
         params.push(&user_id);
@@ -390,15 +401,14 @@ async fn fetch_links_for_search(
 /// HashMap keyed by the source memory ID.
 async fn fetch_links_batch(
     db: &Database,
-    memory_ids: &[i64],
+    memory_ids: Arc<[i64]>,
     user_id: i64,
 ) -> Result<HashMap<i64, Vec<LinkedMemory>>> {
     if memory_ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let ids_owned: Vec<i64> = memory_ids.to_vec();
-    let placeholders = ids_owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = memory_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
     // For each memory_id we need both directions. We tag each row with the
     // "owner" memory ID so we can group results into the right bucket.
@@ -417,15 +427,13 @@ async fn fetch_links_batch(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&link_sql).map_err(rusqlite_to_eng_error)?;
 
-        // Params: [ids..., user_id, ids..., user_id]. Borrow-only
-        // (R8 P-005).
         let mut params: Vec<&dyn rusqlite::types::ToSql> =
-            Vec::with_capacity(ids_owned.len() * 2 + 2);
-        for id in &ids_owned {
+            Vec::with_capacity(memory_ids.len() * 2 + 2);
+        for id in memory_ids.iter() {
             params.push(id);
         }
         params.push(&user_id);
-        for id in &ids_owned {
+        for id in memory_ids.iter() {
             params.push(id);
         }
         params.push(&user_id);
@@ -461,15 +469,14 @@ async fn fetch_links_batch(
 /// Returns a HashMap keyed by root_memory_id.
 async fn fetch_version_chains_batch(
     db: &Database,
-    root_ids: &[i64],
+    root_ids: Arc<[i64]>,
     user_id: i64,
 ) -> Result<HashMap<i64, Vec<VersionChainEntry>>> {
     if root_ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let ids_owned: Vec<i64> = root_ids.to_vec();
-    let placeholders = ids_owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = root_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let chain_sql = format!(
         "SELECT COALESCE(root_memory_id, id) AS root, id, content, version, is_latest \
          FROM memories \
@@ -480,13 +487,12 @@ async fn fetch_version_chains_batch(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&chain_sql).map_err(rusqlite_to_eng_error)?;
 
-        // Params: [ids..., ids..., user_id]. Borrow-only (R8 P-005).
         let mut params: Vec<&dyn rusqlite::types::ToSql> =
-            Vec::with_capacity(ids_owned.len() * 2 + 1);
-        for id in &ids_owned {
+            Vec::with_capacity(root_ids.len() * 2 + 1);
+        for id in root_ids.iter() {
             params.push(id);
         }
-        for id in &ids_owned {
+        for id in root_ids.iter() {
             params.push(id);
         }
         params.push(&user_id);
@@ -537,7 +543,7 @@ fn resolve_strategy(req: &SearchRequest) -> (QuestionType, crate::memory::types:
         limit = ?req.limit,
     )
 )]
-pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<SearchResult>> {
+pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<SearchResult>>> {
     // SECURITY (SEC-MED-6): clamp at library entry point so MCP, sidecar,
     // and CLI callers inherit the cap. HTTP route-level clamp is kept as
     // defense-in-depth.
@@ -654,7 +660,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     }
 
     if results.is_empty() {
-        return Ok(vec![]);
+        return Ok(Arc::new(Vec::new()));
     }
 
     // RRF fusion across channels, weighted by strategy.
@@ -691,9 +697,9 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
     // Warm the pagerank cache for this user if it is empty (first-time or cold start).
     let _ = crate::graph::pagerank::ensure_pagerank_for_user(db, user_id).await;
     {
-        let ids: Vec<i64> = results.keys().copied().collect();
+        let ids: Arc<[i64]> = results.keys().copied().collect::<Vec<i64>>().into();
         if !ids.is_empty() {
-            if let Ok(rows) = hydrate_candidates(db, &ids, user_id).await {
+            if let Ok(rows) = hydrate_candidates(db, Arc::clone(&ids), user_id).await {
                 for row in rows {
                     if let Some(c) = results.get_mut(&row.id) {
                         c.created_at = row.created_at;
@@ -891,8 +897,8 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
 
     // Build final SearchResult vec -- batch-fetch all memories in one query
     // instead of N separate round-trips.
-    let candidate_ids: Vec<i64> = sorted.iter().map(|c| c.id).collect();
-    let memory_map = fetch_memories_batch(db, &candidate_ids, user_id).await?;
+    let candidate_ids: Arc<[i64]> = sorted.iter().map(|c| c.id).collect::<Vec<i64>>().into();
+    let memory_map = fetch_memories_batch(db, Arc::clone(&candidate_ids), user_id).await?;
 
     let mut final_results: Vec<SearchResult> = Vec::with_capacity(sorted.len());
 
@@ -999,14 +1005,19 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
 
     // Include linked memories + version chain if requested -- batch queries
     if req.include_links {
-        let result_ids: Vec<i64> = final_results.iter().map(|r| r.memory.id).collect();
-        let root_ids: Vec<i64> = final_results
+        let result_ids: Arc<[i64]> = final_results
+            .iter()
+            .map(|r| r.memory.id)
+            .collect::<Vec<i64>>()
+            .into();
+        let root_ids: Arc<[i64]> = final_results
             .iter()
             .map(|r| r.memory.root_memory_id.unwrap_or(r.memory.id))
-            .collect();
+            .collect::<Vec<i64>>()
+            .into();
 
-        let links_map = fetch_links_batch(db, &result_ids, user_id).await?;
-        let chains_map = fetch_version_chains_batch(db, &root_ids, user_id).await?;
+        let links_map = fetch_links_batch(db, Arc::clone(&result_ids), user_id).await?;
+        let chains_map = fetch_version_chains_batch(db, Arc::clone(&root_ids), user_id).await?;
 
         for result in &mut final_results {
             if let Some(links) = links_map.get(&result.memory.id) {
@@ -1032,10 +1043,10 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
         "hybrid search completed"
     );
 
-    // 3.5: Populate cache before returning.
-    cache_put(user_id, param_hash, &final_results);
+    let arc_results = Arc::new(final_results);
+    cache_put(user_id, param_hash, Arc::clone(&arc_results));
 
-    Ok(final_results)
+    Ok(arc_results)
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,7 +1066,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Vec<Sear
 )]
 pub async fn faceted_search(
     db: &Database,
-    req: FacetedSearchRequest,
+    mut req: FacetedSearchRequest,
 ) -> Result<FacetedSearchResponse> {
     let user_id = req
         .user_id
@@ -1104,7 +1115,11 @@ pub async fn faceted_search(
     let date_from = req.date_from.as_deref().and_then(parse_iso_date);
     let date_to = req.date_to.as_deref().and_then(parse_iso_date);
 
-    // Predicate closure over a Memory: returns true if it passes all filters.
+    // R8 P-010: move the embedding out of req up front so the inner
+    // SearchRequest does not have to clone 4 KB of floats. The predicate
+    // closure below does not read embedding, so zeroing it here is safe.
+    let taken_embedding = req.embedding.take();
+
     let passes_filters = |m: &super::types::Memory| -> bool {
         // Category
         if let Some(ref cat) = req.category {
@@ -1169,7 +1184,7 @@ pub async fn faceted_search(
         let over_fetch = (limit * 5).min(MAX_LIMIT);
         let search_req = SearchRequest {
             query: req.query.clone(),
-            embedding: req.embedding.clone(),
+            embedding: taken_embedding,
             limit: Some(over_fetch),
             category: req.category.clone(),
             source: req.source.clone(),
@@ -1185,9 +1200,8 @@ pub async fn faceted_search(
             latest_only: true,
             source_filter: None,
         };
-        let mut candidates = hybrid_search(db, search_req).await?;
-        // hybrid_search already applies category/source/tags_all/space_id,
-        // but we still need importance range, date range, tags_any, tags_none.
+        let arc = hybrid_search(db, search_req).await?;
+        let mut candidates = (*arc).clone();
         candidates.retain(|r| passes_filters(&r.memory));
         candidates.truncate(limit);
         results = candidates;

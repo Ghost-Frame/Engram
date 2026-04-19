@@ -200,7 +200,8 @@ async fn search_memories(
         source_filter: body.source_filter,
     };
 
-    let mut results = hybrid_search(&state.db, req).await?;
+    let arc_results = hybrid_search(&state.db, req).await?;
+    let mut results = (*arc_results).clone();
 
     {
         let reranker_guard = state.reranker.read().await;
@@ -298,7 +299,8 @@ async fn explain_search(
     };
 
     let hybrid_start = std::time::Instant::now();
-    let mut results = hybrid_search(&state.db, req).await?;
+    let arc_results = hybrid_search(&state.db, req).await?;
+    let mut results = (*arc_results).clone();
     let hybrid_ms = hybrid_start.elapsed().as_secs_f64() * 1000.0;
 
     let rerank_start = std::time::Instant::now();
@@ -457,7 +459,7 @@ async fn recall(
     }
 
     let mut semantic_count = 0usize;
-    for r in &semantic_results {
+    for r in semantic_results.iter() {
         if seen_ids.insert(r.memory.id) {
             semantic_count += 1;
             output.push(json!({

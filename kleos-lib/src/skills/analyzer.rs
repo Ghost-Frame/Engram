@@ -529,7 +529,6 @@ mod tests {
         let parent = seed_skill(&db, 1, "flaky", 20, 4, 7200).await;
         // Recent child -> parent is in cooldown.
         let child_id = {
-            let parent = parent;
             db.write(move |conn| {
                 conn.execute(
                     "INSERT INTO skill_records \
