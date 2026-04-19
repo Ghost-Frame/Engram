@@ -39,8 +39,6 @@ cargo build --release
 ./target/release/kleos-server
 ```
 
-> Note: the repository will be renamed to `kleos-rust` in a future step. The clone URL above reflects the current name.
-
 Server binds to `127.0.0.1:4200` by default. Set a bootstrap secret, start the server, then claim the admin key:
 
 ```bash
