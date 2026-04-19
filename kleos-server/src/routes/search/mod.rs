@@ -10,14 +10,16 @@ use serde_json::{json, Value};
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
 mod types;
+mod web;
 use types::DecayScoresQuery;
 
-/// Search-adjacent routes: decay refresh and decay scores.
-/// Core search and recall are already in memory.rs.
+/// Search-adjacent routes: decay refresh, decay scores, and the SearXNG
+/// web-search proxy. Core memory search and recall live in memory.rs.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/decay/refresh", post(refresh_decay))
         .route("/decay/scores", get(get_decay_scores))
+        .route("/search/web", post(web::web_search))
 }
 
 async fn refresh_decay(

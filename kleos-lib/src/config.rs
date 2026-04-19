@@ -165,6 +165,18 @@ fn default_skill_evolution_derive_similarity() -> f32 {
     0.7
 }
 
+fn default_web_search_url() -> String {
+    "http://100.64.0.13:8888".to_string()
+}
+
+fn default_web_search_timeout_ms() -> u64 {
+    8000
+}
+
+fn default_web_search_limit() -> u32 {
+    10
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GateConfig {
@@ -487,6 +499,18 @@ pub struct Config {
     /// candidates for derivation.
     #[serde(default = "default_skill_evolution_derive_similarity")]
     pub skill_evolution_derive_similarity: f32,
+    /// Base URL of the SearXNG instance proxied by the /search/web route.
+    /// Must include scheme and port. Default: http://100.64.0.13:8888
+    /// (the private Zanverse Headscale SearXNG instance).
+    #[serde(default = "default_web_search_url")]
+    pub web_search_url: String,
+    /// Upstream request timeout in milliseconds for /search/web.
+    #[serde(default = "default_web_search_timeout_ms")]
+    pub web_search_timeout_ms: u64,
+    /// Default result limit when the /search/web body omits `limit`.
+    /// Hard-capped at 50 regardless of this value.
+    #[serde(default = "default_web_search_limit")]
+    pub web_search_default_limit: u32,
     /// Whether to run the auto-backup background task.
     pub backup_enabled: bool,
     /// Seconds between scheduled backups. Default: 6 hours.
@@ -569,6 +593,9 @@ impl Default for Config {
             skill_evolution_refix_cooldown_secs: default_skill_evolution_refix_cooldown_secs(),
             skill_evolution_capture_tag: default_skill_evolution_capture_tag(),
             skill_evolution_derive_similarity: default_skill_evolution_derive_similarity(),
+            web_search_url: default_web_search_url(),
+            web_search_timeout_ms: default_web_search_timeout_ms(),
+            web_search_default_limit: default_web_search_limit(),
             backup_enabled: false,
             backup_interval_secs: 6 * 3600,
             backup_dir: "backups".to_string(),
@@ -950,6 +977,37 @@ impl Config {
                     "invalid env KLEOS_SKILL_EVOLUTION_DERIVE_SIMILARITY={}, using default {}",
                     v,
                     config.skill_evolution_derive_similarity
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_WEB_SEARCH_URL")
+            .or_else(|_| std::env::var("ENGRAM_WEB_SEARCH_URL"))
+        {
+            if !v.trim().is_empty() {
+                config.web_search_url = v;
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_WEB_SEARCH_TIMEOUT_MS")
+            .or_else(|_| std::env::var("ENGRAM_WEB_SEARCH_TIMEOUT_MS"))
+        {
+            match v.parse() {
+                Ok(n) => config.web_search_timeout_ms = n,
+                Err(_) => tracing::warn!(
+                    "invalid env KLEOS_WEB_SEARCH_TIMEOUT_MS={}, using default {}",
+                    v,
+                    config.web_search_timeout_ms
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KLEOS_WEB_SEARCH_DEFAULT_LIMIT")
+            .or_else(|_| std::env::var("ENGRAM_WEB_SEARCH_DEFAULT_LIMIT"))
+        {
+            match v.parse() {
+                Ok(n) => config.web_search_default_limit = n,
+                Err(_) => tracing::warn!(
+                    "invalid env KLEOS_WEB_SEARCH_DEFAULT_LIMIT={}, using default {}",
+                    v,
+                    config.web_search_default_limit
                 ),
             }
         }
