@@ -223,11 +223,14 @@ async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Respons
     }
 
     let body = lines.join("\n");
+    // R8-R-001: response builder uses static header bytes so .unwrap() is
+    // infallible today, but fall back to a minimal 200 response rather
+    // than panicking if that ever changes.
     Response::builder()
         .header(
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )
         .body(Body::from(body))
-        .unwrap()
+        .unwrap_or_else(|_| Response::new(Body::empty()))
 }

@@ -300,23 +300,26 @@ pub async fn neighborhood_filtered(
                     .prepare(&sql)
                     .map_err(rusqlite_to_eng_error)?;
 
-                // Build params: frontier IDs + user_id + optional type filters
-                let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-                for &id in &frontier_clone {
-                    params.push(Box::new(id));
+                // R8 P-005: borrow params directly instead of Box::new +
+                // clone. frontier_clone and type_filter_clone outlive
+                // this block so &i64 / &String refs are stable.
+                let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(
+                    frontier_clone.len()
+                        + 1
+                        + type_filter_clone.as_ref().map_or(0, |t| t.len()),
+                );
+                for id in &frontier_clone {
+                    params.push(id);
                 }
-                params.push(Box::new(user_id));
+                params.push(&user_id);
                 if let Some(ref types) = type_filter_clone {
                     for t in types {
-                        params.push(Box::new(t.clone()));
+                        params.push(t);
                     }
                 }
 
-                let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-                    params.iter().map(|p| p.as_ref()).collect();
-
                 let rows = stmt
-                    .query_map(param_refs.as_slice(), |row: &rusqlite::Row| {
+                    .query_map(params.as_slice(), |row: &rusqlite::Row| {
                         let source_id: i64 = row.get(0)?;
                         let target_id: i64 = row.get(1)?;
                         let similarity: f64 = row.get(2)?;
