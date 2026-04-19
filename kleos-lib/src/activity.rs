@@ -213,7 +213,12 @@ async fn fanout_chiasm(db: &Database, report: &ActivityReport, user_id: i64) {
 
 /// Broca fan-out: log the action to the action ledger.
 /// Best-effort -- logs warnings on failure but does not propagate errors.
-async fn fanout_broca(db: &Database, report: &ActivityReport, user_id: i64) {
+async fn fanout_broca(
+    db: &Database,
+    report: &ActivityReport,
+    user_id: i64,
+    axon_event_id: Option<i64>,
+) {
     match log_action(
         db,
         LogActionRequest {
@@ -222,7 +227,7 @@ async fn fanout_broca(db: &Database, report: &ActivityReport, user_id: i64) {
             action: report.action.clone(),
             narrative: None,
             payload: Some(serde_json::json!({"summary": report.summary})),
-            axon_event_id: None,
+            axon_event_id,
             user_id: Some(user_id),
         },
     )
@@ -377,7 +382,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
         payload["details"] = details.clone();
     }
 
-    publish_event(
+    let axon_event = publish_event(
         db,
         PublishEventRequest {
             channel,
@@ -389,6 +394,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
         },
     )
     .await?;
+    let axon_event_id = Some(axon_event.id);
 
     // Fan-out to Chiasm, Broca, and Thymus in parallel (all best-effort)
     // NOTE: Brain absorption requires Arc<dyn BrainBackend> + EmbeddingProvider,
@@ -396,7 +402,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
     // server layer where those are accessible via AppState.
     tokio::join!(
         fanout_chiasm(db, report, user_id),
-        fanout_broca(db, report, user_id),
+        fanout_broca(db, report, user_id, axon_event_id),
         fanout_thymus(db, report, user_id),
     );
 

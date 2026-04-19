@@ -27,6 +27,23 @@ pub fn router() -> Router<AppState> {
         )
         .route("/tasks/{id}/history", get(get_task_history_handler))
         .route("/feed", get(get_feed))
+        // Chiasm aliases so agents using Kleos naming can find tasks
+        .route(
+            "/chiasm/tasks",
+            get(list_tasks_handler).post(create_task_handler),
+        )
+        .route("/chiasm/tasks/stats", get(get_stats))
+        .route(
+            "/chiasm/tasks/{id}",
+            get(get_task_handler)
+                .patch(update_task_handler)
+                .delete(delete_task_handler),
+        )
+        .route(
+            "/chiasm/tasks/{id}/history",
+            get(get_task_history_handler),
+        )
+        .route("/chiasm/feed", get(get_feed))
 }
 
 async fn list_tasks_handler(
