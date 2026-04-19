@@ -49,9 +49,8 @@ kleos/
 
 ### Before You Code
 
-1. Check existing issues -- someone might already be working on it
-2. Open an issue first for significant changes -- lets us discuss the approach before you invest time
-3. Read `CLAUDE.md` -- contains workspace conventions, import paths, and patterns
+1. Check existing issues - someone might already be working on it
+2. Open an issue first for significant changes - lets us discuss the approach before you invest time
 
 ### While Coding
 
@@ -62,8 +61,8 @@ cargo check --workspace
 # Run tests (in-memory SQLite, no external deps)
 cargo test --workspace
 
-# Lint before committing -- warnings are errors
-cargo clippy --workspace -- -D warnings
+# Lint before committing - warnings are errors
+cargo clippy --workspace - -D warnings
 ```
 
 ### Code Style
@@ -102,7 +101,7 @@ cargo clippy --workspace -- -D warnings
 
 ## Testing
 
-Tests use in-memory SQLite -- no database setup needed. Each test gets isolated state.
+Tests use in-memory SQLite - no database setup needed. Each test gets isolated state.
 
 ```rust
 #[tokio::test]
@@ -118,12 +117,12 @@ async fn test_search_returns_recent_memories_first() {
 
 ## Common Pitfalls
 
-1. **Wrong import paths** -- check `kleos-lib/src/lib.rs` for what's exported
-2. **Forgetting `pub mod`** -- new modules must be declared in parent `mod.rs`
-3. **Moving out of borrows** -- use `.clone()` or restructure; the compiler tells you exactly what's wrong
-4. **Missing Cargo.toml deps** -- add workspace deps before using them
-5. **Not running cargo check** -- Rust errors are precise; read them before asking for help
-6. **Feature-gated code** -- the `brain` module requires `brain_hopfield` feature flag
+1. **Wrong import paths** - check `kleos-lib/src/lib.rs` for what's exported
+2. **Forgetting `pub mod`** - new modules must be declared in parent `mod.rs`
+3. **Moving out of borrows** - use `.clone()` or restructure; the compiler tells you exactly what's wrong
+4. **Missing Cargo.toml deps** - add workspace deps before using them
+5. **Not running cargo check** - Rust errors are precise; read them before asking for help
+6. **Feature-gated code** - the `brain` module requires `brain_hopfield` feature flag
 
 ## Feature Flags
 
@@ -148,7 +147,7 @@ async fn test_search_returns_recent_memories_first() {
 cargo run -p kleos-migrate -- --source old-kleos.db --target /data/kleos
 ```
 
-The `--target` is a directory -- rusqlite database and LanceDB index are created inside it. Use `--dry-run` to preview table counts and schema diffs without writing. Use `--skip-vectors` to copy relational data only.
+The `--target` is a directory - rusqlite database and LanceDB index are created inside it. Use `--dry-run` to preview table counts and schema diffs without writing. Use `--skip-vectors` to copy relational data only.
 
 Note: `kleos-migrate` has a linker conflict between libsqlite3-sys and libsql-ffi. It must be built separately and cannot share a binary with the server.
 
