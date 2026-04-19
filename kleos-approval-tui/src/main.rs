@@ -398,10 +398,8 @@ async fn main() -> io::Result<()> {
                         }
                         KeyCode::Up | KeyCode::Char('k') => app.select_prev(),
                         KeyCode::Down | KeyCode::Char('j') => app.select_next(),
-                        KeyCode::Enter => {
-                            if !app.approvals.is_empty() {
-                                app.detail_mode = true;
-                            }
+                        KeyCode::Enter if !app.approvals.is_empty() => {
+                            app.detail_mode = true;
                         }
                         KeyCode::Esc => {
                             app.detail_mode = false;
