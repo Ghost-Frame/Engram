@@ -86,6 +86,9 @@ enum Commands {
         #[arg(short, long, default_value = "kleos.db")]
         db: String,
     },
+    /// Skill management
+    #[command(subcommand)]
+    Skill(SkillCommands),
     /// Credential management (talks to credd)
     #[command(subcommand)]
     Cred(CredCommands),
@@ -152,6 +155,99 @@ enum CredCommands {
     AgentRevoke {
         /// Agent name to revoke
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillCommands {
+    /// Search skills by query
+    Search {
+        /// Search query
+        query: String,
+        /// Maximum results
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+    /// List skills
+    List {
+        /// Maximum results
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+        /// Offset
+        #[arg(short, long, default_value = "0")]
+        offset: usize,
+        /// Filter by agent
+        #[arg(short, long)]
+        agent: Option<String>,
+    },
+    /// Get a skill by ID
+    Get {
+        /// Skill ID
+        id: i64,
+    },
+    /// Record an execution result for a skill
+    Execute {
+        /// Skill ID
+        id: i64,
+        /// Whether the execution succeeded
+        #[arg(short, long)]
+        success: bool,
+        /// Duration in milliseconds
+        #[arg(short, long)]
+        duration_ms: Option<i64>,
+        /// Error type (if failed)
+        #[arg(long)]
+        error_type: Option<String>,
+        /// Error message (if failed)
+        #[arg(long)]
+        error_message: Option<String>,
+    },
+    /// Capture a new skill from a description
+    Capture {
+        /// Description of the skill to capture
+        description: String,
+        /// Agent name
+        #[arg(short, long, default_value = "claude-code")]
+        agent: String,
+    },
+    /// Fix / refine an existing skill
+    Fix {
+        /// Skill ID
+        id: i64,
+        /// Direction for the fix
+        #[arg(short, long)]
+        direction: Option<String>,
+        /// Agent name
+        #[arg(short, long, default_value = "claude-code")]
+        agent: String,
+    },
+    /// Derive a new skill from parent skills
+    Derive {
+        /// Parent skill IDs (at least one required)
+        #[arg(required = true)]
+        parent_ids: Vec<i64>,
+        /// Direction for derivation
+        #[arg(short, long)]
+        direction: String,
+        /// Agent name
+        #[arg(short, long, default_value = "claude-code")]
+        agent: String,
+    },
+    /// Show skill dashboard stats
+    Stats,
+    /// Show lineage for a skill
+    Lineage {
+        /// Skill ID
+        id: i64,
+    },
+    /// Show recent skill evolution
+    Evolve {
+        /// Hours to look back
+        #[arg(short = 'H', long, default_value = "24")]
+        hours: u64,
+        /// Maximum results
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
     },
 }
 
@@ -385,9 +481,204 @@ async fn main() {
             Err(e) => eprintln!("Error: {}", e),
         },
 
+        Commands::Skill(skill_cmd) => {
+            handle_skill_command(&client, skill_cmd).await;
+        }
+
         Commands::Cred(cred_cmd) => {
             let cred_client = Client::new(cli.credd_url.clone(), api_key.clone());
             handle_cred_command(&cred_client, cred_cmd).await;
+        }
+    }
+}
+
+async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
+    match cmd {
+        SkillCommands::Search { query, limit } => {
+            let body = json!({ "query": query, "limit": limit });
+            match client.post("/skills/search", body).await {
+                Ok(v) => {
+                    let results = v.as_array().cloned().unwrap_or_else(|| {
+                        v.get("results")
+                            .and_then(|r| r.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                    });
+                    if results.is_empty() {
+                        println!("No results.");
+                    }
+                    for item in &results {
+                        let id = value_as_string(item.get("id")).unwrap_or_else(|| "?".to_string());
+                        let trust = item
+                            .get("trust_score")
+                            .and_then(|x| x.as_f64())
+                            .unwrap_or(0.0);
+                        let name = item.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                        let desc = item.get("description").and_then(|x| x.as_str()).unwrap_or("");
+                        println!("#{} [trust:{:.2}] {} -- {}", id, trust, name, truncate(desc, 80));
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        SkillCommands::List { limit, offset, agent } => {
+            let mut path = format!("/skills?limit={}&offset={}", limit, offset);
+            if let Some(a) = agent {
+                path.push_str(&format!("&agent={}", a));
+            }
+            match client.get(&path).await {
+                Ok(v) => {
+                    let items = v.as_array().cloned().unwrap_or_else(|| {
+                        v.get("skills")
+                            .and_then(|r| r.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                    });
+                    if items.is_empty() {
+                        println!("No skills.");
+                    }
+                    for item in &items {
+                        let id = value_as_string(item.get("id")).unwrap_or_else(|| "?".to_string());
+                        let version = value_as_string(item.get("version")).unwrap_or_else(|| "?".to_string());
+                        let trust = item
+                            .get("trust_score")
+                            .and_then(|x| x.as_f64())
+                            .unwrap_or(0.0);
+                        let name = item.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                        println!("#{} [v{} trust:{:.2}] {}", id, version, trust, name);
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        SkillCommands::Get { id } => {
+            match client.get(&format!("/skills/{}", id)).await {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        SkillCommands::Execute {
+            id,
+            success,
+            duration_ms,
+            error_type,
+            error_message,
+        } => {
+            let body = json!({
+                "success": success,
+                "duration_ms": duration_ms,
+                "error_type": error_type,
+                "error_message": error_message,
+            });
+            match client.post(&format!("/skills/{}/execute", id), body).await {
+                Ok(_) => println!("Recorded execution for skill #{}", id),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        SkillCommands::Capture { description, agent } => {
+            let body = json!({ "description": description, "agent": agent });
+            match client.post("/skills/capture", body).await {
+                Ok(v) => {
+                    let skill_id = value_as_string(v.get("skill_id")).unwrap_or_else(|| "?".to_string());
+                    let message = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+                    let success = v.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+                    if success {
+                        println!("Captured skill #{}: {}", skill_id, message);
+                    } else {
+                        println!("Capture failed: {}", message);
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        SkillCommands::Fix { id, direction, agent } => {
+            let dir = direction.as_deref().unwrap_or("").to_string();
+            let body = json!({ "direction": dir, "agent": agent });
+            match client.post(&format!("/skills/{}/fix", id), body).await {
+                Ok(v) => {
+                    let skill_id = value_as_string(v.get("skill_id")).unwrap_or_else(|| "?".to_string());
+                    let message = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+                    let success = v.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+                    if success {
+                        println!("Fixed skill #{}: {}", skill_id, message);
+                    } else {
+                        println!("Fix failed: {}", message);
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        SkillCommands::Derive { parent_ids, direction, agent } => {
+            let body = json!({ "parent_ids": parent_ids, "direction": direction, "agent": agent });
+            match client.post("/skills/derive", body).await {
+                Ok(v) => {
+                    let skill_id = value_as_string(v.get("skill_id")).unwrap_or_else(|| "?".to_string());
+                    let message = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+                    let success = v.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+                    if success {
+                        println!("Derived skill #{}: {}", skill_id, message);
+                    } else {
+                        println!("Derive failed: {}", message);
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        SkillCommands::Stats => {
+            match client.get("/skills/dashboard/overview").await {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        SkillCommands::Lineage { id } => {
+            match client.get(&format!("/skills/{}/lineage", id)).await {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        SkillCommands::Evolve { hours, limit } => {
+            match client
+                .get(&format!("/skills/evolution/recent?hours={}&limit={}", hours, limit))
+                .await
+            {
+                Ok(v) => {
+                    let evolutions = v.as_array().cloned().unwrap_or_else(|| {
+                        v.get("evolutions")
+                            .and_then(|r| r.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                    });
+                    if evolutions.is_empty() {
+                        println!("No recent evolutions.");
+                    }
+                    for item in &evolutions {
+                        let skill_id = value_as_string(item.get("skill_id")).unwrap_or_else(|| "?".to_string());
+                        let version = value_as_string(item.get("version")).unwrap_or_else(|| "?".to_string());
+                        let name = item.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                        let origin = item.get("origin").and_then(|x| x.as_str()).unwrap_or("?");
+                        let parent_ids: Vec<String> = item
+                            .get("parent_ids")
+                            .and_then(|x| x.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| value_as_string(Some(v)))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        println!("#{} [v{}] {} ({}) -- parents: {:?}", skill_id, version, name, origin, parent_ids);
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
         }
     }
 }

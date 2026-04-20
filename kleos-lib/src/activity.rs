@@ -11,6 +11,7 @@ use crate::services::soma::{get_agent_by_name, heartbeat, register_agent, Regist
 use crate::services::thymus::{
     record_drift_event, record_metric, RecordDriftEventRequest, RecordMetricRequest,
 };
+use crate::skills::{record_execution, search::search_skills};
 use crate::{EngError, Result};
 
 // -- Types --
@@ -309,6 +310,52 @@ async fn fanout_thymus(db: &Database, report: &ActivityReport, user_id: i64) {
     }
 }
 
+/// Skills fan-out: search for relevant skills matching the activity summary,
+/// then record execution success/failure against the best match.
+/// Only fires for task.completed and error.raised actions.
+/// Best-effort -- logs warnings on failure but does not propagate errors.
+async fn fanout_skills(db: &Database, report: &ActivityReport, user_id: i64) {
+    let success = match report.action.as_str() {
+        "task.completed" => true,
+        "error.raised" => false,
+        _ => return,
+    };
+
+    let matches = match search_skills(db, &report.summary, user_id, 1).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("activity: skills search failed: {}", e);
+            return;
+        }
+    };
+
+    let skill = match matches.first() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let error_type = if success {
+        None
+    } else {
+        Some("activity_error")
+    };
+    let error_msg = if success {
+        None
+    } else {
+        Some(report.summary.as_str())
+    };
+
+    match record_execution(db, skill.id, user_id, success, None, error_type, error_msg).await {
+        Ok(()) => tracing::debug!(
+            "activity: recorded {} execution for skill #{} ({})",
+            if success { "successful" } else { "failed" },
+            skill.id,
+            skill.name
+        ),
+        Err(e) => tracing::warn!("activity: skills record_execution failed: {}", e),
+    }
+}
+
 // -- Core function --
 
 #[tracing::instrument(skip(db, report), fields(action = %report.action, project = ?report.project))]
@@ -404,6 +451,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
         fanout_chiasm(db, report, user_id),
         fanout_broca(db, report, user_id, axon_event_id),
         fanout_thymus(db, report, user_id),
+        fanout_skills(db, report, user_id),
     );
 
     Ok(store_result.id)
