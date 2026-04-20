@@ -95,7 +95,7 @@ impl TenantDatabase {
         ];
 
         for pragma in pragmas {
-            conn.execute(pragma, [])
+            conn.execute_batch(pragma)
                 .map_err(|e| EngError::Internal(format!("failed to set pragma: {}", e)))?;
         }
 
@@ -200,7 +200,7 @@ impl TenantDatabase {
             .conn
             .lock()
             .map_err(|_| EngError::Internal("failed to acquire database lock".to_string()))?;
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", [])
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
             .map_err(|e| EngError::Internal(format!("checkpoint failed: {}", e)))?;
         Ok(())
     }

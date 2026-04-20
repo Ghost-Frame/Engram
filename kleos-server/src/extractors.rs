@@ -57,6 +57,12 @@ impl FromRequestParts<AppState> for ResolvedDb {
                 )
             })?;
 
+            // Users whose data lives in the main DB bypass tenant sharding.
+            // user_id=1 is the system/admin user with pre-existing data.
+            if auth.user_id == 1 {
+                return Ok(ResolvedDb(fallback_db));
+            }
+
             if let Some(registry) = registry {
                 let handle = registry
                     .get_or_create(&auth.user_id.to_string())
