@@ -62,6 +62,7 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 mimalloc = { version = "0.1", default-features = false }
 lru = "0.16"
 metrics = "0.24"
+rust_decimal = { version = "1", features = ["serde-str"] }
 metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
 # Dev/bench shared deps.
 criterion = { version = "0.5", features = ["html_reports"] }
