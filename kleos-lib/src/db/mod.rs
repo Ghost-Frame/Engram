@@ -110,6 +110,27 @@ impl Database {
         })
     }
 
+    /// Open a tenant's database with lightweight pools.
+    /// Skips migrations (tenant DBs are already initialized) and
+    /// uses a small pool config suitable for background processing.
+    pub async fn open_tenant(
+        db_path: &str,
+        vector_index: Option<Arc<dyn VectorIndex>>,
+    ) -> Result<Self> {
+        let pool_config = DbPoolConfig {
+            max_readers: 2,
+            writer_count: 1,
+            ..DbPoolConfig::default()
+        };
+        let pools = DatabasePools::new(db_path, pool_config, None).await?;
+
+        Ok(Self {
+            db_path: db_path.to_string(),
+            pools,
+            vector_index,
+        })
+    }
+
     pub fn db_path(&self) -> &str {
         &self.db_path
     }

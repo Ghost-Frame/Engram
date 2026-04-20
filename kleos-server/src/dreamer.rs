@@ -13,6 +13,7 @@ use kleos_lib::intelligence::types::GrowthReflectRequest;
 use kleos_lib::llm::local::LocalModelClient;
 use kleos_lib::services::brain::BrainBackend;
 use kleos_lib::skills::{analyzer, evolver};
+use kleos_lib::tenant::TenantRegistry;
 use kleos_lib::EngError;
 use serde::Serialize;
 use serde_json::Value;
@@ -21,7 +22,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// Program-lifetime monotonic anchor. We store `last_request_time` as
 /// milliseconds since this anchor so that idleness checks are immune to
@@ -127,6 +128,7 @@ pub fn start_dreamer_task(
     llm: Option<Arc<LocalModelClient>>,
     stats: DreamerStatsHandle,
     last_request_time: Arc<AtomicU64>,
+    tenant_registry: Option<Arc<TenantRegistry>>,
 ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let token = CancellationToken::new();
     let cancel = token.clone();
@@ -177,6 +179,17 @@ pub fn start_dreamer_task(
                         &mut last_evolution_run_at,
                     )
                     .await;
+
+                    // Tenant-aware pass: iterate all tenant shards
+                    if let Some(ref registry) = tenant_registry {
+                        run_cycle_tenants(
+                            registry,
+                            llm.as_ref(),
+                            &config,
+                            &stats,
+                        )
+                        .await;
+                    }
                 }
             }
         }
@@ -540,4 +553,105 @@ async fn recent_memory_contents(
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))
     })
     .await
+}
+
+/// Run intelligence pipeline across all active tenant shards.
+/// Each tenant gets its own Database bridge so the existing pipeline
+/// functions work without modification.
+async fn run_cycle_tenants(
+    registry: &Arc<TenantRegistry>,
+    llm: Option<&Arc<LocalModelClient>>,
+    config: &Config,
+    _stats: &DreamerStatsHandle,
+) {
+    let tenants = match registry.list() {
+        Ok(t) => t,
+        Err(e) => {
+            error!(error = %e, "dreamer: failed to list tenants");
+            return;
+        }
+    };
+
+    let mut tenants_processed = 0usize;
+    for tenant_row in tenants {
+        if tenant_row.status != kleos_lib::tenant::TenantStatus::Active {
+            continue;
+        }
+
+        let handle = match registry.get(&tenant_row.user_id).await {
+            Ok(Some(h)) => h,
+            Ok(None) => continue,
+            Err(e) => {
+                warn!(tenant = %tenant_row.tenant_id, error = %e, "dreamer: failed to load tenant");
+                continue;
+            }
+        };
+
+        let db_path = handle.db.path().to_string_lossy().to_string();
+        let tenant_db = match Database::open_tenant(
+            &db_path,
+            Some(Arc::clone(&handle.vector_index)),
+        )
+        .await
+        {
+            Ok(db) => db,
+            Err(e) => {
+                warn!(tenant = %tenant_row.tenant_id, error = %e, "dreamer: failed to open tenant db");
+                continue;
+            }
+        };
+
+        let users = match active_user_ids(&tenant_db).await {
+            Ok(u) => u,
+            Err(e) => {
+                warn!(tenant = %tenant_row.tenant_id, error = %e, "dreamer: failed to get tenant users");
+                continue;
+            }
+        };
+
+        for user_id in &users {
+            if let Err(e) = default_pipeline().run(&tenant_db, *user_id).await {
+                warn!(
+                    tenant = %tenant_row.tenant_id,
+                    user_id = *user_id,
+                    error = %e,
+                    "dreamer: tenant pipeline failed"
+                );
+            }
+
+            let roll: f64 = rand::random();
+            if roll < GROWTH_REFLECT_CHANCE {
+                if let Ok(ctx) = recent_memory_contents(&tenant_db, *user_id, GROWTH_CONTEXT_SIZE).await {
+                    if !ctx.is_empty() {
+                        let req = GrowthReflectRequest {
+                            service: "dreamer".to_string(),
+                            context: ctx,
+                            existing_growth: None,
+                            prompt_override: None,
+                        };
+                        if let Err(e) = growth::reflect(&tenant_db, &req, *user_id).await {
+                            warn!(
+                                tenant = %tenant_row.tenant_id,
+                                user_id = *user_id,
+                                error = %e,
+                                "dreamer: tenant growth reflect failed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if config.skill_evolution_enabled {
+            if let Some(llm_ref) = llm {
+                let _report = run_skill_evolution(&tenant_db, llm_ref.as_ref(), config, &users).await;
+            }
+        }
+
+        tenants_processed += 1;
+    }
+
+    if tenants_processed > 0 {
+        info!(tenants = tenants_processed, "dreamer: tenant cycle complete");
+    }
 }

@@ -6,6 +6,7 @@ use kleos_lib::gate::PendingApproval;
 use kleos_lib::llm::local::LocalModelClient;
 use kleos_lib::reranker::Reranker;
 use kleos_lib::services::brain::BrainBackend;
+use kleos_lib::tenant::TenantRegistry;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
@@ -68,6 +69,8 @@ pub struct AppState {
     /// Unix-seconds timestamp of the most recent HTTP request. Used by the
     /// dreamer to gate heavy consolidation work behind a period of idleness.
     pub last_request_time: Arc<AtomicU64>,
+    /// Tenant registry for multi-tenant dreamer and background jobs.
+    pub tenant_registry: Option<Arc<TenantRegistry>>,
 }
 
 impl AppState {
