@@ -1,8 +1,10 @@
 //! Core types for tenant management.
 
+use crate::db::Database;
 use crate::vector::VectorIndex;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
+use tokio::sync::OnceCell;
 
 use super::TenantDatabase;
 
@@ -84,6 +86,9 @@ pub struct TenantHandle {
 
     /// Last time this handle was accessed (for LRU eviction).
     pub last_access: Mutex<Instant>,
+
+    /// Lazily-initialized async Database pool for API request handling.
+    pub async_db: OnceCell<Arc<Database>>,
 }
 
 impl TenantHandle {
@@ -100,6 +105,19 @@ impl TenantHandle {
             .lock()
             .map(|last| last.elapsed())
             .unwrap_or(Duration::ZERO)
+    }
+
+    /// Get or lazily create the async Database pool for this tenant.
+    pub async fn database(&self) -> crate::Result<Arc<Database>> {
+        self.async_db
+            .get_or_try_init(|| async {
+                let db_path = self.db.path().to_string_lossy().into_owned();
+                let vi = Arc::clone(&self.vector_index);
+                let db = Database::open_tenant(&db_path, Some(vi)).await?;
+                Ok(Arc::new(db))
+            })
+            .await
+            .cloned()
     }
 }
 

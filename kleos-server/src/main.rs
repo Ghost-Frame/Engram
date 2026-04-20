@@ -167,6 +167,19 @@ async fn main() {
         tracing::warn!("POST /admin/safe-mode/exit to recover");
     }
 
+    let tenant_registry = if std::env::var("KLEOS_TENANT_SHARDING").as_deref() == Ok("1") {
+        use kleos_lib::tenant::{TenantConfig, TenantRegistry};
+        let reg = TenantRegistry::new(
+            &config.data_dir,
+            TenantConfig::default(),
+            config.vector_dimensions,
+        ).expect("failed to initialize tenant registry");
+        tracing::info!("tenant sharding enabled");
+        Some(Arc::new(reg))
+    } else {
+        None
+    };
+
     let state = AppState {
         db: db_arc,
         credd: Arc::new(CreddClient::from_config(&config)),
@@ -182,7 +195,7 @@ async fn main() {
         safe_mode: Arc::new(AtomicBool::new(safe_mode_active)),
         dreamer_stats: new_stats_handle(),
         last_request_time: Arc::new(AtomicU64::new(0)),
-        tenant_registry: None,
+        tenant_registry,
     };
 
     // R8 R-008: every background task is described by a factory so the

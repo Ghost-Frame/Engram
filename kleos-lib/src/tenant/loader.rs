@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
-use tokio::sync::RwLock;
+use tokio::sync::{OnceCell, RwLock};
 use tracing::{debug, info, warn};
 
 /// Manages lazy loading and eviction of tenant handles.
@@ -113,6 +113,7 @@ impl TenantLoader {
             created_at: SystemTime::UNIX_EPOCH
                 + std::time::Duration::from_secs(row.created_at as u64),
             last_access: std::sync::Mutex::new(Instant::now()),
+            async_db: OnceCell::new(),
         });
 
         // Store in cache

@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 
-use crate::{error::AppError, extractors::Auth, state::AppState};
+use crate::{error::AppError, extractors::{Auth, ResolvedDb}, state::AppState};
 
 mod types;
 use types::{
@@ -88,6 +88,7 @@ fn memory_to_json(m: &kleos_lib::memory::types::Memory) -> Value {
 async fn store_memory(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(mut req): Json<StoreRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     if req.content.trim().is_empty() {
@@ -107,7 +108,7 @@ async fn store_memory(
     }
     let embedded = req.embedding.is_some();
     let content = req.content.clone();
-    let result = memory::store(&state.db, req).await?;
+    let result = memory::store(&db, req).await?;
     if let Some(existing_id) = result.duplicate_of {
         return Ok((
             StatusCode::OK,
@@ -122,7 +123,7 @@ async fn store_memory(
     // Background: extract facts, preferences, and state from the new memory.
     // Fire-and-forget so the store response is not delayed.
     {
-        let db = state.db.clone();
+        let db = db.clone();
         let memory_id = result.id;
         let user_id = auth.user_id;
         let content_for_extract = content;
@@ -145,7 +146,7 @@ async fn store_memory(
         });
     }
 
-    let mem = memory::get(&state.db, result.id, auth.user_id).await?;
+    let mem = memory::get(&db, result.id, auth.user_id).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({
@@ -160,6 +161,7 @@ async fn store_memory(
 async fn search_memories(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<SearchBody>,
 ) -> Result<Json<Value>, AppError> {
     let embedding = {
@@ -200,7 +202,7 @@ async fn search_memories(
         source_filter: body.source_filter,
     };
 
-    let arc_results = hybrid_search(&state.db, req).await?;
+    let arc_results = hybrid_search(&db, req).await?;
     let mut results = (*arc_results).clone();
 
     {
@@ -255,6 +257,7 @@ async fn search_memories(
 async fn explain_search(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<SearchBody>,
 ) -> Result<Json<Value>, AppError> {
     let total_start = std::time::Instant::now();
@@ -299,7 +302,7 @@ async fn explain_search(
     };
 
     let hybrid_start = std::time::Instant::now();
-    let arc_results = hybrid_search(&state.db, req).await?;
+    let arc_results = hybrid_search(&db, req).await?;
     let mut results = (*arc_results).clone();
     let hybrid_ms = hybrid_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -360,6 +363,7 @@ async fn explain_search(
 async fn recall(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<RecallBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.unwrap_or(20).min(100);
@@ -380,7 +384,7 @@ async fn recall(
         include_forgotten: false,
         include_archived: false,
     };
-    let all_list = memory::list(&state.db, static_opts).await?;
+    let all_list = memory::list(&db, static_opts).await?;
     let static_memories: Vec<_> = all_list.into_iter().filter(|m| m.is_static).collect();
 
     let query_embedding = {
@@ -415,7 +419,7 @@ async fn recall(
         latest_only: true,
         source_filter: None,
     };
-    let semantic_results = hybrid_search(&state.db, semantic_req).await?;
+    let semantic_results = hybrid_search(&db, semantic_req).await?;
 
     let recent_opts = ListOptions {
         limit: 20,
@@ -427,7 +431,7 @@ async fn recall(
         include_forgotten: false,
         include_archived: false,
     };
-    let recent_all = memory::list(&state.db, recent_opts).await?;
+    let recent_all = memory::list(&db, recent_opts).await?;
     let important_memories: Vec<_> = recent_all
         .into_iter()
         .filter(|m| m.importance >= 7)
@@ -481,7 +485,7 @@ async fn recall(
         include_forgotten: false,
         include_archived: false,
     };
-    let recent_extra = memory::list(&state.db, recent_extra_opts).await?;
+    let recent_extra = memory::list(&db, recent_extra_opts).await?;
     for m in recent_extra
         .iter()
         .filter(|m| m.importance < 7 && !m.is_static)
@@ -514,8 +518,8 @@ async fn recall(
 }
 
 async fn list_memories(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let opts = ListOptions {
@@ -528,70 +532,70 @@ async fn list_memories(
         include_forgotten: params.include_forgotten.unwrap_or(false),
         include_archived: params.include_archived.unwrap_or(false),
     };
-    let memories = memory::list(&state.db, opts).await?;
+    let memories = memory::list(&db, opts).await?;
     let results: Vec<Value> = memories.iter().map(memory_to_json).collect();
     Ok(Json(json!({ "results": results })))
 }
 
 async fn get_memory(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let mem = memory::get(&state.db, id, auth.user_id).await?;
+    let mem = memory::get(&db, id, auth.user_id).await?;
     Ok(Json(memory_to_json(&mem)))
 }
 
 async fn delete_memory(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    memory::delete(&state.db, id, auth.user_id).await?;
+    memory::delete(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
 async fn list_trashed(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(opts): Query<TrashListOptions>,
 ) -> Result<Json<Value>, AppError> {
     let limit = opts.limit.unwrap_or(50).min(200);
-    let memories = memory::list_trashed(&state.db, auth.user_id, limit).await?;
+    let memories = memory::list_trashed(&db, auth.user_id, limit).await?;
     let items: Vec<Value> = memories.iter().map(memory_to_json).collect();
     Ok(Json(json!({ "memories": items, "count": items.len() })))
 }
 
 async fn restore_memory(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let restored = memory::restore(&state.db, id, auth.user_id).await?;
+    let restored = memory::restore(&db, id, auth.user_id).await?;
     Ok(Json(memory_to_json(&restored)))
 }
 
 async fn update_memory(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let updated = memory::update(&state.db, id, req, auth.user_id).await?;
+    let updated = memory::update(&db, id, req, auth.user_id).await?;
     Ok(Json(memory_to_json(&updated)))
 }
 
 async fn list_tags(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let tags = memory::list_all_tags(&state.db, auth.user_id).await?;
+    let tags = memory::list_all_tags(&db, auth.user_id).await?;
     Ok(Json(json!({ "tags": tags })))
 }
 
 async fn search_tags(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<SearchTagsBody>,
 ) -> Result<Json<Value>, AppError> {
     if body.tags.is_empty() {
@@ -601,7 +605,7 @@ async fn search_tags(
     }
 
     let memories = memory::search_by_tags(
-        &state.db,
+        &db,
         auth.user_id,
         &body.tags,
         body.match_all.unwrap_or(false),
@@ -616,6 +620,7 @@ async fn search_tags(
 async fn faceted_search_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(mut body): Json<FacetedSearchRequest>,
 ) -> Result<Json<Value>, AppError> {
     body.user_id = Some(auth.user_id);
@@ -631,47 +636,45 @@ async fn faceted_search_handler(
         }
     }
 
-    let resp = faceted_search(&state.db, body).await?;
+    let resp = faceted_search(&db, body).await?;
     Ok(Json(json!(resp)))
 }
 
 async fn update_tags(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<UpdateTagsBody>,
 ) -> Result<Json<Value>, AppError> {
-    memory::update_memory_tags(&state.db, id, auth.user_id, &body.tags).await?;
-    let updated = memory::get(&state.db, id, auth.user_id).await?;
+    memory::update_memory_tags(&db, id, auth.user_id, &body.tags).await?;
+    let updated = memory::get(&db, id, auth.user_id).await?;
     Ok(Json(memory_to_json(&updated)))
 }
 
 async fn profile_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let profile = memory::get_user_profile(&state.db, auth.user_id).await?;
+    let profile = memory::get_user_profile(&db, auth.user_id).await?;
     Ok(Json(json!(profile)))
 }
 
 async fn synthesize_profile(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     let uid = auth.user_id;
-    state
-        .db
-        .write(move |conn| {
-            conn.execute(
-                "DELETE FROM personality_signals WHERE user_id = ?1 AND memory_id IS NOT NULL",
-                params![uid],
-            )?;
-            Ok(())
-        })
-        .await?;
+    db.write(move |conn| {
+        conn.execute(
+            "DELETE FROM personality_signals WHERE user_id = ?1 AND memory_id IS NOT NULL",
+            params![uid],
+        )?;
+        Ok(())
+    })
+    .await?;
 
     let memories = memory::list(
-        &state.db,
+        &db,
         ListOptions {
             limit: 200,
             offset: 0,
@@ -687,7 +690,7 @@ async fn synthesize_profile(
 
     for mem in &memories {
         let _ = kleos_lib::personality::extract_personality_signals(
-            &state.db,
+            &db,
             &mem.content,
             mem.id,
             auth.user_id,
@@ -695,65 +698,65 @@ async fn synthesize_profile(
         .await?;
     }
 
-    let _ = kleos_lib::personality::synthesize_personality_profile(&state.db, auth.user_id).await?;
-    let profile = memory::get_user_profile(&state.db, auth.user_id).await?;
+    let _ = kleos_lib::personality::synthesize_personality_profile(&db, auth.user_id).await?;
+    let profile = memory::get_user_profile(&db, auth.user_id).await?;
     Ok(Json(json!(profile)))
 }
 
 async fn user_stats(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = memory::get_user_stats(&state.db, auth.user_id).await?;
+    let stats = memory::get_user_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }
 
 async fn forget_memory(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     body: Option<Json<ForgetBody>>,
 ) -> Result<Json<Value>, AppError> {
-    memory::mark_forgotten(&state.db, id, auth.user_id).await?;
+    memory::mark_forgotten(&db, id, auth.user_id).await?;
     if let Some(reason) = body.and_then(|Json(body)| body.reason) {
-        memory::update_forget_reason(&state.db, id, &reason, auth.user_id).await?;
+        memory::update_forget_reason(&db, id, &reason, auth.user_id).await?;
     }
     Ok(Json(json!({ "id": id, "status": "forgotten" })))
 }
 
 async fn archive_memory(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    memory::mark_archived(&state.db, id, auth.user_id).await?;
+    memory::mark_archived(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "id": id, "status": "archived" })))
 }
 
 async fn unarchive_memory(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    memory::mark_unarchived(&state.db, id, auth.user_id).await?;
+    memory::mark_unarchived(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "id": id, "status": "active" })))
 }
 
 async fn get_links(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let _ = memory::get(&state.db, id, auth.user_id).await?;
-    let links = memory::get_links_for(&state.db, id, auth.user_id).await?;
+    let _ = memory::get(&db, id, auth.user_id).await?;
+    let links = memory::get_links_for(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "links": links })))
 }
 
 async fn version_chain_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let versions = memory::get_version_chain(&state.db, id, auth.user_id).await?;
+    let versions = memory::get_version_chain(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "versions": versions })))
 }
