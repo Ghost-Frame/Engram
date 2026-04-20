@@ -514,15 +514,28 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                             .and_then(|x| x.as_f64())
                             .unwrap_or(0.0);
                         let name = item.get("name").and_then(|x| x.as_str()).unwrap_or("?");
-                        let desc = item.get("description").and_then(|x| x.as_str()).unwrap_or("");
-                        println!("#{} [trust:{:.2}] {} -- {}", id, trust, name, truncate(desc, 80));
+                        let desc = item
+                            .get("description")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("");
+                        println!(
+                            "#{} [trust:{:.2}] {} -- {}",
+                            id,
+                            trust,
+                            name,
+                            truncate(desc, 80)
+                        );
                     }
                 }
                 Err(e) => eprintln!("Error: {}", e),
             }
         }
 
-        SkillCommands::List { limit, offset, agent } => {
+        SkillCommands::List {
+            limit,
+            offset,
+            agent,
+        } => {
             let mut path = format!("/skills?limit={}&offset={}", limit, offset);
             if let Some(a) = agent {
                 path.push_str(&format!("&agent={}", a));
@@ -540,7 +553,8 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                     }
                     for item in &items {
                         let id = value_as_string(item.get("id")).unwrap_or_else(|| "?".to_string());
-                        let version = value_as_string(item.get("version")).unwrap_or_else(|| "?".to_string());
+                        let version =
+                            value_as_string(item.get("version")).unwrap_or_else(|| "?".to_string());
                         let trust = item
                             .get("trust_score")
                             .and_then(|x| x.as_f64())
@@ -553,12 +567,10 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
             }
         }
 
-        SkillCommands::Get { id } => {
-            match client.get(&format!("/skills/{}", id)).await {
-                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
-                Err(e) => eprintln!("Error: {}", e),
-            }
-        }
+        SkillCommands::Get { id } => match client.get(&format!("/skills/{}", id)).await {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+            Err(e) => eprintln!("Error: {}", e),
+        },
 
         SkillCommands::Execute {
             id,
@@ -583,7 +595,8 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
             let body = json!({ "description": description, "agent": agent });
             match client.post("/skills/capture", body).await {
                 Ok(v) => {
-                    let skill_id = value_as_string(v.get("skill_id")).unwrap_or_else(|| "?".to_string());
+                    let skill_id =
+                        value_as_string(v.get("skill_id")).unwrap_or_else(|| "?".to_string());
                     let message = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
                     let success = v.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
                     if success {
@@ -596,12 +609,17 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
             }
         }
 
-        SkillCommands::Fix { id, direction, agent } => {
+        SkillCommands::Fix {
+            id,
+            direction,
+            agent,
+        } => {
             let dir = direction.as_deref().unwrap_or("").to_string();
             let body = json!({ "direction": dir, "agent": agent });
             match client.post(&format!("/skills/{}/fix", id), body).await {
                 Ok(v) => {
-                    let skill_id = value_as_string(v.get("skill_id")).unwrap_or_else(|| "?".to_string());
+                    let skill_id =
+                        value_as_string(v.get("skill_id")).unwrap_or_else(|| "?".to_string());
                     let message = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
                     let success = v.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
                     if success {
@@ -614,11 +632,16 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
             }
         }
 
-        SkillCommands::Derive { parent_ids, direction, agent } => {
+        SkillCommands::Derive {
+            parent_ids,
+            direction,
+            agent,
+        } => {
             let body = json!({ "parent_ids": parent_ids, "direction": direction, "agent": agent });
             match client.post("/skills/derive", body).await {
                 Ok(v) => {
-                    let skill_id = value_as_string(v.get("skill_id")).unwrap_or_else(|| "?".to_string());
+                    let skill_id =
+                        value_as_string(v.get("skill_id")).unwrap_or_else(|| "?".to_string());
                     let message = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
                     let success = v.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
                     if success {
@@ -631,12 +654,10 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
             }
         }
 
-        SkillCommands::Stats => {
-            match client.get("/skills/dashboard/overview").await {
-                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
-                Err(e) => eprintln!("Error: {}", e),
-            }
-        }
+        SkillCommands::Stats => match client.get("/skills/dashboard/overview").await {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+            Err(e) => eprintln!("Error: {}", e),
+        },
 
         SkillCommands::Lineage { id } => {
             match client.get(&format!("/skills/{}/lineage", id)).await {
@@ -647,7 +668,10 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
 
         SkillCommands::Evolve { hours, limit } => {
             match client
-                .get(&format!("/skills/evolution/recent?hours={}&limit={}", hours, limit))
+                .get(&format!(
+                    "/skills/evolution/recent?hours={}&limit={}",
+                    hours, limit
+                ))
                 .await
             {
                 Ok(v) => {
@@ -661,8 +685,10 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                         println!("No recent evolutions.");
                     }
                     for item in &evolutions {
-                        let skill_id = value_as_string(item.get("skill_id")).unwrap_or_else(|| "?".to_string());
-                        let version = value_as_string(item.get("version")).unwrap_or_else(|| "?".to_string());
+                        let skill_id = value_as_string(item.get("skill_id"))
+                            .unwrap_or_else(|| "?".to_string());
+                        let version =
+                            value_as_string(item.get("version")).unwrap_or_else(|| "?".to_string());
                         let name = item.get("name").and_then(|x| x.as_str()).unwrap_or("?");
                         let origin = item.get("origin").and_then(|x| x.as_str()).unwrap_or("?");
                         let parent_ids: Vec<String> = item
@@ -674,7 +700,10 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                                     .collect()
                             })
                             .unwrap_or_default();
-                        println!("#{} [v{}] {} ({}) -- parents: {:?}", skill_id, version, name, origin, parent_ids);
+                        println!(
+                            "#{} [v{}] {} ({}) -- parents: {:?}",
+                            skill_id, version, name, origin, parent_ids
+                        );
                     }
                 }
                 Err(e) => eprintln!("Error: {}", e),
