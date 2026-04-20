@@ -8,6 +8,7 @@ pub mod artifacts;
 pub mod audit;
 pub mod auth;
 pub mod cognitive;
+pub mod commerce;
 pub mod config;
 pub mod context;
 pub mod conversations;

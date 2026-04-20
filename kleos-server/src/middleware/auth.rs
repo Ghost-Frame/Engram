@@ -7,7 +7,15 @@ use tracing::Instrument;
 
 use crate::state::AppState;
 
-const OPEN_PATHS: &[&str] = &["/health", "/live", "/ready", "/bootstrap"];
+const OPEN_PATHS: &[&str] = &[
+    "/health",
+    "/live",
+    "/ready",
+    "/bootstrap",
+    "/.well-known/agent-card.json",
+    "/.well-known/agent-commerce.json",
+    "/llms.txt",
+];
 
 /// Methods that mutate state and therefore require `Scope::Write` (or admin).
 fn requires_write_scope(method: &Method) -> bool {

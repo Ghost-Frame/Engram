@@ -239,6 +239,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_memories_list_covering_index),
         transactional: true,
     },
+    Migration {
+        version: 24,
+        description: "commerce_tables",
+        up: run_migration_commerce_tables,
+        down: Some(down_migration_commerce_tables),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -268,6 +275,7 @@ const MIGRATION_LINK_COVERING_INDEXES: i64 = 20;
 const MIGRATION_UPLOAD_SESSIONS: i64 = 21;
 const MIGRATION_SERVICE_DEAD_LETTERS: i64 = 22;
 const MIGRATION_MEMORIES_LIST_COVERING_INDEX: i64 = 23;
+const MIGRATION_COMMERCE_TABLES: i64 = 24;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -442,6 +450,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             MIGRATION_MEMORIES_LIST_COVERING_INDEX,
             "memories_list_covering_index",
         )?;
+    }
+
+    if current_version < MIGRATION_COMMERCE_TABLES {
+        info!("Running migration 24: commerce_tables");
+        run_migration_commerce_tables(conn)?;
+        record_migration(conn, MIGRATION_COMMERCE_TABLES, "commerce_tables")?;
     }
 
     Ok(())
@@ -1188,6 +1202,112 @@ fn down_migration_memories_list_covering_index(conn: &rusqlite::Connection) -> R
     conn.execute_batch("DROP INDEX IF EXISTS idx_memories_list_user_id_desc;")
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     info!("Dropped idx_memories_list_user_id_desc (migration 23 down)");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 24: commerce tables
+// ---------------------------------------------------------------------------
+
+fn run_migration_commerce_tables(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS service_pricing (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             service_id TEXT NOT NULL UNIQUE,
+             base_amount TEXT NOT NULL,
+             currency TEXT NOT NULL DEFAULT 'USDC',
+             chain TEXT NOT NULL DEFAULT 'base',
+             chain_id INTEGER NOT NULL DEFAULT 8453,
+             is_active BOOLEAN NOT NULL DEFAULT 1,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+
+         CREATE TABLE IF NOT EXISTS volume_discounts (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             service_id TEXT NOT NULL,
+             min_calls INTEGER NOT NULL,
+             amount TEXT NOT NULL,
+             FOREIGN KEY (service_id) REFERENCES service_pricing(service_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_vd_service ON volume_discounts(service_id);
+
+         CREATE TABLE IF NOT EXISTS payment_quotes (
+             id TEXT PRIMARY KEY,
+             user_id INTEGER,
+             wallet_address TEXT,
+             service_id TEXT NOT NULL,
+             amount TEXT NOT NULL,
+             currency TEXT NOT NULL DEFAULT 'USDC',
+             discount_applied TEXT,
+             status TEXT NOT NULL DEFAULT 'pending',
+             parameters TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             expires_at TEXT NOT NULL,
+             settled_at TEXT,
+             FOREIGN KEY (user_id) REFERENCES users(id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_pq_user ON payment_quotes(user_id);
+         CREATE INDEX IF NOT EXISTS idx_pq_status ON payment_quotes(status);
+         CREATE INDEX IF NOT EXISTS idx_pq_expires ON payment_quotes(expires_at)
+             WHERE status = 'pending';
+
+         CREATE TABLE IF NOT EXISTS payment_settlements (
+             id TEXT PRIMARY KEY,
+             quote_id TEXT NOT NULL UNIQUE,
+             user_id INTEGER,
+             wallet_address TEXT,
+             amount TEXT NOT NULL,
+             currency TEXT NOT NULL DEFAULT 'USDC',
+             payment_method TEXT NOT NULL,
+             tx_hash TEXT,
+             block_number INTEGER,
+             status TEXT NOT NULL DEFAULT 'pending',
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             confirmed_at TEXT,
+             FOREIGN KEY (quote_id) REFERENCES payment_quotes(id),
+             FOREIGN KEY (user_id) REFERENCES users(id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_ps_user ON payment_settlements(user_id);
+         CREATE INDEX IF NOT EXISTS idx_ps_quote ON payment_settlements(quote_id);
+         CREATE INDEX IF NOT EXISTS idx_ps_created ON payment_settlements(created_at DESC);
+
+         CREATE TABLE IF NOT EXISTS account_balances (
+             user_id INTEGER PRIMARY KEY,
+             balance TEXT NOT NULL DEFAULT '0',
+             currency TEXT NOT NULL DEFAULT 'USDC',
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             FOREIGN KEY (user_id) REFERENCES users(id)
+         );
+
+         CREATE TABLE IF NOT EXISTS daily_spend (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             user_id INTEGER NOT NULL,
+             date TEXT NOT NULL,
+             total_amount TEXT NOT NULL DEFAULT '0',
+             call_count INTEGER NOT NULL DEFAULT 0,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(user_id, date),
+             FOREIGN KEY (user_id) REFERENCES users(id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_ds_user_date ON daily_spend(user_id, date);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Created commerce tables (migration 24)");
+    Ok(())
+}
+
+fn down_migration_commerce_tables(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS daily_spend;
+         DROP TABLE IF EXISTS account_balances;
+         DROP TABLE IF EXISTS payment_settlements;
+         DROP TABLE IF EXISTS payment_quotes;
+         DROP TABLE IF EXISTS volume_discounts;
+         DROP TABLE IF EXISTS service_pricing;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Dropped commerce tables (migration 24 down)");
     Ok(())
 }
 

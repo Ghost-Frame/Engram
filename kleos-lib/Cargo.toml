@@ -69,6 +69,7 @@ subtle = { workspace = true }
 zeroize = { workspace = true }
 toml = { workspace = true }
 metrics = { workspace = true }
+rust_decimal = { workspace = true }
 
 # Vendored protoc binary -- only available for Linux x86_64.
 # Other platforms install protoc via system package manager.
