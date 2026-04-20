@@ -20,7 +20,7 @@ pub struct LanceDb {
 
 /// Open or create LanceDB at target/lance/
 pub async fn open_lance(target_dir: &Path) -> Result<LanceDb> {
-    let lance_path = target_dir.join("lance");
+    let lance_path = target_dir.join("hnsw").join("memories.lance");
     std::fs::create_dir_all(&lance_path)?;
 
     info!("Opening LanceDB at {:?}", lance_path);

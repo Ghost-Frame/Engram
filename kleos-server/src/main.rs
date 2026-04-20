@@ -182,6 +182,7 @@ async fn main() {
         safe_mode: Arc::new(AtomicBool::new(safe_mode_active)),
         dreamer_stats: new_stats_handle(),
         last_request_time: Arc::new(AtomicU64::new(0)),
+        tenant_registry: None,
     };
 
     // R8 R-008: every background task is described by a factory so the
@@ -208,6 +209,7 @@ async fn main() {
         let llm = state.llm.clone();
         let stats = Arc::clone(&state.dreamer_stats);
         let last_req = Arc::clone(&state.last_request_time);
+        let registry = state.tenant_registry.clone();
         supervised.push(Supervised::spawn("dreamer", move || {
             start_dreamer_task(
                 Arc::clone(&db),
@@ -216,6 +218,7 @@ async fn main() {
                 llm.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&last_req),
+                registry.clone(),
             )
         }));
         tracing::info!(

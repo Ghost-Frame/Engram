@@ -270,6 +270,7 @@ pub struct StoreRequest {
     pub embedding: Option<Vec<f32>>,
     pub session_id: Option<String>,
     pub is_static: Option<bool>,
+    #[serde(alias = "userId")]
     pub user_id: Option<i64>,
     pub space_id: Option<i64>,
     pub parent_memory_id: Option<i64>,

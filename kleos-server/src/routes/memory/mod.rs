@@ -498,8 +498,15 @@ async fn recall(
 
     output.truncate(limit);
     let count = output.len();
+
+    // Build compat profile from static memories for zanmemory clients
+    let profile: Vec<&str> = static_memories.iter().map(|m| m.content.as_str()).collect();
+    let results = output.clone();
+
     Ok(Json(json!({
         "memories": output,
+        "results": results,
+        "profile": profile,
         "breakdown": { "static": static_count, "semantic": semantic_count,
                        "important": important_count, "recent": recent_count },
         "count": count,
