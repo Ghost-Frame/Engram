@@ -1,5 +1,12 @@
 -- Per-tenant schema v1
 -- No user_id columns - each database belongs to exactly one tenant
+--
+-- SHIM NOTE (walkback tag: TENANT_USERID_SHIM): Until the kleos-lib memory/search
+-- layer is refactored to stop filtering by user_id on tenant shards, a few
+-- tables below carry a redundant user_id column. Every row in a tenant shard
+-- will have the same user_id (the shard owner). These columns and the
+-- vector_sync_pending table should be dropped during the full tenant refactor.
+-- Grep for TENANT_USERID_SHIM to find every shim touchpoint.
 
 -- Schema migrations tracking
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -16,6 +23,7 @@ CREATE TABLE IF NOT EXISTS memories (
     source TEXT NOT NULL DEFAULT 'unknown',
     session_id TEXT,
     importance INTEGER NOT NULL DEFAULT 5,
+    user_id INTEGER NOT NULL DEFAULT 0, -- TENANT_USERID_SHIM
     embedding BLOB,
     embedding_vec_1024 FLOAT32(1024),
     version INTEGER NOT NULL DEFAULT 1,
@@ -309,3 +317,20 @@ CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE OF content ON memo
     INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
     INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
 END;
+
+-- Index on memories.user_id so filtered queries stay fast. -- TENANT_USERID_SHIM
+CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id);
+
+-- Vector sync retry queue. Written when a LanceDB op fails so a sweeper can
+-- retry. Mirrors the main-DB schema. -- TENANT_USERID_SHIM
+CREATE TABLE IF NOT EXISTS vector_sync_pending (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL, -- TENANT_USERID_SHIM
+    op TEXT NOT NULL,
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_attempt_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_vector_sync_memory ON vector_sync_pending(memory_id);
