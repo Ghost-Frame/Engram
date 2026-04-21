@@ -1,9 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-/// Configuration for the Ollama local model client.
+/// Configuration for the local model client.
+///
+/// Targets any OpenAI-compatible `/v1/chat/completions` endpoint. Defaults to a
+/// local Ollama server; set `api_key` (or `LLM_API_KEY`) and point `url` at a
+/// cloud provider to route Kleos's internal LLM calls through DashScope,
+/// OpenRouter, DeepSeek, etc.
 #[derive(Debug, Clone)]
 pub struct OllamaConfig {
-    /// Ollama OpenAI-compatible endpoint URL.
+    /// OpenAI-compatible endpoint URL.
     pub url: String,
     /// Default model name.
     pub model: String,
@@ -11,7 +16,7 @@ pub struct OllamaConfig {
     pub timeout_bg_ms: u64,
     /// Timeout for hot-path (latency-critical) requests in ms.
     pub timeout_hot_ms: u64,
-    /// Maximum concurrent requests to Ollama.
+    /// Maximum concurrent requests to the endpoint.
     pub concurrency: usize,
     /// Maximum queued requests before rejecting.
     pub max_queue: usize,
@@ -19,6 +24,8 @@ pub struct OllamaConfig {
     pub cb_threshold: u32,
     /// Circuit breaker: cooldown in ms before half-open probe.
     pub cb_cooldown_ms: u64,
+    /// Bearer token for cloud OpenAI-compatible providers. `None` for local Ollama.
+    pub api_key: Option<String>,
 }
 
 impl Default for OllamaConfig {
@@ -32,6 +39,7 @@ impl Default for OllamaConfig {
             max_queue: 50,
             cb_threshold: 3,
             cb_cooldown_ms: 30_000,
+            api_key: None,
         }
     }
 }
@@ -58,6 +66,12 @@ impl OllamaConfig {
         if let Ok(v) = std::env::var("OLLAMA_CONCURRENCY") {
             if let Ok(n) = v.parse() {
                 cfg.concurrency = n;
+            }
+        }
+        if let Ok(v) = std::env::var("LLM_API_KEY") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                cfg.api_key = Some(trimmed.to_string());
             }
         }
         cfg
