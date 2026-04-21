@@ -101,6 +101,11 @@ pub async fn copy_all(
     // consistent. PRAGMA foreign_key_check surfaces orphans that survived the
     // OFF window; failing loud here prevents a stamped-but-broken target from
     // reaching production.
+    //
+    // When --override-user-id is set we deliberately rewrite user_id on every
+    // row to a tenant value that does not exist in the source users table.
+    // That breaks user-scoped FKs by design (the target is a tenant shard
+    // with no users table in use), so we downgrade the check to a warning.
     {
         let conn = target.conn.lock().await;
         conn.execute("PRAGMA foreign_keys = ON", [])?;
@@ -122,11 +127,19 @@ pub async fn copy_all(
             }
         }
         if !violations.is_empty() {
-            anyhow::bail!(
-                "foreign_key_check reported {} violation(s) after copy (showing up to 10): {}",
-                violations.len(),
-                violations.join("; ")
-            );
+            if override_user_id.is_some() {
+                tracing::warn!(
+                    "foreign_key_check reported {} violation(s) after copy with --override-user-id (ignored, showing up to 10): {}",
+                    violations.len(),
+                    violations.join("; ")
+                );
+            } else {
+                anyhow::bail!(
+                    "foreign_key_check reported {} violation(s) after copy (showing up to 10): {}",
+                    violations.len(),
+                    violations.join("; ")
+                );
+            }
         }
     }
 
