@@ -28,6 +28,12 @@ struct Args {
     /// Copy relational data only, skip embedding extraction
     #[arg(long, default_value_t = false)]
     skip_vectors: bool,
+
+    /// Force all rows to this user_id (for migrating a single-tenant source
+    /// DB into a tenant shard owned by a different user). Affects both the
+    /// memories.user_id column and the user_id field of lance vectors.
+    #[arg(long)]
+    override_user_id: Option<i64>,
 }
 
 #[tokio::main]
@@ -67,12 +73,12 @@ async fn main() -> Result<()> {
 
     // Phase 2: Copy relational data
     info!("Phase 2: Copying relational data...");
-    tables::copy_all(&source_db, &target_db).await?;
+    tables::copy_all(&source_db, &target_db, args.override_user_id).await?;
 
     // Phase 3: Extract vectors
     if let Some(ref lance) = lance_db {
         info!("Phase 3: Extracting vectors to LanceDB...");
-        vectors::extract_and_insert(&source_db, lance).await?;
+        vectors::extract_and_insert(&source_db, lance, args.override_user_id).await?;
     } else {
         info!("Phase 3: Skipping vector extraction (--skip-vectors)");
     }

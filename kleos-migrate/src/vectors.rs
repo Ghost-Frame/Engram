@@ -47,16 +47,40 @@ fn vector_schema() -> Arc<Schema> {
 }
 
 /// Extract embeddings from source and insert into LanceDB
-pub async fn extract_and_insert(source: &SourceDb, lance: &LanceDb) -> Result<()> {
+pub async fn extract_and_insert(
+    source: &SourceDb,
+    lance: &LanceDb,
+    override_user_id: Option<i64>,
+) -> Result<()> {
     info!("Extracting memory vectors...");
 
+    // Detect whether the source memories table has a user_id column --
+    // legacy single-tenant bot DBs don't.
+    let source_has_user_id = {
+        let stmt = source
+            .conn
+            .prepare("PRAGMA table_info(\"memories\")")
+            .await?;
+        let mut rows = stmt.query(()).await?;
+        let mut found = false;
+        while let Some(row) = rows.next().await? {
+            let name: String = row.get(1)?;
+            if name == "user_id" {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+
+    let select_sql = if source_has_user_id {
+        "SELECT id, user_id, embedding_vec_1024 FROM memories WHERE embedding_vec_1024 IS NOT NULL"
+    } else {
+        "SELECT id, embedding_vec_1024 FROM memories WHERE embedding_vec_1024 IS NOT NULL"
+    };
+
     // Query memories with embeddings
-    let stmt = source
-        .conn
-        .prepare(
-            "SELECT id, user_id, embedding_vec_1024 FROM memories WHERE embedding_vec_1024 IS NOT NULL",
-        )
-        .await?;
+    let stmt = source.conn.prepare(select_sql).await?;
 
     let mut rows = stmt.query(()).await?;
 
@@ -66,8 +90,12 @@ pub async fn extract_and_insert(source: &SourceDb, lance: &LanceDb) -> Result<()
 
     while let Some(row) = rows.next().await? {
         let memory_id: i64 = row.get(0)?;
-        let user_id: i64 = row.get(1)?;
-        let embedding_blob: Vec<u8> = row.get(2)?;
+        let (source_user_id, embedding_blob): (i64, Vec<u8>) = if source_has_user_id {
+            (row.get(1)?, row.get(2)?)
+        } else {
+            (0, row.get(1)?)
+        };
+        let user_id = override_user_id.unwrap_or(source_user_id);
 
         // Decode FLOAT32(1024) blob: 1024 floats * 4 bytes each = 4096 bytes
         if embedding_blob.len() == 4096 {

@@ -63,7 +63,11 @@ const FK_ORDERED_TABLES: &[&str] = &[
 ];
 
 /// Copy all tables from source to target
-pub async fn copy_all(source: &SourceDb, target: &TargetDb) -> Result<()> {
+pub async fn copy_all(
+    source: &SourceDb,
+    target: &TargetDb,
+    override_user_id: Option<i64>,
+) -> Result<()> {
     let all_tables = source::get_tables(source).await?;
 
     // Disable FK checks during migration (legacy data may have orphaned refs)
@@ -90,7 +94,7 @@ pub async fn copy_all(source: &SourceDb, target: &TargetDb) -> Result<()> {
     info!("Copying {} tables...", copy_order.len());
 
     for table in &copy_order {
-        copy_table(source, target, table).await?;
+        copy_table(source, target, table, override_user_id).await?;
     }
 
     // Re-enable FK checks and verify the copied data is still referentially
@@ -167,7 +171,12 @@ fn get_required_columns(conn: &rusqlite::Connection, table: &str) -> Result<Vec<
 }
 
 /// Copy a single table from source to target
-async fn copy_table(source: &SourceDb, target: &TargetDb, table: &str) -> Result<()> {
+async fn copy_table(
+    source: &SourceDb,
+    target: &TargetDb,
+    table: &str,
+    override_user_id: Option<i64>,
+) -> Result<()> {
     // Get source columns
     let source_cols = source::get_columns(source, table).await?;
 
@@ -192,7 +201,7 @@ async fn copy_table(source: &SourceDb, target: &TargetDb, table: &str) -> Result
 
     // Intersect: only copy columns that exist in BOTH source and target
     // Also filter out vector columns
-    let cols: Vec<String> = source_cols
+    let mut cols: Vec<String> = source_cols
         .into_iter()
         .filter(|c| !SKIP_COLUMNS.contains(&c.as_str()))
         .filter(|c| target_cols.contains(c))
@@ -203,9 +212,23 @@ async fn copy_table(source: &SourceDb, target: &TargetDb, table: &str) -> Result
         return Ok(());
     }
 
+    // If --override-user-id is set and the target has a user_id column, we
+    // want to force the override on every row regardless of source value.
+    // The source column count determines how many SELECT fields we read per
+    // row; the user_id column is appended after and populated from the
+    // override, never from the source row.
+    let source_col_count = cols.len();
+    let inject_user_id = override_user_id.is_some() && target_cols.iter().any(|c| c == "user_id");
+    if inject_user_id && !cols.iter().any(|c| c == "user_id") {
+        cols.push("user_id".to_string());
+    }
+
     // Check if all required target columns are present in source
-    let missing_required: Vec<&String> =
-        required_cols.iter().filter(|c| !cols.contains(c)).collect();
+    // (user_id is satisfied either by source or by the injected override)
+    let missing_required: Vec<&String> = required_cols
+        .iter()
+        .filter(|c| !cols.contains(c))
+        .collect();
 
     if !missing_required.is_empty() {
         info!(
@@ -240,15 +263,32 @@ async fn copy_table(source: &SourceDb, target: &TargetDb, table: &str) -> Result
     );
     pb.set_message(table.to_string());
 
-    // Query all rows
-    let col_list = cols
+    // Build column lists for INSERT and SELECT separately.
+    // INSERT covers every column we write (including any injected user_id).
+    // SELECT only covers source columns, since the injected column value
+    // comes from the --override-user-id flag, not the source row.
+    let insert_col_list = cols
         .iter()
         .map(|c| format!("\"{}\"", c))
         .collect::<Vec<_>>()
         .join(", ");
-    let query = format!("SELECT {} FROM \"{}\"", col_list, table);
+    let select_col_list = cols[..source_col_count]
+        .iter()
+        .map(|c| format!("\"{}\"", c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query = format!("SELECT {} FROM \"{}\"", select_col_list, table);
     let stmt = source.conn.prepare(&query).await?;
     let mut rows = stmt.query(()).await?;
+
+    // Index of user_id in the final cols vec (for override), and whether the
+    // source row actually contributed a user_id value at that index.
+    let user_id_insert_idx = cols.iter().position(|c| c == "user_id");
+    let user_id_source_idx = if inject_user_id {
+        None
+    } else {
+        user_id_insert_idx
+    };
 
     let conn = target.conn.lock().await;
 
@@ -257,7 +297,7 @@ async fn copy_table(source: &SourceDb, target: &TargetDb, table: &str) -> Result
     let insert_sql = format!(
         "INSERT OR REPLACE INTO \"{}\" ({}) VALUES ({})",
         table,
-        col_list,
+        insert_col_list,
         placeholders.join(", ")
     );
 
@@ -268,12 +308,22 @@ async fn copy_table(source: &SourceDb, target: &TargetDb, table: &str) -> Result
     conn.execute("BEGIN TRANSACTION", [])?;
 
     while let Some(row) = rows.next().await? {
-        // Convert libsql row to rusqlite values
+        // Convert libsql row to rusqlite values. We read `source_col_count`
+        // columns from the source row, then append the override user_id if
+        // we're injecting it.
         let mut values: Vec<rusqlite::types::Value> = Vec::new();
 
-        for i in 0..cols.len() {
+        for i in 0..source_col_count {
             let value = convert_value(&row, i as i32)?;
             values.push(value);
+        }
+
+        if let Some(override_uid) = override_user_id {
+            if inject_user_id {
+                values.push(rusqlite::types::Value::Integer(override_uid));
+            } else if let Some(idx) = user_id_source_idx {
+                values[idx] = rusqlite::types::Value::Integer(override_uid);
+            }
         }
 
         let params: Vec<&dyn rusqlite::ToSql> =
