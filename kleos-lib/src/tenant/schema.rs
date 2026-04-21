@@ -18,13 +18,19 @@ pub fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
 
 /// Get the schema version from a database.
 pub fn get_schema_version(conn: &Connection) -> Result<Option<i64>, rusqlite::Error> {
-    let mut stmt =
-        conn.prepare("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")?;
-    let mut rows = stmt.query([])?;
-    if let Some(row) = rows.next()? {
-        Ok(Some(row.get(0)?))
-    } else {
-        Ok(None)
+    let stmt =
+        conn.prepare("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1");
+    match stmt {
+        Err(e) if e.to_string().contains("no such table") => return Ok(None),
+        Err(e) => return Err(e),
+        Ok(mut s) => {
+            let mut rows = s.query([])?;
+            if let Some(row) = rows.next()? {
+                Ok(Some(row.get(0)?))
+            } else {
+                Ok(None)
+            }
+        }
     }
 }
 
