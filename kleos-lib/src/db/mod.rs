@@ -20,6 +20,7 @@ pub struct Database {
     db_path: String,
     pools: DatabasePools,
     pub vector_index: Option<Arc<dyn VectorIndex>>,
+    is_tenant: bool,
 }
 
 impl Database {
@@ -82,6 +83,7 @@ impl Database {
             db_path: db_path.clone(),
             pools,
             vector_index,
+            is_tenant: false,
         })
     }
 
@@ -107,6 +109,7 @@ impl Database {
             db_path: ":memory:".to_string(),
             pools,
             vector_index: None,
+            is_tenant: false,
         })
     }
 
@@ -128,7 +131,13 @@ impl Database {
             db_path: db_path.to_string(),
             pools,
             vector_index,
+            is_tenant: true,
         })
+    }
+
+    /// Returns true if this is a tenant shard database.
+    pub fn is_tenant(&self) -> bool {
+        self.is_tenant
     }
 
     pub fn db_path(&self) -> &str {

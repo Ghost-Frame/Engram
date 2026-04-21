@@ -235,8 +235,16 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
 /// with a `quota_exceeded` marker when the tenant is already at or above
 /// their limit, so callers can surface a 429/403 without leaking the
 /// underlying numbers.
+///
+/// NOTE: Tenant shard databases skip quota checks -- the tenant_quotas table
+/// only exists in the main database. Shards are already isolated per-user and
+/// admin-provisioned, so quota enforcement happens at the admin level.
 #[tracing::instrument(skip(db))]
 pub async fn enforce_memory_quota(db: &Database, user_id: i64) -> Result<()> {
+    // Tenant shards don't have tenant_quotas table -- skip check.
+    if db.is_tenant() {
+        return Ok(());
+    }
     let status = check_quota(db, user_id).await?;
     if !status.within_limits || status.memory_count >= status.memory_limit {
         return Err(EngError::Forbidden(format!(
