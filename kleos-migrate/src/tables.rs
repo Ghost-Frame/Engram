@@ -212,14 +212,19 @@ async fn copy_table(
         return Ok(());
     }
 
-    // If --override-user-id is set and the target has a user_id column, we
+    // If --override-user-id is set and the target has a user_id column we
     // want to force the override on every row regardless of source value.
-    // The source column count determines how many SELECT fields we read per
-    // row; the user_id column is appended after and populated from the
-    // override, never from the source row.
+    // Two cases:
+    //   - source lacks user_id: inject it as an appended column and use the
+    //     override as the value (source row never touches that column).
+    //   - source has user_id: leave cols alone, just replace the value in
+    //     each row with the override at the existing position.
     let source_col_count = cols.len();
-    let inject_user_id = override_user_id.is_some() && target_cols.iter().any(|c| c == "user_id");
-    if inject_user_id && !cols.iter().any(|c| c == "user_id") {
+    let target_has_user_id = target_cols.iter().any(|c| c == "user_id");
+    let inject_user_id = override_user_id.is_some()
+        && target_has_user_id
+        && !cols.iter().any(|c| c == "user_id");
+    if inject_user_id {
         cols.push("user_id".to_string());
     }
 
@@ -281,13 +286,15 @@ async fn copy_table(
     let stmt = source.conn.prepare(&query).await?;
     let mut rows = stmt.query(()).await?;
 
-    // Index of user_id in the final cols vec (for override), and whether the
-    // source row actually contributed a user_id value at that index.
-    let user_id_insert_idx = cols.iter().position(|c| c == "user_id");
+    // Position of user_id in the source row (and INSERT cols when not
+    // injecting) so we can replace the value in-place. When we inject a
+    // user_id column, no source position exists.
     let user_id_source_idx = if inject_user_id {
         None
+    } else if override_user_id.is_some() && target_has_user_id {
+        cols.iter().position(|c| c == "user_id")
     } else {
-        user_id_insert_idx
+        None
     };
 
     let conn = target.conn.lock().await;
