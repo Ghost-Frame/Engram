@@ -35,6 +35,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "scratchpad_user_id_shim",
         up: apply_schema_v2_scratchpad_shim,
     },
+    TenantMigration {
+        version: 3,
+        description: "sessions_user_id_shim",
+        up: apply_schema_v3_sessions_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -45,6 +50,11 @@ fn apply_schema_v1(conn: &Connection) -> Result<()> {
 fn apply_schema_v2_scratchpad_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v2_scratchpad.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v2 failed: {e}")))
+}
+
+fn apply_schema_v3_sessions_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v3_sessions.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v3 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -235,5 +245,127 @@ mod tests {
             )
             .unwrap();
         assert_eq!(post, 1);
+    }
+
+    #[test]
+    fn sessions_has_user_id_after_v3() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        // user_id column present on sessions.
+        let user_id_present: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            user_id_present, 1,
+            "tenant sessions is missing the user_id shim column after v3"
+        );
+
+        // session_output table exists.
+        let output_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_output'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(output_table, 1, "tenant session_output table missing after v3");
+
+        // Exercise the SQL shape kleos-lib sessions.rs actually uses.
+        conn.execute(
+            "INSERT INTO sessions (id, agent, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["sess-1", "claude-code", 4_i64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_output (session_id, line) VALUES (?1, ?2)",
+            rusqlite::params!["sess-1", "hello"],
+        )
+        .unwrap();
+
+        let (id, agent, uid): (String, String, i64) = conn
+            .query_row(
+                "SELECT id, agent, user_id FROM sessions WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params!["sess-1", 4_i64],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(id, "sess-1");
+        assert_eq!(agent, "claude-code");
+        assert_eq!(uid, 4);
+
+        let line: String = conn
+            .query_row(
+                "SELECT line FROM session_output WHERE session_id = ?1",
+                rusqlite::params!["sess-1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(line, "hello");
+    }
+
+    #[test]
+    fn v2_db_upgrades_cleanly_to_v3() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Simulate an existing tenant at v2 (before v3 existed): apply v1+v2
+        // only, stamp schema_migrations, then call the runner.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        apply_schema_v2_scratchpad_shim(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);",
+        )
+        .unwrap();
+
+        // Pre: v1 sessions has no user_id, and session_output does not exist.
+        let pre_user: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre_user, 0);
+
+        let pre_output: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_output'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre_output, 0);
+
+        // Run chain; v3 catches it up.
+        run_tenant_migrations(&conn).unwrap();
+
+        let post_user: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post_user, 1);
+
+        let post_output: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_output'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post_output, 1);
     }
 }
