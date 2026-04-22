@@ -24,15 +24,27 @@ pub struct TenantMigration {
 /// The canonical ordered list of tenant migrations.
 ///
 /// Append-only. Never renumber, never edit a past entry.
-pub static TENANT_MIGRATIONS: &[TenantMigration] = &[TenantMigration {
-    version: 1,
-    description: "initial_tenant_schema",
-    up: apply_schema_v1,
-}];
+pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
+    TenantMigration {
+        version: 1,
+        description: "initial_tenant_schema",
+        up: apply_schema_v1,
+    },
+    TenantMigration {
+        version: 2,
+        description: "scratchpad_user_id_shim",
+        up: apply_schema_v2_scratchpad_shim,
+    },
+];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v1.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v1 failed: {e}")))
+}
+
+fn apply_schema_v2_scratchpad_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v2_scratchpad.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v2 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -134,5 +146,94 @@ mod tests {
             )
             .unwrap();
         assert_eq!(exists, 1);
+    }
+
+    #[test]
+    fn scratchpad_has_user_id_after_v2() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        // Column present: confirms v2 ran and reshaped scratchpad.
+        let user_id_present: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            user_id_present, 1,
+            "tenant scratchpad is missing the user_id shim column after v2"
+        );
+
+        // INSERT ... ON CONFLICT(user_id, session, entry_key) must match
+        // an actual unique index on (user_id, session, entry_key).
+        // Duplicate triggers the upsert path; no duplicate row results.
+        conn.execute(
+            "INSERT INTO scratchpad (user_id, session, agent, model, entry_key, value, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', '+5 minutes')) \
+             ON CONFLICT(user_id, session, entry_key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![4_i64, "s1", "agent", "model", "key1", "v1"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO scratchpad (user_id, session, agent, model, entry_key, value, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', '+5 minutes')) \
+             ON CONFLICT(user_id, session, entry_key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![4_i64, "s1", "agent", "model", "key1", "v2"],
+        )
+        .unwrap();
+
+        let (count, value): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(value) FROM scratchpad WHERE user_id = 4",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "upsert collapsed into one row");
+        assert_eq!(value, "v2");
+    }
+
+    #[test]
+    fn v1_only_db_upgrades_cleanly_to_v2() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Simulate an existing tenant at v1 (before v2 existed): apply v1
+        // only, stamp schema_migrations, then call the runner.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1)",
+            [],
+        )
+        .unwrap();
+
+        // The v1 scratchpad has no user_id column.
+        let pre: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre, 0);
+
+        // Run the chain; v2 should catch it up.
+        run_tenant_migrations(&conn).unwrap();
+
+        let post: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post, 1);
     }
 }
