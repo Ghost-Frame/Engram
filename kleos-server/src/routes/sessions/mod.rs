@@ -9,8 +9,9 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::{AppState, SessionBroadcast};
+use kleos_lib::db::Database;
 use kleos_lib::sessions::{
     append_output, create_session, get_session, get_session_output, list_sessions,
     SessionCreateRequest,
@@ -32,10 +33,11 @@ pub fn router() -> Router<AppState> {
 
 async fn create_session_handler(
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<SessionCreateRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let session = create_session(&state.db, &body, auth.user_id).await?;
+    let session = create_session(&db, &body, auth.user_id).await?;
 
     // SECURITY (SEC-H4): enforce per-tenant session count limit to prevent
     // unbounded HashMap growth from a single API key creating sessions in a loop.
@@ -62,29 +64,30 @@ async fn create_session_handler(
 }
 
 async fn list_sessions_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Query(params): Query<ListSessionsParams>,
 ) -> Result<Json<Value>, AppError> {
     let sessions: Vec<kleos_lib::sessions::SessionInfo> =
-        list_sessions(&state.db, auth.user_id, params.limit, params.offset).await?;
+        list_sessions(&db, auth.user_id, params.limit, params.offset).await?;
     Ok(Json(
         json!({ "sessions": sessions, "count": sessions.len() }),
     ))
 }
 
 async fn get_session_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let session = get_session(&state.db, &id, auth.user_id).await?;
-    let output = get_session_output(&state.db, &id, auth.user_id).await?;
+    let session = get_session(&db, &id, auth.user_id).await?;
+    let output = get_session_output(&db, &id, auth.user_id).await?;
     Ok(Json(json!({ "session": session, "output": output })))
 }
 
 async fn append_handler(
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<String>,
     Json(body): Json<AppendBody>,
@@ -99,7 +102,7 @@ async fn append_handler(
         ))));
     }
 
-    append_output(&state.db, &id, &body.line, auth.user_id).await?;
+    append_output(&db, &id, &body.line, auth.user_id).await?;
 
     // Broadcast to any WebSocket subscribers (scoped to this tenant only).
     {
@@ -125,20 +128,27 @@ async fn append_handler(
 
 async fn stream_handler(
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<String>,
     ws: WebSocketUpgrade,
 ) -> axum::response::Response {
-    ws.on_upgrade(move |socket| handle_ws(socket, state, id, auth.user_id))
+    ws.on_upgrade(move |socket| handle_ws(socket, state, db, id, auth.user_id))
 }
 
-async fn handle_ws(mut socket: WebSocket, state: AppState, session_id: String, user_id: i64) {
+async fn handle_ws(
+    mut socket: WebSocket,
+    state: AppState,
+    db: Arc<Database>,
+    session_id: String,
+    user_id: i64,
+) {
     // Verify the caller actually owns this session before attaching a
     // broadcast subscriber. Without this check a tenant with a valid API
     // key could stream another tenant's session by guessing the id
     // (MT-F10). We hit the DB here because the in-memory map might miss
     // and we still want DB fallback to run.
-    if get_session(&state.db, &session_id, user_id).await.is_err() {
+    if get_session(&db, &session_id, user_id).await.is_err() {
         let _ = socket
             .send(Message::Text(
                 json!({"type": "session_end", "status": "not_found"})
@@ -160,7 +170,7 @@ async fn handle_ws(mut socket: WebSocket, state: AppState, session_id: String, u
             None => {
                 // Session not in memory -- send buffered from DB and close
                 drop(sessions);
-                if let Ok(lines) = get_session_output(&state.db, &session_id, user_id).await {
+                if let Ok(lines) = get_session_output(&db, &session_id, user_id).await {
                     for line in lines {
                         let msg = json!({"type": "output", "data": line});
                         if socket
