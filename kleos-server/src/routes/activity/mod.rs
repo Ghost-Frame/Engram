@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::brain_absorber::absorb_activity_to_brain;
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::activity::{process_activity, ActivityReport};
 
@@ -19,10 +19,11 @@ pub fn router() -> Router<AppState> {
 
 async fn report_activity(
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<ActivityReport>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let memory_id = process_activity(&state.db, &body, auth.user_id).await?;
+    let memory_id = process_activity(&db, &body, auth.user_id).await?;
 
     // Brain absorption: fire-and-forget, best-effort, never fails the response.
     // Requires AppState brain + embedder which are not available in engram-lib.
