@@ -1,11 +1,11 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::chiasm::{
     create_task, delete_task, get_feed as get_task_feed, get_stats as get_task_stats, get_task,
@@ -44,7 +44,7 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn list_tasks_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Query(params): Query<ListTasksParams>,
 ) -> Result<Json<Value>, AppError> {
@@ -52,7 +52,7 @@ async fn list_tasks_handler(
     let offset = params.offset.unwrap_or(0);
 
     let tasks = list_tasks(
-        &state.db,
+        &db,
         auth.user_id,
         params.status.as_deref(),
         params.agent.as_deref(),
@@ -66,7 +66,7 @@ async fn list_tasks_handler(
 }
 
 async fn create_task_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<CreateTaskBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
@@ -79,29 +79,29 @@ async fn create_task_handler(
         user_id: Some(auth.user_id),
     };
 
-    let task = create_task(&state.db, req).await?;
+    let task = create_task(&db, req).await?;
     Ok((StatusCode::CREATED, Json(json!(task))))
 }
 
 async fn get_stats(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_task_stats(&state.db, Some(auth.user_id)).await?;
+    let stats = get_task_stats(&db, Some(auth.user_id)).await?;
     Ok(Json(json!(stats)))
 }
 
 async fn get_task_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let task = get_task(&state.db, id, auth.user_id).await?;
+    let task = get_task(&db, id, auth.user_id).await?;
     Ok(Json(json!(task)))
 }
 
 async fn update_task_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
     Json(body): Json<UpdateTaskBody>,
@@ -113,38 +113,38 @@ async fn update_task_handler(
         agent: body.agent,
     };
 
-    let task = update_task(&state.db, id, req, auth.user_id).await?;
+    let task = update_task(&db, id, req, auth.user_id).await?;
     Ok(Json(json!(task)))
 }
 
 async fn get_task_history_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
     Query(params): Query<HistoryParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
-    let history = list_task_history(&state.db, id, auth.user_id, limit).await?;
+    let history = list_task_history(&db, id, auth.user_id, limit).await?;
     Ok(Json(json!({ "history": history, "count": history.len() })))
 }
 
 async fn delete_task_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_task(&state.db, id, auth.user_id).await?;
+    delete_task(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
 async fn get_feed(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Query(params): Query<ListTasksParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
-    let items = get_task_feed(&state.db, auth.user_id, limit, offset).await?;
-    let total = get_task_stats(&state.db, Some(auth.user_id)).await?.total;
+    let items = get_task_feed(&db, auth.user_id, limit, offset).await?;
+    let total = get_task_stats(&db, Some(auth.user_id)).await?.total;
     Ok(Json(json!({ "items": items, "total": total })))
 }
