@@ -11,6 +11,7 @@ use axum::{
     Json, Router,
 };
 use base64::Engine as _;
+use kleos_lib::db::Database;
 use kleos_lib::ingestion::{
     self,
     types::{
@@ -26,7 +27,11 @@ use uuid::Uuid;
 
 use rusqlite::{params, OptionalExtension};
 
-use crate::{error::AppError, extractors::Auth, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
 use kleos_lib::validation::{
     MAX_IMPORT_BATCH, MAX_INGEST_TEXT_BYTES, MAX_UPLOAD_CHUNK_BYTES, MAX_UPLOAD_TOTAL_BYTES,
 };
@@ -95,7 +100,7 @@ fn sha256_hex(data: &[u8]) -> String {
 }
 
 async fn upload_init(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<UploadInitBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
@@ -123,30 +128,28 @@ async fn upload_init(
     let total_size = body.total_size;
     let total_chunks = body.total_chunks;
 
-    state
-        .db
-        .write(move |conn| {
-            conn.execute(
-                "INSERT INTO upload_sessions
-                   (upload_id, user_id, filename, content_type, source,
-                    total_size, total_chunks, chunk_size, status, expires_at)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9)",
-                params![
-                    upload_id_db,
-                    user_id,
-                    filename,
-                    content_type,
-                    source_db,
-                    total_size,
-                    total_chunks,
-                    chunk_size,
-                    expires_at_db
-                ],
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
-            Ok(())
-        })
-        .await?;
+    db.write(move |conn| {
+        conn.execute(
+            "INSERT INTO upload_sessions
+               (upload_id, user_id, filename, content_type, source,
+                total_size, total_chunks, chunk_size, status, expires_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9)",
+            params![
+                upload_id_db,
+                user_id,
+                filename,
+                content_type,
+                source_db,
+                total_size,
+                total_chunks,
+                chunk_size,
+                expires_at_db
+            ],
+        )
+        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -162,12 +165,11 @@ async fn upload_init(
 }
 
 async fn load_session(
-    state: &AppState,
+    db: &Database,
     upload_id: &str,
 ) -> Result<UploadSession, kleos_lib::EngError> {
     let id = upload_id.to_string();
-    let row: Option<UploadSession> = state
-        .db
+    let row: Option<UploadSession> = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT user_id, status, source, filename, content_type,
@@ -226,7 +228,7 @@ fn ensure_session_owner(session: &UploadSession, user_id: i64) -> Result<(), App
 }
 
 async fn upload_chunk(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<UploadChunkBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -236,7 +238,7 @@ async fn upload_chunk(
         )));
     }
 
-    let session = load_session(&state, &body.upload_id).await?;
+    let session = load_session(&db, &body.upload_id).await?;
     ensure_session_owner(&session, auth.user_id)?;
 
     let raw = base64::engine::general_purpose::STANDARD
@@ -266,8 +268,7 @@ async fn upload_chunk(
     let raw_for_db = raw.clone();
     let size = raw.len() as i64;
 
-    let (total_received, total_bytes) = state
-        .db
+    let (total_received, total_bytes) = db
         .write(move |conn| {
             // Guard against exceeding the per-session disk cap even before
             // this chunk lands. We check the *current* aggregate (excluding
@@ -333,15 +334,15 @@ async fn upload_chunk(
 
 async fn upload_complete(
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<UploadCompleteBody>,
 ) -> Result<Json<Value>, AppError> {
-    let session = load_session(&state, &body.upload_id).await?;
+    let session = load_session(&db, &body.upload_id).await?;
     ensure_session_owner(&session, auth.user_id)?;
 
     let upload_id = body.upload_id.clone();
-    let chunks: Vec<(i64, String, Vec<u8>)> = state
-        .db
+    let chunks: Vec<(i64, String, Vec<u8>)> = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -484,12 +485,12 @@ async fn upload_complete(
             ))));
         }
         let bytes = text.len();
-        let r = ingestion::ingest(state.db.clone(), &ctx, &text, options, Some(&meta)).await?;
+        let r = ingestion::ingest(db.clone(), &ctx, &text, options, Some(&meta)).await?;
         (r, bytes)
     } else {
         let bytes = assembled.len();
         let r =
-            ingestion::ingest_binary(state.db.clone(), &ctx, &assembled, options, Some(&meta))
+            ingestion::ingest_binary(db.clone(), &ctx, &assembled, options, Some(&meta))
                 .await?;
         (r, bytes)
     };
@@ -497,24 +498,22 @@ async fn upload_complete(
     // Finalize: mark session complete and drop chunk blobs to reclaim space.
     let upload_id_db = body.upload_id.clone();
     let final_hash_db = final_hash.clone();
-    state
-        .db
-        .write(move |conn| {
-            conn.execute(
-                "UPDATE upload_sessions SET status = 'completed',
-                   completed_at = datetime('now'), final_sha256 = ?1
-                   WHERE upload_id = ?2",
-                params![final_hash_db, upload_id_db],
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
-            conn.execute(
-                "DELETE FROM upload_chunks WHERE upload_id = ?1",
-                params![upload_id_db],
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
-            Ok(())
-        })
-        .await?;
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE upload_sessions SET status = 'completed',
+               completed_at = datetime('now'), final_sha256 = ?1
+               WHERE upload_id = ?2",
+            params![final_hash_db, upload_id_db],
+        )
+        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM upload_chunks WHERE upload_id = ?1",
+            params![upload_id_db],
+        )
+        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await?;
 
     Ok(Json(json!({
         "upload_id": body.upload_id,
@@ -530,34 +529,32 @@ async fn upload_complete(
 }
 
 async fn upload_abort(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<UploadAbortBody>,
 ) -> Result<Json<Value>, AppError> {
-    let session = load_session(&state, &body.upload_id).await?;
+    let session = load_session(&db, &body.upload_id).await?;
     if session.user_id != auth.user_id {
         return Err(AppError(kleos_lib::EngError::Auth(
             "upload belongs to another user".into(),
         )));
     }
     let upload_id = body.upload_id.clone();
-    state
-        .db
-        .write(move |conn| {
-            conn.execute(
-                "UPDATE upload_sessions SET status = 'aborted',
-                   completed_at = datetime('now') WHERE upload_id = ?1",
-                params![upload_id],
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
-            conn.execute(
-                "DELETE FROM upload_chunks WHERE upload_id = ?1",
-                params![upload_id],
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
-            Ok(())
-        })
-        .await?;
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE upload_sessions SET status = 'aborted',
+               completed_at = datetime('now') WHERE upload_id = ?1",
+            params![upload_id],
+        )
+        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM upload_chunks WHERE upload_id = ?1",
+            params![upload_id],
+        )
+        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        Ok(())
+    })
+    .await?;
 
     Ok(Json(json!({
         "upload_id": body.upload_id,
@@ -566,19 +563,18 @@ async fn upload_abort(
 }
 
 async fn upload_status(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     AxumPath(upload_id): AxumPath<String>,
 ) -> Result<Json<Value>, AppError> {
-    let session = load_session(&state, &upload_id).await?;
+    let session = load_session(&db, &upload_id).await?;
     if session.user_id != auth.user_id {
         return Err(AppError(kleos_lib::EngError::Auth(
             "upload belongs to another user".into(),
         )));
     }
     let id = upload_id.clone();
-    let (chunks_received, bytes_received, received_indices): (i64, i64, Vec<i64>) = state
-        .db
+    let (chunks_received, bytes_received, received_indices): (i64, i64, Vec<i64>) = db
         .read(move |conn| {
             let (count, bytes): (i64, i64) = conn
                 .query_row(
@@ -618,6 +614,7 @@ async fn upload_status(
 
 async fn import_bulk(
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<ImportBulkBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
@@ -673,7 +670,7 @@ async fn import_bulk(
         mime: None,
     };
     let ctx = build_ingest_context(&state).await;
-    let result = ingestion::ingest(state.db.clone(), &ctx, &input, options, Some(&meta)).await?;
+    let result = ingestion::ingest(db.clone(), &ctx, &input, options, Some(&meta)).await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({
@@ -686,7 +683,7 @@ async fn import_bulk(
 }
 
 async fn import_json(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<ImportJsonBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -739,7 +736,7 @@ async fn import_json(
             0i32
         };
         let user_id = auth.user_id;
-        match state.db.write(move |conn| {
+        match db.write(move |conn| {
             conn.execute(
                 "INSERT INTO memories (content, category, source, session_id, importance, tags, confidence, is_static, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![content, category, source, session_id, importance, tags_str, confidence, is_static, user_id, sync_id, created_at, updated_at],
@@ -756,7 +753,7 @@ async fn import_json(
 }
 
 async fn import_mem0(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
@@ -811,7 +808,7 @@ async fn import_mem0(
         let category_s = category.to_string();
         let source_s = source.to_string();
         let user_id = auth.user_id;
-        if state.db.write(move |conn| {
+        if db.write(move |conn| {
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, tags, confidence, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, datetime('now'), datetime('now'))",
                 params![content, category_s, source_s, importance, tags_str, user_id, sync_id],
@@ -825,7 +822,7 @@ async fn import_mem0(
 }
 
 async fn import_supermemory(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
@@ -928,7 +925,7 @@ async fn import_supermemory(
         let category_s = category.to_string();
         let source_s = source.to_string();
         let user_id = auth.user_id;
-        match state.db.write(move |conn| {
+        match db.write(move |conn| {
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, tags, confidence, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, datetime('now'), datetime('now'))",
                 params![content, category_s, source_s, importance, tags_str, user_id, sync_id],
@@ -946,6 +943,7 @@ async fn import_supermemory(
 
 async fn ingest_text(
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<IngestBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -993,7 +991,7 @@ async fn ingest_text(
         chunker_options: None,
     };
     let ctx = build_ingest_context(&state).await;
-    let result = ingestion::ingest(state.db.clone(), &ctx, &raw_text, options, None).await?;
+    let result = ingestion::ingest(db.clone(), &ctx, &raw_text, options, None).await?;
     Ok(Json(json!({
         "ingested": result.total_memories, "source": ingest_source, "title": title,
         "chunks_processed": result.total_chunks, "errors": result.errors,
@@ -1007,6 +1005,7 @@ async fn ingest_text(
 /// the client does not send `Accept: text/event-stream`.
 async fn ingest_text_stream(
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     headers: HeaderMap,
     Json(body): Json<IngestBody>,
@@ -1064,7 +1063,7 @@ async fn ingest_text_stream(
         .is_some_and(|v| v.contains("text/event-stream"));
 
     if !accepts_sse {
-        let result = ingestion::ingest(state.db.clone(), &ctx, &raw_text, options, None).await?;
+        let result = ingestion::ingest(db.clone(), &ctx, &raw_text, options, None).await?;
         let payload = json!({
             "ingested": result.total_memories, "title": title,
             "chunks_processed": result.total_chunks, "errors": result.errors,
@@ -1089,11 +1088,12 @@ async fn ingest_text_stream(
     let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<Event>(CHANNEL_CAP);
 
     // Spawn ingestion task.
-    let db = state.db.clone();
+    let db_clone = db.clone();
     let sse_tx_clone = sse_tx.clone();
     tokio::spawn(async move {
         let res =
-            ingestion::ingest_streaming(db, &ctx, &raw_text, options, None, progress_tx).await;
+            ingestion::ingest_streaming(db_clone, &ctx, &raw_text, options, None, progress_tx)
+                .await;
         if let Err(e) = res {
             let _ = sse_tx_clone
                 .send(
