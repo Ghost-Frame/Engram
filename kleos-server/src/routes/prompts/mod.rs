@@ -16,7 +16,7 @@ use kleos_lib::services::brain::BrainQueryOptions;
 use kleos_lib::EngError;
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 
 mod types;
@@ -32,17 +32,18 @@ pub fn router() -> Router<AppState> {
 async fn get_prompt(
     Auth(auth): Auth,
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Query(q): Query<PromptQuery>,
 ) -> Result<Json<Value>, AppError> {
     let format = q.format.as_deref().unwrap_or("raw");
     let budget = q.tokens.unwrap_or(4000).clamp(100, 128000);
     let context = q.context.as_deref().unwrap_or("");
     let mut result =
-        kleos_lib::prompts::generate_prompt(&state.db, format, budget, context, auth.user_id)
+        kleos_lib::prompts::generate_prompt(&db, format, budget, context, auth.user_id)
             .await?;
     result.prompt = state
         .credd
-        .resolve_text(&state.db, auth.user_id, &auth.key.name, &result.prompt)
+        .resolve_text(&db, auth.user_id, &auth.key.name, &result.prompt)
         .await?;
     result.tokens_estimated = estimate_tokens(&result.prompt);
     Ok(Json(json!({
@@ -56,6 +57,7 @@ async fn get_prompt(
 async fn post_prompt_generate(
     Auth(auth): Auth,
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<GeneratePromptRequest>,
 ) -> Result<Json<Value>, AppError> {
     let agent = body.agent.trim();
@@ -112,7 +114,7 @@ async fn post_prompt_generate(
             include_links: false,
             source_filter: None,
         };
-        if let Ok(results) = hybrid_search(&state.db, personality_req).await {
+        if let Ok(results) = hybrid_search(&db, personality_req).await {
             if !results.is_empty() {
                 let mut buf = String::from("## Personality\n");
                 for r in results.iter() {
@@ -149,7 +151,7 @@ async fn post_prompt_generate(
             include_links: false,
             source_filter: None,
         };
-        let results = hybrid_search(&state.db, memory_req).await?;
+        let results = hybrid_search(&db, memory_req).await?;
         if !results.is_empty() {
             let mut buf = String::from("## Relevant Memories\n");
             for r in results.iter() {
@@ -300,7 +302,7 @@ async fn post_prompt_generate(
 
     // Living prompt: Growth observations
     if include_growth {
-        if let Ok(observations) = list_observations(&state.db, auth.user_id, growth_limit).await {
+        if let Ok(observations) = list_observations(&db, auth.user_id, growth_limit).await {
             if !observations.is_empty() {
                 let mut buf = String::from("## Growth Observations\n");
                 for obs in &observations {
@@ -341,7 +343,7 @@ async fn post_prompt_generate(
 
     let mut prompt = state
         .credd
-        .resolve_text(&state.db, auth.user_id, agent, &sections.join("\n\n"))
+        .resolve_text(&db, auth.user_id, agent, &sections.join("\n\n"))
         .await?;
     let mut tokens = estimate_tokens(&prompt);
     if tokens > max_tokens {
@@ -364,7 +366,7 @@ async fn post_prompt_generate(
 
 async fn post_header(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<HeaderBody>,
 ) -> Result<Json<Value>, AppError> {
     let actor_model = body.actor_model.as_deref().unwrap_or("unknown");
@@ -372,7 +374,7 @@ async fn post_header(
     let context = body.context.as_deref().unwrap_or("");
     let limit = body.limit.unwrap_or(10).min(30);
     let result = kleos_lib::prompts::generate_header(
-        &state.db,
+        &db,
         actor_model,
         actor_role,
         context,

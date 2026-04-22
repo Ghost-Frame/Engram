@@ -50,6 +50,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "approvals_shim",
         up: apply_schema_v5_approvals_shim,
     },
+    TenantMigration {
+        version: 6,
+        description: "broca_actions_shim",
+        up: apply_schema_v6_broca_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -75,6 +80,11 @@ fn apply_schema_v4_chiasm_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v5_approvals_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v5_approvals.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v5 failed: {e}")))
+}
+
+fn apply_schema_v6_broca_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v6_broca.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v6 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -512,6 +522,93 @@ mod tests {
         let post: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='approvals'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post, 1);
+    }
+
+    #[test]
+    fn broca_actions_usable_after_v6() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='broca_actions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(table, 1, "broca_actions table missing after v6");
+
+        // Exercise the INSERT shape kleos-lib services/broca.rs uses.
+        conn.execute(
+            "INSERT INTO broca_actions (agent, service, action, payload, narrative, axon_event_id, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "claude-code",
+                "cred",
+                "resolve",
+                r#"{"svc":"kleos","key":"claude-code"}"#,
+                None::<String>,
+                None::<i64>,
+                4_i64,
+            ],
+        )
+        .unwrap();
+
+        let (agent, service, uid): (String, String, i64) = conn
+            .query_row(
+                "SELECT agent, service, user_id FROM broca_actions WHERE user_id = ?1",
+                rusqlite::params![4_i64],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(agent, "claude-code");
+        assert_eq!(service, "cred");
+        assert_eq!(uid, 4);
+    }
+
+    #[test]
+    fn v5_db_upgrades_cleanly_to_v6() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        apply_schema_v2_scratchpad_shim(&conn).unwrap();
+        apply_schema_v3_sessions_shim(&conn).unwrap();
+        apply_schema_v4_chiasm_shim(&conn).unwrap();
+        apply_schema_v5_approvals_shim(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);",
+        )
+        .unwrap();
+
+        let pre: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='broca_actions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre, 0);
+
+        run_tenant_migrations(&conn).unwrap();
+
+        let post: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='broca_actions'",
                 [],
                 |r| r.get(0),
             )
