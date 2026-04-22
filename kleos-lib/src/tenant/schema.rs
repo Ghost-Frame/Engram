@@ -21,8 +21,8 @@ pub fn get_schema_version(conn: &Connection) -> Result<Option<i64>, rusqlite::Er
     let stmt =
         conn.prepare("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1");
     match stmt {
-        Err(e) if e.to_string().contains("no such table") => return Ok(None),
-        Err(e) => return Err(e),
+        Err(e) if e.to_string().contains("no such table") => Ok(None),
+        Err(e) => Err(e),
         Ok(mut s) => {
             let mut rows = s.query([])?;
             if let Some(row) = rows.next()? {

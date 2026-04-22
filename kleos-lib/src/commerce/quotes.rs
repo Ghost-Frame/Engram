@@ -16,17 +16,28 @@ const QUOTE_TTL_SECS: i64 = 300;
 // Create
 // ---------------------------------------------------------------------------
 
+/// Parameters for creating a new payment quote.
+pub struct CreateQuoteParams<'a> {
+    pub user_id: Option<i64>,
+    pub wallet_address: Option<&'a str>,
+    pub service_id: &'a str,
+    pub amount: Decimal,
+    pub currency: &'a str,
+    pub discount_applied: Option<&'a str>,
+    pub parameters: Option<serde_json::Value>,
+}
+
 /// Create a new payment quote, locking the price for QUOTE_TTL_SECS.
-pub async fn create_quote(
-    db: &Database,
-    user_id: Option<i64>,
-    wallet_address: Option<&str>,
-    service_id: &str,
-    amount: Decimal,
-    currency: &str,
-    discount_applied: Option<&str>,
-    parameters: Option<serde_json::Value>,
-) -> Result<PaymentQuote> {
+pub async fn create_quote(db: &Database, params: CreateQuoteParams<'_>) -> Result<PaymentQuote> {
+    let CreateQuoteParams {
+        user_id,
+        wallet_address,
+        service_id,
+        amount,
+        currency,
+        discount_applied,
+        parameters,
+    } = params;
     let id = format!("q_{}", Uuid::new_v4().as_simple());
     let now = Utc::now();
     let created_at = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
@@ -110,7 +121,8 @@ pub async fn get_quote(db: &Database, quote_id: &str) -> Result<PaymentQuote> {
                         .unwrap_or(Decimal::ZERO),
                     currency: row.get(5)?,
                     discount_applied: row.get(6)?,
-                    status: QuoteStatus::from_str(&row.get::<_, String>(7)?)
+                    status: row.get::<_, String>(7)?
+                        .parse::<QuoteStatus>()
                         .unwrap_or(QuoteStatus::Pending),
                     parameters: params_str
                         .and_then(|s| serde_json::from_str(&s).ok()),

@@ -64,14 +64,17 @@ impl QuoteStatus {
             Self::Cancelled => "cancelled",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for QuoteStatus {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "pending" => Some(Self::Pending),
-            "settled" => Some(Self::Settled),
-            "expired" => Some(Self::Expired),
-            "cancelled" => Some(Self::Cancelled),
-            _ => None,
+            "pending" => Ok(Self::Pending),
+            "settled" => Ok(Self::Settled),
+            "expired" => Ok(Self::Expired),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => Err(format!("unknown quote status: {s}")),
         }
     }
 }

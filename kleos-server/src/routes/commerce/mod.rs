@@ -59,13 +59,15 @@ async fn create_quote(
 
     let quote = quotes::create_quote(
         &state.db,
-        Some(auth.user_id),
-        None, // wallet_address -- set for x402 callers
-        &body.service,
-        amount,
-        "USDC",
-        discount.as_deref(),
-        body.parameters.clone(),
+        quotes::CreateQuoteParams {
+            user_id: Some(auth.user_id),
+            wallet_address: None,
+            service_id: &body.service,
+            amount,
+            currency: "USDC",
+            discount_applied: discount.as_deref(),
+            parameters: body.parameters.clone(),
+        },
     )
     .await
     .map_err(|e| {
