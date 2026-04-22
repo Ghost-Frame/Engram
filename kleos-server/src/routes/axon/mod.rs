@@ -1,13 +1,13 @@
 mod types;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::axon::{
     consume, delete_subscription, ensure_channel, get_cursor, get_event,
@@ -39,7 +39,7 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn publish_event_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<PublishBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
@@ -58,12 +58,12 @@ async fn publish_event_handler(
         user_id: Some(auth.user_id),
     };
 
-    let event = publish_event(&state.db, req).await?;
+    let event = publish_event(&db, req).await?;
     Ok((StatusCode::CREATED, Json(json!(event))))
 }
 
 async fn list_events_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Query(params): Query<QueryEventsParams>,
 ) -> Result<Json<Value>, AppError> {
@@ -72,7 +72,7 @@ async fn list_events_handler(
     let action = params.action.or(params.event_type);
 
     let events = query_events(
-        &state.db,
+        &db,
         params.channel.as_deref(),
         action.as_deref(),
         params.source.as_deref(),
@@ -96,38 +96,38 @@ async fn list_events_handler(
 }
 
 async fn get_event_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let event = get_event(&state.db, id, auth.user_id).await?;
+    let event = get_event(&db, id, auth.user_id).await?;
     Ok(Json(json!(event)))
 }
 
 async fn list_channels_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let channels = list_channels(&state.db, auth.user_id).await?;
+    let channels = list_channels(&db, auth.user_id).await?;
     Ok(Json(json!({ "channels": channels })))
 }
 
 async fn get_stats(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_axon_stats(&state.db, Some(auth.user_id)).await?;
+    let stats = get_axon_stats(&db, Some(auth.user_id)).await?;
     Ok(Json(json!(stats)))
 }
 
 // --- New handlers for P0-0 Phase 27c ---
 
 async fn create_channel_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,
     Json(body): Json<CreateChannelBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    ensure_channel(&state.db, body.name.clone(), body.description).await?;
+    ensure_channel(&db, body.name.clone(), body.description).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({ "ok": true, "channel": body.name })),
@@ -135,7 +135,7 @@ async fn create_channel_handler(
 }
 
 async fn subscribe_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<SubscribeBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
@@ -149,36 +149,36 @@ async fn subscribe_handler(
         filter_type: body.filter_type,
         webhook_url: body.webhook_url,
     };
-    let sub = upsert_subscription(&state.db, req, auth.user_id).await?;
+    let sub = upsert_subscription(&db, req, auth.user_id).await?;
     Ok((StatusCode::CREATED, Json(json!(sub))))
 }
 
 async fn unsubscribe_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<UnsubscribeBody>,
 ) -> Result<Json<Value>, AppError> {
-    let deleted = delete_subscription(&state.db, &body.agent, &body.channel, auth.user_id).await?;
+    let deleted = delete_subscription(&db, &body.agent, &body.channel, auth.user_id).await?;
     Ok(Json(json!({ "deleted": deleted })))
 }
 
 async fn list_subscriptions_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Query(params): Query<ListSubscriptionsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let subs = list_subscriptions_for_agent(&state.db, &params.agent, auth.user_id).await?;
+    let subs = list_subscriptions_for_agent(&db, &params.agent, auth.user_id).await?;
     Ok(Json(json!({ "subscriptions": subs, "count": subs.len() })))
 }
 
 async fn poll_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<PollBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.unwrap_or(100).min(1000);
-    let events = consume(&state.db, &body.agent, &body.channel, limit, auth.user_id).await?;
-    let cursor = get_cursor(&state.db, &body.agent, &body.channel, auth.user_id).await?;
+    let events = consume(&db, &body.agent, &body.channel, limit, auth.user_id).await?;
+    let cursor = get_cursor(&db, &body.agent, &body.channel, auth.user_id).await?;
     Ok(Json(json!({
         "events": events,
         "cursor": cursor.last_event_id,
@@ -187,10 +187,10 @@ async fn poll_handler(
 }
 
 async fn get_cursor_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Query(params): Query<GetCursorParams>,
 ) -> Result<Json<Value>, AppError> {
-    let cursor = get_cursor(&state.db, &params.agent, &params.channel, auth.user_id).await?;
+    let cursor = get_cursor(&db, &params.agent, &params.channel, auth.user_id).await?;
     Ok(Json(json!(cursor)))
 }
