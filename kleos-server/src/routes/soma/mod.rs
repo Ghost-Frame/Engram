@@ -1,11 +1,11 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::soma::{
     add_agent_to_group, create_group, delete_agent, get_agent, get_stats as get_soma_stats,
@@ -50,7 +50,7 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn create_agent_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<CreateAgentBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
@@ -67,18 +67,18 @@ async fn create_agent_handler(
         config: body.config,
     };
 
-    let agent = register_agent(&state.db, req).await?;
+    let agent = register_agent(&db, req).await?;
     Ok((StatusCode::CREATED, Json(json!(agent))))
 }
 
 async fn list_agents_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Query(params): Query<ListAgentsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
     let agents = list_agents(
-        &state.db,
+        &db,
         auth.user_id,
         params.agent_type.as_deref(),
         params.status.as_deref(),
@@ -90,21 +90,21 @@ async fn list_agents_handler(
 }
 
 async fn get_agent_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let agent = get_agent(&state.db, id, auth.user_id).await?;
+    let agent = get_agent(&db, id, auth.user_id).await?;
     Ok(Json(json!(agent)))
 }
 
 async fn update_agent_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
     Json(body): Json<UpdateAgentBody>,
 ) -> Result<Json<Value>, AppError> {
-    let existing = get_agent(&state.db, id, auth.user_id).await?;
+    let existing = get_agent(&db, id, auth.user_id).await?;
 
     if body.r#type.is_some()
         || body.description.is_some()
@@ -116,7 +116,7 @@ async fn update_agent_handler(
         let capabilities = body.capabilities.or(Some(existing.capabilities.clone()));
         let config = body.config.or(Some(existing.config.clone()));
         register_agent(
-            &state.db,
+            &db,
             RegisterAgentRequest {
                 user_id: Some(auth.user_id),
                 name: existing.name.clone(),
@@ -130,96 +130,96 @@ async fn update_agent_handler(
     }
 
     if let Some(status) = body.status.as_deref() {
-        set_status(&state.db, id, auth.user_id, status).await?;
+        set_status(&db, id, auth.user_id, status).await?;
     }
 
-    let agent = get_agent(&state.db, id, auth.user_id).await?;
+    let agent = get_agent(&db, id, auth.user_id).await?;
     Ok(Json(json!(agent)))
 }
 
 async fn delete_agent_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_agent(&state.db, id, auth.user_id).await?;
+    delete_agent(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
 async fn heartbeat_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    heartbeat(&state.db, id, auth.user_id).await?;
+    heartbeat(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
 async fn get_stats(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_soma_stats(&state.db, Some(auth.user_id)).await?;
+    let stats = get_soma_stats(&db, Some(auth.user_id)).await?;
     Ok(Json(json!(stats)))
 }
 
 // --- New handlers for P0-0 Phase 27c: groups and logs ---
 
 async fn create_group_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<CreateGroupBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let group = create_group(&state.db, body.name, body.description, auth.user_id).await?;
+    let group = create_group(&db, body.name, body.description, auth.user_id).await?;
     Ok((StatusCode::CREATED, Json(json!(group))))
 }
 
 async fn list_groups_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let groups = list_groups(&state.db, auth.user_id).await?;
+    let groups = list_groups(&db, auth.user_id).await?;
     Ok(Json(json!({ "groups": groups, "count": groups.len() })))
 }
 
 async fn add_member_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(group_id): Path<i64>,
     Json(body): Json<AddMemberBody>,
 ) -> Result<Json<Value>, AppError> {
-    add_agent_to_group(&state.db, body.agent_id, group_id, auth.user_id).await?;
+    add_agent_to_group(&db, body.agent_id, group_id, auth.user_id).await?;
     Ok(Json(
         json!({ "ok": true, "group_id": group_id, "agent_id": body.agent_id }),
     ))
 }
 
 async fn remove_member_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path((group_id, agent_id)): Path<(i64, i64)>,
 ) -> Result<Json<Value>, AppError> {
-    let removed = remove_agent_from_group(&state.db, agent_id, group_id, auth.user_id).await?;
+    let removed = remove_agent_from_group(&db, agent_id, group_id, auth.user_id).await?;
     Ok(Json(json!({ "removed": removed })))
 }
 
 async fn log_event_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,
     Path(agent_id): Path<i64>,
     Json(body): Json<LogEventBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let id = log_event(&state.db, agent_id, &body.level, &body.message, body.data).await?;
+    let id = log_event(&db, agent_id, &body.level, &body.message, body.data).await?;
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
 }
 
 async fn list_logs_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(agent_id): Path<i64>,
     Query(params): Query<ListLogsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
-    let logs = list_agent_logs(&state.db, agent_id, auth.user_id, limit).await?;
+    let logs = list_agent_logs(&db, agent_id, auth.user_id, limit).await?;
     Ok(Json(json!({ "logs": logs, "count": logs.len() })))
 }
