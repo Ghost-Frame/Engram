@@ -65,6 +65,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "axon_events_and_soma_agents_shim",
         up: apply_schema_v8_activity_shim,
     },
+    TenantMigration {
+        version: 9,
+        description: "webhooks_shim",
+        up: apply_schema_v9_webhooks_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -105,6 +110,11 @@ fn apply_schema_v7_projects_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v8_activity_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v8_activity.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v8 failed: {e}")))
+}
+
+fn apply_schema_v9_webhooks_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v9_webhooks.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v9 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -833,6 +843,105 @@ mod tests {
         let post: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('axon_events', 'soma_agents')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post, 2);
+    }
+
+    #[test]
+    fn webhooks_usable_after_v9() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('webhooks', 'webhook_dead_letters')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2, "webhooks/webhook_dead_letters missing after v9");
+
+        conn.execute(
+            "INSERT INTO webhooks (user_id, url, events, secret) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![4_i64, "https://example.test/hook", "memory.created", None::<String>],
+        )
+        .unwrap();
+        let webhook_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO webhook_dead_letters (webhook_id, event, payload, attempts, last_error, last_status_code) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![webhook_id, "memory.created", "{}", 3_i64, "timeout", 504_i64],
+        )
+        .unwrap();
+
+        let (url, uid): (String, i64) = conn
+            .query_row(
+                "SELECT url, user_id FROM webhooks WHERE id = ?1",
+                rusqlite::params![webhook_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(url, "https://example.test/hook");
+        assert_eq!(uid, 4);
+
+        let dl_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM webhook_dead_letters WHERE webhook_id = ?1",
+                rusqlite::params![webhook_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dl_count, 1);
+    }
+
+    #[test]
+    fn v8_db_upgrades_cleanly_to_v9() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        apply_schema_v2_scratchpad_shim(&conn).unwrap();
+        apply_schema_v3_sessions_shim(&conn).unwrap();
+        apply_schema_v4_chiasm_shim(&conn).unwrap();
+        apply_schema_v5_approvals_shim(&conn).unwrap();
+        apply_schema_v6_broca_shim(&conn).unwrap();
+        apply_schema_v7_projects_shim(&conn).unwrap();
+        apply_schema_v8_activity_shim(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (6);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (7);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (8);",
+        )
+        .unwrap();
+
+        let pre: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('webhooks', 'webhook_dead_letters')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre, 0);
+
+        run_tenant_migrations(&conn).unwrap();
+
+        let post: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('webhooks', 'webhook_dead_letters')",
                 [],
                 |r| r.get(0),
             )
