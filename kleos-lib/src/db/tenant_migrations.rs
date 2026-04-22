@@ -80,6 +80,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "axon_family_shim",
         up: apply_schema_v11_axon_shim,
     },
+    TenantMigration {
+        version: 12,
+        description: "soma_family_shim",
+        up: apply_schema_v12_soma_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -135,6 +140,11 @@ fn apply_schema_v10_ingestion_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v11_axon_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v11_axon.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v11 failed: {e}")))
+}
+
+fn apply_schema_v12_soma_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v12_soma.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v12 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -1181,6 +1191,120 @@ mod tests {
         let post: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('axon_channels', 'axon_subscriptions', 'axon_cursors')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post, 3);
+    }
+
+    #[test]
+    fn soma_family_usable_after_v12() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('soma_groups', 'soma_agent_groups', 'soma_agent_logs')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 3, "soma family tables missing after v12");
+
+        // Seed a soma_agents row so FKs have a target.
+        conn.execute(
+            "INSERT INTO soma_agents (name, type, description, capabilities, config, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["claude-code", "cli", None::<String>, "[]", "{}", 4_i64],
+        )
+        .unwrap();
+        let agent_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO soma_groups (name, description, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["infra", None::<String>, 4_i64],
+        )
+        .unwrap();
+        let group_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO soma_agent_groups (agent_id, group_id) VALUES (?1, ?2)",
+            rusqlite::params![agent_id, group_id],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO soma_agent_logs (agent_id, level, message, data) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![agent_id, "info", "heartbeat ok", "{}"],
+        )
+        .unwrap();
+
+        let (g, ag, l): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM soma_groups WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM soma_agent_groups WHERE group_id = ?2), \
+                   (SELECT COUNT(*) FROM soma_agent_logs WHERE agent_id = ?3)",
+                rusqlite::params![4_i64, group_id, agent_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(g, 1);
+        assert_eq!(ag, 1);
+        assert_eq!(l, 1);
+    }
+
+    #[test]
+    fn v11_db_upgrades_cleanly_to_v12() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        apply_schema_v2_scratchpad_shim(&conn).unwrap();
+        apply_schema_v3_sessions_shim(&conn).unwrap();
+        apply_schema_v4_chiasm_shim(&conn).unwrap();
+        apply_schema_v5_approvals_shim(&conn).unwrap();
+        apply_schema_v6_broca_shim(&conn).unwrap();
+        apply_schema_v7_projects_shim(&conn).unwrap();
+        apply_schema_v8_activity_shim(&conn).unwrap();
+        apply_schema_v9_webhooks_shim(&conn).unwrap();
+        apply_schema_v10_ingestion_shim(&conn).unwrap();
+        apply_schema_v11_axon_shim(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (6);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (7);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (8);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (9);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (10);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (11);",
+        )
+        .unwrap();
+
+        let pre: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('soma_groups', 'soma_agent_groups', 'soma_agent_logs')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre, 0);
+
+        run_tenant_migrations(&conn).unwrap();
+
+        let post: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('soma_groups', 'soma_agent_groups', 'soma_agent_logs')",
                 [],
                 |r| r.get(0),
             )
