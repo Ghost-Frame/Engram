@@ -1,12 +1,12 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query},
     routing::{get, post},
     Json, Router,
 };
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 
 mod types;
@@ -24,13 +24,13 @@ pub fn router() -> Router<AppState> {
 
 async fn list_inbox(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Query(q): Query<PagingQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
-    let pending = kleos_lib::inbox::list_pending(&state.db, auth.user_id, limit, offset).await?;
-    let total = kleos_lib::inbox::count_pending(&state.db, auth.user_id).await?;
+    let pending = kleos_lib::inbox::list_pending(&db, auth.user_id, limit, offset).await?;
+    let total = kleos_lib::inbox::count_pending(&db, auth.user_id).await?;
     Ok(Json(
         json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),
     ))
@@ -38,24 +38,22 @@ async fn list_inbox(
 
 async fn approve(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::inbox::approve_memory(&state.db, id, auth.user_id).await?;
+    kleos_lib::inbox::approve_memory(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "approved": true, "id": id })))
 }
 
 async fn reject(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<RejectBody>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::inbox::reject_memory(&state.db, id, auth.user_id).await?;
+    kleos_lib::inbox::reject_memory(&db, id, auth.user_id).await?;
     if let Some(reason) = &body.reason {
-        if let Err(e) =
-            kleos_lib::inbox::set_forget_reason(&state.db, id, reason, auth.user_id).await
-        {
+        if let Err(e) = kleos_lib::inbox::set_forget_reason(&db, id, reason, auth.user_id).await {
             tracing::warn!(
                 memory_id = id,
                 user_id = auth.user_id,
@@ -69,12 +67,12 @@ async fn reject(
 
 async fn edit(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<EditBody>,
 ) -> Result<Json<Value>, AppError> {
     kleos_lib::inbox::edit_and_approve(
-        &state.db,
+        &db,
         id,
         body.content.as_deref(),
         body.category.as_deref(),
@@ -88,18 +86,18 @@ async fn edit(
 
 async fn bulk_action(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<BulkBody>,
 ) -> Result<Json<Value>, AppError> {
     let mut count = 0;
     for id in &body.ids {
         match body.action.as_str() {
             "approve" => {
-                kleos_lib::inbox::approve_memory(&state.db, *id, auth.user_id).await?;
+                kleos_lib::inbox::approve_memory(&db, *id, auth.user_id).await?;
                 count += 1;
             }
             "reject" => {
-                kleos_lib::inbox::reject_memory(&state.db, *id, auth.user_id).await?;
+                kleos_lib::inbox::reject_memory(&db, *id, auth.user_id).await?;
                 count += 1;
             }
             _ => {
@@ -116,13 +114,13 @@ async fn bulk_action(
 
 async fn list_pending_legacy(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Query(q): Query<PagingQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
-    let pending = kleos_lib::inbox::list_pending(&state.db, auth.user_id, limit, offset).await?;
-    let total = kleos_lib::inbox::count_pending(&state.db, auth.user_id).await?;
+    let pending = kleos_lib::inbox::list_pending(&db, auth.user_id, limit, offset).await?;
+    let total = kleos_lib::inbox::count_pending(&db, auth.user_id).await?;
     Ok(Json(
         json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),
     ))
