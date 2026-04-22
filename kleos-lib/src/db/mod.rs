@@ -4,6 +4,7 @@ pub mod pitr;
 pub mod pool;
 pub mod schema;
 pub mod schema_sql;
+pub mod tenant_migrations;
 pub mod types;
 
 use crate::config::Config;
@@ -114,8 +115,11 @@ impl Database {
     }
 
     /// Open a tenant's database with lightweight pools.
-    /// Skips migrations (tenant DBs are already initialized) and
-    /// uses a small pool config suitable for background processing.
+    ///
+    /// Runs the tenant migration chain (see `tenant_migrations`) on open so
+    /// both freshly-created and existing tenant shards land at the latest
+    /// tenant schema version. Pool sizes are kept small because thousands of
+    /// tenants may be resident concurrently.
     pub async fn open_tenant(
         db_path: &str,
         vector_index: Option<Arc<dyn VectorIndex>>,
@@ -126,6 +130,18 @@ impl Database {
             ..DbPoolConfig::default()
         };
         let pools = DatabasePools::new(db_path, pool_config, None).await?;
+
+        let writer = pools.writer().get().await.map_err(|e| {
+            EngError::DatabaseMessage(format!(
+                "failed to acquire tenant writer pool connection: {e}"
+            ))
+        })?;
+        writer
+            .interact(|conn| tenant_migrations::run_tenant_migrations(conn))
+            .await
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("tenant pool migration failed: {e}"))
+            })??;
 
         Ok(Self {
             db_path: db_path.to_string(),
