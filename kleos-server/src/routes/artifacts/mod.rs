@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Multipart, Path, State},
+    extract::{Multipart, Path},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -9,7 +9,11 @@ use kleos_lib::artifacts::{self, StoreArtifactOpts};
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
-use crate::{error::AppError, extractors::Auth, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
 use kleos_lib::validation::MAX_ARTIFACT_UPLOAD_BYTES as MAX_UPLOAD_BYTES;
 
 #[allow(dead_code)]
@@ -26,10 +30,10 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn get_stats(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let stats = artifacts::get_artifact_stats(&state.db, auth.user_id).await?;
+    let stats = artifacts::get_artifact_stats(&db, auth.user_id).await?;
     Ok(Json(json!({
         "total_count": stats.total_count,
         "total_bytes": stats.total_bytes,
@@ -39,13 +43,12 @@ async fn get_stats(
 }
 
 async fn list_for_memory(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     // Verify the memory belongs to this user
-    let owner: i64 = state
-        .db
+    let owner: i64 = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT user_id FROM memories WHERE id = ?1",
@@ -61,7 +64,7 @@ async fn list_for_memory(
         return Err(AppError(kleos_lib::EngError::NotFound("Not found".into())));
     }
 
-    let artifacts = artifacts::get_artifacts_by_memory(&state.db, memory_id, auth.user_id).await?;
+    let artifacts = artifacts::get_artifacts_by_memory(&db, memory_id, auth.user_id).await?;
     Ok(Json(
         json!({ "artifacts": artifacts, "memory_id": memory_id }),
     ))
@@ -78,7 +81,7 @@ async fn list_for_memory(
 ///   - `session_id` (optional)
 ///   - `metadata` (optional): JSON string
 async fn upload_artifact(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(memory_id): Path<i64>,
     mut multipart: Multipart,
@@ -199,7 +202,7 @@ async fn upload_artifact(
     };
 
     let artifact_id = artifacts::store_artifact(
-        &state.db,
+        &db,
         auth.user_id,
         memory_id,
         &display_name,
@@ -216,7 +219,7 @@ async fn upload_artifact(
     .await?;
 
     // Index for FTS if applicable
-    artifacts::index_artifact(&state.db, artifact_id, auth.user_id, &mime_type, &data).await;
+    artifacts::index_artifact(&db, artifact_id, auth.user_id, &mime_type, &data).await;
 
     Ok(Json(json!({
         "id": artifact_id,
@@ -229,11 +232,11 @@ async fn upload_artifact(
 }
 
 async fn download_artifact(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let artifact = artifacts::get_artifact_by_id(&state.db, id, auth.user_id)
+    let artifact = artifacts::get_artifact_by_id(&db, id, auth.user_id)
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Artifact not found".into())))?;
 
@@ -245,8 +248,7 @@ async fn download_artifact(
         ))
     })?;
 
-    let owner: i64 = state
-        .db
+    let owner: i64 = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT user_id FROM memories WHERE id = ?1",
@@ -263,7 +265,7 @@ async fn download_artifact(
     }
 
     // Get artifact data (inline storage only for now)
-    let data = artifacts::get_artifact_data(&state.db, id, auth.user_id)
+    let data = artifacts::get_artifact_data(&db, id, auth.user_id)
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("Artifact has no data".into())))?;
 
