@@ -587,19 +587,7 @@ async fn run_cycle_tenants(
             }
         };
 
-        let db_path = handle.db.path().to_string_lossy().to_string();
-        let tenant_db = match Database::open_tenant(
-            &db_path,
-            Some(Arc::clone(&handle.vector_index)),
-        )
-        .await
-        {
-            Ok(db) => db,
-            Err(e) => {
-                warn!(tenant = %tenant_row.tenant_id, error = %e, "dreamer: failed to open tenant db");
-                continue;
-            }
-        };
+        let tenant_db = Arc::clone(&handle.db);
 
         let users = match active_user_ids(&tenant_db).await {
             Ok(u) => u,

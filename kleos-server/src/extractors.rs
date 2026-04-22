@@ -74,14 +74,7 @@ impl FromRequestParts<AppState> for ResolvedDb {
                         )
                     })?;
 
-                let db = handle.database().await.map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": format!("tenant database error: {}", e) })),
-                    )
-                })?;
-
-                Ok(ResolvedDb(db))
+                Ok(ResolvedDb(handle.database()))
             } else {
                 Ok(ResolvedDb(fallback_db))
             }

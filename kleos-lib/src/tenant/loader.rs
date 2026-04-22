@@ -5,14 +5,14 @@
 //! - The number of resident tenants exceeds `max_resident`
 
 use super::types::{TenantConfig, TenantHandle, TenantRow, TenantStatus};
-use super::TenantDatabase;
+use crate::db::Database;
 use crate::vector::LanceIndex;
 use crate::{EngError, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
-use tokio::sync::{OnceCell, RwLock};
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 /// Manages lazy loading and eviction of tenant handles.
@@ -71,49 +71,45 @@ impl TenantLoader {
         // Evict if necessary before loading
         self.maybe_evict().await?;
 
-        // Load database -- prefer kleos.db in the tenant dir, fall back to
-        // kleos.db in the same dir for existing deployments.
-        let db_path = crate::config::resolve_db_path(
-            &self
-                .data_root
-                .join("tenants")
-                .join(tenant_id)
-                .join("kleos.db"),
-        );
+        // Ensure tenant directory exists before opening pools.
+        let tenant_dir = self.data_root.join("tenants").join(tenant_id);
+        std::fs::create_dir_all(&tenant_dir).map_err(|e| {
+            EngError::Internal(format!("failed to create tenant directory: {}", e))
+        })?;
 
-        let db = TenantDatabase::open(&db_path)?;
-
-        // Load vector index
-        let lance_path = self
-            .data_root
-            .join("tenants")
-            .join(tenant_id)
-            .join("hnsw")
-            .join("memories.lance");
-
-        // Ensure lance directory exists
+        // Load the vector index first so it can be handed to the Database.
+        let lance_path = tenant_dir.join("hnsw").join("memories.lance");
         if let Some(parent) = lance_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 EngError::Internal(format!("failed to create lance directory: {}", e))
             })?;
         }
 
-        let vector_index = LanceIndex::open(
-            lance_path.to_string_lossy().as_ref(),
-            self.vector_dimensions,
-        )
-        .await
-        .map_err(|e| EngError::Internal(format!("failed to open vector index: {}", e)))?;
+        let vector_index: Arc<dyn crate::vector::VectorIndex> = Arc::new(
+            LanceIndex::open(
+                lance_path.to_string_lossy().as_ref(),
+                self.vector_dimensions,
+            )
+            .await
+            .map_err(|e| EngError::Internal(format!("failed to open vector index: {}", e)))?,
+        );
+
+        // Open the tenant's SQLite pool. The existing deployment path is
+        // `tenants/<id>/kleos.db`; migration (tenant chain v1+) runs inside
+        // `Database::open_tenant`.
+        let db_path = tenant_dir.join("kleos.db").to_string_lossy().into_owned();
+        let db = Arc::new(
+            Database::open_tenant(&db_path, Some(Arc::clone(&vector_index))).await?,
+        );
 
         let handle = Arc::new(TenantHandle {
             tenant_id: tenant_id.to_string(),
             user_id: row.user_id.clone(),
-            db: Arc::new(db),
-            vector_index: Arc::new(vector_index),
+            db,
+            vector_index,
             created_at: SystemTime::UNIX_EPOCH
                 + std::time::Duration::from_secs(row.created_at as u64),
             last_access: std::sync::Mutex::new(Instant::now()),
-            async_db: OnceCell::new(),
         });
 
         // Store in cache
@@ -146,8 +142,7 @@ impl TenantLoader {
         };
 
         if let Some(handle) = handle {
-            // Checkpoint WAL before dropping
-            if let Err(e) = handle.db.checkpoint() {
+            if let Err(e) = handle.db.checkpoint().await {
                 warn!(
                     "failed to checkpoint tenant {} before eviction: {}",
                     tenant_id, e

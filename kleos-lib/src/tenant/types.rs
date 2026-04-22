@@ -4,9 +4,6 @@ use crate::db::Database;
 use crate::vector::VectorIndex;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
-use tokio::sync::OnceCell;
-
-use super::TenantDatabase;
 
 /// Status of a tenant in the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,8 +72,8 @@ pub struct TenantHandle {
     /// The original user ID that maps to this tenant.
     pub user_id: String,
 
-    /// The per-tenant SQLite database (rusqlite).
-    pub db: Arc<TenantDatabase>,
+    /// The per-tenant async SQLite database (deadpool-sqlite pool).
+    pub db: Arc<Database>,
 
     /// The per-tenant vector index (LanceDB).
     pub vector_index: Arc<dyn VectorIndex>,
@@ -86,9 +83,6 @@ pub struct TenantHandle {
 
     /// Last time this handle was accessed (for LRU eviction).
     pub last_access: Mutex<Instant>,
-
-    /// Lazily-initialized async Database pool for API request handling.
-    pub async_db: OnceCell<Arc<Database>>,
 }
 
 impl TenantHandle {
@@ -107,17 +101,13 @@ impl TenantHandle {
             .unwrap_or(Duration::ZERO)
     }
 
-    /// Get or lazily create the async Database pool for this tenant.
-    pub async fn database(&self) -> crate::Result<Arc<Database>> {
-        self.async_db
-            .get_or_try_init(|| async {
-                let db_path = self.db.path().to_string_lossy().into_owned();
-                let vi = Arc::clone(&self.vector_index);
-                let db = Database::open_tenant(&db_path, Some(vi)).await?;
-                Ok(Arc::new(db))
-            })
-            .await
-            .cloned()
+    /// Get the async Database for this tenant.
+    ///
+    /// Returns a clone of the Arc already held in the handle. Kept as a
+    /// method (rather than requiring callers to reach into `.db`) to leave
+    /// room for per-request tracking, quota checks, or rate limiting later.
+    pub fn database(&self) -> Arc<Database> {
+        Arc::clone(&self.db)
     }
 }
 

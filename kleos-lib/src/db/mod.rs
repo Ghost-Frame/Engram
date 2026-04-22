@@ -151,6 +151,48 @@ impl Database {
         })
     }
 
+    /// Open an in-memory tenant database for testing.
+    ///
+    /// Runs the tenant migration chain so the schema matches a real tenant
+    /// shard. Distinct from `connect_memory` which runs the system/main
+    /// migration chain.
+    pub async fn open_tenant_memory() -> Result<Self> {
+        let id = uuid::Uuid::new_v4();
+        let uri = format!("file:tenant_test_{id}?mode=memory&cache=shared");
+        let pool_config = DbPoolConfig {
+            max_readers: 2,
+            writer_count: 1,
+            ..DbPoolConfig::default()
+        };
+        let pools = DatabasePools::new(&uri, pool_config, None).await?;
+
+        let writer = pools.writer().get().await.map_err(|e| {
+            EngError::DatabaseMessage(format!("failed to acquire writer pool connection: {e}"))
+        })?;
+        writer
+            .interact(|conn| tenant_migrations::run_tenant_migrations(conn))
+            .await
+            .map_err(|e| EngError::DatabaseMessage(format!("tenant migration failed: {e}")))??;
+
+        Ok(Self {
+            db_path: uri,
+            pools,
+            vector_index: None,
+            is_tenant: true,
+        })
+    }
+
+    /// Checkpoint the WAL and truncate it. Call before evicting a tenant
+    /// to ensure all in-flight writes are persisted to the main database file.
+    pub async fn checkpoint(&self) -> Result<()> {
+        self.write(|conn| {
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .map_err(|e| EngError::DatabaseMessage(format!("checkpoint failed: {e}")))?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Returns true if this is a tenant shard database.
     pub fn is_tenant(&self) -> bool {
         self.is_tenant

@@ -2,7 +2,8 @@
 // Iterates over all tenants and recomputes scores based on dirty state.
 
 use crate::config::Config;
-use crate::tenant::{TenantDatabase, TenantRegistry};
+use crate::db::Database;
+use crate::tenant::TenantRegistry;
 use crate::{EngError, Result};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -17,13 +18,19 @@ const CONVERGENCE_THRESHOLD: f64 = 1e-6;
 
 /// Compute PageRank scores for a tenant database.
 /// Since tenants are isolated, no user_id scoping is needed.
-fn compute_pagerank_for_tenant(db: &TenantDatabase) -> Result<Vec<(i64, f64)>> {
-    // Get all memories and their links
-    let memories: Vec<i64> = db.query_map(
-        "SELECT id FROM memories WHERE is_forgotten = 0 AND is_latest = 1",
-        &[],
-        |row| row.get(0),
-    )?;
+async fn compute_pagerank_for_tenant(db: &Database) -> Result<Vec<(i64, f64)>> {
+    let memories: Vec<i64> = db
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT id FROM memories WHERE is_forgotten = 0 AND is_latest = 1")
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, i64>(0))
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?;
 
     if memories.is_empty() {
         return Ok(Vec::new());
@@ -32,21 +39,25 @@ fn compute_pagerank_for_tenant(db: &TenantDatabase) -> Result<Vec<(i64, f64)>> {
     let memory_count = memories.len();
     let base_score = 1.0 / memory_count as f64;
 
-    // Build adjacency list from memory_links
-    let links: Vec<(i64, i64)> = db.query_map(
-        "SELECT source_id, target_id FROM memory_links",
-        &[],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    let links: Vec<(i64, i64)> = db
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT source_id, target_id FROM memory_links")
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?;
 
-    // Create index mapping
     let id_to_idx: std::collections::HashMap<i64, usize> = memories
         .iter()
         .enumerate()
         .map(|(i, &id)| (id, i))
         .collect();
 
-    // Build out-degree counts and adjacency
     let mut out_degree = vec![0usize; memory_count];
     let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); memory_count];
 
@@ -57,14 +68,12 @@ fn compute_pagerank_for_tenant(db: &TenantDatabase) -> Result<Vec<(i64, f64)>> {
         }
     }
 
-    // Power iteration
     let mut scores = vec![base_score; memory_count];
     let mut next_scores = vec![0.0; memory_count];
 
     for _ in 0..MAX_ITERATIONS {
         let teleport = (1.0 - DAMPING) / memory_count as f64;
 
-        // Collect dangling node contribution
         let dangling_sum: f64 = scores
             .iter()
             .enumerate()
@@ -82,7 +91,6 @@ fn compute_pagerank_for_tenant(db: &TenantDatabase) -> Result<Vec<(i64, f64)>> {
             next_scores[i] = teleport + dangling_contrib + DAMPING * link_contrib;
         }
 
-        // Check convergence
         let delta: f64 = scores
             .iter()
             .zip(next_scores.iter())
@@ -96,16 +104,14 @@ fn compute_pagerank_for_tenant(db: &TenantDatabase) -> Result<Vec<(i64, f64)>> {
         }
     }
 
-    // Return (memory_id, score) pairs
     Ok(memories.into_iter().zip(scores).collect())
 }
 
 /// Persist PageRank scores to a tenant database.
-fn persist_pagerank_for_tenant(db: &TenantDatabase, scores: &[(i64, f64)]) -> Result<()> {
-    db.transaction(|conn| {
-        for (memory_id, score) in scores {
-            // Get degree counts
-            let in_degree: i64 = conn
+async fn persist_pagerank_for_tenant(db: &Database, scores: Vec<(i64, f64)>) -> Result<()> {
+    db.transaction(move |tx| {
+        for (memory_id, score) in &scores {
+            let in_degree: i64 = tx
                 .query_row(
                     "SELECT COUNT(*) FROM memory_links WHERE target_id = ?1",
                     [memory_id],
@@ -113,7 +119,7 @@ fn persist_pagerank_for_tenant(db: &TenantDatabase, scores: &[(i64, f64)]) -> Re
                 )
                 .unwrap_or(0);
 
-            let out_degree: i64 = conn
+            let out_degree: i64 = tx
                 .query_row(
                     "SELECT COUNT(*) FROM memory_links WHERE source_id = ?1",
                     [memory_id],
@@ -121,8 +127,7 @@ fn persist_pagerank_for_tenant(db: &TenantDatabase, scores: &[(i64, f64)]) -> Re
                 )
                 .unwrap_or(0);
 
-            // Upsert into memory_pagerank
-            conn.execute(
+            tx.execute(
                 "INSERT INTO memory_pagerank (memory_id, score, in_degree, out_degree, computed_at)
                  VALUES (?1, ?2, ?3, ?4, datetime('now'))
                  ON CONFLICT(memory_id) DO UPDATE SET
@@ -134,8 +139,7 @@ fn persist_pagerank_for_tenant(db: &TenantDatabase, scores: &[(i64, f64)]) -> Re
             )
             .map_err(|e| EngError::Internal(format!("pagerank upsert failed: {}", e)))?;
 
-            // Also update the denormalized score on memories table
-            conn.execute(
+            tx.execute(
                 "UPDATE memories SET pagerank_score = ?1 WHERE id = ?2",
                 rusqlite::params![score, memory_id],
             )
@@ -143,45 +147,43 @@ fn persist_pagerank_for_tenant(db: &TenantDatabase, scores: &[(i64, f64)]) -> Re
         }
         Ok(())
     })
+    .await
 }
 
-/// Get memory count for a tenant (used to detect dirty state).
-fn get_memory_count(db: &TenantDatabase) -> Result<i64> {
-    db.query_one(
-        "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0 AND is_latest = 1",
-        &[],
-        |row| row.get(0),
-    )?
-    .ok_or_else(|| EngError::Internal("no count returned".into()))
+async fn get_memory_count(db: &Database) -> Result<i64> {
+    db.read(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0 AND is_latest = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+    })
+    .await
 }
 
-/// Get the last computed pagerank count for a tenant.
-fn get_pagerank_count(db: &TenantDatabase) -> Result<i64> {
-    db.query_one("SELECT COUNT(*) FROM memory_pagerank", &[], |row| {
-        row.get(0)
-    })?
-    .ok_or_else(|| EngError::Internal("no count returned".into()))
+async fn get_pagerank_count(db: &Database) -> Result<i64> {
+    db.read(|conn| {
+        conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+    })
+    .await
 }
 
-/// Check if a tenant needs PageRank refresh.
-/// Returns true if memory count differs from pagerank count (indicating new memories).
-fn needs_refresh(db: &TenantDatabase, threshold: u32) -> Result<bool> {
-    let memory_count = get_memory_count(db)?;
-    let pagerank_count = get_pagerank_count(db)?;
+async fn needs_refresh(db: &Database, threshold: u32) -> Result<bool> {
+    let memory_count = get_memory_count(db).await?;
+    let pagerank_count = get_pagerank_count(db).await?;
 
-    // Refresh if counts differ by more than threshold
     let diff = (memory_count - pagerank_count).unsigned_abs();
     Ok(diff >= threshold as u64)
 }
 
-/// Refresh PageRank for a single tenant.
 async fn refresh_tenant(handle: Arc<crate::tenant::TenantHandle>, threshold: u32) -> bool {
     let db = &handle.db;
 
-    // Check if refresh needed
-    let should_refresh = match needs_refresh(db.as_ref(), threshold) {
+    let should_refresh = match needs_refresh(db.as_ref(), threshold).await {
         Ok(true) => true,
-        Ok(false) => return true, // No refresh needed, but not an error
+        Ok(false) => return true,
         Err(e) => {
             warn!(tenant_id = %handle.tenant_id, error = %e, "failed to check refresh state");
             return false;
@@ -192,15 +194,15 @@ async fn refresh_tenant(handle: Arc<crate::tenant::TenantHandle>, threshold: u32
         return true;
     }
 
-    // Compute and persist
-    match compute_pagerank_for_tenant(db.as_ref()) {
+    match compute_pagerank_for_tenant(db.as_ref()).await {
         Ok(scores) if scores.is_empty() => true,
         Ok(scores) => {
-            if let Err(e) = persist_pagerank_for_tenant(db.as_ref(), &scores) {
+            let count = scores.len();
+            if let Err(e) = persist_pagerank_for_tenant(db.as_ref(), scores).await {
                 warn!(tenant_id = %handle.tenant_id, error = %e, "pagerank persist failed");
                 return false;
             }
-            info!(tenant_id = %handle.tenant_id, scores = scores.len(), "pagerank refreshed");
+            info!(tenant_id = %handle.tenant_id, scores = count, "pagerank refreshed");
             true
         }
         Err(e) => {
@@ -210,9 +212,7 @@ async fn refresh_tenant(handle: Arc<crate::tenant::TenantHandle>, threshold: u32
     }
 }
 
-/// Run a single refresh cycle across all tenants.
 async fn run_once(registry: &Arc<TenantRegistry>, config: &Config) -> Result<usize> {
-    // List all registered tenants
     let tenants = registry.list()?;
     if tenants.is_empty() {
         return Ok(0);
@@ -222,7 +222,6 @@ async fn run_once(registry: &Arc<TenantRegistry>, config: &Config) -> Result<usi
     let mut handles = Vec::with_capacity(tenants.len());
 
     for tenant_row in tenants {
-        // Skip non-active tenants
         if tenant_row.status != crate::tenant::TenantStatus::Active {
             continue;
         }
@@ -235,7 +234,6 @@ async fn run_once(registry: &Arc<TenantRegistry>, config: &Config) -> Result<usi
         handles.push(tokio::spawn(async move {
             let _permit = sem_arc.acquire_owned().await;
 
-            // Load the tenant handle
             let handle = match registry_arc.get(&user_id).await {
                 Ok(Some(h)) => h,
                 Ok(None) => {
@@ -264,8 +262,6 @@ async fn run_once(registry: &Arc<TenantRegistry>, config: &Config) -> Result<usi
     Ok(refreshed)
 }
 
-/// Spawn the background refresh loop for tenant-sharded architecture.
-/// Returns a `CancellationToken` that, when cancelled, causes the loop to exit.
 pub fn start_pagerank_refresh_job_tenant(
     registry: Arc<TenantRegistry>,
     config: Arc<Config>,
@@ -303,72 +299,87 @@ pub fn start_pagerank_refresh_job_tenant(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_compute_pagerank_empty() {
-        let db = TenantDatabase::open_memory().unwrap();
-        let scores = compute_pagerank_for_tenant(&db).unwrap();
+    #[tokio::test]
+    async fn test_compute_pagerank_empty() {
+        let db = Database::open_tenant_memory().await.unwrap();
+        let scores = compute_pagerank_for_tenant(&db).await.unwrap();
         assert!(scores.is_empty());
     }
 
-    #[test]
-    fn test_compute_pagerank_single_memory() {
-        let db = TenantDatabase::open_memory().unwrap();
+    #[tokio::test]
+    async fn test_compute_pagerank_single_memory() {
+        let db = Database::open_tenant_memory().await.unwrap();
 
-        db.execute(
-            "INSERT INTO memories (content, category) VALUES (?1, ?2)",
-            &[&"test content", &"test"],
-        )
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category) VALUES (?1, ?2)",
+                rusqlite::params!["test content", "test"],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        })
+        .await
         .unwrap();
 
-        let scores = compute_pagerank_for_tenant(&db).unwrap();
+        let scores = compute_pagerank_for_tenant(&db).await.unwrap();
         assert_eq!(scores.len(), 1);
-        assert!((scores[0].1 - 1.0).abs() < 0.001); // Single node has score ~1.0
+        assert!((scores[0].1 - 1.0).abs() < 0.001);
     }
 
-    #[test]
-    fn test_persist_pagerank() {
-        let db = TenantDatabase::open_memory().unwrap();
+    #[tokio::test]
+    async fn test_persist_pagerank() {
+        let db = Database::open_tenant_memory().await.unwrap();
 
-        // Insert a memory
-        db.execute(
-            "INSERT INTO memories (content, category) VALUES (?1, ?2)",
-            &[&"test content", &"test"],
-        )
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category) VALUES (?1, ?2)",
+                rusqlite::params!["test content", "test"],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            Ok(())
+        })
+        .await
         .unwrap();
 
         let scores = vec![(1i64, 0.75f64)];
-        persist_pagerank_for_tenant(&db, &scores).unwrap();
+        persist_pagerank_for_tenant(&db, scores).await.unwrap();
 
-        // Verify persisted
-        let stored_score: Option<f64> = db
-            .query_one(
-                "SELECT score FROM memory_pagerank WHERE memory_id = 1",
-                &[],
-                |row| row.get(0),
-            )
+        let stored_score: f64 = db
+            .read(|conn| {
+                conn.query_row(
+                    "SELECT score FROM memory_pagerank WHERE memory_id = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            })
+            .await
             .unwrap();
 
-        assert!((stored_score.unwrap() - 0.75).abs() < 0.001);
+        assert!((stored_score - 0.75).abs() < 0.001);
     }
 
-    #[test]
-    fn test_needs_refresh() {
-        let db = TenantDatabase::open_memory().unwrap();
+    #[tokio::test]
+    async fn test_needs_refresh() {
+        let db = Database::open_tenant_memory().await.unwrap();
 
-        // No memories, no pagerank - no refresh needed
-        assert!(!needs_refresh(&db, 10).unwrap());
+        assert!(!needs_refresh(&db, 10).await.unwrap());
 
-        // Add some memories
         for i in 0..15 {
-            db.execute(
-                "INSERT INTO memories (content, category) VALUES (?1, ?2)",
-                &[&format!("content {}", i), &"test"],
-            )
+            let content = format!("content {}", i);
+            db.write(move |conn| {
+                conn.execute(
+                    "INSERT INTO memories (content, category) VALUES (?1, ?2)",
+                    rusqlite::params![content, "test"],
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                Ok(())
+            })
+            .await
             .unwrap();
         }
 
-        // 15 memories, 0 pagerank entries - diff is 15, exceeds threshold of 10
-        assert!(needs_refresh(&db, 10).unwrap());
-        assert!(!needs_refresh(&db, 20).unwrap());
+        assert!(needs_refresh(&db, 10).await.unwrap());
+        assert!(!needs_refresh(&db, 20).await.unwrap());
     }
 }
