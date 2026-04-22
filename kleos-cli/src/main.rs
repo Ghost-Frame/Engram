@@ -86,12 +86,73 @@ enum Commands {
         #[arg(short, long, default_value = "kleos.db")]
         db: String,
     },
+    /// Ingest text or a file into the memory pipeline
+    Ingest {
+        /// Inline text to ingest (use --file for paths)
+        #[arg(short, long, conflicts_with = "file")]
+        text: Option<String>,
+        /// Read content from a file (any supported format: .md, .txt, .html, .csv, .jsonl, .pdf, .docx, .zip)
+        #[arg(short, long)]
+        file: Option<std::path::PathBuf>,
+        /// Ingestion mode: raw | extract
+        #[arg(short, long, default_value = "raw")]
+        mode: String,
+        /// Source label recorded on each memory
+        #[arg(short, long)]
+        source: Option<String>,
+        /// Category to assign
+        #[arg(short, long, default_value = "general")]
+        category: String,
+    },
+    /// Check server health
+    Health,
+    /// Durable job queue inspection and control
+    #[command(subcommand)]
+    Jobs(JobsCommands),
     /// Skill management
     #[command(subcommand)]
     Skill(SkillCommands),
     /// Credential management (talks to credd)
     #[command(subcommand)]
     Cred(CredCommands),
+}
+
+#[derive(Subcommand)]
+enum JobsCommands {
+    /// Show queue stats (pending / running / completed / failed counts)
+    Stats,
+    /// List jobs filtered by status
+    List {
+        /// Status filter: pending | running | failed
+        #[arg(short, long, default_value = "pending")]
+        status: String,
+        /// Maximum rows to return
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+        /// Row offset
+        #[arg(short, long, default_value = "0")]
+        offset: usize,
+    },
+    /// Retry a failed job by id, or retry every failed job when --all is given
+    Retry {
+        /// Job id to retry (omit together with --all to retry every failed job)
+        id: Option<i64>,
+        /// Retry every failed job
+        #[arg(long)]
+        all: bool,
+    },
+    /// Delete failed jobs older than N days
+    Purge {
+        /// Only purge failed jobs older than this many days
+        #[arg(long, default_value = "7")]
+        older_than_days: i64,
+    },
+    /// Delete completed jobs older than N days
+    Cleanup {
+        /// Only remove completed jobs older than this many days
+        #[arg(long, default_value = "1")]
+        older_than_days: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -481,6 +542,25 @@ async fn main() {
             Err(e) => eprintln!("Error: {}", e),
         },
 
+        Commands::Ingest {
+            text,
+            file,
+            mode,
+            source,
+            category,
+        } => {
+            handle_ingest(&client, text, file, mode, source, category).await;
+        }
+
+        Commands::Health => match client.get("/health").await {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+            Err(e) => eprintln!("Error: {}", e),
+        },
+
+        Commands::Jobs(jobs_cmd) => {
+            handle_jobs_command(&client, jobs_cmd).await;
+        }
+
         Commands::Skill(skill_cmd) => {
             handle_skill_command(&client, skill_cmd).await;
         }
@@ -488,6 +568,233 @@ async fn main() {
         Commands::Cred(cred_cmd) => {
             let cred_client = Client::new(cli.credd_url.clone(), api_key.clone());
             handle_cred_command(&cred_client, cred_cmd).await;
+        }
+    }
+}
+
+async fn handle_ingest(
+    client: &Client,
+    text: &Option<String>,
+    file: &Option<std::path::PathBuf>,
+    mode: &str,
+    source: &Option<String>,
+    category: &str,
+) {
+    // Prefer --file when given; fall back to --text; error otherwise.
+    let (raw_bytes, is_binary, source_label) = match (file, text) {
+        (Some(path), _) => match std::fs::read(path) {
+            Ok(bytes) => {
+                // We treat UTF-8 decodable input as text ingest and hand off
+                // binary content to the chunked upload flow.
+                let looks_text = std::str::from_utf8(&bytes).is_ok();
+                let label = source
+                    .clone()
+                    .or_else(|| {
+                        path.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or_else(|| "file".to_string());
+                (bytes, !looks_text, label)
+            }
+            Err(e) => {
+                eprintln!("Error reading {}: {}", path.display(), e);
+                return;
+            }
+        },
+        (None, Some(t)) => (
+            t.as_bytes().to_vec(),
+            false,
+            source.clone().unwrap_or_else(|| "cli".to_string()),
+        ),
+        (None, None) => {
+            eprintln!("Error: supply --text or --file");
+            return;
+        }
+    };
+
+    if !is_binary {
+        // Hot path: POST /ingest with the decoded string body.
+        let text_body = String::from_utf8(raw_bytes).expect("utf8 verified above");
+        let body = json!({
+            "text": text_body,
+            "mode": mode,
+            "source": source_label,
+            "category": category,
+        });
+        match client.post("/ingest", body).await {
+            Ok(v) => {
+                if let Some(id) = value_as_string(v.get("job_id")) {
+                    let memories = v
+                        .get("ingested")
+                        .and_then(|v| v.as_i64())
+                        .or_else(|| v.get("ingested_memories").and_then(|v| v.as_i64()))
+                        .unwrap_or(0);
+                    let chunks = v
+                        .get("chunks_processed")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    println!("Ingested: job {id} -- {memories} memories, {chunks} chunks");
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                }
+            }
+            Err(e) => eprintln!("Error: {}", e),
+        }
+        return;
+    }
+
+    // Binary path: chunked upload flow. Split into 1MiB chunks, POST init →
+    // chunk* → complete so PDF/DOCX/ZIP payloads reach ingest_binary().
+    const CHUNK_SIZE: usize = 1 << 20;
+    let filename = file
+        .as_ref()
+        .and_then(|p| p.file_name().and_then(|n| n.to_str().map(|s| s.to_string())));
+    let content_type = filename
+        .as_deref()
+        .and_then(|f| f.rsplit_once('.'))
+        .map(|(_, ext)| match ext.to_ascii_lowercase().as_str() {
+            "pdf" => "application/pdf",
+            "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "zip" => "application/zip",
+            _ => "application/octet-stream",
+        });
+
+    let total_chunks = raw_bytes.len().div_ceil(CHUNK_SIZE);
+    let mut init_body = json!({
+        "total_chunks": total_chunks as i64,
+        "source": source_label,
+    });
+    if let Some(name) = &filename {
+        init_body["filename"] = json!(name);
+    }
+    if let Some(ct) = content_type {
+        init_body["content_type"] = json!(ct);
+    }
+
+    let init_resp = match client.post("/ingest/upload/init", init_body).await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error initiating upload: {}", e);
+            return;
+        }
+    };
+    let upload_id = match init_resp.get("upload_id").and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => {
+            eprintln!("Upload init returned no upload_id: {init_resp}");
+            return;
+        }
+    };
+
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let mut full_hasher = Sha256::new();
+    for (idx, chunk) in raw_bytes.chunks(CHUNK_SIZE).enumerate() {
+        full_hasher.update(chunk);
+        let chunk_hash = format!("{:x}", Sha256::digest(chunk));
+        let body = json!({
+            "upload_id": upload_id,
+            "chunk_index": idx as i64,
+            "chunk_hash": chunk_hash,
+            "data": b64.encode(chunk),
+        });
+        if let Err(e) = client.post("/ingest/upload/chunk", body).await {
+            eprintln!("Error uploading chunk {}: {}", idx, e);
+            return;
+        }
+    }
+    let final_hash = format!("{:x}", full_hasher.finalize());
+    let complete_body = json!({
+        "upload_id": upload_id,
+        "total_chunks": total_chunks as i64,
+        "final_sha256": final_hash,
+        "mode": mode,
+        "category": category,
+    });
+    match client.post("/ingest/upload/complete", complete_body).await {
+        Ok(v) => {
+            let memories = v.get("ingested_memories").and_then(|v| v.as_i64()).unwrap_or(0);
+            let chunks = v.get("chunks_processed").and_then(|v| v.as_i64()).unwrap_or(0);
+            let job = value_as_string(v.get("job_id")).unwrap_or_else(|| "?".into());
+            println!("Ingested: job {job} -- {memories} memories, {chunks} chunks");
+        }
+        Err(e) => eprintln!("Error completing upload: {}", e),
+    }
+}
+
+async fn handle_jobs_command(client: &Client, cmd: &JobsCommands) {
+    match cmd {
+        JobsCommands::Stats => match client.get("/jobs/stats").await {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+            Err(e) => eprintln!("Error: {}", e),
+        },
+        JobsCommands::List {
+            status,
+            limit,
+            offset,
+        } => {
+            let path = format!("/jobs?status={status}&limit={limit}&offset={offset}");
+            match client.get(&path).await {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+        JobsCommands::Retry { id, all } => {
+            if *all {
+                // Server has no "retry all" endpoint -- emulate by listing
+                // failed jobs and retrying each id.
+                let listing = match client.get("/jobs/failed?limit=200&offset=0").await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("Error listing failed jobs: {}", e);
+                        return;
+                    }
+                };
+                let empty = Vec::new();
+                let jobs = listing
+                    .get("jobs")
+                    .and_then(|v| v.as_array())
+                    .unwrap_or(&empty);
+                if jobs.is_empty() {
+                    println!("No failed jobs to retry.");
+                    return;
+                }
+                let mut retried = 0usize;
+                for job in jobs {
+                    if let Some(job_id) = job.get("id").and_then(|v| v.as_i64()) {
+                        match client.post(&format!("/jobs/{job_id}/retry"), json!({})).await {
+                            Ok(_) => retried += 1,
+                            Err(e) => eprintln!("Retry {job_id} failed: {e}"),
+                        }
+                    }
+                }
+                println!("Retried {retried} of {} failed jobs.", jobs.len());
+                return;
+            }
+            let Some(id) = id else {
+                eprintln!("Error: provide a job id or --all");
+                return;
+            };
+            match client.post(&format!("/jobs/{id}/retry"), json!({})).await {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+        JobsCommands::Purge { older_than_days } => {
+            let body = json!({ "older_than_days": older_than_days });
+            match client.post("/jobs/purge", body).await {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+        JobsCommands::Cleanup { older_than_days } => {
+            let body = json!({ "older_than_days": older_than_days });
+            match client.post("/jobs/cleanup", body).await {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                Err(e) => eprintln!("Error: {}", e),
+            }
         }
     }
 }

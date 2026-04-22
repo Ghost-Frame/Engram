@@ -13,7 +13,9 @@ use axum::{
 use base64::Engine as _;
 use kleos_lib::ingestion::{
     self,
-    types::{FormatMeta, IngestMode, IngestOptions, IngestProgressEvent, SupportedFormat},
+    types::{
+        FormatMeta, IngestContext, IngestMode, IngestOptions, IngestProgressEvent, SupportedFormat,
+    },
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -75,6 +77,16 @@ pub fn router() -> Router<AppState> {
 
 /// Session lifetime before automatic expiry (24 hours).
 const UPLOAD_SESSION_TTL_HOURS: i64 = 24;
+
+/// Build the runtime context that the ingestion pipeline uses to call the
+/// embedder and local LLM. Clones cheap Arcs out of `AppState` so the RwLock
+/// is not held across the ingestion call.
+async fn build_ingest_context(state: &AppState) -> IngestContext {
+    IngestContext {
+        embedder: state.current_embedder().await,
+        llm: state.llm.clone(),
+    }
+}
 
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -403,24 +415,10 @@ async fn upload_complete(
         }
     }
 
-    // Text-only pipeline for now: treat the assembled bytes as UTF-8. Binary
-    // formats can land here once ingestion grows binary-format support; for
-    // now we reject non-UTF-8 cleanly rather than silently lossy-decoding.
-    let text = String::from_utf8(assembled).map_err(|_| {
-        AppError(kleos_lib::EngError::InvalidInput(
-            "assembled payload is not valid UTF-8 -- binary ingest not yet supported".into(),
-        ))
-    })?;
-    if text.trim().is_empty() {
+    if assembled.is_empty() {
         return Err(AppError(kleos_lib::EngError::InvalidInput(
             "assembled payload is empty".into(),
         )));
-    }
-    if text.len() > MAX_INGEST_TEXT_BYTES {
-        return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
-            "assembled text exceeds {} bytes; decompose before upload",
-            MAX_INGEST_TEXT_BYTES
-        ))));
     }
 
     let mode = match body.mode.as_deref() {
@@ -458,7 +456,43 @@ async fn upload_complete(
         mime: session.content_type.clone(),
     };
 
-    let result = ingestion::ingest(&state.db, &text, options, Some(&meta)).await?;
+    // Resolve format using the same rules the library uses so we can dispatch
+    // text vs binary parsers. Binary formats (PDF, DOCX, ZIP) take the raw
+    // bytes; text formats go through the UTF-8 path with size gating.
+    let resolved_format = options
+        .format
+        .unwrap_or_else(|| ingestion::detect_format(&assembled, Some(&meta)));
+
+    let ctx = build_ingest_context(&state).await;
+
+    let (result, total_bytes) = if ingestion::parsers::is_text_format(resolved_format) {
+        let text = String::from_utf8(assembled).map_err(|_| {
+            AppError(kleos_lib::EngError::InvalidInput(format!(
+                "assembled payload for text format {} is not valid UTF-8",
+                resolved_format
+            )))
+        })?;
+        if text.trim().is_empty() {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(
+                "assembled payload is empty".into(),
+            )));
+        }
+        if text.len() > MAX_INGEST_TEXT_BYTES {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+                "assembled text exceeds {} bytes; decompose before upload",
+                MAX_INGEST_TEXT_BYTES
+            ))));
+        }
+        let bytes = text.len();
+        let r = ingestion::ingest(state.db.clone(), &ctx, &text, options, Some(&meta)).await?;
+        (r, bytes)
+    } else {
+        let bytes = assembled.len();
+        let r =
+            ingestion::ingest_binary(state.db.clone(), &ctx, &assembled, options, Some(&meta))
+                .await?;
+        (r, bytes)
+    };
 
     // Finalize: mark session complete and drop chunk blobs to reclaim space.
     let upload_id_db = body.upload_id.clone();
@@ -487,7 +521,7 @@ async fn upload_complete(
         "status": "completed",
         "final_sha256": final_hash,
         "total_chunks": total,
-        "total_bytes": text.len(),
+        "total_bytes": total_bytes,
         "job_id": result.job_id,
         "ingested_memories": result.total_memories,
         "chunks_processed": result.total_chunks,
@@ -638,7 +672,8 @@ async fn import_bulk(
         extension: None,
         mime: None,
     };
-    let result = ingestion::ingest(&state.db, &input, options, Some(&meta)).await?;
+    let ctx = build_ingest_context(&state).await;
+    let result = ingestion::ingest(state.db.clone(), &ctx, &input, options, Some(&meta)).await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({
@@ -941,7 +976,7 @@ async fn ingest_text(
         });
         ingest_source = body.source.unwrap_or_else(|| "text".to_string());
     } else {
-        return Err(AppError(kleos_lib::EngError::Internal(
+        return Err(AppError(kleos_lib::EngError::NotImplemented(
             "URL fetching not yet implemented in Rust port".to_string(),
         )));
     }
@@ -957,7 +992,8 @@ async fn ingest_text(
         entity_ids: body.entity_ids.clone(),
         chunker_options: None,
     };
-    let result = ingestion::ingest(&state.db, &raw_text, options, None).await?;
+    let ctx = build_ingest_context(&state).await;
+    let result = ingestion::ingest(state.db.clone(), &ctx, &raw_text, options, None).await?;
     Ok(Json(json!({
         "ingested": result.total_memories, "source": ingest_source, "title": title,
         "chunks_processed": result.total_chunks, "errors": result.errors,
@@ -996,7 +1032,7 @@ async fn ingest_text_stream(
             )));
         }
         None => {
-            return Err(AppError(kleos_lib::EngError::Internal(
+            return Err(AppError(kleos_lib::EngError::NotImplemented(
                 "URL fetching not yet implemented in Rust port".to_string(),
             )));
         }
@@ -1020,13 +1056,15 @@ async fn ingest_text_stream(
         chunker_options: None,
     };
 
+    let ctx = build_ingest_context(&state).await;
+
     let accepts_sse = headers
         .get("accept")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.contains("text/event-stream"));
 
     if !accepts_sse {
-        let result = ingestion::ingest(&state.db, &raw_text, options, None).await?;
+        let result = ingestion::ingest(state.db.clone(), &ctx, &raw_text, options, None).await?;
         let payload = json!({
             "ingested": result.total_memories, "title": title,
             "chunks_processed": result.total_chunks, "errors": result.errors,
@@ -1054,7 +1092,8 @@ async fn ingest_text_stream(
     let db = state.db.clone();
     let sse_tx_clone = sse_tx.clone();
     tokio::spawn(async move {
-        let res = ingestion::ingest_streaming(&db, &raw_text, options, None, progress_tx).await;
+        let res =
+            ingestion::ingest_streaming(db, &ctx, &raw_text, options, None, progress_tx).await;
         if let Err(e) = res {
             let _ = sse_tx_clone
                 .send(

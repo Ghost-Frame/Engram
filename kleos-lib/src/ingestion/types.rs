@@ -2,8 +2,11 @@
 // Ingestion pipeline types -- ported from ingestion/types.ts
 // ============================================================================
 
+use crate::embeddings::EmbeddingProvider;
+use crate::llm::local::LocalModelClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // -- Enums --
 
@@ -247,3 +250,25 @@ pub enum IngestProgressEvent {
 /// backpressure when a slow SSE client cannot keep up; producers use
 /// `try_send` and silently drop on full (see [`emit`]).
 pub type IngestProgressSender = tokio::sync::mpsc::Sender<IngestProgressEvent>;
+
+/// Runtime providers for the ingestion pipeline. Embedder computes vectors for
+/// each chunk so processors can match /store semantics (SimHash dedup + LanceDB
+/// insert); llm drives structured fact extraction in `IngestMode::Extract`.
+///
+/// Both are optional: when `embedder` is absent, processors still persist
+/// memories but skip vector storage; when `llm` is absent, extract mode
+/// degrades to raw mode and logs a warning.
+#[derive(Clone, Default)]
+pub struct IngestContext {
+    pub embedder: Option<Arc<dyn EmbeddingProvider>>,
+    pub llm: Option<Arc<LocalModelClient>>,
+}
+
+impl std::fmt::Debug for IngestContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IngestContext")
+            .field("embedder", &self.embedder.is_some())
+            .field("llm", &self.llm.is_some())
+            .finish()
+    }
+}

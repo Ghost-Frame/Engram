@@ -1383,9 +1383,7 @@ mod tests {
     use super::*;
 
     fn open_test_db() -> rusqlite::Connection {
-        let db_path =
-            std::env::temp_dir().join(format!("engram-migrations-{}.db", uuid::Uuid::new_v4()));
-        rusqlite::Connection::open(&db_path).expect("open test db")
+        rusqlite::Connection::open_in_memory().expect("open in-memory test db")
     }
 
     /// Helper: apply up through migration 21 then manually fake a lower
@@ -1420,10 +1418,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_migrations_idempotent() -> Result<()> {
-        let db_path =
-            std::env::temp_dir().join(format!("engram-migrations-{}.db", uuid::Uuid::new_v4()));
-        let conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        let conn = open_test_db();
 
         run_migrations(&conn)?;
         run_migrations(&conn)?;
@@ -1437,7 +1432,6 @@ mod tests {
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         assert_eq!(count, 1);
 
-        let _ = std::fs::remove_file(&db_path);
         Ok(())
     }
 

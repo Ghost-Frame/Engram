@@ -76,6 +76,7 @@ impl TestApp {
             safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             dreamer_stats: kleos_server::dreamer::new_stats_handle(),
             last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tenant_registry: None,
         };
         let router = build_router(state);
 
@@ -363,6 +364,7 @@ async fn bootstrap_returns_api_key() {
         safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         dreamer_stats: kleos_server::dreamer::new_stats_handle(),
         last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        tenant_registry: None,
     };
     let router = build_router(state);
 
@@ -1850,6 +1852,70 @@ async fn ingest_stream_rejects_empty_body() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
+// C2 wire: ingestion must enqueue an `ingestion.fact_extract` job for each
+// memory it persists. Without a worker the server tests don't run the job,
+// but the row in `jobs` proves the producer side of the pipeline is live.
+#[tokio::test]
+async fn ingest_enqueues_fact_extract_job() {
+    let app = TestApp::new().await;
+
+    let (status, _body) = app
+        .post(
+            "/ingest",
+            json!({
+                "text": "Alice prefers coffee over tea and works at Acme Corp in Seattle.",
+                "mode": "raw",
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let jobs: Vec<(String, String, String)> = app
+        .db
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT type, payload, status FROM jobs ORDER BY id ASC")
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?);
+            }
+            Ok(out)
+        })
+        .await
+        .expect("query jobs table");
+
+    let fact_jobs: Vec<_> = jobs
+        .iter()
+        .filter(|(t, _, _)| t == "ingestion.fact_extract")
+        .collect();
+    assert!(
+        !fact_jobs.is_empty(),
+        "ingestion must enqueue at least one ingestion.fact_extract job; saw {jobs:?}"
+    );
+
+    // Payload must carry the fields the registered handler needs.
+    let (_, payload_str, status_str) = fact_jobs[0];
+    let payload: serde_json::Value =
+        serde_json::from_str(payload_str).expect("job payload is JSON");
+    assert!(payload.get("memory_id").is_some(), "payload: {payload}");
+    assert!(payload.get("user_id").is_some(), "payload: {payload}");
+    assert!(payload.get("content").is_some(), "payload: {payload}");
+    assert_eq!(
+        status_str, "pending",
+        "without a worker the job should sit in pending; status={status_str}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 3.8 Resumable chunked upload
 // ---------------------------------------------------------------------------
@@ -2063,4 +2129,74 @@ async fn upload_abort_clears_chunks() {
         )
         .await;
     assert_eq!(cs, StatusCode::BAD_REQUEST);
+}
+
+// Binary format (PDF) bytes must flow through ingest_binary -- the old code
+// rejected anything non-UTF-8 with HTTP 400. A synthetic %PDF header followed
+// by non-UTF-8 bytes won't parse to a real document, but the response must be
+// a 200 with Failed/empty results rather than a 400 UTF-8 rejection.
+#[tokio::test]
+async fn upload_complete_dispatches_binary_format_to_ingest_binary() {
+    let app = TestApp::new().await;
+
+    let (status, init) = app
+        .post(
+            "/ingest/upload/init",
+            json!({
+                "filename": "synthetic.pdf",
+                "content_type": "application/pdf",
+                "total_chunks": 1,
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "init body: {init}");
+    let upload_id = init["upload_id"].as_str().unwrap().to_string();
+
+    // %PDF magic + arbitrary non-UTF-8 bytes. The old UTF-8 gate would have
+    // rejected this; the new dispatcher must send it to the PDF parser.
+    let mut bytes: Vec<u8> = b"%PDF-1.4\n".to_vec();
+    bytes.extend_from_slice(&[0xFF, 0xFE, 0xFD, 0x00, 0x80, 0x81]);
+
+    let (cs, cb) = app
+        .post(
+            "/ingest/upload/chunk",
+            json!({
+                "upload_id": upload_id,
+                "chunk_index": 0,
+                "chunk_hash": sha256_hex_test(&bytes),
+                "data": b64_test(&bytes),
+            }),
+        )
+        .await;
+    assert_eq!(cs, StatusCode::OK, "chunk body: {cb}");
+
+    let (fs, fb) = app
+        .post(
+            "/ingest/upload/complete",
+            json!({
+                "upload_id": upload_id,
+                "total_chunks": 1,
+                "final_sha256": sha256_hex_test(&bytes),
+                "mode": "raw",
+            }),
+        )
+        .await;
+    assert_eq!(
+        fs,
+        StatusCode::OK,
+        "binary upload must not be rejected with 400 UTF-8 error: {fb}"
+    );
+    // The response must come from the binary path. Either the parser produced
+    // zero memories (malformed PDF) or we got an error list naming the parser.
+    let errors = fb["errors"].as_array();
+    let ingested = fb["ingested_memories"].as_i64().unwrap_or(0);
+    let serialized = fb.to_string();
+    assert!(
+        !serialized.contains("not valid UTF-8"),
+        "binary path must not surface the old UTF-8 rejection: {fb}"
+    );
+    assert!(
+        ingested == 0 || errors.is_some(),
+        "expected binary parser outcome (zero ingested or errors list): {fb}"
+    );
 }
