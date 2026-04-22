@@ -1,12 +1,12 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query},
     routing::{delete, get, post},
     Json, Router,
 };
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 
 mod types;
@@ -22,11 +22,11 @@ pub fn router() -> Router<AppState> {
 
 async fn list_scratch(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Query(q): Query<ScratchQuery>,
 ) -> Result<Json<Value>, AppError> {
     let entries = kleos_lib::scratchpad::list_entries(
-        &state.db,
+        &db,
         auth.user_id,
         q.agent.as_deref(),
         q.model.as_deref(),
@@ -39,7 +39,7 @@ async fn list_scratch(
 
 async fn put_scratch(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<kleos_lib::scratchpad::ScratchPutBody>,
 ) -> Result<Json<Value>, AppError> {
     let session = body.session.as_deref().unwrap_or("default");
@@ -51,7 +51,7 @@ async fn put_scratch(
     for e in &entries {
         let value = e.value.as_deref().unwrap_or("");
         kleos_lib::scratchpad::upsert_entry(
-            &state.db,
+            &db,
             auth.user_id,
             session,
             agent,
@@ -70,19 +70,19 @@ async fn put_scratch(
 
 async fn delete_session(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Path(session): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::scratchpad::delete_session(&state.db, auth.user_id, &session).await?;
+    kleos_lib::scratchpad::delete_session(&db, auth.user_id, &session).await?;
     Ok(Json(json!({ "deleted": true, "session": session })))
 }
 
 async fn delete_key(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Path((session, key)): Path<(String, String)>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::scratchpad::delete_session_key(&state.db, auth.user_id, &session, &key).await?;
+    kleos_lib::scratchpad::delete_session_key(&db, auth.user_id, &session, &key).await?;
     Ok(Json(
         json!({ "deleted": true, "session": session, "key": key }),
     ))
@@ -90,14 +90,14 @@ async fn delete_key(
 
 async fn promote(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Path(session): Path<String>,
     Json(body): Json<PromoteBody>,
 ) -> Result<Json<Value>, AppError> {
     let combine = body.combine.unwrap_or(false);
     let category = body.category.as_deref().unwrap_or("discovery");
     let ids = kleos_lib::scratchpad::promote_entries(
-        &state.db,
+        &db,
         auth.user_id,
         &session,
         body.keys.as_deref(),
