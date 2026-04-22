@@ -75,6 +75,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "ingestion_shim",
         up: apply_schema_v10_ingestion_shim,
     },
+    TenantMigration {
+        version: 11,
+        description: "axon_family_shim",
+        up: apply_schema_v11_axon_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -125,6 +130,11 @@ fn apply_schema_v9_webhooks_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v10_ingestion_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v10_ingestion.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v10 failed: {e}")))
+}
+
+fn apply_schema_v11_axon_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v11_axon.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v11 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -1067,6 +1077,110 @@ mod tests {
         let post: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('upload_sessions', 'upload_chunks', 'ingestion_hashes')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post, 3);
+    }
+
+    #[test]
+    fn axon_family_usable_after_v11() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('axon_channels', 'axon_subscriptions', 'axon_cursors')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 3, "axon family tables missing after v11");
+
+        conn.execute(
+            "INSERT INTO axon_channels (name, description) VALUES (?1, ?2)",
+            rusqlite::params!["system", "System events"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO axon_subscriptions (agent, channel, filter_type, webhook_url, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["claude-code", "system", None::<String>, None::<String>, 4_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO axon_cursors (agent, channel, last_event_id, user_id) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["claude-code", "system", 0_i64, 4_i64],
+        )
+        .unwrap();
+
+        let (ch, sub, cur): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM axon_channels), \
+                   (SELECT COUNT(*) FROM axon_subscriptions WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM axon_cursors WHERE user_id = ?1)",
+                rusqlite::params![4_i64],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(ch, 1);
+        assert_eq!(sub, 1);
+        assert_eq!(cur, 1);
+    }
+
+    #[test]
+    fn v10_db_upgrades_cleanly_to_v11() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        apply_schema_v2_scratchpad_shim(&conn).unwrap();
+        apply_schema_v3_sessions_shim(&conn).unwrap();
+        apply_schema_v4_chiasm_shim(&conn).unwrap();
+        apply_schema_v5_approvals_shim(&conn).unwrap();
+        apply_schema_v6_broca_shim(&conn).unwrap();
+        apply_schema_v7_projects_shim(&conn).unwrap();
+        apply_schema_v8_activity_shim(&conn).unwrap();
+        apply_schema_v9_webhooks_shim(&conn).unwrap();
+        apply_schema_v10_ingestion_shim(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (6);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (7);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (8);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (9);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (10);",
+        )
+        .unwrap();
+
+        let pre: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('axon_channels', 'axon_subscriptions', 'axon_cursors')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre, 0);
+
+        run_tenant_migrations(&conn).unwrap();
+
+        let post: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('axon_channels', 'axon_subscriptions', 'axon_cursors')",
                 [],
                 |r| r.get(0),
             )
