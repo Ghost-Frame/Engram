@@ -12,18 +12,30 @@ use super::types::{AccountBalance, PaymentMethod, PaymentSettlement, SettlementS
 // Create settlement
 // ---------------------------------------------------------------------------
 
+/// Parameters for creating a new payment settlement.
+pub struct CreateSettlementParams<'a> {
+    pub quote_id: &'a str,
+    pub user_id: Option<i64>,
+    pub wallet_address: Option<&'a str>,
+    pub amount: Decimal,
+    pub currency: &'a str,
+    pub payment_method: PaymentMethod,
+    pub tx_hash: Option<&'a str>,
+    pub block_number: Option<i64>,
+}
+
 /// Record a settlement for a settled quote.
-pub async fn create_settlement(
-    db: &Database,
-    quote_id: &str,
-    user_id: Option<i64>,
-    wallet_address: Option<&str>,
-    amount: Decimal,
-    currency: &str,
-    payment_method: PaymentMethod,
-    tx_hash: Option<&str>,
-    block_number: Option<i64>,
-) -> Result<PaymentSettlement> {
+pub async fn create_settlement(db: &Database, params: CreateSettlementParams<'_>) -> Result<PaymentSettlement> {
+    let CreateSettlementParams {
+        quote_id,
+        user_id,
+        wallet_address,
+        amount,
+        currency,
+        payment_method,
+        tx_hash,
+        block_number,
+    } = params;
     let id = format!("stl_{}", Uuid::new_v4().as_simple());
     let now = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%SZ")

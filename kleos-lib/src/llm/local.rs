@@ -328,8 +328,7 @@ mod tests {
 
     #[test]
     fn test_config_api_key_field_round_trips() {
-        let mut c = OllamaConfig::default();
-        c.api_key = Some("sk-test".into());
+        let c = OllamaConfig { api_key: Some("sk-test".into()), ..Default::default() };
         let client = LocalModelClient::new(c);
         assert!(client.is_available());
         // The Bearer header is attached at request time inside call(); we cannot
