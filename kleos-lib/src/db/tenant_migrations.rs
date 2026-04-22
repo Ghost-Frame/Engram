@@ -70,6 +70,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "webhooks_shim",
         up: apply_schema_v9_webhooks_shim,
     },
+    TenantMigration {
+        version: 10,
+        description: "ingestion_shim",
+        up: apply_schema_v10_ingestion_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -115,6 +120,11 @@ fn apply_schema_v8_activity_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v9_webhooks_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v9_webhooks.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v9 failed: {e}")))
+}
+
+fn apply_schema_v10_ingestion_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v10_ingestion.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v10 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -947,6 +957,121 @@ mod tests {
             )
             .unwrap();
         assert_eq!(post, 2);
+    }
+
+    #[test]
+    fn ingestion_tables_usable_after_v10() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('upload_sessions', 'upload_chunks', 'ingestion_hashes')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 3, "ingestion tables missing after v10");
+
+        // Exercise upload_sessions INSERT shape routes/ingestion uses.
+        conn.execute(
+            "INSERT INTO upload_sessions
+               (upload_id, user_id, filename, content_type, source,
+                total_size, total_chunks, chunk_size, status, expires_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9)",
+            rusqlite::params![
+                "upl-1",
+                4_i64,
+                None::<String>,
+                None::<String>,
+                "upload",
+                None::<i64>,
+                None::<i64>,
+                1_048_576_i64,
+                "2099-01-01 00:00:00",
+            ],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO upload_chunks (upload_id, chunk_index, chunk_hash, size, data) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["upl-1", 0_i64, "abc123", 3_i64, vec![1u8, 2, 3]],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT OR IGNORE INTO ingestion_hashes (sha256, user_id, job_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["deadbeef", 4_i64, "job-1"],
+        )
+        .unwrap();
+
+        let (session_count, chunk_count, hash_count): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM upload_sessions WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM upload_chunks WHERE upload_id = ?2), \
+                   (SELECT COUNT(*) FROM ingestion_hashes WHERE user_id = ?1)",
+                rusqlite::params![4_i64, "upl-1"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(session_count, 1);
+        assert_eq!(chunk_count, 1);
+        assert_eq!(hash_count, 1);
+    }
+
+    #[test]
+    fn v9_db_upgrades_cleanly_to_v10() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        apply_schema_v2_scratchpad_shim(&conn).unwrap();
+        apply_schema_v3_sessions_shim(&conn).unwrap();
+        apply_schema_v4_chiasm_shim(&conn).unwrap();
+        apply_schema_v5_approvals_shim(&conn).unwrap();
+        apply_schema_v6_broca_shim(&conn).unwrap();
+        apply_schema_v7_projects_shim(&conn).unwrap();
+        apply_schema_v8_activity_shim(&conn).unwrap();
+        apply_schema_v9_webhooks_shim(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (6);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (7);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (8);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (9);",
+        )
+        .unwrap();
+
+        let pre: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('upload_sessions', 'upload_chunks', 'ingestion_hashes')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre, 0);
+
+        run_tenant_migrations(&conn).unwrap();
+
+        let post: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('upload_sessions', 'upload_chunks', 'ingestion_hashes')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post, 3);
     }
 
     #[test]
