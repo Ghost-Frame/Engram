@@ -40,6 +40,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "sessions_user_id_shim",
         up: apply_schema_v3_sessions_shim,
     },
+    TenantMigration {
+        version: 4,
+        description: "chiasm_tasks_shim",
+        up: apply_schema_v4_chiasm_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -55,6 +60,11 @@ fn apply_schema_v2_scratchpad_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v3_sessions_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v3_sessions.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v3 failed: {e}")))
+}
+
+fn apply_schema_v4_chiasm_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v4_chiasm.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v4 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -306,6 +316,101 @@ mod tests {
             )
             .unwrap();
         assert_eq!(line, "hello");
+    }
+
+    #[test]
+    fn chiasm_tasks_usable_after_v4() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        // Both tables exist.
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('chiasm_tasks', 'chiasm_task_updates')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2, "chiasm_tasks and/or chiasm_task_updates missing after v4");
+
+        // Exercise the SQL shape kleos-lib chiasm.rs actually uses.
+        conn.execute(
+            "INSERT INTO chiasm_tasks (agent, project, title, status, summary, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["claude-code", "engram-rust", "Phase 3.4", "active", None::<String>, 4_i64],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO chiasm_task_updates (task_id, agent, status, summary, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![task_id, "claude-code", "active", "started", 4_i64],
+        )
+        .unwrap();
+
+        let (agent, project, uid): (String, String, i64) = conn
+            .query_row(
+                "SELECT agent, project, user_id FROM chiasm_tasks WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![task_id, 4_i64],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(agent, "claude-code");
+        assert_eq!(project, "engram-rust");
+        assert_eq!(uid, 4);
+
+        let update_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chiasm_task_updates WHERE task_id = ?1 AND user_id = ?2",
+                rusqlite::params![task_id, 4_i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(update_count, 1);
+    }
+
+    #[test]
+    fn v3_db_upgrades_cleanly_to_v4() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        apply_schema_v2_scratchpad_shim(&conn).unwrap();
+        apply_schema_v3_sessions_shim(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);",
+        )
+        .unwrap();
+
+        // Pre: chiasm tables do not exist.
+        let pre: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('chiasm_tasks', 'chiasm_task_updates')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre, 0);
+
+        // Run chain; v4 catches it up.
+        run_tenant_migrations(&conn).unwrap();
+
+        let post: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('chiasm_tasks', 'chiasm_task_updates')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post, 2);
     }
 
     #[test]
