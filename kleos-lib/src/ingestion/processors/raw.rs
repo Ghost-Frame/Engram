@@ -2,25 +2,32 @@
 // Raw processor -- ported from processors/raw.ts
 // ============================================================================
 //
-// Stores each chunk directly as a memory. The TS version also does:
-// - Embedding computation
-// - SimHash deduplication
-// - Post-store job enqueueing
-// These integrations will be wired up when the embedding and job systems
-// are ported. For now, we store the memory directly via DB insert.
+// Stores each chunk directly as a memory using the canonical memory::store
+// path, so every ingested chunk goes through the same pipeline as POST /store:
+// SimHash dedup, FTS5 index, LanceDB vector insert (when an embedder is
+// provided), valence analysis, pagerank dirty-mark, and a durable
+// `ingestion.fact_extract` job that runs `fast_extract_facts` through the
+// jobs queue (retryable, survives restart).
 
 use crate::db::Database;
-use crate::ingestion::types::{Chunk, ProcessOptions, ProcessResult};
-use crate::EngError;
-use uuid::Uuid;
+use crate::ingestion::types::{Chunk, IngestContext, ProcessOptions, ProcessResult};
+use crate::jobs::enqueue_job;
+use crate::memory::{self, types::StoreRequest};
+use std::sync::Arc;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
-
-/// Process chunks by storing each as a raw memory.
-#[tracing::instrument(skip(db, chunks, options), fields(chunk_count = chunks.len()))]
-pub async fn process(db: &Database, chunks: &[Chunk], options: &ProcessOptions) -> ProcessResult {
+/// Process chunks by storing each as a memory via `memory::store`.
+///
+/// The embedder in `ctx` is used to compute a per-chunk vector before the
+/// insert so `memory::store` can forward it to the LanceDB index. When no
+/// embedder is configured the memory is still persisted but vector search
+/// for it will only match after a later backfill.
+#[tracing::instrument(skip(db, ctx, chunks, options), fields(chunk_count = chunks.len()))]
+pub async fn process(
+    db: Arc<Database>,
+    ctx: &IngestContext,
+    chunks: &[Chunk],
+    options: &ProcessOptions,
+) -> ProcessResult {
     let mut memories_created = 0;
     let mut errors = Vec::new();
 
@@ -31,44 +38,64 @@ pub async fn process(db: &Database, chunks: &[Chunk], options: &ProcessOptions) 
             continue;
         }
 
-        let sync_id = Uuid::new_v4().to_string();
-        let content_owned = content.to_string();
-        let category = options.category.clone();
-        let source = options.source.clone();
-        let user_id = options.user_id;
-        let space_id = options.space_id;
-        let episode_id = options.episode_id;
-        let chunk_index = chunk.index;
+        let embedding = match &ctx.embedder {
+            Some(embedder) => match embedder.embed(content).await {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(
+                        "ingestion embedder failed for chunk {}: {} -- continuing without vector",
+                        chunk.index,
+                        e
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
 
-        match db
-            .write(move |conn| {
-                conn.execute(
-                    "INSERT INTO memories (content, category, source, importance, user_id, space_id, \
-                     episode_id, sync_id, confidence, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, 5, ?4, ?5, ?6, ?7, 1.0, datetime('now'), datetime('now'))",
-                    rusqlite::params![
-                        content_owned,
-                        category,
-                        source,
-                        user_id,
-                        space_id,
-                        episode_id,
-                        sync_id
-                    ],
-                )
-                .map_err(rusqlite_to_eng_error)?;
-                Ok(())
-            })
-            .await
-        {
-            Ok(_) => {
+        let req = StoreRequest {
+            content: content.to_string(),
+            category: options.category.clone(),
+            source: options.source.clone(),
+            importance: 5,
+            tags: None,
+            embedding,
+            session_id: None,
+            is_static: None,
+            user_id: Some(options.user_id),
+            space_id: options.space_id,
+            parent_memory_id: None,
+        };
+
+        match memory::store(db.as_ref(), req).await {
+            Ok(result) => {
+                if result.duplicate_of.is_some() {
+                    continue;
+                }
                 memories_created += 1;
-                // TODO: Compute embedding and write to vec table
-                // TODO: SimHash deduplication check
-                // TODO: Enqueue post_store job for FSRS init, entity linking, etc.
+                let payload = serde_json::json!({
+                    "memory_id": result.id,
+                    "content": content,
+                    "user_id": options.user_id,
+                    "episode_id": options.episode_id,
+                });
+                if let Err(e) = enqueue_job(
+                    db.as_ref(),
+                    "ingestion.fact_extract",
+                    &payload.to_string(),
+                    3,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        memory_id = result.id,
+                        "failed to enqueue ingestion.fact_extract job: {}",
+                        e
+                    );
+                }
             }
             Err(e) => {
-                errors.push(format!("Chunk {}: insert failed: {}", chunk_index, e));
+                errors.push(format!("Chunk {}: insert failed: {}", chunk.index, e));
             }
         }
     }

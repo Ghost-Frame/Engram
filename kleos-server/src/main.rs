@@ -9,7 +9,7 @@ use kleos_lib::reranker::{self, Reranker};
 use kleos_lib::services::brain::create_brain_backend;
 use kleos_server::background::{
     start_auto_backup_task, start_auto_checkpoint_task, start_job_cleanup_task,
-    start_session_reaper_task, start_vector_sync_replay_task,
+    start_job_worker_task, start_session_reaper_task, start_vector_sync_replay_task,
 };
 use kleos_server::dreamer::{new_stats_handle, start_dreamer_task};
 use kleos_server::state::AppState;
@@ -258,6 +258,19 @@ async fn main() {
         tracing::info!("job-cleanup background task started");
     }
 
+    // Register handlers before the worker starts consuming so a pending job
+    // claimed on the first tick finds its handler. Handlers close over
+    // Arc<Database> -- the handler Fn is itself Arc-wrapped by the registry.
+    register_job_handlers(Arc::clone(&state.db)).await;
+
+    {
+        let db = Arc::clone(&state.db);
+        supervised.push(Supervised::spawn("job-worker", move || {
+            start_job_worker_task(Arc::clone(&db))
+        }));
+        tracing::info!("job-worker background task started");
+    }
+
     {
         let db = Arc::clone(&state.db);
         supervised.push(Supervised::spawn("vector-sync-replay", move || {
@@ -331,6 +344,56 @@ async fn main() {
     if let Err(e) = supervisor_handle.await {
         tracing::error!(error = %e, "supervisor task exit error");
     }
+}
+
+/// Register every durable-job handler the server knows about. Handlers are
+/// registered exactly once at startup, before the worker loop begins
+/// consuming, so a pending job claimed on the first tick finds its handler.
+///
+/// Each handler closure captures the `Arc<Database>` it needs. The registry
+/// wraps the closure in another `Arc`, so cheap handler clones are fine.
+async fn register_job_handlers(db: Arc<Database>) {
+    // ingestion.fact_extract -- durable fast_extract_facts invocation.
+    // Payload: { "memory_id": i64, "content": string, "user_id": i64,
+    //            "episode_id": i64|null }
+    {
+        let db = Arc::clone(&db);
+        kleos_lib::jobs::register_job_handler("ingestion.fact_extract", move |payload| {
+            let db = Arc::clone(&db);
+            async move {
+                let memory_id = payload.get("memory_id").and_then(|v| v.as_i64()).ok_or(
+                    kleos_lib::EngError::InvalidInput(
+                        "ingestion.fact_extract payload missing memory_id".into(),
+                    ),
+                )?;
+                let content = payload
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or(kleos_lib::EngError::InvalidInput(
+                        "ingestion.fact_extract payload missing content".into(),
+                    ))?
+                    .to_string();
+                let user_id = payload.get("user_id").and_then(|v| v.as_i64()).ok_or(
+                    kleos_lib::EngError::InvalidInput(
+                        "ingestion.fact_extract payload missing user_id".into(),
+                    ),
+                )?;
+                let episode_id = payload.get("episode_id").and_then(|v| v.as_i64());
+                kleos_lib::intelligence::extraction::fast_extract_facts(
+                    db.as_ref(),
+                    &content,
+                    memory_id,
+                    user_id,
+                    episode_id,
+                )
+                .await
+                .map(|_| ())
+            }
+        })
+        .await;
+    }
+
+    tracing::info!("durable job handlers registered");
 }
 
 /// R8 R-008: one respawnable background task.

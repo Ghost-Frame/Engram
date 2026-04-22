@@ -10,6 +10,11 @@ use crate::{EngError, Result};
 use regex::Regex;
 use tracing::{debug, warn};
 
+/// Retained for symmetry with other modules. Extraction writes errors are
+/// logged inline via `warn!` and do not propagate, so `?` + this helper is
+/// not used on the hot path. Kept so new write paths have a consistent
+/// conversion available without redefining it.
+#[allow(dead_code)]
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }

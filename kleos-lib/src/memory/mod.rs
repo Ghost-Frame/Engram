@@ -196,7 +196,10 @@ pub(crate) const MEMORY_COLUMNS: &str = "id, content, category, source, session_
     valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated";
 
 /// Number of columns in `MEMORY_COLUMNS`. Must match the highest index
-/// `row_to_memory` reads from (indices 0..MEMORY_COLUMN_COUNT-1).
+/// `row_to_memory` reads from (indices 0..MEMORY_COLUMN_COUNT-1). Consumed
+/// only by the test guard below; a non-test reference would be redundant
+/// with the SELECT list itself.
+#[cfg(test)]
 pub(crate) const MEMORY_COLUMN_COUNT: usize = 48;
 
 // -- Public CRUD functions ---

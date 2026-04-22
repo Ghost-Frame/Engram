@@ -272,6 +272,10 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Shared TenantConfig builder reserved for future registry-level tests
+    /// (LRU eviction, lazy load, shutdown). Currently only
+    /// `test_tenant_id_generation` runs here and does not need a config.
+    #[allow(dead_code)]
     fn test_config() -> TenantConfig {
         TenantConfig {
             max_resident: 10,

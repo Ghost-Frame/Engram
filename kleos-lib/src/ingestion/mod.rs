@@ -11,10 +11,11 @@ pub mod types;
 use crate::db::Database;
 use crate::Result;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use std::time::Instant;
 use types::{
-    Chunk, FormatMeta, IngestOptions, IngestProgressEvent, IngestProgressSender, IngestResult,
-    IngestStatus, ProcessOptions,
+    Chunk, FormatMeta, IngestContext, IngestOptions, IngestProgressEvent, IngestProgressSender,
+    IngestResult, IngestStatus, ProcessOptions,
 };
 use uuid::Uuid;
 
@@ -73,31 +74,34 @@ fn emit(tx: &Option<IngestProgressSender>, event: IngestProgressEvent) {
 ///
 /// This is the main entry point for bulk document ingestion.
 /// Ported from the TS runPipeline() function.
-#[tracing::instrument(skip(db, input, options, meta), fields(input_len = input.len()))]
+#[tracing::instrument(skip(db, ctx, input, options, meta), fields(input_len = input.len()))]
 pub async fn ingest(
-    db: &Database,
+    db: Arc<Database>,
+    ctx: &IngestContext,
     input: &str,
     options: IngestOptions,
     meta: Option<&FormatMeta>,
 ) -> Result<IngestResult> {
-    ingest_inner(db, input, options, meta, None).await
+    ingest_inner(db, ctx, input, options, meta, None).await
 }
 
 /// Streaming variant: same as [`ingest`] but emits [`IngestProgressEvent`]s as
 /// each pipeline phase completes.
-#[tracing::instrument(skip(db, input, options, meta, progress_tx), fields(input_len = input.len()))]
+#[tracing::instrument(skip(db, ctx, input, options, meta, progress_tx), fields(input_len = input.len()))]
 pub async fn ingest_streaming(
-    db: &Database,
+    db: Arc<Database>,
+    ctx: &IngestContext,
     input: &str,
     options: IngestOptions,
     meta: Option<&FormatMeta>,
     progress_tx: IngestProgressSender,
 ) -> Result<IngestResult> {
-    ingest_inner(db, input, options, meta, Some(progress_tx)).await
+    ingest_inner(db, ctx, input, options, meta, Some(progress_tx)).await
 }
 
 async fn ingest_inner(
-    db: &Database,
+    db: Arc<Database>,
+    ctx: &IngestContext,
     input: &str,
     options: IngestOptions,
     meta: Option<&FormatMeta>,
@@ -111,7 +115,7 @@ async fn ingest_inner(
 
     // Dedup: skip if this exact content was already ingested for this user.
     let hash = content_hash(input.as_bytes());
-    if is_duplicate(db, &hash, options.user_id).await {
+    if is_duplicate(db.as_ref(), &hash, options.user_id).await {
         emit(
             &progress_tx,
             IngestProgressEvent::Skipped {
@@ -220,7 +224,8 @@ async fn ingest_inner(
         // Process chunks (one at a time matching TS behavior)
         for chunk in &doc_chunks {
             let result = processors::process_chunks(
-                db,
+                Arc::clone(&db),
+                ctx,
                 options.mode,
                 std::slice::from_ref(chunk),
                 &process_options,
@@ -256,7 +261,7 @@ async fn ingest_inner(
     );
 
     // Record hash so future identical content is skipped.
-    record_hash(db, &hash, options.user_id, &job_id).await;
+    record_hash(db.as_ref(), &hash, options.user_id, &job_id).await;
 
     emit(
         &progress_tx,
@@ -281,9 +286,10 @@ async fn ingest_inner(
 }
 
 /// Ingest with binary input (for PDF, DOCX, ZIP formats).
-#[tracing::instrument(skip(db, input, options, meta), fields(input_bytes = input.len()))]
+#[tracing::instrument(skip(db, ctx, input, options, meta), fields(input_bytes = input.len()))]
 pub async fn ingest_binary(
-    db: &Database,
+    db: Arc<Database>,
+    ctx: &IngestContext,
     input: &[u8],
     options: IngestOptions,
     meta: Option<&FormatMeta>,
@@ -299,12 +305,12 @@ pub async fn ingest_binary(
         let text = std::str::from_utf8(input).map_err(|e| {
             crate::EngError::InvalidInput(format!("input is not valid UTF-8: {}", e))
         })?;
-        return ingest(db, text, options, meta).await;
+        return ingest(db, ctx, text, options, meta).await;
     }
 
     // Dedup: skip if this exact binary content was already ingested.
     let hash = content_hash(input);
-    if is_duplicate(db, &hash, options.user_id).await {
+    if is_duplicate(db.as_ref(), &hash, options.user_id).await {
         return Ok(IngestResult {
             job_id,
             status: IngestStatus::Skipped,
@@ -354,7 +360,8 @@ pub async fn ingest_binary(
 
         for chunk in &doc_chunks {
             let result = processors::process_chunks(
-                db,
+                Arc::clone(&db),
+                ctx,
                 options.mode,
                 std::slice::from_ref(chunk),
                 &process_options,
@@ -366,7 +373,7 @@ pub async fn ingest_binary(
     }
 
     // Record hash so future identical content is skipped.
-    record_hash(db, &hash, options.user_id, &job_id).await;
+    record_hash(db.as_ref(), &hash, options.user_id, &job_id).await;
 
     Ok(IngestResult {
         job_id,

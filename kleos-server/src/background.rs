@@ -60,6 +60,80 @@ pub fn start_auto_checkpoint_task(
     (token, handle)
 }
 
+/// Drains the durable jobs queue. A single worker loops over
+/// [`kleos_lib::jobs::process_next_job`], which atomically claims a pending
+/// row, runs the registered handler, and records success/failure/retry.
+///
+/// The worker polls the queue every 200ms when empty and spins tight when
+/// work is available. Every 5 minutes it calls
+/// [`kleos_lib::jobs::recover_stuck_jobs`] to unstick rows abandoned by a
+/// crashed worker so they return to `pending` and get retried.
+pub fn start_job_worker_task(
+    db: Arc<Database>,
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+
+    let handle = tokio::spawn(async move {
+        let poll_interval = Duration::from_millis(200);
+        let stuck_recovery_interval = Duration::from_secs(300);
+        let mut last_stuck_recovery = tokio::time::Instant::now();
+        let mut consecutive_errors: u32 = 0;
+
+        loop {
+            if cancel.is_cancelled() {
+                info!("job-worker task shutting down");
+                break;
+            }
+
+            if last_stuck_recovery.elapsed() >= stuck_recovery_interval {
+                match kleos_lib::jobs::recover_stuck_jobs(&db).await {
+                    Ok(n) if n > 0 => {
+                        warn!(recovered = n, "job-worker re-queued stuck jobs");
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!(error = %e, "job-worker recover_stuck_jobs failed"),
+                }
+                last_stuck_recovery = tokio::time::Instant::now();
+            }
+
+            match kleos_lib::jobs::process_next_job(&db).await {
+                Ok(true) => {
+                    // Work happened; loop immediately to drain the queue.
+                    consecutive_errors = 0;
+                }
+                Ok(false) => {
+                    consecutive_errors = 0;
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        _ = tokio::time::sleep(poll_interval) => {}
+                    }
+                }
+                Err(e) => {
+                    consecutive_errors = consecutive_errors.saturating_add(1);
+                    error!(
+                        error = %e,
+                        consecutive_errors,
+                        "job-worker process_next_job error"
+                    );
+                    // Exponential backoff on repeated errors so a broken DB
+                    // does not spin the worker at 100% CPU.
+                    let backoff = Duration::from_secs(
+                        2u64.saturating_pow(consecutive_errors.min(8)),
+                    )
+                    .min(MAX_BACKOFF);
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        _ = tokio::time::sleep(backoff) => {}
+                    }
+                }
+            }
+        }
+    });
+
+    (token, handle)
+}
+
 /// Deletes completed jobs older than 1 hour on an hourly interval.
 /// RB-L5: failures back off exponentially (doubling each time, capped at 5 min).
 pub fn start_job_cleanup_task(

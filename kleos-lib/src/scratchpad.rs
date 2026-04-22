@@ -257,6 +257,11 @@ fn row_to_entry_rusqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScratchEnt
     })
 }
 
+/// `Result<_>` wrapper around `row_to_entry_rusqlite`. Current call sites
+/// use `query_map` which wants the `rusqlite::Result` variant directly, so
+/// this converted form is kept only for callers that want to treat a single
+/// row error as a domain error.
+#[allow(dead_code)]
 fn row_to_entry(row: &rusqlite::Row<'_>) -> Result<ScratchEntry> {
     row_to_entry_rusqlite(row).map_err(rusqlite_to_eng_error)
 }

@@ -601,6 +601,7 @@ pub async fn touch_lease(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     #[test]
     fn test_job_status_roundtrip() {
         assert_eq!(JobStatus::from_str_loose("pending"), JobStatus::Pending);
@@ -612,5 +613,39 @@ mod tests {
     fn test_job_stats_default() {
         let s = JobStats::default();
         assert_eq!(s.pending, 0);
+    }
+
+    // End-to-end: enqueue a job, register a handler, run the worker once,
+    // verify the handler ran and the row is marked completed. This is the
+    // proof that the jobs queue is an actually wired pipeline rather than
+    // just a table full of pending rows.
+    #[tokio::test]
+    async fn enqueue_process_next_runs_registered_handler() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        CALLS.store(0, Ordering::SeqCst);
+
+        register_job_handler("test.counter", |payload| async move {
+            let delta = payload.get("delta").and_then(|v| v.as_u64()).unwrap_or(0);
+            CALLS.fetch_add(delta as usize, Ordering::SeqCst);
+            Ok(())
+        })
+        .await;
+
+        let job_id = enqueue_job(&db, "test.counter", r#"{"delta":3}"#, 3)
+            .await
+            .expect("enqueue");
+        assert!(job_id > 0);
+
+        let processed = process_next_job(&db).await.expect("process");
+        assert!(processed, "worker should have claimed the pending job");
+        assert_eq!(CALLS.load(Ordering::SeqCst), 3);
+
+        let stats = get_job_stats(&db).await.expect("stats");
+        assert_eq!(stats.completed, 1, "job should be marked completed");
+        assert_eq!(stats.pending, 0);
+        assert_eq!(stats.running, 0);
+        assert_eq!(stats.failed, 0);
     }
 }

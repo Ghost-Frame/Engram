@@ -288,6 +288,12 @@ pub fn assemble_context_string(
 /// Check whether content is semantically duplicate against already-added blocks.
 /// Computes the candidate embedding on-demand using the provider.
 /// Returns false when no provider or embedding fails.
+///
+/// Kept as an on-demand variant for callers that have not pre-embedded the
+/// candidate. The hot-path assembler (`assemble`, `assemble_stream`) embeds
+/// upfront and inlines the cosine check via `spawn_blocking` to reuse the
+/// vector, so this helper is not invoked there.
+#[allow(dead_code)]
 async fn is_semantic_duplicate(
     content: &str,
     block_embeddings: &[Vec<f32>],

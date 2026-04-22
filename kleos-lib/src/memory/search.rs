@@ -139,6 +139,12 @@ struct Candidate {
     is_latest: Option<bool>,
     is_static: bool,
     source_count: i32,
+    /// Lineage is resolved later from the hydrated `Memory` row
+    /// (`r.memory.root_memory_id`), so this slot stays `None` on the
+    /// Candidate itself. Kept so the Candidate shape stays aligned with
+    /// the memories table if a future consolidation step wants to read
+    /// lineage before hydration.
+    #[allow(dead_code)]
     root_memory_id: Option<i64>,
     access_count: i32,
     pagerank_score: f64,
@@ -288,6 +294,10 @@ async fn fetch_graph_neighbors(
     .await
 }
 
+/// Single-memory fetch retained for targeted lookups (e.g. re-hydrating a
+/// specific id after a graph-walk hop). The hot search path now batches via
+/// `fetch_memories_batch`, so this helper is currently unreferenced.
+#[allow(dead_code)]
 async fn fetch_memory_for_search(
     db: &Database,
     id: i64,
@@ -356,6 +366,10 @@ async fn fetch_memories_batch(
     .await
 }
 
+/// Single-memory link fetch retained for targeted link expansion. The hot
+/// search path uses `fetch_links_batch` to fetch links for all result ids in
+/// one query, so this helper is currently unreferenced.
+#[allow(dead_code)]
 async fn fetch_links_for_search(
     db: &Database,
     memory_id: i64,
