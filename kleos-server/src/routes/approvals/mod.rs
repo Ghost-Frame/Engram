@@ -7,7 +7,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::approvals::{
     create_approval, decide, expire_stale_for_user, get_approval, list_pending,
@@ -27,10 +27,11 @@ pub fn router() -> Router<AppState> {
 
 async fn create_handler(
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<CreateApprovalRequest>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), AppError> {
-    let approval = create_approval(&state.db, &body, auth.user_id).await?;
+    let approval = create_approval(&db, &body, auth.user_id).await?;
 
     // Notify any waiting watchers that a new approval is pending
     if let Some(ref tx) = state.approval_notify {
@@ -41,11 +42,11 @@ async fn create_handler(
 }
 
 async fn get_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<String>,
 ) -> Result<Json<ApprovalResponse>, AppError> {
-    let approval = get_approval(&state.db, &id, auth.user_id)
+    let approval = get_approval(&db, &id, auth.user_id)
         .await?
         .ok_or_else(|| kleos_lib::EngError::NotFound(format!("approval {} not found", id)))?;
 
@@ -53,13 +54,13 @@ async fn get_handler(
 }
 
 async fn list_pending_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     // First expire any stale approvals for this user
-    let expired_count = expire_stale_for_user(&state.db, auth.user_id).await?;
+    let expired_count = expire_stale_for_user(&db, auth.user_id).await?;
 
-    let approvals = list_pending(&state.db, auth.user_id).await?;
+    let approvals = list_pending(&db, auth.user_id).await?;
     let responses: Vec<ApprovalResponse> = approvals.into_iter().map(Into::into).collect();
 
     Ok(Json(json!({
@@ -71,6 +72,7 @@ async fn list_pending_handler(
 
 async fn decide_handler(
     State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<String>,
     Json(body): Json<DecideBody>,
@@ -81,7 +83,7 @@ async fn decide_handler(
         reason: body.reason,
     };
 
-    let approval = decide(&state.db, &id, &req, auth.user_id).await?;
+    let approval = decide(&db, &id, &req, auth.user_id).await?;
 
     // Notify any waiting watchers that a decision was made
     if let Some(ref tx) = state.approval_notify {
