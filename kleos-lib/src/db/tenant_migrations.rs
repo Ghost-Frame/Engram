@@ -55,6 +55,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "broca_actions_shim",
         up: apply_schema_v6_broca_shim,
     },
+    TenantMigration {
+        version: 7,
+        description: "projects_shim",
+        up: apply_schema_v7_projects_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -85,6 +90,11 @@ fn apply_schema_v5_approvals_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v6_broca_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v6_broca.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v6 failed: {e}")))
+}
+
+fn apply_schema_v7_projects_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v7_projects.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v7 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -614,6 +624,111 @@ mod tests {
             )
             .unwrap();
         assert_eq!(post, 1);
+    }
+
+    #[test]
+    fn projects_usable_after_v7() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects', 'memory_projects')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2, "projects/memory_projects missing after v7");
+
+        // Seed a memory so the FK target exists for memory_projects.
+        conn.execute(
+            "INSERT INTO memories (content, category, source, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["seed", "general", "test", 4_i64],
+        )
+        .unwrap();
+        let memory_id = conn.last_insert_rowid();
+
+        // Exercise the INSERT + SELECT shape projects.rs uses.
+        let (project_id, _created_at): (i64, String) = conn
+            .query_row(
+                "INSERT INTO projects (name, description, status, metadata, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id, created_at",
+                rusqlite::params!["p1", None::<String>, "active", None::<String>, 4_i64],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_projects (memory_id, project_id) VALUES (?1, ?2)",
+            rusqlite::params![memory_id, project_id],
+        )
+        .unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_projects WHERE project_id = ?1",
+                rusqlite::params![project_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let (name, uid): (String, i64) = conn
+            .query_row(
+                "SELECT name, user_id FROM projects WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![project_id, 4_i64],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "p1");
+        assert_eq!(uid, 4);
+    }
+
+    #[test]
+    fn v6_db_upgrades_cleanly_to_v7() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        apply_schema_v2_scratchpad_shim(&conn).unwrap();
+        apply_schema_v3_sessions_shim(&conn).unwrap();
+        apply_schema_v4_chiasm_shim(&conn).unwrap();
+        apply_schema_v5_approvals_shim(&conn).unwrap();
+        apply_schema_v6_broca_shim(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (6);",
+        )
+        .unwrap();
+
+        let pre: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects', 'memory_projects')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre, 0);
+
+        run_tenant_migrations(&conn).unwrap();
+
+        let post: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects', 'memory_projects')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post, 2);
     }
 
     #[test]

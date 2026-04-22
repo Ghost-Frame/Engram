@@ -1,12 +1,12 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query},
     routing::{get, post, put},
     Json, Router,
 };
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 
 mod types;
@@ -29,7 +29,7 @@ pub fn router() -> Router<AppState> {
 
 async fn create_project(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<kleos_lib::projects::CreateProjectBody>,
 ) -> Result<Json<Value>, AppError> {
     let name = body.name.as_deref().unwrap_or("").trim();
@@ -49,7 +49,7 @@ async fn create_project(
         .as_ref()
         .map(|m| serde_json::to_string(m).unwrap_or_default());
     let (id, created_at) = kleos_lib::projects::create_project(
-        &state.db,
+        &db,
         name,
         body.description.as_deref(),
         status,
@@ -64,25 +64,25 @@ async fn create_project(
 
 async fn list_projects(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Query(q): Query<StatusQuery>,
 ) -> Result<Json<Value>, AppError> {
     let projects =
-        kleos_lib::projects::list_projects(&state.db, auth.user_id, q.status.as_deref()).await?;
+        kleos_lib::projects::list_projects(&db, auth.user_id, q.status.as_deref()).await?;
     let count = projects.len();
     Ok(Json(json!({ "projects": projects, "count": count })))
 }
 
 async fn get_project(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let project = kleos_lib::projects::get_project(&state.db, id, auth.user_id)
+    let project = kleos_lib::projects::get_project(&db, id, auth.user_id)
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Project not found".into())))?;
     let memory_ids =
-        kleos_lib::projects::get_project_memory_ids(&state.db, id, auth.user_id).await?;
+        kleos_lib::projects::get_project_memory_ids(&db, id, auth.user_id).await?;
     Ok(Json(
         json!({ "id": project.id, "name": project.name, "description": project.description, "status": project.status, "metadata": project.metadata, "memory_ids": memory_ids, "created_at": project.created_at }),
     ))
@@ -90,7 +90,7 @@ async fn get_project(
 
 async fn update_project(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<kleos_lib::projects::UpdateProjectBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -99,7 +99,7 @@ async fn update_project(
         .as_ref()
         .map(|m| serde_json::to_string(m).unwrap_or_default());
     kleos_lib::projects::update_project(
-        &state.db,
+        &db,
         id,
         auth.user_id,
         body.name.as_deref(),
@@ -113,20 +113,20 @@ async fn update_project(
 
 async fn delete_project_handler(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::projects::delete_project(&state.db, id, auth.user_id).await?;
+    kleos_lib::projects::delete_project(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
 async fn link_memory(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Path((id, mid)): Path<(i64, i64)>,
 ) -> Result<Json<Value>, AppError> {
     // link_memory now verifies both project and memory ownership internally
-    kleos_lib::projects::link_memory(&state.db, mid, id, auth.user_id).await?;
+    kleos_lib::projects::link_memory(&db, mid, id, auth.user_id).await?;
     Ok(Json(
         json!({ "linked": true, "project_id": id, "memory_id": mid }),
     ))
@@ -134,11 +134,11 @@ async fn link_memory(
 
 async fn unlink_memory(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Path((id, mid)): Path<(i64, i64)>,
 ) -> Result<Json<Value>, AppError> {
     // unlink_memory now verifies project ownership internally
-    kleos_lib::projects::unlink_memory(&state.db, mid, id, auth.user_id).await?;
+    kleos_lib::projects::unlink_memory(&db, mid, id, auth.user_id).await?;
     Ok(Json(
         json!({ "unlinked": true, "project_id": id, "memory_id": mid }),
     ))
