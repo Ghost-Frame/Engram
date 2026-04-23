@@ -4,36 +4,35 @@ mod target;
 mod validate;
 mod vectors;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use tracing::info;
 
 #[derive(Parser, Debug)]
-#[command(name = "engram-migrate")]
-#[command(about = "ETL tool to migrate Engram from libsql to rusqlite + LanceDB")]
+#[command(name = "kleos-migrate")]
+#[command(about = "ETL tool to copy an encrypted SQLCipher monolith into a per-tenant shard")]
 struct Args {
-    /// Path to source libsql database file
+    /// Absolute path to source monolith .db file
     #[arg(long)]
     source: PathBuf,
 
-    /// Directory for target rusqlite db + lance/ subdirectory
+    /// Name of env var holding SQLCipher raw hex key (default: ENGRAM_DB_KEY).
+    /// If the env var is unset or empty, source is opened as plaintext.
+    #[arg(long, default_value = "ENGRAM_DB_KEY")]
+    source_key_env: String,
+
+    /// Tenant shard output directory (will contain kleos.db and hnsw/memories.lance/)
     #[arg(long)]
     target: PathBuf,
 
-    /// Report table counts and schema diffs without writing
-    #[arg(long, default_value_t = false)]
-    dry_run: bool,
-
-    /// Copy relational data only, skip embedding extraction
-    #[arg(long, default_value_t = false)]
-    skip_vectors: bool,
-
-    /// Force all rows to this user_id (for migrating a single-tenant source
-    /// DB into a tenant shard owned by a different user). Affects both the
-    /// memories.user_id column and the user_id field of lance vectors.
+    /// Only copy rows where user_id = FILTER_USER_ID
     #[arg(long)]
-    override_user_id: Option<i64>,
+    filter_user_id: i64,
+
+    /// Allow writing into a non-empty target directory
+    #[arg(long, default_value_t = false)]
+    force: bool,
 }
 
 #[tokio::main]
@@ -41,60 +40,62 @@ async fn main() -> Result<()> {
     kleos_lib::config::migrate_env_prefix();
 
     let _otel_guard =
-        kleos_lib::observability::init_tracing("engram-migrate", "kleos_migrate=info");
+        kleos_lib::observability::init_tracing("kleos-migrate", "kleos_migrate=info");
 
     let args = Args::parse();
 
-    info!("engram-migrate starting");
-    info!("Source: {:?}", args.source);
-    info!("Target: {:?}", args.target);
-    info!("Dry run: {}", args.dry_run);
-    info!("Skip vectors: {}", args.skip_vectors);
+    info!("kleos-migrate starting");
+    info!("Source:         {:?}", args.source);
+    info!("Source key env: {}", args.source_key_env);
+    info!("Target:         {:?}", args.target);
+    info!("Filter user_id: {}", args.filter_user_id);
+    info!("Force:          {}", args.force);
 
-    // Phase 1: Initialize
-    info!("Phase 1: Initializing...");
-    let source_db = source::open(&args.source).await?;
-
-    if args.dry_run {
-        info!("Dry run mode -- analyzing source database...");
-        let table_info = source::analyze(&source_db).await?;
-        for (table, count) in &table_info {
-            info!("  {}: {} rows", table, count);
+    // Safety check: refuse to overwrite a non-empty target unless --force.
+    if args.target.exists() && !args.force {
+        let mut entries = std::fs::read_dir(&args.target)?;
+        if let Some(_first) = entries.next() {
+            return Err(anyhow!(
+                "target directory {:?} is not empty; use --force to allow overwriting",
+                args.target
+            ));
         }
-        return Ok(());
     }
 
-    let target_db = target::create(&args.target).await?;
-    let lance_db = if !args.skip_vectors {
-        Some(vectors::open_lance(&args.target).await?)
-    } else {
-        None
-    };
+    // Phase 1: open source.
+    info!("Phase 1: Opening source database...");
+    let source = source::open(&args.source, Some(args.source_key_env.as_str()))?;
 
-    // Phase 2: Copy relational data
-    info!("Phase 2: Copying relational data...");
-    tables::copy_all(&source_db, &target_db, args.override_user_id).await?;
+    // Phase 2: open / initialize target.
+    info!("Phase 2: Opening target tenant shard...");
+    let target = target::open(&args.target).await?;
 
-    // Phase 3: Extract vectors
-    if let Some(ref lance) = lance_db {
-        info!("Phase 3: Extracting vectors to LanceDB...");
-        vectors::extract_and_insert(&source_db, lance, args.override_user_id).await?;
-    } else {
-        info!("Phase 3: Skipping vector extraction (--skip-vectors)");
+    // Phase 3: copy relational tables.
+    info!("Phase 3: Copying relational tables...");
+    let counts = tables::copy_all(&source, &target, args.filter_user_id).await?;
+
+    // Phase 4: extract and write vectors.
+    info!("Phase 4: Extracting vectors to LanceDB...");
+    let lance = vectors::open_lance(&args.target).await?;
+    vectors::extract_and_insert(&source, &lance, args.filter_user_id).await?;
+
+    // Phase 5: validate.
+    info!("Phase 5: Validating...");
+    validate::run(&source, &target, args.filter_user_id).await?;
+
+    // Print per-table summary.
+    println!("\n=== Migration summary ===");
+    println!("{:<40} {:>10}", "Table", "Rows copied");
+    println!("{}", "-".repeat(52));
+    let mut sorted: Vec<_> = counts.iter().collect();
+    sorted.sort_by_key(|(t, _)| t.as_str());
+    for (table, n) in &sorted {
+        println!("{:<40} {:>10}", table, n);
     }
+    let total: usize = counts.values().sum();
+    println!("{}", "-".repeat(52));
+    println!("{:<40} {:>10}", "TOTAL", total);
 
-    // Phase 4: Rebuild FTS indexes
-    info!("Phase 4: Rebuilding FTS indexes...");
-    target::rebuild_fts(&target_db).await?;
-
-    // Phase 5: Validate
-    info!("Phase 5: Validating migration...");
-    validate::run(&source_db, &target_db, lance_db.as_ref()).await?;
-
-    // Phase 6: Stamp metadata
-    info!("Phase 6: Stamping migration metadata...");
-    target::stamp_metadata(&target_db, &args.source, &args.target).await?;
-
-    info!("Migration complete!");
+    info!("kleos-migrate complete");
     Ok(())
 }

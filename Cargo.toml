@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate"]
+exclude = ["kleos-migrate-libsql-legacy"]
 
 [workspace.package]
 rust-version = "1.94"

@@ -1,97 +1,68 @@
-use anyhow::Result;
-use kleos_lib::db::schema_sql::{
-    AUXILIARY_SCHEMA_STATEMENTS, CORE_SCHEMA_SQL, SYNTHEOS_SERVICES_SQL,
-};
+use anyhow::{anyhow, Result};
 use rusqlite::Connection;
-use std::path::Path;
-use tokio::sync::Mutex;
-use tracing::info;
+use std::path::{Path, PathBuf};
 
+#[allow(dead_code)]
 pub struct TargetDb {
-    pub conn: Mutex<Connection>,
+    pub db: kleos_lib::db::Database,
+    pub target_dir: PathBuf,
+    pub kleos_db_path: PathBuf,
 }
 
-/// Create target rusqlite database with schema
-pub async fn create(target_dir: &Path) -> Result<TargetDb> {
+/// Open (or create) the tenant shard at `target_dir/kleos.db`.
+/// Runs TENANT_MIGRATIONS automatically via `Database::open_tenant`.
+pub async fn open(target_dir: &Path) -> Result<TargetDb> {
     std::fs::create_dir_all(target_dir)?;
-    let db_path = kleos_lib::config::resolve_db_path(&target_dir.join("kleos.db"));
+    let kleos_db_path = target_dir.join("kleos.db");
 
-    info!("Creating target database at {:?}", db_path);
-
-    let conn = Connection::open(&db_path)?;
-
-    // Enable WAL mode and pragmas
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA synchronous=NORMAL;
-         PRAGMA foreign_keys=ON;
-         PRAGMA cache_size=-64000;
-         PRAGMA busy_timeout=5000;",
-    )?;
-
-    // Run schema creation from engram-lib constants
-    info!("Creating core schema...");
-    conn.execute_batch(CORE_SCHEMA_SQL)?;
-
-    info!("Creating auxiliary schema...");
-    for stmt in AUXILIARY_SCHEMA_STATEMENTS {
-        conn.execute_batch(stmt)?;
-    }
-
-    info!("Creating Syntheos services schema...");
-    conn.execute_batch(SYNTHEOS_SERVICES_SQL)?;
+    let db = kleos_lib::db::Database::open_tenant(
+        kleos_db_path
+            .to_str()
+            .ok_or_else(|| anyhow!("target path is not valid UTF-8"))?,
+        None,
+    )
+    .await
+    .map_err(|e| anyhow!("open tenant db: {e}"))?;
 
     Ok(TargetDb {
-        conn: Mutex::new(conn),
+        db,
+        target_dir: target_dir.to_path_buf(),
+        kleos_db_path,
     })
 }
 
-/// Rebuild FTS indexes after data copy
-pub async fn rebuild_fts(db: &TargetDb) -> Result<()> {
-    let conn = db.conn.lock().await;
-
-    let fts_tables = [
-        "memories_fts",
-        "episodes_fts",
-        "messages_fts",
-        "skills_fts",
-        "artifacts_fts",
-    ];
-
-    for table in fts_tables {
-        // Check if FTS table exists
-        let exists: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?",
-            [table],
-            |row| row.get(0),
-        )?;
-
-        if exists {
-            info!("Rebuilding FTS index: {}", table);
-            let rebuild_sql = format!("INSERT INTO {}({}) VALUES('rebuild')", table, table);
-            conn.execute(&rebuild_sql, [])?;
-        }
-    }
-
-    Ok(())
+/// Open a fresh unpooled read/write connection on the target DB for bulk inserts.
+///
+/// The pooled `Database` is only used for schema-init during this tool's run;
+/// a direct rusqlite connection on the same file is fine because the server
+/// isn't using it.
+pub fn raw_conn(target: &TargetDb) -> Result<Connection> {
+    let conn = Connection::open(&target.kleos_db_path)?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL; \
+         PRAGMA busy_timeout=30000;",
+    )?;
+    Ok(conn)
 }
 
-/// Stamp migration metadata into app_state
-pub async fn stamp_metadata(db: &TargetDb, source: &Path, target: &Path) -> Result<()> {
-    let conn = db.conn.lock().await;
+/// Return column names for `table` in the target schema.
+pub fn get_target_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info(\"{}\")", table))?;
+    let mut rows = stmt.query([])?;
+    let mut columns = Vec::new();
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        columns.push(name);
+    }
+    Ok(columns)
+}
 
-    let manifest = serde_json::json!({
-        "source": source.to_string_lossy(),
-        "target": target.to_string_lossy(),
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "version": "1.0"
-    });
-
-    conn.execute(
-        "INSERT OR REPLACE INTO app_state (key, value, updated_at) VALUES (?, ?, datetime('now'))",
-        rusqlite::params!["migration_manifest", manifest.to_string()],
-    )?;
-
-    info!("Migration metadata stamped");
-    Ok(())
+/// Return true if `table` exists in the target schema.
+pub fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?1 LIMIT 1",
+        rusqlite::params![table],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    Ok(count == 1)
 }

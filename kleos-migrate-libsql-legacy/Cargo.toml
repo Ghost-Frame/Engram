@@ -3,16 +3,21 @@ name = "kleos-migrate"
 version = "0.3.2"
 edition = "2021"
 rust-version.workspace = true
-description = "ETL tool to copy an encrypted SQLCipher monolith into a per-tenant shard"
+description = "ETL tool to migrate Engram from libsql to rusqlite + LanceDB"
 license = "Elastic-2.0"
 
 [[bin]]
 name = "kleos-migrate"
 path = "src/main.rs"
 
+[[bin]]
+name = "engram-migrate"
+path = "src/main.rs"
+
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "0.3.2", features = ["sqlcipher", "tenant-sharding"] }
-rusqlite = { workspace = true, features = ["bundled-sqlcipher"] }
+kleos-lib = { path = "../kleos-lib", version = "0.3.2" }
+libsql = { workspace = true }
+rusqlite = { workspace = true }
 lancedb = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
@@ -21,5 +26,9 @@ tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+indicatif = "0.18"
 anyhow = "1"
 futures = { workspace = true }
