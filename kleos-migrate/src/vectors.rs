@@ -44,12 +44,21 @@ fn vector_schema() -> Arc<Schema> {
     ]))
 }
 
+/// Stats from one vector extraction pass. Used by validate::run to catch
+/// the silent-drop case where the source had eligible embeddings but
+/// everything got filtered out by the blob-size check.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct VectorStats {
+    pub source_eligible: usize,
+    pub inserted: usize,
+}
+
 /// Extract embeddings from source memories and write them into LanceDB.
 pub async fn extract_and_insert(
     source: &SourceDb,
     lance: &LanceDb,
     filter_user_id: i64,
-) -> Result<()> {
+) -> Result<VectorStats> {
     info!("Extracting memory vectors...");
 
     let source_cols = source::get_columns(source, "memories")?;
@@ -58,7 +67,7 @@ pub async fn extract_and_insert(
 
     if !source_has_vec_col {
         info!("source memories table has no embedding_vec_1024 column -- skipping vector extraction");
-        return Ok(());
+        return Ok(VectorStats::default());
     }
 
     let select_sql: &str = if source_has_user_id {
@@ -74,10 +83,12 @@ pub async fn extract_and_insert(
     let mut memory_ids: Vec<i64> = Vec::new();
     let mut user_ids: Vec<i64> = Vec::new();
     let mut vectors: Vec<Vec<Option<f32>>> = Vec::new();
+    let mut source_eligible = 0usize;
 
     if source_has_user_id {
         let mut rows = src_stmt.query(rusqlite::params![filter_user_id])?;
         while let Some(row) = rows.next()? {
+            source_eligible += 1;
             let id: i64 = row.get(0)?;
             let _source_uid: i64 = row.get(1)?;
             let blob: Vec<u8> = row.get(2)?;
@@ -101,6 +112,7 @@ pub async fn extract_and_insert(
     } else {
         let mut rows = src_stmt.query([])?;
         while let Some(row) = rows.next()? {
+            source_eligible += 1;
             let id: i64 = row.get(0)?;
             let blob: Vec<u8> = row.get(1)?;
 
@@ -122,11 +134,15 @@ pub async fn extract_and_insert(
         }
     }
 
-    info!("Extracted {} memory vectors", vectors.len());
+    let inserted = vectors.len();
+    info!("Extracted {} / {} memory vectors", inserted, source_eligible);
 
     if vectors.is_empty() {
         info!("No vectors to write -- skipping LanceDB write");
-        return Ok(());
+        return Ok(VectorStats {
+            source_eligible,
+            inserted,
+        });
     }
 
     let memory_id_array = Int64Array::from(memory_ids);
@@ -166,5 +182,8 @@ pub async fn extract_and_insert(
     }
 
     info!("Vector extraction complete");
-    Ok(())
+    Ok(VectorStats {
+        source_eligible,
+        inserted,
+    })
 }
