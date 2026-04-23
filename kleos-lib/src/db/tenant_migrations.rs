@@ -115,6 +115,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "intelligence_family_shim",
         up: apply_schema_v18_intelligence_shim,
     },
+    TenantMigration {
+        version: 19,
+        description: "skills_family_shim",
+        up: apply_schema_v19_skills_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -205,6 +210,11 @@ fn apply_schema_v17_growth_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v18_intelligence_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v18_intelligence.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v18 failed: {e}")))
+}
+
+fn apply_schema_v19_skills_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v19_skills.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v19 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -2138,6 +2148,104 @@ mod tests {
             )
             .unwrap();
         assert_eq!((c, s, cc, cl, r, tp, d, f), (1, 1, 1, 1, 1, 1, 1, 1));
+    }
+
+    #[test]
+    fn skills_family_usable_after_v19() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('skill_records', 'skill_lineage_parents', 'skill_tags', \
+                              'execution_analyses', 'skill_judgments', 'skill_tool_deps', \
+                              'tool_quality_records')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 7, "skills family tables missing after v19");
+
+        let fts_present: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='skills_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(fts_present >= 1, "skills_fts FTS5 virtual table missing");
+
+        conn.execute(
+            "INSERT INTO skill_records (name, agent, code, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["brew-coffee", "claude", "# coffee recipe", 4_i64],
+        )
+        .unwrap();
+        let sid = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO skill_tags (skill_id, tag) VALUES (?1, ?2)",
+            rusqlite::params![sid, "food"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO skill_tool_deps (skill_id, tool_name, is_optional) VALUES (?1, ?2, 0)",
+            rusqlite::params![sid, "kettle"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO execution_analyses (skill_id, success, duration_ms) VALUES (?1, 1, 42.0)",
+            rusqlite::params![sid],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO skill_judgments (skill_id, judge_agent, score) VALUES (?1, ?2, ?3)",
+            rusqlite::params![sid, "gir", 0.8_f64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO tool_quality_records (tool_name, agent, success) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["kettle", "claude", 1_i64],
+        )
+        .unwrap();
+
+        // FTS trigger should have populated skills_fts with the new row.
+        let fts_hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM skills_fts WHERE skills_fts MATCH 'coffee'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_hits, 1, "skills_fts insert trigger did not fire");
+
+        let (s, t, d, e, j, tq): (i64, i64, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM skill_records WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM skill_tags WHERE skill_id = ?2), \
+                   (SELECT COUNT(*) FROM skill_tool_deps WHERE skill_id = ?2), \
+                   (SELECT COUNT(*) FROM execution_analyses WHERE skill_id = ?2), \
+                   (SELECT COUNT(*) FROM skill_judgments WHERE skill_id = ?2), \
+                   (SELECT COUNT(*) FROM tool_quality_records WHERE tool_name = 'kettle')",
+                rusqlite::params![4_i64, sid],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!((s, t, d, e, j, tq), (1, 1, 1, 1, 1, 1));
     }
 
     #[test]
