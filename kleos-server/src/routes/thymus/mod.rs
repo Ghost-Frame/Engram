@@ -1,11 +1,11 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::thymus::{
     create_rubric, delete_rubric, evaluate, get_drift_events, get_evaluation, get_metric_summary,
@@ -57,51 +57,51 @@ pub fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 
 async fn list_rubrics_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let rubrics = list_rubrics(&state.db, auth.user_id).await?;
+    let rubrics = list_rubrics(&db, auth.user_id).await?;
     Ok(Json(json!({ "rubrics": rubrics })))
 }
 
 async fn create_rubric_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<CreateRubricRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let req = CreateRubricRequest {
         user_id: Some(auth.user_id),
         ..body
     };
-    let rubric = create_rubric(&state.db, req).await?;
+    let rubric = create_rubric(&db, req).await?;
     Ok((StatusCode::CREATED, Json(json!(rubric))))
 }
 
 async fn get_rubric_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let rubric = get_rubric(&state.db, id, auth.user_id).await?;
+    let rubric = get_rubric(&db, id, auth.user_id).await?;
     Ok(Json(json!(rubric)))
 }
 
 async fn update_rubric_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<UpdateRubricRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let rubric = update_rubric(&state.db, id, body, auth.user_id).await?;
+    let rubric = update_rubric(&db, id, body, auth.user_id).await?;
     Ok(Json(json!(rubric)))
 }
 
 async fn delete_rubric_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_rubric(&state.db, id, auth.user_id).await?;
+    delete_rubric(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -110,26 +110,26 @@ async fn delete_rubric_handler(
 // ---------------------------------------------------------------------------
 
 async fn evaluate_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<EvaluateRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let req = EvaluateRequest {
         user_id: Some(auth.user_id),
         ..body
     };
-    let evaluation = evaluate(&state.db, req).await?;
+    let evaluation = evaluate(&db, req).await?;
     Ok((StatusCode::CREATED, Json(json!(evaluation))))
 }
 
 async fn list_evaluations_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListEvaluationsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
     let evaluations = list_evaluations(
-        &state.db,
+        &db,
         auth.user_id,
         params.agent.as_deref(),
         params.rubric_id,
@@ -140,11 +140,11 @@ async fn list_evaluations_handler(
 }
 
 async fn get_evaluation_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let evaluation = get_evaluation(&state.db, id, auth.user_id).await?;
+    let evaluation = get_evaluation(&db, id, auth.user_id).await?;
     Ok(Json(json!(evaluation)))
 }
 
@@ -153,26 +153,26 @@ async fn get_evaluation_handler(
 // ---------------------------------------------------------------------------
 
 async fn record_metric_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<RecordMetricRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let req = RecordMetricRequest {
         user_id: Some(auth.user_id),
         ..body
     };
-    let metric = record_metric(&state.db, req).await?;
+    let metric = record_metric(&db, req).await?;
     Ok((StatusCode::CREATED, Json(json!(metric))))
 }
 
 async fn get_metrics_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<GetMetricsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
     let metrics = get_metrics(
-        &state.db,
+        &db,
         auth.user_id,
         params.agent.as_deref(),
         params.metric.as_deref(),
@@ -184,15 +184,15 @@ async fn get_metrics_handler(
 }
 
 async fn get_metric_summary_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<MetricSummaryParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let metric = params.metric.as_deref().unwrap_or("*");
 
     let summary = get_metric_summary(
-        &state.db,
+        &db,
         auth.user_id,
         agent,
         metric,
@@ -207,24 +207,24 @@ async fn get_metric_summary_handler(
 // ---------------------------------------------------------------------------
 
 async fn record_session_quality_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(mut body): Json<RecordSessionQualityRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     body.user_id = Some(auth.user_id);
-    let sq = record_session_quality(&state.db, body).await?;
+    let sq = record_session_quality(&db, body).await?;
     Ok((StatusCode::CREATED, Json(json!(sq))))
 }
 
 async fn get_session_quality_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<SessionQualityParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
     let records = get_session_quality(
-        &state.db,
+        &db,
         auth.user_id,
         agent,
         params.since.as_deref(),
@@ -239,23 +239,23 @@ async fn get_session_quality_handler(
 // ---------------------------------------------------------------------------
 
 async fn record_drift_event_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(mut body): Json<RecordDriftEventRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     body.user_id = Some(auth.user_id);
-    let event = record_drift_event(&state.db, body).await?;
+    let event = record_drift_event(&db, body).await?;
     Ok((StatusCode::CREATED, Json(json!(event))))
 }
 
 async fn get_drift_events_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<DriftEventsParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
-    let events = get_drift_events(&state.db, auth.user_id, agent, limit).await?;
+    let events = get_drift_events(&db, auth.user_id, agent, limit).await?;
     Ok(Json(json!({ "drift_events": events })))
 }
 
@@ -264,9 +264,9 @@ async fn get_drift_events_handler(
 // ---------------------------------------------------------------------------
 
 async fn get_stats_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_stats(&state.db, auth.user_id).await?;
+    let stats = get_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }
