@@ -50,25 +50,59 @@ pub const SKIP_TABLES: &[&str] = &[
 ];
 
 /// Open source SQLCipher (or plaintext) database.
+///
+/// If the env var named by `key_env` is set and non-empty, the source is
+/// opened as SQLCipher. The tool tries compat 4 first (current default),
+/// then falls back to compat 3 for older Engram databases. compat PRAGMAs
+/// must be set BEFORE the key or they are no-ops.
 pub fn open(path: &Path, key_env: Option<&str>) -> Result<SourceDb> {
-    let conn = Connection::open(path)?;
+    let hex_key = key_env
+        .and_then(|name| std::env::var(name).ok())
+        .filter(|k| !k.is_empty());
 
-    // Apply SQLCipher key if env var is set and non-empty.
-    if let Some(env_name) = key_env {
-        if let Ok(hex_key) = std::env::var(env_name) {
-            if !hex_key.is_empty() {
-                conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", hex_key))?;
-                // SQLCipher 4 compatibility hint (covers older DBs created with cipher_compatibility=3)
-                conn.execute_batch("PRAGMA cipher_compatibility = 4;")?;
-            }
+    if let Some(key) = hex_key {
+        // Try modern SQLCipher 4 first (bundled-sqlcipher default).
+        if let Ok(db) = try_open_encrypted(path, &key, 4) {
+            return Ok(db);
         }
+        // Fall back to compat 3 for DBs created by older SQLCipher builds.
+        return try_open_encrypted(path, &key, 3).map_err(|e| {
+            anyhow!(
+                "source DB open failed with both cipher_compatibility=4 and =3: {e}. \
+                 Wrong key, not a database, or unsupported SQLCipher version?"
+            )
+        });
     }
 
-    // Verify we can actually read the schema. Catches bad key / corruption early.
-    conn.query_row("PRAGMA schema_version", [], |_| Ok(()))
-        .map_err(|_| anyhow!("source DB open failed: wrong key or not a database?"))?;
-
+    // Plaintext path.
+    let conn = Connection::open(path)?;
+    verify_readable(&conn)?;
     Ok(SourceDb { conn })
+}
+
+fn try_open_encrypted(path: &Path, hex_key: &str, compat: u8) -> Result<SourceDb> {
+    let conn = Connection::open(path)?;
+    // Compat PRAGMA MUST precede the key pragma. SQLCipher ignores it once
+    // the key has been applied.
+    conn.execute_batch(&format!("PRAGMA cipher_compatibility = {compat};"))?;
+    conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", hex_key))?;
+    verify_readable(&conn)?;
+    Ok(SourceDb { conn })
+}
+
+/// Force a page-level decrypt so a wrong key surfaces as an error.
+///
+/// `PRAGMA schema_version` reads from a header cache on some SQLCipher
+/// builds and can pass with a wrong key. `SELECT count(*) FROM sqlite_master`
+/// must decrypt at least one data page so it is the correct probe.
+fn verify_readable(conn: &Connection) -> Result<()> {
+    conn.query_row(
+        "SELECT count(*) FROM sqlite_master",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|_| ())
+    .map_err(|_| anyhow!("source DB open failed: wrong key or not a database?"))
 }
 
 /// Return all non-system, non-FTS, non-shadow table names from source.

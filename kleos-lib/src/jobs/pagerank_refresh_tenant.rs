@@ -111,6 +111,9 @@ async fn compute_pagerank_for_tenant(db: &Database) -> Result<Vec<(i64, f64)>> {
 async fn persist_pagerank_for_tenant(db: &Database, scores: Vec<(i64, f64)>) -> Result<()> {
     db.transaction(move |tx| {
         for (memory_id, score) in &scores {
+            // TENANT_USERID_SHIM: user_id is hardcoded to 1 because every row
+            // on a tenant shard shares a single owner. The column is kept for
+            // schema parity with the monolith and is dropped in Phase 5.
             tx.execute(
                 "INSERT INTO memory_pagerank (memory_id, user_id, score, computed_at)
                  VALUES (?1, 1, ?2, CAST(strftime('%s','now') AS INTEGER))
