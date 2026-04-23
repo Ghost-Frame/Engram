@@ -125,6 +125,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "episodes_user_id_and_fts_shim",
         up: apply_schema_v20_episodes_shim,
     },
+    TenantMigration {
+        version: 21,
+        description: "messages_and_fts_shim",
+        up: apply_schema_v21_messages_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -225,6 +230,11 @@ fn apply_schema_v19_skills_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v20_episodes_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v20_episodes.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v20 failed: {e}")))
+}
+
+fn apply_schema_v21_messages_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v21_messages.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v21 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -2300,6 +2310,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(fts_hits, 1, "episodes_fts insert trigger did not fire");
+    }
+
+    #[test]
+    fn messages_and_fts_usable_after_v21() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let has_messages: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_messages, 1);
+
+        let has_fts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='messages_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_fts >= 1);
+
+        // Need a parent conversation row (added in v16).
+        conn.execute(
+            "INSERT INTO conversations (agent, session_id, title, metadata, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                "claude",
+                "sess-1",
+                None::<String>,
+                None::<String>,
+                4_i64,
+            ],
+        )
+        .unwrap();
+        let conv_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, metadata) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![conv_id, "user", "hello world", None::<String>],
+        )
+        .unwrap();
+
+        let fts_hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'hello'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_hits, 1, "messages_fts insert trigger did not fire");
     }
 
     #[test]
