@@ -30,6 +30,13 @@ struct Args {
     #[arg(long)]
     filter_user_id: i64,
 
+    /// Path to an existing source LanceDB directory (or the `.lance` table
+    /// inside it). When set, vectors are read from this LanceDB and filtered
+    /// by user_id, not from `memories.embedding_vec_1024`. Use when the
+    /// monolith stores embeddings in LanceDB rather than the SQL blob column.
+    #[arg(long)]
+    source_lance: Option<PathBuf>,
+
     /// Allow writing into a non-empty target directory
     #[arg(long, default_value_t = false)]
     force: bool,
@@ -62,7 +69,8 @@ async fn main() -> Result<()> {
     let source = source::open(&args.source, Some(args.source_key_env.as_str()))?;
 
     if args.dry_run {
-        return dry_run_report(&source, args.filter_user_id);
+        return dry_run_report(&source, args.filter_user_id, args.source_lance.as_deref())
+            .await;
     }
 
     // Safety check: refuse to overwrite a non-empty target unless --force.
@@ -87,8 +95,11 @@ async fn main() -> Result<()> {
     // Phase 4: extract and write vectors.
     info!("Phase 4: Extracting vectors to LanceDB...");
     let lance = vectors::open_lance(&args.target).await?;
-    let vector_stats =
-        vectors::extract_and_insert(&source, &lance, args.filter_user_id).await?;
+    let vector_stats = if let Some(src_lance) = args.source_lance.as_deref() {
+        vectors::extract_from_source_lance(src_lance, &lance, args.filter_user_id).await?
+    } else {
+        vectors::extract_and_insert(&source, &lance, args.filter_user_id).await?
+    };
 
     // Phase 5: validate.
     info!("Phase 5: Validating...");
@@ -114,7 +125,11 @@ async fn main() -> Result<()> {
 /// Read-only pre-flight: report per-table source-filtered row counts and
 /// total embedding rows without touching the target directory or LanceDB.
 /// The target arg is accepted but ignored in dry-run mode.
-fn dry_run_report(source: &source::SourceDb, filter_user_id: i64) -> Result<()> {
+async fn dry_run_report(
+    source: &source::SourceDb,
+    filter_user_id: i64,
+    source_lance: Option<&std::path::Path>,
+) -> Result<()> {
     info!("DRY RUN: reporting source-side counts only; target untouched");
 
     let tables = source::get_tables(source)?;
@@ -170,7 +185,23 @@ fn dry_run_report(source: &source::SourceDb, filter_user_id: i64) -> Result<()> 
         };
         println!("{:<40} {:>10}", "Embeddings (eligible)", vec_count);
     } else {
-        println!("{:<40} {:>10}", "Embeddings (eligible)", "n/a");
+        println!("{:<40} {:>10}", "Embeddings (eligible, SQL)", "n/a");
+    }
+
+    // If a source LanceDB was given, count filtered rows there too.
+    if let Some(src_lance) = source_lance {
+        match vectors::dry_run_source_lance_count(src_lance, filter_user_id).await {
+            Ok(count) => {
+                println!("{:<40} {:>10}", "Embeddings (source LanceDB)", count);
+            }
+            Err(e) => {
+                println!(
+                    "{:<40} {:>10}",
+                    format!("Embeddings (source LanceDB): ERROR {}", e),
+                    ""
+                );
+            }
+        }
     }
 
     info!("dry run complete");
