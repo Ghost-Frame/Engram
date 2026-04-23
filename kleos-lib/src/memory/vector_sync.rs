@@ -178,9 +178,18 @@ pub async fn replay_vector_sync_pending(
         })
         .await?;
 
-    // During the bypass window, only user 1 data exists on the monolith; use 0
-    // as a sentinel owner_user_id for the generic replay path. The LanceDB
-    // user_id field is removed in Phase 5.21.
+    // Phase 5.1 transitional: owner_user_id is no longer stored in
+    // vector_sync_pending. Callers that know the tenant owner should use
+    // replay_vector_sync_pending_for_user. This generic path stamps 0 as a
+    // sentinel because LanceDB still carries a user_id field until Phase 5.21;
+    // searches that filter by user_id will NOT match these rows. The table is
+    // empty on production shards today, so hitting this warn! is a real signal.
+    if !pending.is_empty() {
+        warn!(
+            pending_rows = pending.len(),
+            "replay_vector_sync_pending using owner_user_id=0 sentinel; LanceDB rows may be invisible to per-user filters until Phase 5.21"
+        );
+    }
     process_pending_batch(db, index.as_ref(), pending, 0, &mut report).await?;
     Ok(report)
 }

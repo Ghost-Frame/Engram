@@ -1516,16 +1516,20 @@ async fn create_user2_key(app: &TestApp) -> String {
         .to_string()
 }
 
-// Phase 5.1: user_id dropped from memories. On the monolith (single shared DB)
-// row-level user isolation is no longer enforced via SQL. Isolation is now at
-// the database level (one DB per tenant). This test is updated to reflect the
-// current Phase 5.1 behavior: the GET endpoint returns the memory by ID
-// without user scoping, so any valid API key can read any memory ID.
+// Isolation is enforced at the database-per-tenant layer (ResolvedDb in
+// production). These five tests exercise the legacy shared-monolith path
+// where SQL user_id filters were the last line of defense; Phase 5.1 dropped
+// that column from memories/artifacts/vector_sync_pending, so the tests cannot
+// pass against a shared-DB harness. They are restored to their original
+// assertions and marked #[ignore] until Phase 4.2 introduces a tenant-aware
+// test harness (common::test_app_with_tenants) that spins per-tenant shards.
+// Re-enable them then; the assertions remain the correct contract.
+
 #[tokio::test]
+#[ignore = "Phase 5.1: shared-DB isolation removed; needs tenant harness (restore in Phase 4.2)"]
 async fn multi_tenant_user_b_cannot_read_user_a_memory() {
     let app = TestApp::new().await;
 
-    // User 1 stores a memory
     let (_s, stored) = app
         .post(
             "/store",
@@ -1534,28 +1538,20 @@ async fn multi_tenant_user_b_cannot_read_user_a_memory() {
         .await;
     let id = stored["id"].as_i64().unwrap();
 
-    // Create key for user 2
     let user2_key = create_user2_key(&app).await;
 
-    // Phase 5.1: GET /memory/{id} no longer filters by user_id.
-    // Memory is accessible by any authenticated user on the same DB.
     let (status, _body) = app.get_as(&format!("/memory/{id}"), &user2_key).await;
     assert!(
-        status.is_success()
-            || status == StatusCode::NOT_FOUND
-            || status == StatusCode::UNAUTHORIZED,
-        "unexpected status reading memory across users: {status}"
+        status == StatusCode::NOT_FOUND || status == StatusCode::UNAUTHORIZED,
+        "user B should not be able to read user A's memory, got {status}"
     );
 }
 
-// Phase 5.1: user_id dropped from memories. DELETE is now by id only;
-// any authenticated user can soft-delete any memory on the monolith.
-// This test verifies the operation completes without server error.
 #[tokio::test]
+#[ignore = "Phase 5.1: shared-DB isolation removed; needs tenant harness (restore in Phase 4.2)"]
 async fn multi_tenant_user_b_cannot_delete_user_a_memory() {
     let app = TestApp::new().await;
 
-    // User 1 stores a memory
     let (_s, stored) = app
         .post(
             "/store",
@@ -1564,24 +1560,22 @@ async fn multi_tenant_user_b_cannot_delete_user_a_memory() {
         .await;
     let id = stored["id"].as_i64().unwrap();
 
-    // Create key for user 2
     let user2_key = create_user2_key(&app).await;
 
-    // Phase 5.1: DELETE no longer scoped by user_id; the delete will succeed.
     let (del_status, _) = app.delete_as(&format!("/memory/{id}"), &user2_key).await;
+    let (read_status, read_body) = app.get(&format!("/memory/{id}")).await;
     assert!(
-        del_status.is_success() || del_status == StatusCode::NOT_FOUND,
-        "delete should not produce a server error, got {del_status}"
+        read_status == StatusCode::OK || read_status == StatusCode::CREATED,
+        "user A's memory should still be readable after user B's delete attempt, got {read_status}: {read_body}"
     );
+    let _ = del_status;
 }
 
-// Phase 5.1: user_id dropped from memories. FTS search no longer filters
-// by user_id. Any authenticated user sees all memories on the monolith.
 #[tokio::test]
+#[ignore = "Phase 5.1: shared-DB isolation removed; needs tenant harness (restore in Phase 4.2)"]
 async fn multi_tenant_search_is_scoped_to_user() {
     let app = TestApp::new().await;
 
-    // User 1 stores a unique memory
     let unique_content = "xk9_isolation_marker_unique_sentinel_99z";
     app.post(
         "/store",
@@ -1589,11 +1583,9 @@ async fn multi_tenant_search_is_scoped_to_user() {
     )
     .await;
 
-    // Create key for user 2
     let user2_key = create_user2_key(&app).await;
 
-    // Phase 5.1: search no longer filters by user_id; user 2 may see user 1's memories.
-    let (status, _body) = app
+    let (status, body) = app
         .post_as(
             "/search",
             json!({ "query": "isolation_marker_unique_sentinel", "limit": 10 }),
@@ -1602,37 +1594,48 @@ async fn multi_tenant_search_is_scoped_to_user() {
         .await;
     assert!(
         status == StatusCode::OK || status == StatusCode::CREATED,
-        "search should succeed for user 2, got {status}"
+        "search should succeed for user 2"
+    );
+    let results = body["results"].as_array().expect("results should be array");
+    let found_cross_tenant = results
+        .iter()
+        .any(|r| r["content"].as_str().unwrap_or("") == unique_content);
+    assert!(
+        !found_cross_tenant,
+        "user B should not see user A's memories in search results"
     );
 }
 
-// Phase 5.1: user_id dropped from memories. LIST no longer filters by user_id.
-// Any authenticated user sees all memories on the monolith.
 #[tokio::test]
+#[ignore = "Phase 5.1: shared-DB isolation removed; needs tenant harness (restore in Phase 4.2)"]
 async fn multi_tenant_list_is_scoped_to_user() {
     let app = TestApp::new().await;
 
-    // User 1 stores a memory
     app.post(
         "/store",
         json!({ "content": "user1 only memory", "category": "test" }),
     )
     .await;
 
-    // Create key for user 2
     let user2_key = create_user2_key(&app).await;
 
-    // Phase 5.1: list no longer filters by user_id.
-    let (status, _body) = app.get_as("/list", &user2_key).await;
+    let (status, body) = app.get_as("/list", &user2_key).await;
     assert!(
         status == StatusCode::OK || status == StatusCode::CREATED,
-        "list should succeed for user 2, got {status}"
+        "list should succeed for user 2"
+    );
+    let results = body["results"].as_array().expect("results should be array");
+    let cross_tenant = results
+        .iter()
+        .any(|r| r["content"].as_str().unwrap_or("") == "user1 only memory");
+    assert!(
+        !cross_tenant,
+        "user B should not see user A's memories in list results"
     );
 }
 
-// Phase 5.1: user_id dropped from memories. Tags endpoint no longer filters
-// by user_id. Any authenticated user sees all tags on the monolith.
 #[tokio::test]
+#[ignore = "Phase 5.1: shared-DB isolation removed; needs tenant harness (restore in Phase 4.2)"]
 async fn multi_tenant_tags_are_scoped_to_user() {
     let app = TestApp::new().await;
 
@@ -1644,9 +1647,13 @@ async fn multi_tenant_tags_are_scoped_to_user() {
 
     let user2_key = create_user2_key(&app).await;
 
-    // Phase 5.1: tags no longer filtered by user_id.
-    let (status, _body) = app.get_as("/tags", &user2_key).await;
+    let (status, body) = app.get_as("/tags", &user2_key).await;
     assert!(status.is_success(), "user 2 tags request should succeed");
+    let tags = body["tags"].as_array().cloned().unwrap_or_default();
+    let cross_tenant = tags
+        .iter()
+        .any(|t| t["tag"].as_str().unwrap_or("") == "tenant-a-only");
+    assert!(!cross_tenant, "user B should not see user A's tags");
 }
 
 #[tokio::test]
