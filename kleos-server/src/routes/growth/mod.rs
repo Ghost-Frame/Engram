@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::Query,
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -7,7 +7,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::intelligence::{
     growth::{list_observations, materialize, reflect},
@@ -25,22 +25,22 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn reflect_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<GrowthReflectRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let result = reflect(&state.db, &body, auth.user_id).await?;
+    let result = reflect(&db, &body, auth.user_id).await?;
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
 async fn observations_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<ObservationsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
     let observations: Vec<GrowthObservation> =
-        list_observations(&state.db, auth.user_id, limit).await?;
+        list_observations(&db, auth.user_id, limit).await?;
     let count = observations.len();
     Ok(Json(
         json!({ "observations": observations, "count": count }),
@@ -48,11 +48,11 @@ async fn observations_handler(
 }
 
 async fn materialize_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<MaterializeBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let new_id = materialize(&state.db, body.observation_id, auth.user_id).await?;
+    let new_id = materialize(&db, body.observation_id, auth.user_id).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({ "ok": true, "memory_id": new_id })),

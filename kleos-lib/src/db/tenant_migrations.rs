@@ -105,6 +105,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "portability_family_shim",
         up: apply_schema_v16_portability_shim,
     },
+    TenantMigration {
+        version: 17,
+        description: "growth_reflections_shim",
+        up: apply_schema_v17_growth_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -185,6 +190,11 @@ fn apply_schema_v15_thymus_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v16_portability_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v16_portability.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v16 failed: {e}")))
+}
+
+fn apply_schema_v17_growth_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v17_growth.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v17 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -1972,6 +1982,46 @@ mod tests {
             )
             .unwrap();
         assert_eq!(post_key, 1);
+    }
+
+    #[test]
+    fn reflections_usable_after_v17() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='reflections'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(table, 1, "reflections table missing after v17");
+
+        conn.execute(
+            "INSERT INTO reflections \
+             (content, reflection_type, themes, source_memory_ids, confidence, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "growth observation content",
+                "pattern",
+                Some("[\"repetition\"]"),
+                Some("[42, 43]"),
+                0.75_f64,
+                4_i64,
+            ],
+        )
+        .unwrap();
+
+        let (content, uid): (String, i64) = conn
+            .query_row(
+                "SELECT content, user_id FROM reflections WHERE user_id = ?1",
+                rusqlite::params![4_i64],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "growth observation content");
+        assert_eq!(uid, 4);
     }
 
     #[test]
