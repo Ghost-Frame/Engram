@@ -90,6 +90,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "loom_family_shim",
         up: apply_schema_v13_loom_shim,
     },
+    TenantMigration {
+        version: 14,
+        description: "graph_family_shim",
+        up: apply_schema_v14_graph_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -155,6 +160,11 @@ fn apply_schema_v12_soma_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v13_loom_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v13_loom.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v13 failed: {e}")))
+}
+
+fn apply_schema_v14_graph_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v14_graph.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v14 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -1444,6 +1454,210 @@ mod tests {
             )
             .unwrap();
         assert_eq!(post, 4);
+    }
+
+    #[test]
+    fn graph_family_usable_after_v14() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('entities', 'entity_relationships', 'memory_entities', \
+                              'structured_facts', 'entity_cooccurrences', \
+                              'memory_pagerank', 'pagerank_dirty')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 7, "graph family tables missing after v14");
+
+        // Seed memory -> entities -> relationship -> memory_entities -> cooccurrence.
+        conn.execute(
+            "INSERT INTO memories (content, category, source, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["seed memory", "general", "test", 4_i64],
+        )
+        .unwrap();
+        let memory_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO entities (name, entity_type, description, aliases, user_id, space_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["alpha", "concept", None::<String>, None::<String>, 4_i64, None::<i64>],
+        )
+        .unwrap();
+        let a_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO entities (name, entity_type, description, aliases, user_id, space_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["beta", "concept", None::<String>, None::<String>, 4_i64, None::<i64>],
+        )
+        .unwrap();
+        let b_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO entity_relationships \
+             (source_entity_id, target_entity_id, relationship_type, strength) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![a_id, b_id, "related", 0.8_f64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO memory_entities (memory_id, entity_id, salience) VALUES (?1, ?2, ?3)",
+            rusqlite::params![memory_id, a_id, 1.0_f64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count, user_id) \
+             VALUES (?1, ?2, 1, ?3) \
+             ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET count = count + 1",
+            rusqlite::params![a_id, b_id, 4_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO structured_facts (memory_id, subject, predicate, object, confidence, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![memory_id, "alpha", "relates_to", "beta", 0.9_f64, 4_i64],
+        )
+        .unwrap();
+
+        // PageRank upsert (monolith shape: memory_id PK, user_id, INTEGER computed_at).
+        conn.execute(
+            "INSERT INTO memory_pagerank (memory_id, user_id, score, computed_at) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(memory_id) DO UPDATE SET score = excluded.score",
+            rusqlite::params![memory_id, 4_i64, 0.5_f64, 1_700_000_000_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO pagerank_dirty (user_id, dirty_count, last_refresh) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(user_id) DO UPDATE SET dirty_count = dirty_count + ?2",
+            rusqlite::params![4_i64, 3_i64, 1_700_000_000_i64],
+        )
+        .unwrap();
+
+        let (e, r, me, co, f, pr, pd): (i64, i64, i64, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM entities WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM entity_relationships), \
+                   (SELECT COUNT(*) FROM memory_entities), \
+                   (SELECT COUNT(*) FROM entity_cooccurrences WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM structured_facts WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM pagerank_dirty WHERE user_id = ?1)",
+                rusqlite::params![4_i64],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(e, 2);
+        assert_eq!(r, 1);
+        assert_eq!(me, 1);
+        assert_eq!(co, 1);
+        assert_eq!(f, 1);
+        assert_eq!(pr, 1);
+        assert_eq!(pd, 1);
+    }
+
+    #[test]
+    fn v13_db_upgrades_cleanly_to_v14() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        apply_schema_v2_scratchpad_shim(&conn).unwrap();
+        apply_schema_v3_sessions_shim(&conn).unwrap();
+        apply_schema_v4_chiasm_shim(&conn).unwrap();
+        apply_schema_v5_approvals_shim(&conn).unwrap();
+        apply_schema_v6_broca_shim(&conn).unwrap();
+        apply_schema_v7_projects_shim(&conn).unwrap();
+        apply_schema_v8_activity_shim(&conn).unwrap();
+        apply_schema_v9_webhooks_shim(&conn).unwrap();
+        apply_schema_v10_ingestion_shim(&conn).unwrap();
+        apply_schema_v11_axon_shim(&conn).unwrap();
+        apply_schema_v12_soma_shim(&conn).unwrap();
+        apply_schema_v13_loom_shim(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (6);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (7);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (8);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (9);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (10);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (11);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (12);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (13);",
+        )
+        .unwrap();
+
+        // Pre: v1 `entities` still has the stale shape (no user_id, `type` instead of `entity_type`).
+        let stale_user_id: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale_user_id, 0, "v1 entities shouldn't yet have user_id");
+
+        let missing_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('memory_entities', 'entity_cooccurrences', 'pagerank_dirty')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            missing_tables, 0,
+            "new graph tables shouldn't exist before v14"
+        );
+
+        run_tenant_migrations(&conn).unwrap();
+
+        let post_user_id: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post_user_id, 1, "v14 should reshape entities with user_id");
+
+        let post_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('memory_entities', 'entity_cooccurrences', 'pagerank_dirty')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post_tables, 3);
     }
 
     #[test]

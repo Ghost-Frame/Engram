@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query},
     http::StatusCode,
     routing::{get, post, put},
     Json, Router,
@@ -24,7 +24,11 @@ use kleos_lib::validation::{
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
-use crate::{error::AppError, extractors::Auth, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
 
 mod types;
 use types::{
@@ -98,8 +102,8 @@ pub fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 
 async fn create_entity_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(mut req): Json<CreateEntityRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     req.user_id = Some(auth.user_id);
@@ -116,8 +120,7 @@ async fn create_entity_handler(
 
     // INSERT ... RETURNING avoids the cross-connection last_insert_rowid() race
     // that could hand a caller another tenant's row under concurrency.
-    let entity = state
-        .db
+    let entity = db
         .write(move |conn| {
             conn.query_row(
                 "INSERT INTO entities (name, entity_type, description, aliases, user_id, space_id) \
@@ -139,16 +142,15 @@ async fn create_entity_handler(
 // ---------------------------------------------------------------------------
 
 async fn list_entities_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(50).min(1000);
     let offset = params.offset.unwrap_or(0);
     let user_id = auth.user_id;
 
-    let results = state
-        .db
+    let results = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -177,14 +179,13 @@ async fn list_entities_handler(
 // ---------------------------------------------------------------------------
 
 async fn get_entity_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let user_id = auth.user_id;
 
-    let entity = state
-        .db
+    let entity = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT id, name, entity_type, description, aliases, user_id, space_id, \
@@ -212,8 +213,8 @@ async fn get_entity_handler(
 // ---------------------------------------------------------------------------
 
 async fn update_entity_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<UpdateEntityBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -222,7 +223,7 @@ async fn update_entity_handler(
         .as_ref()
         .and_then(|value| serde_json::to_string(value).ok());
     let entity = update_entity(
-        &state.db,
+        &db,
         id,
         auth.user_id,
         body.name.as_deref(),
@@ -241,23 +242,21 @@ async fn update_entity_handler(
 // ---------------------------------------------------------------------------
 
 async fn delete_entity_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let user_id = auth.user_id;
 
-    state
-        .db
-        .write(move |conn| {
-            conn.execute(
-                "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
-                params![id, user_id],
-            )
-            .map_err(kleos_lib::EngError::Database)?;
-            Ok(())
-        })
-        .await?;
+    db.write(move |conn| {
+        conn.execute(
+            "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+        )
+        .map_err(kleos_lib::EngError::Database)?;
+        Ok(())
+    })
+    .await?;
 
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
@@ -267,8 +266,8 @@ async fn delete_entity_handler(
 // ---------------------------------------------------------------------------
 
 async fn entity_relationships_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Query(params): Query<RelationshipQuery>,
 ) -> Result<Json<Value>, AppError> {
@@ -276,8 +275,7 @@ async fn entity_relationships_handler(
     // result set and starve server memory.
     let user_id = auth.user_id;
 
-    let relationships = state
-        .db
+    let relationships = db
         .read(move |conn| {
             if let Some(relationship_type) = params.relationship_type {
                 let mut stmt = conn
@@ -336,13 +334,13 @@ async fn entity_relationships_handler(
 // ---------------------------------------------------------------------------
 
 async fn delete_relationship_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<DeleteRelationshipBody>,
 ) -> Result<Json<Value>, AppError> {
     delete_relationship(
-        &state.db,
+        &db,
         id,
         body.target_entity_id,
         auth.user_id,
@@ -364,14 +362,13 @@ async fn delete_relationship_handler(
 // ---------------------------------------------------------------------------
 
 async fn entity_memories_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let user_id = auth.user_id;
 
-    let memory_ids = state
-        .db
+    let memory_ids = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -398,13 +395,13 @@ async fn entity_memories_handler(
 // ---------------------------------------------------------------------------
 
 async fn entity_search_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<EntitySearchBody>,
 ) -> Result<Json<Value>, AppError> {
     let memories = search_entity_memories(
-        &state.db,
+        &db,
         id,
         auth.user_id,
         &body.query,
@@ -421,11 +418,11 @@ async fn entity_search_handler(
 // ---------------------------------------------------------------------------
 
 async fn link_entity_memory_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path((entity_id, memory_id)): Path<(i64, i64)>,
 ) -> Result<Json<Value>, AppError> {
-    link_memory_entity(&state.db, memory_id, entity_id, auth.user_id, 1.0)
+    link_memory_entity(&db, memory_id, entity_id, auth.user_id, 1.0)
         .await
         .map_err(AppError)?;
     Ok(Json(json!({
@@ -440,11 +437,11 @@ async fn link_entity_memory_handler(
 // ---------------------------------------------------------------------------
 
 async fn unlink_entity_memory_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path((entity_id, memory_id)): Path<(i64, i64)>,
 ) -> Result<Json<Value>, AppError> {
-    unlink_memory_entity(&state.db, memory_id, entity_id, auth.user_id)
+    unlink_memory_entity(&db, memory_id, entity_id, auth.user_id)
         .await
         .map_err(AppError)?;
     Ok(Json(json!({
@@ -459,8 +456,8 @@ async fn unlink_entity_memory_handler(
 // ---------------------------------------------------------------------------
 
 async fn create_relationship_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(req): Json<CreateRelationshipRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let user_id = auth.user_id;
@@ -468,8 +465,7 @@ async fn create_relationship_handler(
     let target_id = req.target_entity_id;
 
     // Verify both entities belong to the authenticated user
-    let count: i64 = state
-        .db
+    let count: i64 = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT COUNT(*) FROM entities WHERE id IN (?1, ?2) AND user_id = ?3",
@@ -495,8 +491,7 @@ async fn create_relationship_handler(
 
     // INSERT ... RETURNING avoids the cross-connection last_insert_rowid()
     // race that could otherwise leak another tenant's relationship row.
-    let relationship = state
-        .db
+    let relationship = db
         .write(move |conn| {
             conn.query_row(
                 "INSERT INTO entity_relationships \
@@ -519,8 +514,8 @@ async fn create_relationship_handler(
 // ---------------------------------------------------------------------------
 
 async fn graph_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<GraphQuery>,
 ) -> Result<Json<Value>, AppError> {
     let cap = params
@@ -532,7 +527,7 @@ async fn graph_handler(
         user_id: auth.user_id,
         limit: Some(cap),
     };
-    let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
+    let result = build_graph_data(&db, &opts).await.map_err(AppError)?;
     let node_count = result.nodes.len();
     let edge_count = result.edges.len();
     Ok(Json(json!({
@@ -548,15 +543,15 @@ async fn graph_handler(
 // ---------------------------------------------------------------------------
 
 async fn graph_raw_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let opts = GraphBuildOptions {
         user_id: auth.user_id,
         limit: Some(params.limit.unwrap_or(500).min(5000) as usize),
     };
-    let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
+    let result = build_graph_data(&db, &opts).await.map_err(AppError)?;
     Ok(Json(json!({
         "nodes": result.nodes,
         "edges": result.edges,
@@ -569,15 +564,15 @@ async fn graph_raw_handler(
 // ---------------------------------------------------------------------------
 
 async fn graph_view_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let opts = GraphBuildOptions {
         user_id: auth.user_id,
         limit: Some(params.limit.unwrap_or(500).min(5000) as usize),
     };
-    let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
+    let result = build_graph_data(&db, &opts).await.map_err(AppError)?;
     Ok(Json(json!({
         "nodes": result.nodes,
         "edges": result.edges,
@@ -590,8 +585,8 @@ async fn graph_view_handler(
 // ---------------------------------------------------------------------------
 
 async fn build_graph_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(mut opts): Json<GraphBuildOptions>,
 ) -> Result<Json<Value>, AppError> {
     opts.user_id = auth.user_id;
@@ -606,7 +601,7 @@ async fn build_graph_handler(
         Some(n) => n.min(MAX_GRAPH_BUILD_NODES),
         None => MAX_GRAPH_BUILD_NODES,
     });
-    let result = build_graph_data(&state.db, &opts).await.map_err(AppError)?;
+    let result = build_graph_data(&db, &opts).await.map_err(AppError)?;
     Ok(Json(json!(result)))
 }
 
@@ -615,12 +610,12 @@ async fn build_graph_handler(
 // ---------------------------------------------------------------------------
 
 async fn graph_search_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<GraphSearchBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.unwrap_or(20).min(1000);
-    let nodes = graph_search(&state.db, &body.query, limit, auth.user_id).await?;
+    let nodes = graph_search(&db, &body.query, limit, auth.user_id).await?;
     Ok(Json(json!({ "nodes": nodes })))
 }
 
@@ -629,8 +624,8 @@ async fn graph_search_handler(
 // ---------------------------------------------------------------------------
 
 async fn neighborhood_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<String>,
     Query(params): Query<NeighborhoodQuery>,
 ) -> Result<Json<Value>, AppError> {
@@ -650,7 +645,7 @@ async fn neighborhood_handler(
     });
 
     let (nodes, edges, hops) =
-        neighborhood_filtered(&state.db, &id, depth, auth.user_id, link_types.as_deref()).await?;
+        neighborhood_filtered(&db, &id, depth, auth.user_id, link_types.as_deref()).await?;
     Ok(Json(
         json!({ "nodes": nodes, "edges": edges, "hops": hops }),
     ))
@@ -661,15 +656,14 @@ async fn neighborhood_handler(
 // ---------------------------------------------------------------------------
 
 async fn memory_entities_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     // SECURITY/DoS: cap entity fan-out per memory to avoid unbounded result sets.
     let user_id = auth.user_id;
 
-    let entities = state
-        .db
+    let entities = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -711,15 +705,14 @@ async fn memory_entities_handler(
 // ---------------------------------------------------------------------------
 
 async fn communities_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     let user_id = auth.user_id;
 
     // Fetch community -> memory_id mapping for the GUI graph visualization.
     // The GUI needs {id, top_memories: [memId, ...]} to map graph nodes to communities.
-    let communities: Vec<Value> = state
-        .db
+    let communities: Vec<Value> = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -764,14 +757,14 @@ async fn communities_handler(
 // ---------------------------------------------------------------------------
 
 async fn community_detail_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_community_stats(&state.db, auth.user_id)
+    let stats = get_community_stats(&db, auth.user_id)
         .await
         .map_err(AppError)?;
-    let members = get_community_members(&state.db, id, auth.user_id, 50)
+    let members = get_community_members(&db, id, auth.user_id, 50)
         .await
         .map_err(AppError)?;
     let community = stats.into_iter().find(|item| item.community_id == id);
@@ -787,10 +780,10 @@ async fn community_detail_handler(
 // ---------------------------------------------------------------------------
 
 async fn detect_communities_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let result = detect_communities(&state.db, auth.user_id, 25)
+    let result = detect_communities(&db, auth.user_id, 25)
         .await
         .map_err(AppError)?;
     Ok(Json(json!(result)))
@@ -801,13 +794,13 @@ async fn detect_communities_handler(
 // ---------------------------------------------------------------------------
 
 async fn community_members_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(50).min(1000) as usize;
-    let members = get_community_members(&state.db, id, auth.user_id, limit)
+    let members = get_community_members(&db, id, auth.user_id, limit)
         .await
         .map_err(AppError)?;
     Ok(Json(json!({ "members": members })))
@@ -818,10 +811,10 @@ async fn community_members_handler(
 // ---------------------------------------------------------------------------
 
 async fn community_stats_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_community_stats(&state.db, auth.user_id)
+    let stats = get_community_stats(&db, auth.user_id)
         .await
         .map_err(AppError)?;
     Ok(Json(json!({ "stats": stats })))
@@ -832,10 +825,10 @@ async fn community_stats_handler(
 // ---------------------------------------------------------------------------
 
 async fn pagerank_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let result = update_pagerank_scores(&state.db, auth.user_id)
+    let result = update_pagerank_scores(&db, auth.user_id)
         .await
         .map_err(AppError)?;
     Ok(Json(json!(result)))
@@ -846,10 +839,10 @@ async fn pagerank_handler(
 // ---------------------------------------------------------------------------
 
 async fn rebuild_cooccurrences_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let count = rebuild_cooccurrences(&state.db, auth.user_id)
+    let count = rebuild_cooccurrences(&db, auth.user_id)
         .await
         .map_err(AppError)?;
     Ok(Json(json!({ "rebuilt": count })))
@@ -860,13 +853,13 @@ async fn rebuild_cooccurrences_handler(
 // ---------------------------------------------------------------------------
 
 async fn entity_cooccurrences_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(1000) as usize;
-    let entities = get_cooccurring_entities(&state.db, id, auth.user_id, limit)
+    let entities = get_cooccurring_entities(&db, id, auth.user_id, limit)
         .await
         .map_err(AppError)?;
     Ok(Json(json!({ "cooccurrences": entities })))
@@ -877,12 +870,12 @@ async fn entity_cooccurrences_handler(
 // ---------------------------------------------------------------------------
 
 async fn facts_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<FactsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let facts = list_facts(
-        &state.db,
+        &db,
         auth.user_id,
         params.memory_id,
         params.limit.unwrap_or(50).min(1000),
