@@ -100,6 +100,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "thymus_family_shim",
         up: apply_schema_v15_thymus_shim,
     },
+    TenantMigration {
+        version: 16,
+        description: "portability_family_shim",
+        up: apply_schema_v16_portability_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -175,6 +180,11 @@ fn apply_schema_v14_graph_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v15_thymus_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v15_thymus.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v15 failed: {e}")))
+}
+
+fn apply_schema_v16_portability_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v16_portability.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v16 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -1805,6 +1815,163 @@ mod tests {
             )
             .unwrap();
         assert_eq!(post, 5);
+    }
+
+    #[test]
+    fn portability_family_usable_after_v16() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('user_preferences', 'conversations', 'app_state')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 3, "portability tables missing after v16");
+
+        // user_preferences should now expose the KV shape preferences.rs expects.
+        let has_key: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('user_preferences') WHERE name='key'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_key, 1, "user_preferences missing 'key' column after v16");
+
+        conn.execute(
+            "INSERT INTO user_preferences (user_id, key, value) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![4_i64, "persona", "gir"],
+        )
+        .unwrap();
+        // Upsert collapses to one row.
+        conn.execute(
+            "INSERT INTO user_preferences (user_id, key, value) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![4_i64, "persona", "technical"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO conversations (agent, session_id, title, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["claude-code", "sess-1", "hello", 4_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["user:4:theme", "dark"],
+        )
+        .unwrap();
+
+        let (pref_value, conv_count, state_value): (String, i64, String) = conn
+            .query_row(
+                "SELECT \
+                   (SELECT value FROM user_preferences WHERE user_id = ?1 AND key = 'persona'), \
+                   (SELECT COUNT(*) FROM conversations WHERE user_id = ?1), \
+                   (SELECT value FROM app_state WHERE key = ?2)",
+                rusqlite::params![4_i64, "user:4:theme"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(pref_value, "technical");
+        assert_eq!(conv_count, 1);
+        assert_eq!(state_value, "dark");
+    }
+
+    #[test]
+    fn v15_db_upgrades_cleanly_to_v16() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        apply_schema_v2_scratchpad_shim(&conn).unwrap();
+        apply_schema_v3_sessions_shim(&conn).unwrap();
+        apply_schema_v4_chiasm_shim(&conn).unwrap();
+        apply_schema_v5_approvals_shim(&conn).unwrap();
+        apply_schema_v6_broca_shim(&conn).unwrap();
+        apply_schema_v7_projects_shim(&conn).unwrap();
+        apply_schema_v8_activity_shim(&conn).unwrap();
+        apply_schema_v9_webhooks_shim(&conn).unwrap();
+        apply_schema_v10_ingestion_shim(&conn).unwrap();
+        apply_schema_v11_axon_shim(&conn).unwrap();
+        apply_schema_v12_soma_shim(&conn).unwrap();
+        apply_schema_v13_loom_shim(&conn).unwrap();
+        apply_schema_v14_graph_shim(&conn).unwrap();
+        apply_schema_v15_thymus_shim(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (6);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (7);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (8);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (9);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (10);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (11);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (12);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (13);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (14);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (15);",
+        )
+        .unwrap();
+
+        // Pre: conversations and app_state do not exist; user_preferences
+        // still has the v1 behavioral shape (no 'key' column).
+        let pre_conv_app: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('conversations', 'app_state')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre_conv_app, 0);
+
+        let pre_key: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('user_preferences') WHERE name='key'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pre_key, 0,
+            "v1 user_preferences should not yet have the KV 'key' column"
+        );
+
+        run_tenant_migrations(&conn).unwrap();
+
+        let post_conv_app: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('conversations', 'app_state')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post_conv_app, 2);
+
+        let post_key: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('user_preferences') WHERE name='key'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post_key, 1);
     }
 
     #[test]
