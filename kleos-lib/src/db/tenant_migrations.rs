@@ -95,6 +95,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "graph_family_shim",
         up: apply_schema_v14_graph_shim,
     },
+    TenantMigration {
+        version: 15,
+        description: "thymus_family_shim",
+        up: apply_schema_v15_thymus_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -165,6 +170,11 @@ fn apply_schema_v13_loom_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v14_graph_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v14_graph.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v14 failed: {e}")))
+}
+
+fn apply_schema_v15_thymus_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v15_thymus.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v15 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -1658,6 +1668,143 @@ mod tests {
             )
             .unwrap();
         assert_eq!(post_tables, 3);
+    }
+
+    #[test]
+    fn thymus_family_usable_after_v15() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('rubrics', 'evaluations', 'quality_metrics', \
+                              'session_quality', 'behavioral_drift_events')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 5, "thymus family tables missing after v15");
+
+        conn.execute(
+            "INSERT INTO rubrics (name, description, criteria, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["r1", None::<String>, "[]", 4_i64],
+        )
+        .unwrap();
+        let rubric_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO evaluations \
+             (rubric_id, agent, subject, input, output, scores, overall_score, evaluator, user_id) \
+             VALUES (?1, ?2, ?3, '{}', '{}', '{}', ?4, ?5, ?6)",
+            rusqlite::params![rubric_id, "claude-code", "turn-1", 0.9_f64, "claude", 4_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO quality_metrics (agent, metric, value, tags, user_id) \
+             VALUES (?1, ?2, ?3, '{}', ?4)",
+            rusqlite::params!["claude-code", "tokens", 1234_f64, 4_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO session_quality (session_id, agent, turn_count, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["sess-1", "claude-code", 5_i64, 4_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO behavioral_drift_events (agent, session_id, drift_type, signal, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["claude-code", "sess-1", "persona", "{}", 4_i64],
+        )
+        .unwrap();
+
+        let (r, e, m, sq, d): (i64, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM rubrics WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM evaluations WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM quality_metrics WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM session_quality WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM behavioral_drift_events WHERE user_id = ?1)",
+                rusqlite::params![4_i64],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(r, 1);
+        assert_eq!(e, 1);
+        assert_eq!(m, 1);
+        assert_eq!(sq, 1);
+        assert_eq!(d, 1);
+    }
+
+    #[test]
+    fn v14_db_upgrades_cleanly_to_v15() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        apply_schema_v1(&conn).unwrap();
+        apply_schema_v2_scratchpad_shim(&conn).unwrap();
+        apply_schema_v3_sessions_shim(&conn).unwrap();
+        apply_schema_v4_chiasm_shim(&conn).unwrap();
+        apply_schema_v5_approvals_shim(&conn).unwrap();
+        apply_schema_v6_broca_shim(&conn).unwrap();
+        apply_schema_v7_projects_shim(&conn).unwrap();
+        apply_schema_v8_activity_shim(&conn).unwrap();
+        apply_schema_v9_webhooks_shim(&conn).unwrap();
+        apply_schema_v10_ingestion_shim(&conn).unwrap();
+        apply_schema_v11_axon_shim(&conn).unwrap();
+        apply_schema_v12_soma_shim(&conn).unwrap();
+        apply_schema_v13_loom_shim(&conn).unwrap();
+        apply_schema_v14_graph_shim(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (6);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (7);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (8);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (9);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (10);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (11);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (12);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (13);
+             INSERT OR IGNORE INTO schema_migrations (version) VALUES (14);",
+        )
+        .unwrap();
+
+        let pre: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('rubrics', 'evaluations', 'quality_metrics', \
+                              'session_quality', 'behavioral_drift_events')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre, 0);
+
+        run_tenant_migrations(&conn).unwrap();
+
+        let post: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('rubrics', 'evaluations', 'quality_metrics', \
+                              'session_quality', 'behavioral_drift_events')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(post, 5);
     }
 
     #[test]
