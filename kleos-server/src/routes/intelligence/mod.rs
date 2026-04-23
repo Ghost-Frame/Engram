@@ -31,7 +31,11 @@ use serde_json::{json, Value};
 
 use rusqlite::params;
 
-use crate::{error::AppError, extractors::Auth, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
 
 mod types;
 use types::{
@@ -195,8 +199,8 @@ async fn dreamer_stats_handler(
 // ---------------------------------------------------------------------------
 
 async fn consolidate_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<ConsolidateBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let ids: Vec<String> = body
@@ -204,27 +208,27 @@ async fn consolidate_handler(
         .into_iter()
         .map(|id| id.to_string())
         .collect();
-    let result = consolidate(&state.db, &ids, auth.user_id).await?;
+    let result = consolidate(&db, &ids, auth.user_id).await?;
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
 async fn candidates_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<CandidatesBody>,
 ) -> Result<Json<Value>, AppError> {
     let threshold = body.threshold.unwrap_or(0.7);
-    let groups = find_consolidation_candidates(&state.db, threshold, auth.user_id).await?;
+    let groups = find_consolidation_candidates(&db, threshold, auth.user_id).await?;
     Ok(Json(json!({ "groups": groups })))
 }
 
 async fn list_consolidations_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(500);
-    let items = list_consolidations(&state.db, auth.user_id, limit).await?;
+    let items = list_consolidations(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "consolidations": items })))
 }
 
@@ -233,20 +237,20 @@ async fn list_consolidations_handler(
 // ---------------------------------------------------------------------------
 
 async fn contradictions_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let mem = memory::get(&state.db, memory_id, auth.user_id).await?;
-    let contradictions = detect_contradictions(&state.db, &mem).await?;
+    let mem = memory::get(&db, memory_id, auth.user_id).await?;
+    let contradictions = detect_contradictions(&db, &mem).await?;
     Ok(Json(json!({ "contradictions": contradictions })))
 }
 
 async fn scan_contradictions_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let contradictions = scan_all_contradictions(&state.db, auth.user_id).await?;
+    let contradictions = scan_all_contradictions(&db, auth.user_id).await?;
     Ok(Json(json!({ "contradictions": contradictions })))
 }
 
@@ -255,11 +259,11 @@ async fn scan_contradictions_handler(
 // ---------------------------------------------------------------------------
 
 async fn decompose_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let child_ids = decompose(&state.db, memory_id, auth.user_id).await?;
+    let child_ids = decompose(&db, memory_id, auth.user_id).await?;
     Ok(Json(json!({ "child_ids": child_ids })))
 }
 
@@ -268,12 +272,12 @@ async fn decompose_handler(
 // ---------------------------------------------------------------------------
 
 async fn detect_temporal_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let patterns = detect_patterns(&state.db, auth.user_id).await?;
+    let patterns = detect_patterns(&db, auth.user_id).await?;
     for pattern in &patterns {
-        if let Err(e) = store_pattern(&state.db, pattern).await {
+        if let Err(e) = store_pattern(&db, pattern).await {
             tracing::warn!("failed to store temporal pattern: {}", e);
         }
     }
@@ -281,12 +285,12 @@ async fn detect_temporal_handler(
 }
 
 async fn list_temporal_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(500);
-    let patterns = list_patterns(&state.db, auth.user_id, limit).await?;
+    let patterns = list_patterns(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
 
@@ -295,22 +299,22 @@ async fn list_temporal_handler(
 // ---------------------------------------------------------------------------
 
 async fn generate_digest_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<DigestBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let period = body.period.unwrap_or_else(|| "daily".into());
-    let digest = generate_digest(&state.db, auth.user_id, &period).await?;
+    let digest = generate_digest(&db, auth.user_id, &period).await?;
     Ok((StatusCode::CREATED, Json(json!(digest))))
 }
 
 async fn list_digests_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(500);
-    let items = list_digests(&state.db, auth.user_id, limit).await?;
+    let items = list_digests(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "digests": items })))
 }
 
@@ -319,14 +323,14 @@ async fn list_digests_handler(
 // ---------------------------------------------------------------------------
 
 async fn create_reflection_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<CreateReflectionBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let reflection_type = body.reflection_type.as_deref().unwrap_or("general");
     let confidence = body.confidence.unwrap_or(1.0);
     let reflection = create_reflection(
-        &state.db,
+        &db,
         &body.content,
         reflection_type,
         &body.source_memory_ids,
@@ -338,23 +342,25 @@ async fn create_reflection_handler(
 }
 
 async fn list_reflections_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(500);
-    let items = list_reflections(&state.db, auth.user_id, limit).await?;
+    let items = list_reflections(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "reflections": items })))
 }
 
+// Hybrid: needs state.llm for LLM-driven generation.
 async fn generate_reflections_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(10).min(100);
     let llm_ref: Option<&dyn LlmReflector> = state.llm.as_deref().map(|c| c as &dyn LlmReflector);
-    let items = generate_reflections_with_llm(&state.db, llm_ref, auth.user_id, limit).await?;
+    let items = generate_reflections_with_llm(&db, llm_ref, auth.user_id, limit).await?;
     Ok(Json(json!({ "reflections": items, "count": items.len() })))
 }
 
@@ -363,12 +369,12 @@ async fn generate_reflections_handler(
 // ---------------------------------------------------------------------------
 
 async fn create_chain_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<CreateChainBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let chain = create_chain(
-        &state.db,
+        &db,
         body.root_memory_id,
         body.description.as_deref(),
         auth.user_id,
@@ -378,33 +384,33 @@ async fn create_chain_handler(
 }
 
 async fn list_chains_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(500);
-    let items = list_chains(&state.db, auth.user_id, limit).await?;
+    let items = list_chains(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "chains": items })))
 }
 
 async fn get_chain_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let chain = get_chain(&state.db, id, auth.user_id).await?;
+    let chain = get_chain(&db, id, auth.user_id).await?;
     Ok(Json(json!(chain)))
 }
 
 async fn add_link_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<AddLinkBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let strength = body.strength.unwrap_or(1.0);
     let order_index = body.order_index.unwrap_or(0);
     let link = add_link(
-        &state.db,
+        &db,
         body.chain_id,
         body.cause_memory_id,
         body.effect_memory_id,
@@ -417,13 +423,13 @@ async fn add_link_handler(
 }
 
 async fn causal_backward_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(memory_id): Path<i64>,
     body: Option<Json<BackwardBody>>,
 ) -> Result<Json<Value>, AppError> {
     let max_depth = body.and_then(|b| b.0.max_depth).unwrap_or(5).min(20);
-    let ancestors = backward_chain(&state.db, memory_id, auth.user_id, max_depth).await?;
+    let ancestors = backward_chain(&db, memory_id, auth.user_id, max_depth).await?;
     Ok(Json(
         json!({ "ancestors": ancestors, "max_depth": max_depth, "count": ancestors.len() }),
     ))
@@ -434,14 +440,14 @@ async fn causal_backward_handler(
 // ---------------------------------------------------------------------------
 
 async fn sentiment_analyze_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<SentimentAnalyzeBody>,
 ) -> Result<Json<Value>, AppError> {
     let text = if let Some(ref content) = body.content {
         content.clone()
     } else if let Some(memory_id) = body.memory_id {
-        let mem = memory::get(&state.db, memory_id, auth.user_id).await?;
+        let mem = memory::get(&db, memory_id, auth.user_id).await?;
         mem.content
     } else {
         return Err(AppError::from(kleos_lib::EngError::InvalidInput(
@@ -468,16 +474,15 @@ async fn sentiment_analyze_handler(
 }
 
 async fn sentiment_history_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<SentimentHistoryQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
     let since = params.since.as_deref().unwrap_or("1970-01-01");
 
     let since_owned = since.to_string();
-    let history = state
-        .db
+    let history = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -516,13 +521,13 @@ async fn sentiment_history_handler(
 // ---------------------------------------------------------------------------
 
 async fn valence_score_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<ValenceScoreBody>,
 ) -> Result<Json<Value>, AppError> {
     if let Some(memory_id) = body.memory_id {
-        let mem = memory::get(&state.db, memory_id, auth.user_id).await?;
-        let result = store_valence(&state.db, memory_id, &mem.content, auth.user_id).await?;
+        let mem = memory::get(&db, memory_id, auth.user_id).await?;
+        let result = store_valence(&db, memory_id, &mem.content, auth.user_id).await?;
         Ok(Json(json!(result)))
     } else if let Some(ref content) = body.content {
         let result = analyze_valence(content);
@@ -535,11 +540,11 @@ async fn valence_score_handler(
 }
 
 async fn valence_get_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let mem = memory::get(&state.db, memory_id, auth.user_id).await?;
+    let mem = memory::get(&db, memory_id, auth.user_id).await?;
     Ok(Json(json!({
         "memory_id": memory_id,
         "valence": mem.valence,
@@ -549,10 +554,10 @@ async fn valence_get_handler(
 }
 
 async fn valence_profile_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let profile = get_emotional_profile(&state.db, auth.user_id).await?;
+    let profile = get_emotional_profile(&db, auth.user_id).await?;
     Ok(Json(json!(profile)))
 }
 
@@ -561,31 +566,31 @@ async fn valence_profile_handler(
 // ---------------------------------------------------------------------------
 
 async fn predictive_recall_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let context = predictive_recall(&state.db, auth.user_id).await?;
+    let context = predictive_recall(&db, auth.user_id).await?;
     Ok(Json(json!(context)))
 }
 
 async fn predictive_patterns_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     // Return temporal patterns that drive predictions
     let limit = params.limit.unwrap_or(20).min(500);
-    let patterns = list_patterns(&state.db, auth.user_id, limit).await?;
+    let patterns = list_patterns(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
 
 async fn predictive_sequences_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<SequencesBody>,
 ) -> Result<Json<Value>, AppError> {
     let window_mins = body.window_mins.unwrap_or(60).clamp(1, 24 * 60);
-    let patterns = detect_sequence_patterns(&state.db, auth.user_id, window_mins).await?;
+    let patterns = detect_sequence_patterns(&db, auth.user_id, window_mins).await?;
     Ok(Json(
         json!({ "patterns": patterns, "window_mins": window_mins, "count": patterns.len() }),
     ))
@@ -596,21 +601,21 @@ async fn predictive_sequences_handler(
 // ---------------------------------------------------------------------------
 
 async fn reconsolidate_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let result = reconsolidate_memory(&state.db, memory_id, auth.user_id).await?;
+    let result = reconsolidate_memory(&db, memory_id, auth.user_id).await?;
     Ok(Json(json!(result)))
 }
 
 async fn reconsolidation_candidates_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<ReconsolidationCandidatesQuery>,
 ) -> Result<Json<Value>, AppError> {
     let batch_size = params.limit.unwrap_or(20).min(100);
-    let results = run_reconsolidation_sweep(&state.db, auth.user_id, batch_size).await?;
+    let results = run_reconsolidation_sweep(&db, auth.user_id, batch_size).await?;
     Ok(Json(json!({ "results": results, "count": results.len() })))
 }
 
@@ -619,17 +624,17 @@ async fn reconsolidation_candidates_handler(
 // ---------------------------------------------------------------------------
 
 async fn extract_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<ExtractBody>,
 ) -> Result<Json<Value>, AppError> {
     let (content, memory_id) = if let Some(mid) = body.memory_id {
-        let mem = memory::get(&state.db, mid, auth.user_id).await?;
+        let mem = memory::get(&db, mid, auth.user_id).await?;
         (mem.content, mid)
     } else if let Some(ref c) = body.content {
         // Store as temp memory so extraction has a memory_id to reference
         let result = memory::store(
-            &state.db,
+            &db,
             kleos_lib::memory::types::StoreRequest {
                 content: c.clone(),
                 category: "general".to_string(),
@@ -652,7 +657,7 @@ async fn extract_handler(
         )));
     };
 
-    let stats = fast_extract_facts(&state.db, &content, memory_id, auth.user_id, None).await?;
+    let stats = fast_extract_facts(&db, &content, memory_id, auth.user_id, None).await?;
     Ok(Json(json!({
         "memory_id": memory_id,
         "facts": stats.facts,
@@ -666,13 +671,13 @@ async fn extract_handler(
 // ---------------------------------------------------------------------------
 
 async fn time_travel_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<TimeTravelBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.unwrap_or(20).min(100);
     let results = time_travel(
-        &state.db,
+        &db,
         auth.user_id,
         body.query.as_deref(),
         &body.timestamp,
@@ -691,12 +696,12 @@ async fn time_travel_handler(
 // ---------------------------------------------------------------------------
 
 async fn sweep_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<SweepBody>,
 ) -> Result<Json<Value>, AppError> {
     let threshold = body.threshold.unwrap_or(0.85);
-    let result = sweep(&state.db, auth.user_id, threshold).await?;
+    let result = sweep(&db, auth.user_id, threshold).await?;
     Ok(Json(json!(result)))
 }
 
@@ -705,12 +710,12 @@ async fn sweep_handler(
 // ---------------------------------------------------------------------------
 
 async fn correct_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<CorrectBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let corrected = correct_memory(
-        &state.db,
+        &db,
         auth.user_id,
         body.memory_id,
         &body.content,
@@ -725,10 +730,10 @@ async fn correct_handler(
 // ---------------------------------------------------------------------------
 
 async fn memory_health_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let report = memory_health(&state.db, auth.user_id).await?;
+    let report = memory_health(&db, auth.user_id).await?;
     Ok(Json(json!(report)))
 }
 
@@ -737,19 +742,19 @@ async fn memory_health_handler(
 // ---------------------------------------------------------------------------
 
 async fn feedback_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<FeedbackRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    feedback::record_feedback(&state.db, auth.user_id, &body).await?;
+    feedback::record_feedback(&db, auth.user_id, &body).await?;
     Ok((StatusCode::CREATED, Json(json!({ "ok": true }))))
 }
 
 async fn feedback_stats_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = feedback::feedback_stats(&state.db, auth.user_id).await?;
+    let stats = feedback::feedback_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -758,24 +763,24 @@ async fn feedback_stats_handler(
 // ---------------------------------------------------------------------------
 
 async fn duplicates_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<DuplicatesQuery>,
 ) -> Result<Json<Value>, AppError> {
     let threshold = params.threshold.unwrap_or(0.9);
     let limit = params.limit.unwrap_or(50).min(200);
-    let pairs = find_duplicates(&state.db, auth.user_id, threshold, limit).await?;
+    let pairs = find_duplicates(&db, auth.user_id, threshold, limit).await?;
     Ok(Json(json!({ "duplicates": pairs, "count": pairs.len() })))
 }
 
 async fn deduplicate_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<DeduplicateBody>,
 ) -> Result<Json<Value>, AppError> {
     let threshold = body.threshold.unwrap_or(0.9);
     let dry_run = body.dry_run.unwrap_or(true);
-    let result = deduplicate(&state.db, auth.user_id, threshold, dry_run).await?;
+    let result = deduplicate(&db, auth.user_id, threshold, dry_run).await?;
     Ok(Json(json!(result)))
 }
 
@@ -784,13 +789,14 @@ async fn deduplicate_handler(
 // ---------------------------------------------------------------------------
 
 async fn run_pipeline_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let report = default_pipeline().run(&state.db, auth.user_id).await?;
+    let report = default_pipeline().run(&db, auth.user_id).await?;
     Ok(Json(json!(report)))
 }
 
+// Hybrid: needs state.brain for neural dream cycle.
 async fn dream_handler(
     State(state): State<AppState>,
     Auth(_auth): Auth,

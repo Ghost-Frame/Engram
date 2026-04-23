@@ -110,6 +110,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "growth_reflections_shim",
         up: apply_schema_v17_growth_shim,
     },
+    TenantMigration {
+        version: 18,
+        description: "intelligence_family_shim",
+        up: apply_schema_v18_intelligence_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -195,6 +200,11 @@ fn apply_schema_v16_portability_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v17_growth_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v17_growth.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v17 failed: {e}")))
+}
+
+fn apply_schema_v18_intelligence_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v18_intelligence.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v18 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -2022,6 +2032,112 @@ mod tests {
             .unwrap();
         assert_eq!(content, "growth observation content");
         assert_eq!(uid, 4);
+    }
+
+    #[test]
+    fn intelligence_family_usable_after_v18() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('consolidations', 'current_state', 'causal_chains', \
+                              'causal_links', 'reconsolidations', 'temporal_patterns', \
+                              'digests', 'memory_feedback')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 8, "intelligence family tables missing after v18");
+
+        conn.execute(
+            "INSERT INTO memories (content, category, source, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["seed", "general", "test", 4_i64],
+        )
+        .unwrap();
+        let mid = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO consolidations (source_ids, strategy, confidence, user_id) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["[1,2,3]", "merge", 0.9_f64, 4_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO current_state (agent, key, value, user_id) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(agent, key, user_id) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["claude", "location", "home", 4_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO causal_chains (root_memory_id, description, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params![mid, "chain", 4_i64],
+        )
+        .unwrap();
+        let chain_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO causal_links (chain_id, cause_memory_id, effect_memory_id) \
+             VALUES (?1, ?2, ?2)",
+            rusqlite::params![chain_id, mid],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO reconsolidations (memory_id, old_content, new_content, user_id) \
+             VALUES (?1, 'old', 'new', ?2)",
+            rusqlite::params![mid, 4_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO temporal_patterns (pattern_type, description, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["daily", "morning routine", 4_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO digests (period, content, memory_count, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["daily", "digest body", 10_i64, 4_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO memory_feedback (memory_id, user_id, rating) VALUES (?1, ?2, ?3)",
+            rusqlite::params![mid, 4_i64, "up"],
+        )
+        .unwrap();
+
+        let (c, s, cc, cl, r, tp, d, f): (i64, i64, i64, i64, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM consolidations WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM current_state WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM causal_chains WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM causal_links WHERE chain_id = ?2), \
+                   (SELECT COUNT(*) FROM reconsolidations WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM temporal_patterns WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM digests WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM memory_feedback WHERE user_id = ?1)",
+                rusqlite::params![4_i64, chain_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!((c, s, cc, cl, r, tp, d, f), (1, 1, 1, 1, 1, 1, 1, 1));
     }
 
     #[test]
