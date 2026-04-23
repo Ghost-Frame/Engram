@@ -111,31 +111,13 @@ async fn compute_pagerank_for_tenant(db: &Database) -> Result<Vec<(i64, f64)>> {
 async fn persist_pagerank_for_tenant(db: &Database, scores: Vec<(i64, f64)>) -> Result<()> {
     db.transaction(move |tx| {
         for (memory_id, score) in &scores {
-            let in_degree: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM memory_links WHERE target_id = ?1",
-                    [memory_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-
-            let out_degree: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM memory_links WHERE source_id = ?1",
-                    [memory_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-
             tx.execute(
-                "INSERT INTO memory_pagerank (memory_id, score, in_degree, out_degree, computed_at)
-                 VALUES (?1, ?2, ?3, ?4, datetime('now'))
+                "INSERT INTO memory_pagerank (memory_id, user_id, score, computed_at)
+                 VALUES (?1, 1, ?2, CAST(strftime('%s','now') AS INTEGER))
                  ON CONFLICT(memory_id) DO UPDATE SET
                      score = excluded.score,
-                     in_degree = excluded.in_degree,
-                     out_degree = excluded.out_degree,
                      computed_at = excluded.computed_at",
-                rusqlite::params![memory_id, score, in_degree, out_degree],
+                rusqlite::params![memory_id, score],
             )
             .map_err(|e| EngError::Internal(format!("pagerank upsert failed: {}", e)))?;
 
