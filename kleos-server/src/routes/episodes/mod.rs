@@ -1,11 +1,11 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::episodes::{
     self, AssignMemoriesRequest, CreateEpisodeRequest, UpdateEpisodeRequest,
@@ -24,11 +24,11 @@ pub fn router() -> Router<AppState> {
 
 // POST /episodes
 async fn create_episode(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<CreateEpisodeRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let ep = episodes::create_episode(&state.db, body, auth.user_id).await?;
+    let ep = episodes::create_episode(&db, body, auth.user_id).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({
@@ -39,8 +39,8 @@ async fn create_episode(
 
 // GET /episodes
 async fn list_episodes(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListEpisodesParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
@@ -50,30 +50,30 @@ async fn list_episodes(
         let after = params.after.as_deref().unwrap_or("2000-01-01");
         let before = params.before.as_deref().unwrap_or("2099-12-31");
         let eps =
-            episodes::list_episodes_by_time_range(&state.db, auth.user_id, after, before, limit)
+            episodes::list_episodes_by_time_range(&db, auth.user_id, after, before, limit)
                 .await?;
         return Ok(Json(json!({ "episodes": eps })));
     }
 
     // FTS search
     if let Some(ref query) = params.query {
-        let eps = episodes::search_episodes_fts(&state.db, query, auth.user_id, limit).await?;
+        let eps = episodes::search_episodes_fts(&db, query, auth.user_id, limit).await?;
         return Ok(Json(json!({ "episodes": eps })));
     }
 
     // Default: list recent
-    let eps = episodes::list_episodes(&state.db, auth.user_id, limit).await?;
+    let eps = episodes::list_episodes(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "episodes": eps })))
 }
 
 // GET /episodes/{id}
 async fn get_episode(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let episode = episodes::get_episode_for_user(&state.db, id, auth.user_id).await?;
-    let memories = episodes::get_episode_memories(&state.db, id, auth.user_id).await?;
+    let episode = episodes::get_episode_for_user(&db, id, auth.user_id).await?;
+    let memories = episodes::get_episode_memories(&db, id, auth.user_id).await?;
     Ok(Json(json!({
         "id": episode.id, "title": episode.title, "session_id": episode.session_id,
         "agent": episode.agent, "summary": episode.summary, "user_id": episode.user_id,
@@ -86,38 +86,38 @@ async fn get_episode(
 
 // PATCH /episodes/{id}
 async fn update_episode(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<UpdateEpisodeRequest>,
 ) -> Result<Json<Value>, AppError> {
     // Verify episode exists for this user
-    episodes::get_episode_for_user(&state.db, id, auth.user_id).await?;
-    episodes::update_episode_for_user(&state.db, id, auth.user_id, &body).await?;
+    episodes::get_episode_for_user(&db, id, auth.user_id).await?;
+    episodes::update_episode_for_user(&db, id, auth.user_id, &body).await?;
     Ok(Json(json!({ "updated": true, "id": id })))
 }
 
 // POST /episodes/{id}/memories
 async fn assign_memories(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<AssignMemoriesRequest>,
 ) -> Result<Json<Value>, AppError> {
     // Verify episode exists for this user
-    episodes::get_episode_for_user(&state.db, id, auth.user_id).await?;
+    episodes::get_episode_for_user(&db, id, auth.user_id).await?;
     let assigned =
-        episodes::assign_memories_to_episode(&state.db, id, &body.memory_ids, auth.user_id).await?;
+        episodes::assign_memories_to_episode(&db, id, &body.memory_ids, auth.user_id).await?;
     Ok(Json(json!({ "assigned": assigned, "episode_id": id })))
 }
 
 // POST /episodes/{id}/finalize
 async fn finalize_episode(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let ep = episodes::finalize_episode(&state.db, id, auth.user_id).await?;
+    let ep = episodes::finalize_episode(&db, id, auth.user_id).await?;
     Ok(Json(json!({
         "finalized": true, "id": ep.id, "summary": ep.summary, "memory_count": ep.memory_count
     })))

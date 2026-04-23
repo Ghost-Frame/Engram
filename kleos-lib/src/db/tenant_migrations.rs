@@ -120,6 +120,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "skills_family_shim",
         up: apply_schema_v19_skills_shim,
     },
+    TenantMigration {
+        version: 20,
+        description: "episodes_user_id_and_fts_shim",
+        up: apply_schema_v20_episodes_shim,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -215,6 +220,11 @@ fn apply_schema_v18_intelligence_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v19_skills_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v19_skills.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v19 failed: {e}")))
+}
+
+fn apply_schema_v20_episodes_shim(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v20_episodes.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v20 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -2246,6 +2256,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!((s, t, d, e, j, tq), (1, 1, 1, 1, 1, 1));
+    }
+
+    #[test]
+    fn episodes_user_id_and_fts_after_v20() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        // episodes now carries user_id.
+        let has_user_id: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_user_id, 1);
+
+        // episodes_fts FTS5 virtual table is present.
+        let fts_present: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='episodes_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(fts_present >= 1);
+
+        // Insert exercises kleos_lib::episodes create path shape.
+        conn.execute(
+            "INSERT INTO episodes (title, session_id, agent, summary, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["morning", "sess-1", "claude", "coffee routine", 4_i64],
+        )
+        .unwrap();
+
+        // Trigger should have synced the FTS index.
+        let fts_hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM episodes_fts WHERE episodes_fts MATCH 'coffee'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_hits, 1, "episodes_fts insert trigger did not fire");
     }
 
     #[test]
