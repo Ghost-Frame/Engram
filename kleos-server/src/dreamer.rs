@@ -609,7 +609,9 @@ async fn run_cycle_tenants(
 
             let roll: f64 = rand::random();
             if roll < GROWTH_REFLECT_CHANCE {
-                if let Ok(ctx) = recent_memory_contents(&tenant_db, *user_id, GROWTH_CONTEXT_SIZE).await {
+                if let Ok(ctx) =
+                    recent_memory_contents(&tenant_db, *user_id, GROWTH_CONTEXT_SIZE).await
+                {
                     if !ctx.is_empty() {
                         let req = GrowthReflectRequest {
                             service: "dreamer".to_string(),
@@ -632,7 +634,8 @@ async fn run_cycle_tenants(
 
         if config.skill_evolution_enabled {
             if let Some(llm_ref) = llm {
-                let _report = run_skill_evolution(&tenant_db, llm_ref.as_ref(), config, &users).await;
+                let _report =
+                    run_skill_evolution(&tenant_db, llm_ref.as_ref(), config, &users).await;
             }
         }
 
@@ -640,6 +643,9 @@ async fn run_cycle_tenants(
     }
 
     if tenants_processed > 0 {
-        info!(tenants = tenants_processed, "dreamer: tenant cycle complete");
+        info!(
+            tenants = tenants_processed,
+            "dreamer: tenant cycle complete"
+        );
     }
 }

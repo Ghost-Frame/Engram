@@ -191,7 +191,7 @@ struct GraphExpansionRow {
 async fn hydrate_candidates(
     db: &Database,
     ids: Arc<[i64]>,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Vec<HydratedCandidateRow>> {
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -202,18 +202,17 @@ async fn hydrate_candidates(
         "SELECT id, created_at, importance, is_static, source_count, \
          version, is_latest, source, model, access_count, pagerank_score, \
          content, category \
-         FROM memories WHERE id IN ({}) AND user_id = ?",
+         FROM memories WHERE id IN ({})",
         placeholders
     );
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
 
-        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(ids.len() + 1);
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(ids.len());
         for id in ids.iter() {
             params.push(id);
         }
-        params.push(&user_id);
 
         let mut rows = stmt
             .query(params.as_slice())
@@ -251,24 +250,24 @@ async fn hydrate_candidates(
 async fn fetch_graph_neighbors(
     db: &Database,
     seed_id: i64,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Vec<GraphExpansionRow>> {
     let link_sql = "SELECT ml.target_id, ml.similarity, ml.type, \
         m.content, m.category, m.importance, m.created_at, \
         m.is_latest, m.is_forgotten, m.version, m.source_count, m.model, m.source \
         FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
-        WHERE ml.source_id = ?1 AND m.user_id = ?2 \
+        WHERE ml.source_id = ?1 \
         UNION \
         SELECT ml.source_id, ml.similarity, ml.type, \
         m.content, m.category, m.importance, m.created_at, \
         m.is_latest, m.is_forgotten, m.version, m.source_count, m.model, m.source \
         FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
-        WHERE ml.target_id = ?1 AND m.user_id = ?2";
+        WHERE ml.target_id = ?1";
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(link_sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![seed_id, user_id])
+            .query(rusqlite::params![seed_id])
             .map_err(rusqlite_to_eng_error)?;
         // 6.9 capacity hint: typical graph-neighbor fanout.
         let mut linked = Vec::with_capacity(16);
@@ -305,7 +304,7 @@ async fn fetch_memory_for_search(
 ) -> Result<Option<crate::memory::types::Memory>> {
     let fetch_sql = format!(
         "SELECT {} FROM memories \
-         WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_latest = 1 \
+         WHERE id = ?1 AND is_forgotten = 0 AND is_latest = 1 \
            AND is_consolidated = 0",
         MEMORY_COLUMNS
     );
@@ -313,10 +312,10 @@ async fn fetch_memory_for_search(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&fetch_sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
+            .query(rusqlite::params![id])
             .map_err(rusqlite_to_eng_error)?;
         if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            Ok(Some(row_to_memory(row)?))
+            Ok(Some(row_to_memory(row, user_id)?))
         } else {
             Ok(None)
         }
@@ -338,7 +337,7 @@ async fn fetch_memories_batch(
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let fetch_sql = format!(
         "SELECT {} FROM memories \
-         WHERE id IN ({}) AND user_id = ? AND is_forgotten = 0 AND is_latest = 1 \
+         WHERE id IN ({}) AND is_forgotten = 0 AND is_latest = 1 \
            AND is_consolidated = 0",
         MEMORY_COLUMNS, placeholders
     );
@@ -346,11 +345,10 @@ async fn fetch_memories_batch(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&fetch_sql).map_err(rusqlite_to_eng_error)?;
 
-        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(ids.len() + 1);
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(ids.len());
         for id in ids.iter() {
             params.push(id);
         }
-        params.push(&user_id);
 
         let mut rows = stmt
             .query(params.as_slice())
@@ -358,7 +356,7 @@ async fn fetch_memories_batch(
 
         let mut map = HashMap::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let mem = row_to_memory(row)?;
+            let mem = row_to_memory(row, user_id)?;
             map.insert(mem.id, mem);
         }
         Ok(map)
@@ -373,22 +371,22 @@ async fn fetch_memories_batch(
 async fn fetch_links_for_search(
     db: &Database,
     memory_id: i64,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Vec<LinkedMemory>> {
     let link_sql = "SELECT ml.target_id, ml.similarity, ml.type, \
         m.content, m.category, m.is_forgotten \
         FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
-        WHERE ml.source_id = ?1 AND m.user_id = ?2 \
+        WHERE ml.source_id = ?1 \
         UNION \
         SELECT ml.source_id, ml.similarity, ml.type, \
         m.content, m.category, m.is_forgotten \
         FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
-        WHERE ml.target_id = ?1 AND m.user_id = ?2";
+        WHERE ml.target_id = ?1";
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(link_sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![memory_id, user_id])
+            .query(rusqlite::params![memory_id])
             .map_err(rusqlite_to_eng_error)?;
         // 6.9 capacity hint: typical link fanout.
         let mut links = Vec::with_capacity(16);
@@ -416,7 +414,7 @@ async fn fetch_links_for_search(
 async fn fetch_links_batch(
     db: &Database,
     memory_ids: Arc<[i64]>,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<HashMap<i64, Vec<LinkedMemory>>> {
     if memory_ids.is_empty() {
         return Ok(HashMap::new());
@@ -430,27 +428,24 @@ async fn fetch_links_batch(
         "SELECT ml.source_id AS owner, ml.target_id, ml.similarity, ml.type, \
              m.content, m.category, m.is_forgotten \
          FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
-         WHERE ml.source_id IN ({placeholders}) AND m.user_id = ? \
+         WHERE ml.source_id IN ({placeholders}) \
          UNION ALL \
          SELECT ml.target_id AS owner, ml.source_id, ml.similarity, ml.type, \
              m.content, m.category, m.is_forgotten \
          FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
-         WHERE ml.target_id IN ({placeholders}) AND m.user_id = ?"
+         WHERE ml.target_id IN ({placeholders})"
     );
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&link_sql).map_err(rusqlite_to_eng_error)?;
 
-        let mut params: Vec<&dyn rusqlite::types::ToSql> =
-            Vec::with_capacity(memory_ids.len() * 2 + 2);
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(memory_ids.len() * 2);
         for id in memory_ids.iter() {
             params.push(id);
         }
-        params.push(&user_id);
         for id in memory_ids.iter() {
             params.push(id);
         }
-        params.push(&user_id);
 
         let mut rows = stmt
             .query(params.as_slice())
@@ -484,7 +479,7 @@ async fn fetch_links_batch(
 async fn fetch_version_chains_batch(
     db: &Database,
     root_ids: Arc<[i64]>,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<HashMap<i64, Vec<VersionChainEntry>>> {
     if root_ids.is_empty() {
         return Ok(HashMap::new());
@@ -494,22 +489,20 @@ async fn fetch_version_chains_batch(
     let chain_sql = format!(
         "SELECT COALESCE(root_memory_id, id) AS root, id, content, version, is_latest \
          FROM memories \
-         WHERE (root_memory_id IN ({placeholders}) OR id IN ({placeholders})) AND user_id = ? \
+         WHERE (root_memory_id IN ({placeholders}) OR id IN ({placeholders})) \
          ORDER BY root, version ASC"
     );
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&chain_sql).map_err(rusqlite_to_eng_error)?;
 
-        let mut params: Vec<&dyn rusqlite::types::ToSql> =
-            Vec::with_capacity(root_ids.len() * 2 + 1);
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(root_ids.len() * 2);
         for id in root_ids.iter() {
             params.push(id);
         }
         for id in root_ids.iter() {
             params.push(id);
         }
-        params.push(&user_id);
 
         let mut rows = stmt
             .query(params.as_slice())
@@ -1291,13 +1284,12 @@ async fn faceted_db_scan(
 ) -> Result<Vec<SearchResult>> {
     // Build SQL with applicable WHERE clauses pushed to DB level.
     let mut conditions = vec![
-        "user_id = ?1".to_string(),
         "is_forgotten = 0".to_string(),
         "is_latest = 1".to_string(),
         "is_consolidated = 0".to_string(),
     ];
-    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql + Send>> = vec![Box::new(user_id)];
-    let mut idx = 2usize;
+    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql + Send>> = vec![];
+    let mut idx = 1usize;
 
     if let Some(ref cat) = req.category {
         conditions.push(format!("category = ?{}", idx));
@@ -1355,7 +1347,7 @@ async fn faceted_db_scan(
         // 6.9 capacity hint: SQL over-fetches limit*3 for tag filtering.
         let mut memories = Vec::with_capacity(limit.saturating_mul(3));
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            memories.push(row_to_memory(row)?);
+            memories.push(row_to_memory(row, user_id)?);
         }
         Ok(memories
             .into_iter()

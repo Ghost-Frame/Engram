@@ -98,8 +98,7 @@ pub async fn get_volume_discounts(db: &Database, service_id: &str) -> Result<Vec
                     id: row.get(0)?,
                     service_id: row.get(1)?,
                     min_calls: row.get(2)?,
-                    amount: Decimal::from_str(&row.get::<_, String>(3)?)
-                        .unwrap_or(Decimal::ZERO),
+                    amount: Decimal::from_str(&row.get::<_, String>(3)?).unwrap_or(Decimal::ZERO),
                 })
             })
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;

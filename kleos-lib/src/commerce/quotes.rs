@@ -117,15 +117,14 @@ pub async fn get_quote(db: &Database, quote_id: &str) -> Result<PaymentQuote> {
                     user_id: row.get(1)?,
                     wallet_address: row.get(2)?,
                     service_id: row.get(3)?,
-                    amount: Decimal::from_str(&row.get::<_, String>(4)?)
-                        .unwrap_or(Decimal::ZERO),
+                    amount: Decimal::from_str(&row.get::<_, String>(4)?).unwrap_or(Decimal::ZERO),
                     currency: row.get(5)?,
                     discount_applied: row.get(6)?,
-                    status: row.get::<_, String>(7)?
+                    status: row
+                        .get::<_, String>(7)?
                         .parse::<QuoteStatus>()
                         .unwrap_or(QuoteStatus::Pending),
-                    parameters: params_str
-                        .and_then(|s| serde_json::from_str(&s).ok()),
+                    parameters: params_str.and_then(|s| serde_json::from_str(&s).ok()),
                     created_at: row.get(9)?,
                     expires_at: row.get(10)?,
                     settled_at: row.get(11)?,
@@ -159,7 +158,10 @@ pub async fn get_valid_quote(db: &Database, quote_id: &str) -> Result<PaymentQuo
     if quote.expires_at < now {
         // Best-effort mark as expired -- don't block on failure.
         let _ = mark_expired(db, quote_id).await;
-        return Err(EngError::Conflict(format!("quote {} has expired", quote_id)));
+        return Err(EngError::Conflict(format!(
+            "quote {} has expired",
+            quote_id
+        )));
     }
 
     Ok(quote)

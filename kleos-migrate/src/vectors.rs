@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use arrow_array::cast::AsArray;
 use arrow_array::types::Float32Type;
-use arrow_array::{Array, FixedSizeListArray, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
+use arrow_array::{
+    Array, FixedSizeListArray, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader,
+};
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lancedb::index::Index;
@@ -95,7 +97,9 @@ pub async fn extract_and_insert(
     let source_has_vec_col = source_cols.iter().any(|c| c == "embedding_vec_1024");
 
     if !source_has_vec_col {
-        info!("source memories table has no embedding_vec_1024 column -- skipping vector extraction");
+        info!(
+            "source memories table has no embedding_vec_1024 column -- skipping vector extraction"
+        );
         return Ok(VectorStats::default());
     }
 
@@ -164,7 +168,10 @@ pub async fn extract_and_insert(
     }
 
     let inserted = vectors.len();
-    info!("Extracted {} / {} memory vectors", inserted, source_eligible);
+    info!(
+        "Extracted {} / {} memory vectors",
+        inserted, source_eligible
+    );
 
     if vectors.is_empty() {
         info!("No vectors to write -- skipping LanceDB write");
@@ -199,11 +206,7 @@ pub async fn extract_and_insert(
 
     let batches = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
     let batches: Box<dyn RecordBatchReader + Send> = Box::new(batches);
-    let table = lance
-        .db
-        .create_table(TABLE_NAME, batches)
-        .execute()
-        .await?;
+    let table = lance.db.create_table(TABLE_NAME, batches).execute().await?;
 
     info!("Creating vector index...");
     if let Err(e) = table.create_index(&["vector"], Index::Auto).execute().await {
@@ -230,7 +233,10 @@ pub async fn extract_from_source_lance(
     target: &LanceDb,
     filter_user_id: i64,
 ) -> Result<VectorStats> {
-    info!("Extracting vectors from source LanceDB at {:?}", source_lance);
+    info!(
+        "Extracting vectors from source LanceDB at {:?}",
+        source_lance
+    );
 
     let src_conn = open_source_lance_parent(source_lance).await?;
     let table_names = src_conn.table_names().execute().await?;

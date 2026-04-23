@@ -78,18 +78,14 @@ pub async fn add_link(
         )));
     }
 
-    // Verify both memories belong to caller
+    // Verify both memories exist
     let count: i64 = db
         .read(move |conn| {
             let mut stmt = conn
-                .prepare(
-                    "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0",
-                )
+                .prepare("SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND is_forgotten = 0")
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let c: i64 = stmt
-                .query_row(params![cause_memory_id, effect_memory_id, user_id], |row| {
-                    row.get(0)
-                })
+                .query_row(params![cause_memory_id, effect_memory_id], |row| row.get(0))
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             Ok(c)
         })

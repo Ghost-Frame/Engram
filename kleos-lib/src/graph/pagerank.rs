@@ -36,11 +36,11 @@ pub async fn compute_pagerank(
             let mut stmt = conn
                 .prepare(
                     "SELECT id FROM memories \
-                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1",
+                     WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| row.get(0))
+                .query_map(rusqlite::params![], |row| row.get(0))
                 .map_err(rusqlite_to_eng_error)?;
             rows.collect::<std::result::Result<Vec<i64>, _>>()
                 .map_err(rusqlite_to_eng_error)
@@ -66,14 +66,13 @@ pub async fn compute_pagerank(
                      FROM memory_links ml \
                      JOIN memories ms ON ms.id = ml.source_id \
                      JOIN memories mt ON mt.id = ml.target_id \
-                     WHERE ms.user_id = ?1 AND mt.user_id = ?1 \
-                       AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
+                     WHERE ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                        AND ms.is_archived = 0 AND mt.is_archived = 0 \
                      GROUP BY ml.source_id, ml.target_id",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| {
+                .query_map(rusqlite::params![], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,
@@ -176,17 +175,16 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
             .unwrap_or(180.0);
 
         // Fetch memory ages in one query (julianday diff).
-        let uid = user_id;
         let ages: HashMap<i64, f64> = db
             .read(move |conn| {
                 let mut stmt = conn
                     .prepare(
                         "SELECT id, julianday('now') - julianday(created_at) \
-                         FROM memories WHERE user_id = ?1",
+                         FROM memories",
                     )
                     .map_err(rusqlite_to_eng_error)?;
                 let mut rows = stmt
-                    .query(rusqlite::params![uid])
+                    .query(rusqlite::params![])
                     .map_err(rusqlite_to_eng_error)?;
                 let mut m = HashMap::new();
                 while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -219,12 +217,10 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
     // Use prepare_cached so the statement is parsed once and reused across N rows.
     db.transaction(move |tx| {
         let mut stmt = tx
-            .prepare_cached(
-                "UPDATE memories SET pagerank_score = ?1 WHERE id = ?2 AND user_id = ?3",
-            )
+            .prepare_cached("UPDATE memories SET pagerank_score = ?1 WHERE id = ?2")
             .map_err(rusqlite_to_eng_error)?;
         for (id, normalized) in &scores_vec {
-            stmt.execute(rusqlite::params![normalized, id, user_id])
+            stmt.execute(rusqlite::params![normalized, id])
                 .map_err(rusqlite_to_eng_error)?;
         }
         Ok(())
@@ -896,28 +892,18 @@ pub async fn ensure_pagerank_for_user(db: &Database, user_id: i64) -> Result<()>
     Ok(())
 }
 
-/// Rebuild pagerank for every distinct user in the database.
-/// Used by the admin endpoint when no user_id is specified.
+/// Rebuild pagerank for the database.
+/// Phase 5.1: user_id dropped from memories; rebuild runs once for the single
+/// tenant owner. The user_id used for pagerank metadata is 0 (sentinel).
 #[tracing::instrument(skip(db))]
 pub async fn rebuild_all_users(db: &Database) -> Result<usize> {
-    let user_ids: Vec<i64> = db
-        .read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT DISTINCT user_id FROM memories WHERE is_forgotten = 0")
-                .map_err(rusqlite_to_eng_error)?;
-            let rows = stmt
-                .query_map([], |row| row.get(0))
-                .map_err(rusqlite_to_eng_error)?;
-            rows.collect::<std::result::Result<Vec<i64>, _>>()
-                .map_err(rusqlite_to_eng_error)
-        })
-        .await?;
-
-    for &uid in &user_ids {
-        let scores = compute_pagerank_for_user(db, uid).await?;
-        persist_pagerank(db, uid, &scores).await?;
+    // Single-tenant: run one rebuild pass with user_id=0 as the sentinel owner.
+    let scores = compute_pagerank_for_user(db, 0).await?;
+    if scores.is_empty() {
+        return Ok(0);
     }
-    Ok(user_ids.len())
+    persist_pagerank(db, 0, &scores).await?;
+    Ok(1)
 }
 
 #[cfg(test)]

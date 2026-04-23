@@ -490,8 +490,7 @@ async fn upload_complete(
     } else {
         let bytes = assembled.len();
         let r =
-            ingestion::ingest_binary(db.clone(), &ctx, &assembled, options, Some(&meta))
-                .await?;
+            ingestion::ingest_binary(db.clone(), &ctx, &assembled, options, Some(&meta)).await?;
         (r, bytes)
     };
 

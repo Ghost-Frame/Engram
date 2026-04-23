@@ -47,7 +47,9 @@ pub async fn get_reconciliation(
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-        let total_spent = breakdown.iter().fold(Decimal::ZERO, |acc, s| acc + s.amount);
+        let total_spent = breakdown
+            .iter()
+            .fold(Decimal::ZERO, |acc, s| acc + s.amount);
 
         // Quote counts.
         let (quotes_created, quotes_expired, quotes_settled): (i64, i64, i64) = conn

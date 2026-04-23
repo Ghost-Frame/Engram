@@ -246,6 +246,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_commerce_tables),
         transactional: true,
     },
+    Migration {
+        version: 25,
+        description: "drop_user_id_memory_core",
+        up: run_migration_drop_user_id_memory_core,
+        // DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -276,6 +284,7 @@ const MIGRATION_UPLOAD_SESSIONS: i64 = 21;
 const MIGRATION_SERVICE_DEAD_LETTERS: i64 = 22;
 const MIGRATION_MEMORIES_LIST_COVERING_INDEX: i64 = 23;
 const MIGRATION_COMMERCE_TABLES: i64 = 24;
+const MIGRATION_DROP_USER_ID_MEMORY_CORE: i64 = 25;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -456,6 +465,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 24: commerce_tables");
         run_migration_commerce_tables(conn)?;
         record_migration(conn, MIGRATION_COMMERCE_TABLES, "commerce_tables")?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_MEMORY_CORE {
+        info!("Running migration 25: drop_user_id_memory_core");
+        run_migration_drop_user_id_memory_core(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_MEMORY_CORE,
+            "drop_user_id_memory_core",
+        )?;
     }
 
     Ok(())
@@ -1308,6 +1327,110 @@ fn down_migration_commerce_tables(conn: &rusqlite::Connection) -> Result<()> {
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     info!("Dropped commerce tables (migration 24 down)");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 25: drop user_id from memory core tables
+// ---------------------------------------------------------------------------
+
+/// Migration 25: drop user_id from memories, artifacts, vector_sync_pending,
+/// and structured_facts on the monolith. Idempotent: each ALTER TABLE and DROP
+/// INDEX is guarded by a pragma_table_info check or IF EXISTS clause.
+fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result<()> {
+    // Drop the prevent_cross_tenant_links trigger: it referenced memories.user_id
+    // which is being dropped in this migration. Tenant isolation is now enforced
+    // at the database level (one DB per tenant) rather than via row-level user_id.
+    conn.execute_batch("DROP TRIGGER IF EXISTS prevent_cross_tenant_links;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    // Drop indexes that key on user_id for these tables.
+    // idx_memories_user: simple index on memories(user_id) from migration 2.
+    // idx_memories_search: composite (user_id, is_forgotten, is_archived, is_latest).
+    // idx_memories_search_composite: (user_id, is_forgotten, is_latest, category).
+    // idx_memories_user_latest: (user_id, is_latest, is_forgotten).
+    // idx_memories_list_user_id_desc: partial (user_id, id DESC) from migration 23.
+    // idx_artifacts_user: simple index on artifacts(user_id).
+    // idx_facts_user / idx_sf_subject_verb / idx_facts_user_subject_predicate:
+    //   indexes on structured_facts keyed by user_id.
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_memories_user;
+         DROP INDEX IF EXISTS idx_memories_search;
+         DROP INDEX IF EXISTS idx_memories_search_composite;
+         DROP INDEX IF EXISTS idx_memories_user_latest;
+         DROP INDEX IF EXISTS idx_memories_list_user_id_desc;
+         DROP INDEX IF EXISTS idx_vector_sync_user;
+         DROP INDEX IF EXISTS idx_artifacts_user;
+         DROP INDEX IF EXISTS idx_facts_user;
+         DROP INDEX IF EXISTS idx_sf_subject_verb;
+         DROP INDEX IF EXISTS idx_facts_user_subject_predicate;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    // Drop user_id from memories if still present.
+    let mem_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if mem_has_user_id > 0 {
+        conn.execute("ALTER TABLE memories DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Dropped memories.user_id (migration 25)");
+    }
+
+    // Drop user_id from artifacts if still present.
+    let art_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('artifacts') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if art_has_user_id > 0 {
+        conn.execute("ALTER TABLE artifacts DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Dropped artifacts.user_id (migration 25)");
+    }
+
+    // Drop user_id from vector_sync_pending if still present.
+    let vsp_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('vector_sync_pending') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if vsp_has_user_id > 0 {
+        conn.execute("ALTER TABLE vector_sync_pending DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Dropped vector_sync_pending.user_id (migration 25)");
+    }
+
+    // Drop user_id from structured_facts if still present.
+    let sf_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('structured_facts') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if sf_has_user_id > 0 {
+        conn.execute("ALTER TABLE structured_facts DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Dropped structured_facts.user_id (migration 25)");
+    }
+
+    // Rebuild a non-user_id covering index for the primary memories filter pattern.
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_memories_latest_filter \
+         ON memories(is_forgotten, is_archived, is_latest);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 25 complete: user_id dropped from memory core tables");
     Ok(())
 }
 

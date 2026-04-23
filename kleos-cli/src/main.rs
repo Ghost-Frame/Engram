@@ -647,18 +647,20 @@ async fn handle_ingest(
     // Binary path: chunked upload flow. Split into 1MiB chunks, POST init →
     // chunk* → complete so PDF/DOCX/ZIP payloads reach ingest_binary().
     const CHUNK_SIZE: usize = 1 << 20;
-    let filename = file
-        .as_ref()
-        .and_then(|p| p.file_name().and_then(|n| n.to_str().map(|s| s.to_string())));
-    let content_type = filename
-        .as_deref()
-        .and_then(|f| f.rsplit_once('.'))
-        .map(|(_, ext)| match ext.to_ascii_lowercase().as_str() {
-            "pdf" => "application/pdf",
-            "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "zip" => "application/zip",
-            _ => "application/octet-stream",
-        });
+    let filename = file.as_ref().and_then(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str().map(|s| s.to_string()))
+    });
+    let content_type =
+        filename
+            .as_deref()
+            .and_then(|f| f.rsplit_once('.'))
+            .map(|(_, ext)| match ext.to_ascii_lowercase().as_str() {
+                "pdf" => "application/pdf",
+                "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "zip" => "application/zip",
+                _ => "application/octet-stream",
+            });
 
     let total_chunks = raw_bytes.len().div_ceil(CHUNK_SIZE);
     let mut init_body = json!({
@@ -715,8 +717,14 @@ async fn handle_ingest(
     });
     match client.post("/ingest/upload/complete", complete_body).await {
         Ok(v) => {
-            let memories = v.get("ingested_memories").and_then(|v| v.as_i64()).unwrap_or(0);
-            let chunks = v.get("chunks_processed").and_then(|v| v.as_i64()).unwrap_or(0);
+            let memories = v
+                .get("ingested_memories")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let chunks = v
+                .get("chunks_processed")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             let job = value_as_string(v.get("job_id")).unwrap_or_else(|| "?".into());
             println!("Ingested: job {job} -- {memories} memories, {chunks} chunks");
         }
@@ -764,7 +772,10 @@ async fn handle_jobs_command(client: &Client, cmd: &JobsCommands) {
                 let mut retried = 0usize;
                 for job in jobs {
                     if let Some(job_id) = job.get("id").and_then(|v| v.as_i64()) {
-                        match client.post(&format!("/jobs/{job_id}/retry"), json!({})).await {
+                        match client
+                            .post(&format!("/jobs/{job_id}/retry"), json!({}))
+                            .await
+                        {
                             Ok(_) => retried += 1,
                             Err(e) => eprintln!("Retry {job_id} failed: {e}"),
                         }

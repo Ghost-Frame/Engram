@@ -222,9 +222,7 @@ fn generate_key() -> Result<(String, String, String, i32)> {
     let (key_hash, hash_version) = if let Some(hash) = hash_key_v2(&full_key) {
         (hash, HASH_VERSION_PEPPERED)
     } else {
-        tracing::warn!(
-            "ENGRAM_API_KEY_PEPPER not set; issuing v1 (unpeppered) key"
-        );
+        tracing::warn!("ENGRAM_API_KEY_PEPPER not set; issuing v1 (unpeppered) key");
         (hash_key_v1(&full_key), HASH_VERSION_LEGACY)
     };
 

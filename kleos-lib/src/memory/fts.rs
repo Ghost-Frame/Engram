@@ -38,6 +38,9 @@ pub async fn fts_search(
     limit: usize,
     user_id: i64,
 ) -> Result<Vec<FtsHit>> {
+    // user_id is kept in the public signature for cross-domain callers; tenant
+    // isolation is enforced at the database level (one DB per tenant).
+    let _ = user_id;
     // SECURITY (SEC-MED-9): reject oversized queries before sanitization to
     // avoid CPU-intensive tokenisation on pathologically large input.
     if query.len() > MAX_FTS_QUERY_LEN {
@@ -62,9 +65,8 @@ pub async fn fts_search(
           AND m.is_forgotten = 0
           AND m.is_latest = 1
           AND m.is_consolidated = 0
-          AND m.user_id = ?2
         ORDER BY memories_fts.rank
-        LIMIT ?3
+        LIMIT ?2
     ";
 
     match db
@@ -73,7 +75,7 @@ pub async fn fts_search(
                 .prepare(sql)
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let mut rows = stmt
-                .query(rusqlite::params![sanitized, user_id, limit as i64])
+                .query(rusqlite::params![sanitized, limit as i64])
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
             // 6.9 capacity hint: LIMIT bounds the row count.

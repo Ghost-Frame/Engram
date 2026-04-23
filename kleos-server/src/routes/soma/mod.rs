@@ -155,10 +155,7 @@ async fn heartbeat_handler(
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn get_stats(
-    ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
-) -> Result<Json<Value>, AppError> {
+async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = get_soma_stats(&db, Some(auth.user_id)).await?;
     Ok(Json(json!(stats)))
 }

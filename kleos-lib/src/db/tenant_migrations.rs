@@ -130,6 +130,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "messages_and_fts_shim",
         up: apply_schema_v21_messages_shim,
     },
+    TenantMigration {
+        version: 22,
+        description: "memories_user_id_drop",
+        up: apply_schema_v22_memories_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -235,6 +240,11 @@ fn apply_schema_v20_episodes_shim(conn: &Connection) -> Result<()> {
 fn apply_schema_v21_messages_shim(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v21_messages.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v21 failed: {e}")))
+}
+
+fn apply_schema_v22_memories_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v22_memories_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v22 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -453,7 +463,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(output_table, 1, "tenant session_output table missing after v3");
+        assert_eq!(
+            output_table, 1,
+            "tenant session_output table missing after v3"
+        );
 
         // Exercise the SQL shape kleos-lib sessions.rs actually uses.
         conn.execute(
@@ -501,13 +514,23 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 2, "chiasm_tasks and/or chiasm_task_updates missing after v4");
+        assert_eq!(
+            tables, 2,
+            "chiasm_tasks and/or chiasm_task_updates missing after v4"
+        );
 
         // Exercise the SQL shape kleos-lib chiasm.rs actually uses.
         conn.execute(
             "INSERT INTO chiasm_tasks (agent, project, title, status, summary, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params!["claude-code", "engram-rust", "Phase 3.4", "active", None::<String>, 4_i64],
+            rusqlite::params![
+                "claude-code",
+                "engram-rust",
+                "Phase 3.4",
+                "active",
+                None::<String>,
+                4_i64
+            ],
         )
         .unwrap();
         let task_id = conn.last_insert_rowid();
@@ -782,8 +805,8 @@ mod tests {
 
         // Seed a memory so the FK target exists for memory_projects.
         conn.execute(
-            "INSERT INTO memories (content, category, source, user_id) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["seed", "general", "test", 4_i64],
+            "INSERT INTO memories (content, category, source) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["seed", "general", "test"],
         )
         .unwrap();
         let memory_id = conn.last_insert_rowid();
@@ -897,14 +920,7 @@ mod tests {
         conn.execute(
             "INSERT INTO soma_agents (name, type, description, capabilities, config, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![
-                "claude-code",
-                "cli",
-                None::<String>,
-                "[]",
-                "{}",
-                4_i64,
-            ],
+            rusqlite::params!["claude-code", "cli", None::<String>, "[]", "{}", 4_i64,],
         )
         .unwrap();
 
@@ -986,7 +1002,12 @@ mod tests {
 
         conn.execute(
             "INSERT INTO webhooks (user_id, url, events, secret) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![4_i64, "https://example.test/hook", "memory.created", None::<String>],
+            rusqlite::params![
+                4_i64,
+                "https://example.test/hook",
+                "memory.created",
+                None::<String>
+            ],
         )
         .unwrap();
         let webhook_id = conn.last_insert_rowid();
@@ -1207,7 +1228,13 @@ mod tests {
         conn.execute(
             "INSERT INTO axon_subscriptions (agent, channel, filter_type, webhook_url, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["claude-code", "system", None::<String>, None::<String>, 4_i64],
+            rusqlite::params![
+                "claude-code",
+                "system",
+                None::<String>,
+                None::<String>,
+                4_i64
+            ],
         )
         .unwrap();
 
@@ -1545,8 +1572,8 @@ mod tests {
 
         // Seed memory -> entities -> relationship -> memory_entities -> cooccurrence.
         conn.execute(
-            "INSERT INTO memories (content, category, source, user_id) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["seed memory", "general", "test", 4_i64],
+            "INSERT INTO memories (content, category, source) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["seed memory", "general", "test"],
         )
         .unwrap();
         let memory_id = conn.last_insert_rowid();
@@ -1554,7 +1581,14 @@ mod tests {
         conn.execute(
             "INSERT INTO entities (name, entity_type, description, aliases, user_id, space_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params!["alpha", "concept", None::<String>, None::<String>, 4_i64, None::<i64>],
+            rusqlite::params![
+                "alpha",
+                "concept",
+                None::<String>,
+                None::<String>,
+                4_i64,
+                None::<i64>
+            ],
         )
         .unwrap();
         let a_id = conn.last_insert_rowid();
@@ -1562,7 +1596,14 @@ mod tests {
         conn.execute(
             "INSERT INTO entities (name, entity_type, description, aliases, user_id, space_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params!["beta", "concept", None::<String>, None::<String>, 4_i64, None::<i64>],
+            rusqlite::params![
+                "beta",
+                "concept",
+                None::<String>,
+                None::<String>,
+                4_i64,
+                None::<i64>
+            ],
         )
         .unwrap();
         let b_id = conn.last_insert_rowid();
@@ -1890,7 +1931,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(has_key, 1, "user_preferences missing 'key' column after v16");
+        assert_eq!(
+            has_key, 1,
+            "user_preferences missing 'key' column after v16"
+        );
 
         conn.execute(
             "INSERT INTO user_preferences (user_id, key, value) VALUES (?1, ?2, ?3) \
@@ -2082,8 +2126,8 @@ mod tests {
         assert_eq!(tables, 8, "intelligence family tables missing after v18");
 
         conn.execute(
-            "INSERT INTO memories (content, category, source, user_id) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["seed", "general", "test", 4_i64],
+            "INSERT INTO memories (content, category, source) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["seed", "general", "test"],
         )
         .unwrap();
         let mid = conn.last_insert_rowid();
@@ -2339,13 +2383,7 @@ mod tests {
         conn.execute(
             "INSERT INTO conversations (agent, session_id, title, metadata, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![
-                "claude",
-                "sess-1",
-                None::<String>,
-                None::<String>,
-                4_i64,
-            ],
+            rusqlite::params!["claude", "sess-1", None::<String>, None::<String>, 4_i64,],
         )
         .unwrap();
         let conv_id = conn.last_insert_rowid();
@@ -2425,5 +2463,122 @@ mod tests {
             )
             .unwrap();
         assert_eq!(post_output, 1);
+    }
+
+    /// v22: memories, artifacts, and vector_sync_pending must NOT have a
+    /// user_id column after the full migration chain completes.
+    #[test]
+    fn user_id_absent_from_memories_after_v22() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        for table in &["memories", "artifacts", "vector_sync_pending"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(
+                count, 0,
+                "table '{}' still has user_id column after v22",
+                table
+            );
+        }
+    }
+
+    /// v22: insert a memory without user_id and verify it can be FTS-matched.
+    #[test]
+    fn memories_constraint_reshaped_after_v22() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO memories (content, category, source, importance, confidence, \
+             created_at, updated_at, is_latest, is_forgotten, is_archived) \
+             VALUES ('thetestword unique phrase', 'general', 'test', 5, 1.0, \
+             datetime('now'), datetime('now'), 1, 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        let hit: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'thetestword'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hit, 1, "FTS trigger must fire and index the new memory");
+    }
+
+    /// v22: rows inserted before v22 survive the DROP COLUMN migration intact.
+    #[test]
+    fn memories_rows_preserved_through_v22() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Bootstrap the schema_migrations table manually so we can stop at v21.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+
+        // Apply migrations v1..v21 (stop before v22).
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 22 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        // Insert a memory row with user_id while the column still exists.
+        conn.execute(
+            "INSERT INTO memories (content, category, source, importance, confidence, \
+             user_id, created_at, updated_at, is_latest, is_forgotten, is_archived) \
+             VALUES ('pre-migration content', 'general', 'test', 5, 1.0, \
+             1, datetime('now'), datetime('now'), 1, 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        let pre_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+        assert!(pre_id > 0);
+
+        // Now apply v22.
+        apply_schema_v22_memories_drop(&conn).unwrap();
+
+        // Row must still exist.
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM memories WHERE id = ?1",
+                rusqlite::params![pre_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(content, "pre-migration content");
+
+        // user_id column must be gone.
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_count, 0, "user_id column must be absent after v22");
     }
 }

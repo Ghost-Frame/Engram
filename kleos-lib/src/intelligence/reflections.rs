@@ -129,29 +129,25 @@ pub async fn generate_reflections(
                 .prepare(
                     "SELECT id, content, category, importance \
                      FROM memories \
-                     WHERE user_id = ?1 \
-                       AND is_latest = 1 \
+                     WHERE is_latest = 1 \
                        AND is_forgotten = 0 \
                        AND is_archived = 0 \
                        AND recall_hits = 0 \
-                       AND importance >= ?2 \
-                       AND created_at <= datetime('now', ?3) \
+                       AND importance >= ?1 \
+                       AND created_at <= datetime('now', ?2) \
                      ORDER BY importance DESC, created_at ASC \
-                     LIMIT ?4",
+                     LIMIT ?3",
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let rows = stmt
-                .query_map(
-                    params![user_id, min_importance, age_cutoff, fetch_limit],
-                    |row| {
-                        Ok(Candidate {
-                            id: row.get(0)?,
-                            content: row.get(1)?,
-                            category: row.get(2)?,
-                            importance: row.get(3)?,
-                        })
-                    },
-                )
+                .query_map(params![min_importance, age_cutoff, fetch_limit], |row| {
+                    Ok(Candidate {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                    })
+                })
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))
@@ -281,29 +277,25 @@ pub async fn generate_reflections_with_llm(
                 .prepare(
                     "SELECT id, content, category, importance \
                      FROM memories \
-                     WHERE user_id = ?1 \
-                       AND is_latest = 1 \
+                     WHERE is_latest = 1 \
                        AND is_forgotten = 0 \
                        AND is_archived = 0 \
                        AND recall_hits = 0 \
-                       AND importance >= ?2 \
-                       AND created_at <= datetime('now', ?3) \
+                       AND importance >= ?1 \
+                       AND created_at <= datetime('now', ?2) \
                      ORDER BY importance DESC, created_at ASC \
-                     LIMIT ?4",
+                     LIMIT ?3",
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let rows = stmt
-                .query_map(
-                    params![user_id, min_importance, age_cutoff, fetch_limit],
-                    |row| {
-                        Ok(Candidate {
-                            id: row.get(0)?,
-                            content: row.get(1)?,
-                            category: row.get(2)?,
-                            importance: row.get(3)?,
-                        })
-                    },
-                )
+                .query_map(params![min_importance, age_cutoff, fetch_limit], |row| {
+                    Ok(Candidate {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                    })
+                })
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))
@@ -484,16 +476,20 @@ mod tests {
         assert!(out.is_empty());
     }
 
+    // Phase 5.1: user_id dropped from memories; single-tenant DB means all
+    // callers see the same data regardless of the user_id argument.
     #[tokio::test]
     async fn generate_reflections_isolated_per_user() {
         let db = Database::connect_memory().await.expect("in-mem db");
         let mid = seed(&db, "nu private unused fact", 9, 1).await;
         set_age_days(&db, mid, 30).await;
-        let other = generate_reflections(&db, 2, 10).await.expect("gen");
-        assert!(other.is_empty());
-        let mine = generate_reflections(&db, 1, 10).await.expect("gen");
-        assert_eq!(mine.len(), 1);
-        assert_eq!(mine[0].reflection_type, "reconsolidate");
+        // Single-tenant: both user 1 and user 2 see the same data.
+        let for_user2 = generate_reflections(&db, 2, 10).await.expect("gen");
+        assert_eq!(for_user2.len(), 1, "single-tenant DB exposes all memories");
+        assert_eq!(for_user2[0].reflection_type, "reconsolidate");
+        let for_user1 = generate_reflections(&db, 1, 10).await.expect("gen");
+        assert_eq!(for_user1.len(), 1);
+        assert_eq!(for_user1[0].reflection_type, "reconsolidate");
     }
 
     #[tokio::test]

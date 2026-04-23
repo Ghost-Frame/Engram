@@ -279,9 +279,7 @@ pub async fn list_conversations(
         CONVERSATION_LIST_COLUMNS
     );
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let rows = stmt
             .query_map(params![user_id, limit as i64], |row| {
                 row_to_conversation_list_item(row)
@@ -309,9 +307,7 @@ pub async fn list_conversations_by_agent(
         CONVERSATION_LIST_COLUMNS
     );
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let rows = stmt
             .query_map(params![user_id, agent, limit as i64], |row| {
                 row_to_conversation_list_item(row)
@@ -451,9 +447,7 @@ pub async fn list_messages(
             .join(", ")
     );
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let rows = stmt
             .query_map(
                 params![conversation_id, user_id, limit as i64, offset as i64],
@@ -490,9 +484,7 @@ pub async fn search_messages(
         .to_string();
     match db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(&sql)
-                .map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
             let rows = stmt
                 .query_map(params![sanitized, user_id, limit as i64], |row| {
                     row_to_message_search_result(row)

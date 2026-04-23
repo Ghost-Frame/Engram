@@ -73,9 +73,8 @@ impl TenantLoader {
 
         // Ensure tenant directory exists before opening pools.
         let tenant_dir = self.data_root.join("tenants").join(tenant_id);
-        std::fs::create_dir_all(&tenant_dir).map_err(|e| {
-            EngError::Internal(format!("failed to create tenant directory: {}", e))
-        })?;
+        std::fs::create_dir_all(&tenant_dir)
+            .map_err(|e| EngError::Internal(format!("failed to create tenant directory: {}", e)))?;
 
         // Load the vector index first so it can be handed to the Database.
         let lance_path = tenant_dir.join("hnsw").join("memories.lance");
@@ -98,9 +97,7 @@ impl TenantLoader {
         // `tenants/<id>/kleos.db`; migration (tenant chain v1+) runs inside
         // `Database::open_tenant`.
         let db_path = tenant_dir.join("kleos.db").to_string_lossy().into_owned();
-        let db = Arc::new(
-            Database::open_tenant(&db_path, Some(Arc::clone(&vector_index))).await?,
-        );
+        let db = Arc::new(Database::open_tenant(&db_path, Some(Arc::clone(&vector_index))).await?);
 
         let handle = Arc::new(TenantHandle {
             tenant_id: tenant_id.to_string(),

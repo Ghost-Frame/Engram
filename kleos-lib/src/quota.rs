@@ -195,12 +195,12 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
             }
         };
 
-        // Count active memories.
+        // Count active memories (user_id dropped from memories table in Phase 5.1).
         let memory_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM memories \
-                 WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1",
-                params![user_id],
+                 WHERE is_forgotten = 0 AND is_latest = 1",
+                params![],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)?;

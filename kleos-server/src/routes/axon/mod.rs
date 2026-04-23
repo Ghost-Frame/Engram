@@ -112,10 +112,7 @@ async fn list_channels_handler(
     Ok(Json(json!({ "channels": channels })))
 }
 
-async fn get_stats(
-    ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
-) -> Result<Json<Value>, AppError> {
+async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = get_axon_stats(&db, Some(auth.user_id)).await?;
     Ok(Json(json!(stats)))
 }

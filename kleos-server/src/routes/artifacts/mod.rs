@@ -29,10 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/artifact/{id}", get(download_artifact))
 }
 
-async fn get_stats(
-    ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
-) -> Result<Json<Value>, AppError> {
+async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = artifacts::get_artifact_stats(&db, auth.user_id).await?;
     Ok(Json(json!({
         "total_count": stats.total_count,

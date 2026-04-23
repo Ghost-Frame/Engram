@@ -21,7 +21,7 @@ pub fn router() -> Router<AppState> {
 
 async fn review(
     State(state): State<AppState>,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Json(body): Json<ReviewBody>,
 ) -> Result<Json<Value>, AppError> {
     let id = body.id.or(body.memory_id).ok_or_else(|| {
@@ -45,25 +45,24 @@ async fn review(
         _ => fsrs::Rating::Good,
     };
 
-    // Verify memory belongs to user and fetch FSRS state
+    // Fetch FSRS state for the memory (user_id dropped from memories in Phase 5.1)
     let row_data = state
         .db
         .read(move |conn| {
             conn.query_row(
-                "SELECT user_id, fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
+                "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok((
-                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<f64>>(0)?,
                         row.get::<_, Option<f64>>(1)?,
                         row.get::<_, Option<f64>>(2)?,
                         row.get::<_, Option<f64>>(3)?,
-                        row.get::<_, Option<f64>>(4)?,
+                        row.get::<_, Option<i64>>(4)?,
                         row.get::<_, Option<i64>>(5)?,
                         row.get::<_, Option<i64>>(6)?,
-                        row.get::<_, Option<i64>>(7)?,
-                        row.get::<_, Option<String>>(8)?,
-                        row.get::<_, String>(9)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
                     ))
                 },
             )
@@ -73,7 +72,6 @@ async fn review(
         .await?;
 
     let (
-        owner,
         stability,
         difficulty,
         storage,
@@ -84,10 +82,6 @@ async fn review(
         last_review,
         created_at,
     ) = row_data.ok_or_else(|| AppError(kleos_lib::EngError::NotFound("not found".into())))?;
-
-    if owner != auth.user_id {
-        return Err(AppError(kleos_lib::EngError::NotFound("not found".into())));
-    }
 
     // Build current FSRS state if it exists
     let current_state = if let Some(s) = stability {
@@ -167,7 +161,7 @@ async fn review(
 
 async fn get_state(
     State(state): State<AppState>,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Query(params): Query<StateQuery>,
 ) -> Result<Json<Value>, AppError> {
     let id = params
@@ -178,20 +172,19 @@ async fn get_state(
         .db
         .read(move |conn| {
             conn.query_row(
-                "SELECT user_id, fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
+                "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok((
-                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<f64>>(0)?,
                         row.get::<_, Option<f64>>(1)?,
                         row.get::<_, Option<f64>>(2)?,
                         row.get::<_, Option<f64>>(3)?,
-                        row.get::<_, Option<f64>>(4)?,
+                        row.get::<_, i64>(4)?,
                         row.get::<_, i64>(5)?,
                         row.get::<_, i64>(6)?,
-                        row.get::<_, i64>(7)?,
-                        row.get::<_, Option<String>>(8)?,
-                        row.get::<_, String>(9)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
                     ))
                 },
             )
@@ -201,7 +194,6 @@ async fn get_state(
         .await?;
 
     let (
-        owner,
         stability,
         difficulty,
         storage_strength,
@@ -212,10 +204,6 @@ async fn get_state(
         last_review_at,
         created_at,
     ) = row_data.ok_or_else(|| AppError(kleos_lib::EngError::NotFound("not found".into())))?;
-
-    if owner != auth.user_id {
-        return Err(AppError(kleos_lib::EngError::NotFound("not found".into())));
-    }
 
     // Calculate retrievability
     let ref_str = last_review_at.as_deref().unwrap_or(&created_at);
@@ -241,17 +229,17 @@ async fn get_state(
 
 async fn init_backfill(
     State(state): State<AppState>,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     // Find memories without FSRS state
     let ids: Vec<i64> = state
         .db
         .read(move |conn| {
             let mut stmt = conn
-                .prepare("SELECT id FROM memories WHERE user_id = ?1 AND fsrs_stability IS NULL")
+                .prepare("SELECT id FROM memories WHERE fsrs_stability IS NULL")
                 .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
             let mut rows = stmt
-                .query(params![auth.user_id])
+                .query(params![])
                 .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
             let mut results = Vec::new();
             while let Some(row) = rows

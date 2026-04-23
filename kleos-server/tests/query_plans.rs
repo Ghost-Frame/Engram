@@ -25,8 +25,8 @@ async fn seed_db() -> Arc<Database> {
     db.write(|conn| {
         for i in 0..20 {
             conn.execute(
-                "INSERT INTO memories (content, category, source, user_id, importance, confidence, created_at, updated_at, is_latest, is_forgotten, is_archived)
-                 VALUES (?1, 'general', 'test', 1, 5, 1.0, datetime('now'), datetime('now'), 1, 0, 0)",
+                "INSERT INTO memories (content, category, source, importance, confidence, created_at, updated_at, is_latest, is_forgotten, is_archived)
+                 VALUES (?1, 'general', 'test', 5, 1.0, datetime('now'), datetime('now'), 1, 0, 0)",
                 params![format!("content-{i}")],
             )
             .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
@@ -84,13 +84,14 @@ fn assert_uses_index(name: &str, plan: &[String]) {
     );
 }
 
+// Phase 5.1: user_id dropped from memories; updated to use the new filter shape.
 #[tokio::test]
 async fn hot_query_hybrid_search_base_uses_index() {
     let db = seed_db().await;
     let plan = explain(
         &db,
-        "SELECT id FROM memories WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 ORDER BY created_at DESC LIMIT 20".into(),
-        vec![rusqlite::types::Value::Integer(1)],
+        "SELECT id FROM memories WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 ORDER BY created_at DESC LIMIT 20".into(),
+        vec![],
     )
     .await;
     assert_uses_index("hybrid_search base", &plan);
@@ -120,16 +121,18 @@ async fn hot_query_links_by_source_uses_index() {
     assert_uses_index("memory_links by source", &plan);
 }
 
+// Phase 5.1: user_id dropped from memories; test queries the created_at index.
 #[tokio::test]
 async fn hot_query_memories_by_user_uses_index() {
     let db = seed_db().await;
     let plan = explain(
         &db,
-        "SELECT id FROM memories WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 50".into(),
-        vec![rusqlite::types::Value::Integer(1)],
+        "SELECT id FROM memories WHERE is_latest = 1 ORDER BY created_at DESC LIMIT 50".into(),
+        vec![],
     )
     .await;
-    assert_uses_index("memories by user", &plan);
+    // is_latest covers idx_memories_latest; created_at covers idx_memories_created.
+    assert_uses_index("memories by is_latest", &plan);
 }
 
 #[tokio::test]

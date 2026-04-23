@@ -264,16 +264,15 @@ pub async fn get_capture_candidates(
     let since_clause = format!("-{} seconds", since_secs as i64);
     db.read(move |conn| {
         let sql = "SELECT DISTINCT m.content FROM memories m \
-                   WHERE m.user_id = ?1 \
-                     AND m.is_forgotten = 0 \
+                   WHERE m.is_forgotten = 0 \
                      AND m.is_archived = 0 \
                      AND m.is_latest = 1 \
                      AND m.tags IS NOT NULL \
-                     AND m.tags LIKE ?2 \
-                     AND m.created_at > datetime('now', ?3) \
+                     AND m.tags LIKE ?1 \
+                     AND m.created_at > datetime('now', ?2) \
                      AND NOT EXISTS ( \
                          SELECT 1 FROM skill_records sr \
-                         WHERE sr.user_id = m.user_id \
+                         WHERE sr.user_id = ?3 \
                            AND sr.is_active = 1 \
                            AND ( \
                                LOWER(m.content) LIKE '%' || LOWER(sr.name) || '%' \
@@ -287,7 +286,7 @@ pub async fn get_capture_candidates(
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let rows: Vec<String> = stmt
             .query_map(
-                params![user_id, tag_needle, since_clause, limit as i64],
+                params![tag_needle, since_clause, user_id, limit as i64],
                 |row| row.get::<_, String>(0),
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
@@ -557,12 +556,12 @@ mod tests {
         let db = memory_db().await;
         db.write(|conn| {
             conn.execute_batch(
-                "INSERT INTO memories (content, tags, user_id, is_latest) \
-                    VALUES ('use ripgrep over grep', '[\"skill_candidate\"]', 1, 1); \
-                 INSERT INTO memories (content, tags, user_id, is_latest) \
-                    VALUES ('use ripgrep over grep', '[\"skill_candidate\"]', 1, 1); \
-                 INSERT INTO memories (content, tags, user_id, is_latest) \
-                    VALUES ('unrelated note', '[\"other\"]', 1, 1);",
+                "INSERT INTO memories (content, tags, is_latest) \
+                    VALUES ('use ripgrep over grep', '[\"skill_candidate\"]', 1); \
+                 INSERT INTO memories (content, tags, is_latest) \
+                    VALUES ('use ripgrep over grep', '[\"skill_candidate\"]', 1); \
+                 INSERT INTO memories (content, tags, is_latest) \
+                    VALUES ('unrelated note', '[\"other\"]', 1);",
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             Ok(())

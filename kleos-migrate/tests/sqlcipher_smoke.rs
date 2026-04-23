@@ -99,11 +99,9 @@ fn migrates_encrypted_monolith_into_tenant_shard() {
 
     // Contents round-trip.
     let first: String = target_conn
-        .query_row(
-            "SELECT content FROM memories WHERE id = 1",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT content FROM memories WHERE id = 1", [], |r| {
+            r.get(0)
+        })
         .expect("read memory 1");
     assert_eq!(first, "master first");
 }
