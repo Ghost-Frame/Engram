@@ -4780,6 +4780,7 @@ dependencies = [
  "kleos-lib",
  "lancedb",
  "rusqlite",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
