@@ -2,7 +2,7 @@
 
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::Path,
     http::header,
     response::Response,
     routing::get,
@@ -10,9 +10,15 @@ use axum::{
 };
 use rusqlite::params;
 use serde_json::{json, Value};
+use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::{error::AppError, extractors::Auth, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
+use kleos_lib::db::Database;
 
 #[allow(dead_code)]
 mod types;
@@ -46,10 +52,10 @@ pub fn router() -> Router<AppState> {
 // buffering the entire response as a single JSON blob. One JSON object per
 // line; clients can parse records as they arrive.
 async fn export_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Response, AppError> {
-    let data = kleos_lib::admin::export_user_data(&state.db, auth.user_id).await?;
+    let data = kleos_lib::admin::export_user_data(&db, auth.user_id).await?;
 
     let mut lines: Vec<Result<axum::body::Bytes, std::convert::Infallible>> = Vec::new();
 
@@ -93,8 +99,8 @@ async fn export_handler(
 // ---------------------------------------------------------------------------
 
 async fn import_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
     // Auto-detect format based on shape
@@ -104,23 +110,23 @@ async fn import_handler(
                 "expected JSON array".into(),
             ))
         })?;
-        return import_array(&state, auth.user_id, arr).await;
+        return import_array(&db, auth.user_id, arr).await;
     }
     if let Some(obj) = body.as_object() {
         if obj.contains_key("memories") {
             // Engram JSON export or generic format with memories key
             let version = obj.get("version").and_then(|v| v.as_str());
             if version.is_some() {
-                return import_engram_export(&state, auth.user_id, obj).await;
+                return import_engram_export(&db, auth.user_id, obj).await;
             }
             // mem0-style: has "memories" but no version
             if let Some(arr) = obj.get("memories").and_then(|v| v.as_array()) {
-                return import_mem0_array(&state, auth.user_id, arr).await;
+                return import_mem0_array(&db, auth.user_id, arr).await;
             }
         }
         if obj.contains_key("results") {
             if let Some(arr) = obj.get("results").and_then(|v| v.as_array()) {
-                return import_mem0_array(&state, auth.user_id, arr).await;
+                return import_mem0_array(&db, auth.user_id, arr).await;
             }
         }
         if obj.contains_key("documents") || obj.contains_key("data") {
@@ -129,7 +135,7 @@ async fn import_handler(
                 .or_else(|| obj.get("data"))
                 .and_then(|v| v.as_array());
             if let Some(arr) = items {
-                return import_array(&state, auth.user_id, arr).await;
+                return import_array(&db, auth.user_id, arr).await;
             }
         }
     }
@@ -139,7 +145,7 @@ async fn import_handler(
 }
 
 async fn import_engram_export(
-    state: &AppState,
+    db: &Arc<Database>,
     user_id: i64,
     obj: &serde_json::Map<String, Value>,
 ) -> Result<Json<Value>, AppError> {
@@ -188,7 +194,7 @@ async fn import_engram_export(
                 .and_then(|v| v.as_str())
                 .unwrap_or(&now)
                 .to_string();
-            match state.db.write(move |conn| {
+            match db.write(move |conn| {
                 conn.execute(
                     "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -206,7 +212,7 @@ async fn import_engram_export(
 }
 
 async fn import_array(
-    state: &AppState,
+    db: &Arc<Database>,
     user_id: i64,
     arr: &[Value],
 ) -> Result<Json<Value>, AppError> {
@@ -238,7 +244,7 @@ async fn import_array(
             .to_string();
         let importance = item.get("importance").and_then(|v| v.as_i64()).unwrap_or(5) as i32;
         let sync_id = Uuid::new_v4().to_string();
-        match state.db.write(move |conn| {
+        match db.write(move |conn| {
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
@@ -255,7 +261,7 @@ async fn import_array(
 }
 
 async fn import_mem0_array(
-    state: &AppState,
+    db: &Arc<Database>,
     user_id: i64,
     arr: &[Value],
 ) -> Result<Json<Value>, AppError> {
@@ -293,7 +299,7 @@ async fn import_mem0_array(
             .and_then(|v| v.as_i64())
             .unwrap_or(5) as i32;
         let sync_id = Uuid::new_v4().to_string();
-        match state.db.write(move |conn| {
+        match db.write(move |conn| {
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
@@ -314,8 +320,8 @@ async fn import_mem0_array(
 // ---------------------------------------------------------------------------
 
 async fn get_state_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     // SECURITY (SEC-LOW-8): push user filter into SQL instead of fetching all
     // rows and filtering in memory. Avoids leaking timing information about
@@ -323,8 +329,7 @@ async fn get_state_handler(
     let prefix = format!("user:{}:", auth.user_id);
     let prefix_like = format!("{}%", prefix);
     let prefix_len = prefix.len();
-    let user_state: serde_json::Map<String, Value> = state
-        .db
+    let user_state: serde_json::Map<String, Value> = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare("SELECT key, value FROM app_state WHERE key LIKE ?1 ORDER BY key")
@@ -348,12 +353,11 @@ async fn get_state_handler(
 }
 
 async fn delete_state_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     let prefix = format!("user:{}:%", auth.user_id);
-    let affected = state
-        .db
+    let affected = db
         .write(move |conn| {
             conn.execute("DELETE FROM app_state WHERE key LIKE ?1", params![prefix])
                 .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
@@ -368,29 +372,29 @@ async fn delete_state_handler(
 // ---------------------------------------------------------------------------
 
 async fn list_preferences_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let prefs = kleos_lib::preferences::list_preferences(&state.db, auth.user_id).await?;
+    let prefs = kleos_lib::preferences::list_preferences(&db, auth.user_id).await?;
     Ok(Json(serde_json::to_value(prefs).map_err(|e| {
         AppError(kleos_lib::EngError::Internal(e.to_string()))
     })?))
 }
 
 async fn get_preference_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(key): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let pref = kleos_lib::preferences::get_preference(&state.db, auth.user_id, &key).await?;
+    let pref = kleos_lib::preferences::get_preference(&db, auth.user_id, &key).await?;
     Ok(Json(serde_json::to_value(pref).map_err(|e| {
         AppError(kleos_lib::EngError::Internal(e.to_string()))
     })?))
 }
 
 async fn put_preferences_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<serde_json::Map<String, Value>>,
 ) -> Result<Json<Value>, AppError> {
     let mut updated = 0i64;
@@ -399,25 +403,25 @@ async fn put_preferences_handler(
             .as_str()
             .map(|s| s.to_string())
             .unwrap_or_else(|| val.to_string());
-        kleos_lib::preferences::set_preference(&state.db, auth.user_id, key, &v).await?;
+        kleos_lib::preferences::set_preference(&db, auth.user_id, key, &v).await?;
         updated += 1;
     }
     Ok(Json(json!({ "updated": updated })))
 }
 
 async fn delete_all_preferences_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let deleted = kleos_lib::preferences::delete_all_preferences(&state.db, auth.user_id).await?;
+    let deleted = kleos_lib::preferences::delete_all_preferences(&db, auth.user_id).await?;
     Ok(Json(json!({ "deleted": deleted })))
 }
 
 async fn delete_preference_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(key): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::preferences::delete_preference(&state.db, auth.user_id, &key).await?;
+    kleos_lib::preferences::delete_preference(&db, auth.user_id, &key).await?;
     Ok(Json(json!({ "deleted": true, "key": key })))
 }
