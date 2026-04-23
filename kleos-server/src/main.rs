@@ -173,7 +173,8 @@ async fn main() {
             &config.data_dir,
             TenantConfig::default(),
             config.vector_dimensions,
-        ).expect("failed to initialize tenant registry");
+        )
+        .expect("failed to initialize tenant registry");
         tracing::info!("tenant sharding enabled");
         Some(Arc::new(reg))
     } else {

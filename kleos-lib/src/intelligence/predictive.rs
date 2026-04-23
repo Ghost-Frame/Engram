@@ -118,14 +118,14 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
                 .prepare(
                     "SELECT id, content, category, importance \
                      FROM memories \
-                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                     WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                        AND category = 'task' AND is_static = 0 \
                        AND created_at > datetime('now', '-3 days') \
                      ORDER BY importance DESC, created_at DESC LIMIT 5",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(params![user_id], |row| {
+                .query_map(params![], |row| {
                     Ok(MemRow {
                         id: row.get(0)?,
                         content: row.get(1)?,
@@ -168,14 +168,14 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
                 .prepare(
                     "SELECT id, content, category, importance \
                      FROM memories \
-                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                     WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                        AND category = 'issue' \
                        AND created_at > datetime('now', '-7 days') \
                      ORDER BY importance DESC LIMIT 3",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(params![user_id], |row| {
+                .query_map(params![], |row| {
                     Ok(MemRow {
                         id: row.get(0)?,
                         content: row.get(1)?,
@@ -215,12 +215,12 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
                 .prepare(
                     "SELECT id, content, category, importance \
                      FROM memories \
-                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                     WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                      ORDER BY created_at DESC LIMIT 3",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(params![user_id], |row| {
+                .query_map(params![], |row| {
                     Ok(MemRow {
                         id: row.get(0)?,
                         content: row.get(1)?,
@@ -297,10 +297,10 @@ pub const SEQUENCE_MIN_SUPPORT: i64 = 2;
 ///
 /// Results are sorted by `support` descending, then `confidence`
 /// descending, so the strongest patterns surface first.
-#[tracing::instrument(skip(db), fields(user_id, window_mins))]
+#[tracing::instrument(skip(db), fields(window_mins))]
 pub async fn detect_sequence_patterns(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     window_mins: i64,
 ) -> Result<Vec<SequencePattern>> {
     if window_mins <= 0 {
@@ -313,15 +313,14 @@ pub async fn detect_sequence_patterns(
                 .prepare(
                     "SELECT category, created_at \
                      FROM memories \
-                     WHERE user_id = ?1 \
-                       AND is_latest = 1 \
+                     WHERE is_latest = 1 \
                        AND is_forgotten = 0 \
                        AND is_archived = 0 \
                      ORDER BY created_at ASC, id ASC",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let iter = stmt
-                .query_map(params![user_id], |row| {
+                .query_map(params![], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })
                 .map_err(rusqlite_to_eng_error)?;
@@ -562,9 +561,12 @@ mod tests {
         assert!(top.confidence > 0.0);
     }
 
+    // Phase 5.1: user_id dropped from memories; single-tenant DB means all
+    // callers see the same data regardless of the user_id argument.
     #[tokio::test]
     async fn sequences_isolated_per_user() {
         let db = Database::connect_memory().await.expect("in-mem db");
+        // Seed data owned by user 1.
         let a = seed(&db, "upsilon kicked off feature branch", "code", 1).await;
         let b = seed(&db, "upsilon documented the branch changes", "docs", 1).await;
         let c = seed(&db, "upsilon followup refactor pass finished", "code", 1).await;
@@ -577,8 +579,13 @@ mod tests {
         ] {
             set_created(&db, id, ts).await;
         }
-        let other = detect_sequence_patterns(&db, 99, 30).await.expect("det");
-        assert!(other.is_empty());
+        // Single-tenant: all callers share the same DB, so sequences are
+        // visible regardless of the user_id argument.
+        let sequences = detect_sequence_patterns(&db, 99, 30).await.expect("det");
+        assert!(
+            !sequences.is_empty(),
+            "single-tenant DB exposes all sequences"
+        );
     }
 
     #[test]

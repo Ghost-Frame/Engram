@@ -15,7 +15,11 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 
-use crate::{error::AppError, extractors::{Auth, ResolvedDb}, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
 
 mod types;
 use types::{
@@ -585,10 +589,7 @@ async fn update_memory(
     Ok(Json(memory_to_json(&updated)))
 }
 
-async fn list_tags(
-    Auth(auth): Auth,
-    ResolvedDb(db): ResolvedDb,
-) -> Result<Json<Value>, AppError> {
+async fn list_tags(Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
     let tags = memory::list_all_tags(&db, auth.user_id).await?;
     Ok(Json(json!({ "tags": tags })))
 }
@@ -703,10 +704,7 @@ async fn synthesize_profile(
     Ok(Json(json!(profile)))
 }
 
-async fn user_stats(
-    Auth(auth): Auth,
-    ResolvedDb(db): ResolvedDb,
-) -> Result<Json<Value>, AppError> {
+async fn user_stats(Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
     let stats = memory::get_user_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }

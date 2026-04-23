@@ -118,10 +118,9 @@ pub fn start_job_worker_task(
                     );
                     // Exponential backoff on repeated errors so a broken DB
                     // does not spin the worker at 100% CPU.
-                    let backoff = Duration::from_secs(
-                        2u64.saturating_pow(consecutive_errors.min(8)),
-                    )
-                    .min(MAX_BACKOFF);
+                    let backoff =
+                        Duration::from_secs(2u64.saturating_pow(consecutive_errors.min(8)))
+                            .min(MAX_BACKOFF);
                     tokio::select! {
                         _ = cancel.cancelled() => break,
                         _ = tokio::time::sleep(backoff) => {}

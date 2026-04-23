@@ -59,10 +59,12 @@ pub fn get_target_columns(conn: &Connection, table: &str) -> Result<Vec<String>>
 
 /// Return true if `table` exists in the target schema.
 pub fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?1 LIMIT 1",
-        rusqlite::params![table],
-        |row| row.get(0),
-    ).unwrap_or(0);
+    let count: i64 = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?1 LIMIT 1",
+            rusqlite::params![table],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
     Ok(count == 1)
 }

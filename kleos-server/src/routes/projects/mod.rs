@@ -81,8 +81,7 @@ async fn get_project(
     let project = kleos_lib::projects::get_project(&db, id, auth.user_id)
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Project not found".into())))?;
-    let memory_ids =
-        kleos_lib::projects::get_project_memory_ids(&db, id, auth.user_id).await?;
+    let memory_ids = kleos_lib::projects::get_project_memory_ids(&db, id, auth.user_id).await?;
     Ok(Json(
         json!({ "id": project.id, "name": project.name, "description": project.description, "status": project.status, "metadata": project.metadata, "memory_ids": memory_ids, "created_at": project.created_at }),
     ))

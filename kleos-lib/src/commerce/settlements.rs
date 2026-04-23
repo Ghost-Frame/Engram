@@ -25,7 +25,10 @@ pub struct CreateSettlementParams<'a> {
 }
 
 /// Record a settlement for a settled quote.
-pub async fn create_settlement(db: &Database, params: CreateSettlementParams<'_>) -> Result<PaymentSettlement> {
+pub async fn create_settlement(
+    db: &Database,
+    params: CreateSettlementParams<'_>,
+) -> Result<PaymentSettlement> {
     let CreateSettlementParams {
         quote_id,
         user_id,
@@ -37,9 +40,7 @@ pub async fn create_settlement(db: &Database, params: CreateSettlementParams<'_>
         block_number,
     } = params;
     let id = format!("stl_{}", Uuid::new_v4().as_simple());
-    let now = chrono::Utc::now()
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let amt_str = amount.to_string();
 
     let settlement = PaymentSettlement {
@@ -69,7 +70,20 @@ pub async fn create_settlement(db: &Database, params: CreateSettlementParams<'_>
                 (id, quote_id, user_id, wallet_address, amount, currency,
                  payment_method, tx_hash, block_number, status, created_at, confirmed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![id, qid, user_id, wa, amt_str, cur, pm, txh, block_number, "confirmed", now, now],
+            params![
+                id,
+                qid,
+                user_id,
+                wa,
+                amt_str,
+                cur,
+                pm,
+                txh,
+                block_number,
+                "confirmed",
+                now,
+                now
+            ],
         )
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         Ok(())
@@ -93,8 +107,7 @@ pub async fn get_balance(db: &Database, user_id: i64) -> Result<AccountBalance> 
             |row| {
                 Ok(AccountBalance {
                     user_id: row.get(0)?,
-                    balance: Decimal::from_str(&row.get::<_, String>(1)?)
-                        .unwrap_or(Decimal::ZERO),
+                    balance: Decimal::from_str(&row.get::<_, String>(1)?).unwrap_or(Decimal::ZERO),
                     currency: row.get(2)?,
                     updated_at: row.get(3)?,
                 })
@@ -131,8 +144,7 @@ pub async fn deduct_balance(db: &Database, user_id: i64, amount: Decimal) -> Res
                 other => EngError::DatabaseMessage(other.to_string()),
             })?;
 
-        let current_dec =
-            Decimal::from_str(&current).unwrap_or(Decimal::ZERO);
+        let current_dec = Decimal::from_str(&current).unwrap_or(Decimal::ZERO);
         let deduct = Decimal::from_str(&amt_str).unwrap_or(Decimal::ZERO);
 
         if current_dec < deduct {
@@ -156,11 +168,7 @@ pub async fn deduct_balance(db: &Database, user_id: i64, amount: Decimal) -> Res
 }
 
 /// Record daily spend for policy enforcement.
-pub async fn record_daily_spend(
-    db: &Database,
-    user_id: i64,
-    amount: Decimal,
-) -> Result<()> {
+pub async fn record_daily_spend(db: &Database, user_id: i64, amount: Decimal) -> Result<()> {
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let amt_str = amount.to_string();
     db.write(move |conn| {

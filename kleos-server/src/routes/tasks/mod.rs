@@ -83,10 +83,7 @@ async fn create_task_handler(
     Ok((StatusCode::CREATED, Json(json!(task))))
 }
 
-async fn get_stats(
-    ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
-) -> Result<Json<Value>, AppError> {
+async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = get_task_stats(&db, Some(auth.user_id)).await?;
     Ok(Json(json!(stats)))
 }

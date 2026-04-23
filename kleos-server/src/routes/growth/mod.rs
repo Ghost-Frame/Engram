@@ -39,8 +39,7 @@ async fn observations_handler(
     Query(params): Query<ObservationsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
-    let observations: Vec<GrowthObservation> =
-        list_observations(&db, auth.user_id, limit).await?;
+    let observations: Vec<GrowthObservation> = list_observations(&db, auth.user_id, limit).await?;
     let count = observations.len();
     Ok(Json(
         json!({ "observations": observations, "count": count }),

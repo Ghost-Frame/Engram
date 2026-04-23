@@ -50,8 +50,7 @@ async fn list_episodes(
         let after = params.after.as_deref().unwrap_or("2000-01-01");
         let before = params.before.as_deref().unwrap_or("2099-12-31");
         let eps =
-            episodes::list_episodes_by_time_range(&db, auth.user_id, after, before, limit)
-                .await?;
+            episodes::list_episodes_by_time_range(&db, auth.user_id, after, before, limit).await?;
         return Ok(Json(json!({ "episodes": eps })));
     }
 

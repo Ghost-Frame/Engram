@@ -1,12 +1,7 @@
 // Portability routes: export, import (auto-detect), state, preferences
 
 use axum::{
-    body::Body,
-    extract::Path,
-    http::header,
-    response::Response,
-    routing::get,
-    Json, Router,
+    body::Body, extract::Path, http::header, response::Response, routing::get, Json, Router,
 };
 use rusqlite::params;
 use serde_json::{json, Value};

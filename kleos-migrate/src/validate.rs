@@ -39,19 +39,17 @@ pub async fn run(
                 |row| row.get(0),
             )?
         } else {
-            source.conn.query_row(
-                &format!("SELECT COUNT(*) FROM \"{}\"", table),
-                [],
-                |row| row.get(0),
-            )?
+            source
+                .conn
+                .query_row(&format!("SELECT COUNT(*) FROM \"{}\"", table), [], |row| {
+                    row.get(0)
+                })?
         };
 
         let target_count: i64 = conn
-            .query_row(
-                &format!("SELECT COUNT(*) FROM \"{}\"", table),
-                [],
-                |row| row.get(0),
-            )
+            .query_row(&format!("SELECT COUNT(*) FROM \"{}\"", table), [], |row| {
+                row.get(0)
+            })
             .unwrap_or(0);
 
         if source_count != target_count {
@@ -68,10 +66,7 @@ pub async fn run(
     }
 
     if !mismatches.is_empty() {
-        return Err(anyhow!(
-            "count mismatch: {}",
-            mismatches.join("; ")
-        ));
+        return Err(anyhow!("count mismatch: {}", mismatches.join("; ")));
     }
 
     // Catch the silent-drop case: source had eligible embeddings, target has

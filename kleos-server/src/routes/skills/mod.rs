@@ -145,14 +145,8 @@ async fn list_skills_handler(
 ) -> Result<Json<Value>, AppError> {
     let limit = clamp_limit(params.limit, 50, 1000)?;
     let offset = clamp_offset(params.offset)?;
-    let skill_list = skills::list_skills(
-        &db,
-        auth.user_id,
-        params.agent.as_deref(),
-        limit,
-        offset,
-    )
-    .await?;
+    let skill_list =
+        skills::list_skills(&db, auth.user_id, params.agent.as_deref(), limit, offset).await?;
     Ok(Json(
         json!({ "skills": skill_list, "count": skill_list.len() }),
     ))
@@ -371,8 +365,7 @@ async fn stats_handler(
 ) -> Result<Json<Value>, AppError> {
     let limit = clamp_limit(params.limit, 50, 1000)?;
     let stats =
-        dashboard::get_skill_stats(&db, auth.user_id, params.sort_by.as_deref(), limit)
-            .await?;
+        dashboard::get_skill_stats(&db, auth.user_id, params.sort_by.as_deref(), limit).await?;
     Ok(Json(json!({ "stats": stats, "count": stats.len() })))
 }
 
@@ -440,8 +433,7 @@ async fn capture_handler(
 ) -> Result<Json<Value>, AppError> {
     let agent = body.agent.as_deref().unwrap_or("system");
     let llm = state.llm.as_deref();
-    let result =
-        evolver::capture_skill(&db, llm, &body.description, agent, auth.user_id).await?;
+    let result = evolver::capture_skill(&db, llm, &body.description, agent, auth.user_id).await?;
     Ok(Json(json!(result)))
 }
 

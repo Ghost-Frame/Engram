@@ -81,7 +81,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 async fn record_vector_sync_failure(
     db: &Database,
     memory_id: i64,
-    user_id: i64,
+    _user_id: i64,
     op: &str,
     err: &str,
 ) {
@@ -91,9 +91,9 @@ async fn record_vector_sync_failure(
     let result = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO vector_sync_pending (memory_id, user_id, op, error) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![memory_id, user_id, op_owned, err_owned],
+                "INSERT INTO vector_sync_pending (memory_id, op, error) \
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![memory_id, op_owned, err_owned],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(())
@@ -125,12 +125,16 @@ fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
 ///   is_forgotten, is_archived, is_fact, is_decomposed,
 ///   forget_after, forget_reason, model, recall_hits, recall_misses,
 ///   adaptive_score, pagerank_score, last_accessed_at, access_count, tags,
-///   episode_id, decay_score, confidence, sync_id, status, user_id, space_id,
+///   episode_id, decay_score, confidence, sync_id, status, space_id,
 ///   fsrs_stability, fsrs_difficulty, fsrs_storage_strength,
 ///   fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses,
 ///   fsrs_last_review_at, valence, arousal, dominant_emotion,
 ///   created_at, updated_at, is_superseded, is_consolidated
-pub(crate) fn row_to_memory(row: &rusqlite::Row<'_>) -> Result<Memory> {
+///
+/// `owner_user_id` is supplied by the caller (from function parameter) because
+/// user_id is no longer a column in MEMORY_COLUMNS -- the field is populated
+/// from context rather than from the row.
+pub(crate) fn row_to_memory(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Memory> {
     Ok(Memory {
         id: row.get(0).map_err(rusqlite_to_eng_error)?,
         content: row.get(1).map_err(rusqlite_to_eng_error)?,
@@ -164,33 +168,36 @@ pub(crate) fn row_to_memory(row: &rusqlite::Row<'_>) -> Result<Memory> {
         confidence: row.get(28).map_err(rusqlite_to_eng_error)?,
         sync_id: row.get(29).map_err(rusqlite_to_eng_error)?,
         status: row.get(30).map_err(rusqlite_to_eng_error)?,
-        user_id: row.get(31).map_err(rusqlite_to_eng_error)?,
-        space_id: row.get(32).map_err(rusqlite_to_eng_error)?,
-        fsrs_stability: row.get(33).map_err(rusqlite_to_eng_error)?,
-        fsrs_difficulty: row.get(34).map_err(rusqlite_to_eng_error)?,
-        fsrs_storage_strength: row.get(35).map_err(rusqlite_to_eng_error)?,
-        fsrs_retrieval_strength: row.get(36).map_err(rusqlite_to_eng_error)?,
-        fsrs_learning_state: row.get(37).map_err(rusqlite_to_eng_error)?,
-        fsrs_reps: row.get(38).map_err(rusqlite_to_eng_error)?,
-        fsrs_lapses: row.get(39).map_err(rusqlite_to_eng_error)?,
-        fsrs_last_review_at: row.get(40).map_err(rusqlite_to_eng_error)?,
-        valence: row.get(41).map_err(rusqlite_to_eng_error)?,
-        arousal: row.get(42).map_err(rusqlite_to_eng_error)?,
-        dominant_emotion: row.get(43).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(44).map_err(rusqlite_to_eng_error)?,
-        updated_at: row.get(45).map_err(rusqlite_to_eng_error)?,
-        is_superseded: row.get::<_, i32>(46).map_err(rusqlite_to_eng_error)? != 0,
-        is_consolidated: row.get::<_, i32>(47).map_err(rusqlite_to_eng_error)? != 0,
+        // user_id is no longer a column in MEMORY_COLUMNS; filled from caller.
+        user_id: owner_user_id,
+        space_id: row.get(31).map_err(rusqlite_to_eng_error)?,
+        fsrs_stability: row.get(32).map_err(rusqlite_to_eng_error)?,
+        fsrs_difficulty: row.get(33).map_err(rusqlite_to_eng_error)?,
+        fsrs_storage_strength: row.get(34).map_err(rusqlite_to_eng_error)?,
+        fsrs_retrieval_strength: row.get(35).map_err(rusqlite_to_eng_error)?,
+        fsrs_learning_state: row.get(36).map_err(rusqlite_to_eng_error)?,
+        fsrs_reps: row.get(37).map_err(rusqlite_to_eng_error)?,
+        fsrs_lapses: row.get(38).map_err(rusqlite_to_eng_error)?,
+        fsrs_last_review_at: row.get(39).map_err(rusqlite_to_eng_error)?,
+        valence: row.get(40).map_err(rusqlite_to_eng_error)?,
+        arousal: row.get(41).map_err(rusqlite_to_eng_error)?,
+        dominant_emotion: row.get(42).map_err(rusqlite_to_eng_error)?,
+        created_at: row.get(43).map_err(rusqlite_to_eng_error)?,
+        updated_at: row.get(44).map_err(rusqlite_to_eng_error)?,
+        is_superseded: row.get::<_, i32>(45).map_err(rusqlite_to_eng_error)? != 0,
+        is_consolidated: row.get::<_, i32>(46).map_err(rusqlite_to_eng_error)? != 0,
     })
 }
 
 /// Standard SELECT column list -- matches row_to_memory index order.
+/// Note: user_id is NOT listed here; it is supplied to row_to_memory as the
+/// `owner_user_id` argument from caller context (Phase 5.1).
 pub(crate) const MEMORY_COLUMNS: &str = "id, content, category, source, session_id, importance, \
     version, is_latest, parent_memory_id, root_memory_id, source_count, is_static, \
     is_forgotten, is_archived, is_fact, is_decomposed, \
     forget_after, forget_reason, model, recall_hits, recall_misses, \
     adaptive_score, pagerank_score, last_accessed_at, access_count, tags, \
-    episode_id, decay_score, confidence, sync_id, status, user_id, space_id, \
+    episode_id, decay_score, confidence, sync_id, status, space_id, \
     fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, \
     fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
     valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated";
@@ -200,7 +207,7 @@ pub(crate) const MEMORY_COLUMNS: &str = "id, content, category, source, session_
 /// only by the test guard below; a non-test reference would be redundant
 /// with the SELECT list itself.
 #[cfg(test)]
-pub(crate) const MEMORY_COLUMN_COUNT: usize = 48;
+pub(crate) const MEMORY_COLUMN_COUNT: usize = 47;
 
 // -- Public CRUD functions ---
 
@@ -237,14 +244,14 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
 
     // 3. Check for duplicates
     let dup_sql = "SELECT id, content FROM memories \
-        WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
+        WHERE is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
         ORDER BY id DESC LIMIT 1000";
 
     let duplicate = db
         .read(move |conn| {
             let mut stmt = conn.prepare(dup_sql).map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt
-                .query(rusqlite::params![user_id])
+                .query(rusqlite::params![])
                 .map_err(rusqlite_to_eng_error)?;
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 let existing_id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
@@ -317,16 +324,16 @@ fn store_transactional_rusqlite(
     tx: &rusqlite::Transaction<'_>,
     content: &str,
     req: &StoreRequest,
-    user_id: i64,
+    _user_id: i64,
     importance: i32,
     tags_json: Option<String>,
 ) -> Result<i64> {
     let (version, root_memory_id) = if let Some(parent_id) = req.parent_memory_id {
         let mut stmt = tx
-            .prepare("SELECT version, root_memory_id FROM memories WHERE id = ?1 AND user_id = ?2")
+            .prepare("SELECT version, root_memory_id FROM memories WHERE id = ?1")
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![parent_id, user_id])
+            .query(rusqlite::params![parent_id])
             .map_err(rusqlite_to_eng_error)?;
         if let Some(parent_row) = rows.next().map_err(rusqlite_to_eng_error)? {
             let parent_version: i32 = parent_row.get(0).map_err(rusqlite_to_eng_error)?;
@@ -335,7 +342,7 @@ fn store_transactional_rusqlite(
             (parent_version + 1, Some(root))
         } else {
             return Err(EngError::NotFound(format!(
-                "parent memory {} not found or not owned by user",
+                "parent memory {} not found",
                 parent_id
             )));
         }
@@ -345,8 +352,8 @@ fn store_transactional_rusqlite(
 
     if let Some(parent_id) = req.parent_memory_id {
         tx.execute(
-            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![parent_id, user_id],
+            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![parent_id],
         )
         .map_err(rusqlite_to_eng_error)?;
     }
@@ -356,15 +363,15 @@ fn store_transactional_rusqlite(
         "INSERT INTO memories (
             content, category, source, session_id, importance,
             version, is_latest, parent_memory_id, root_memory_id,
-            is_static, tags, status, user_id, space_id,
+            is_static, tags, status, space_id,
             fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state,
             fsrs_reps, fsrs_lapses, model
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, 1, ?7, ?8,
-            ?9, ?10, 'approved', ?11, ?12,
+            ?9, ?10, 'approved', ?11,
             1.0, 1.0, 0,
-            0, 0, ?13
+            0, 0, ?12
         )",
         rusqlite::params![
             content,
@@ -377,7 +384,6 @@ fn store_transactional_rusqlite(
             root_memory_id,
             is_static,
             tags_json,
-            user_id,
             req.space_id,
             Option::<String>::None
         ],
@@ -402,7 +408,7 @@ fn store_transactional_rusqlite(
 #[tracing::instrument(skip(db))]
 pub async fn get(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
     let sql = format!(
-        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_archived = 0",
+        "SELECT {} FROM memories WHERE id = ?1 AND is_forgotten = 0 AND is_archived = 0",
         MEMORY_COLUMNS
     );
     get_internal(db, id, user_id, &sql, true).await
@@ -414,7 +420,7 @@ pub async fn get(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
 #[tracing::instrument(skip(db))]
 pub async fn get_for_ownership(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
     let sql = format!(
-        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
+        "SELECT {} FROM memories WHERE id = ?1 AND is_forgotten = 0",
         MEMORY_COLUMNS
     );
     get_internal(db, id, user_id, &sql, false).await
@@ -432,10 +438,10 @@ async fn get_internal(
         .read(move |conn| {
             let mut stmt = conn.prepare(&sql_for_read).map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt
-                .query(rusqlite::params![id, user_id])
+                .query(rusqlite::params![id])
                 .map_err(rusqlite_to_eng_error)?;
             if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                row_to_memory(row)
+                row_to_memory(row, user_id)
             } else {
                 Err(EngError::NotFound(format!("memory {} not found", id)))
             }
@@ -449,8 +455,8 @@ async fn get_internal(
                     access_count = access_count + 1, \
                     last_accessed_at = datetime('now'), \
                     updated_at = datetime('now') \
-                 WHERE id = ?1 AND user_id = ?2",
-                rusqlite::params![id, user_id],
+                 WHERE id = ?1",
+                rusqlite::params![id],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(())
@@ -467,11 +473,9 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     // query returns every user's memories. All HTTP handlers set this, but
     // a missing guard here would silently expose all data if any future
     // internal caller uses ListOptions::default().
-    if opts.user_id.is_none() {
-        return Err(crate::EngError::InvalidInput(
-            "user_id is required for memory listing".into(),
-        ));
-    }
+    let owner_user_id = opts.user_id.ok_or_else(|| {
+        crate::EngError::InvalidInput("user_id is required for memory listing".into())
+    })?;
 
     // Build WHERE clauses with parameterized values to prevent SQL injection
     let mut conditions = vec!["1=1".to_string()];
@@ -496,11 +500,6 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     if let Some(ref src) = opts.source {
         conditions.push(format!("source = ?{}", param_idx));
         param_values.push(rusqlite::types::Value::Text(src.clone()));
-        param_idx += 1;
-    }
-    if let Some(uid) = opts.user_id {
-        conditions.push(format!("user_id = ?{}", param_idx));
-        param_values.push(rusqlite::types::Value::Integer(uid));
         param_idx += 1;
     }
     if let Some(sid) = opts.space_id {
@@ -531,7 +530,7 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
         let mut rows = stmt.query(rusqlite_params).map_err(rusqlite_to_eng_error)?;
         let mut memories = Vec::with_capacity(cap);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            memories.push(row_to_memory(row)?);
+            memories.push(row_to_memory(row, owner_user_id)?);
         }
         Ok(memories)
     })
@@ -548,8 +547,8 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
                     is_forgotten = 1, \
                     forget_reason = 'user_deleted', \
                     updated_at = datetime('now') \
-                 WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
-                rusqlite::params![id, user_id],
+                 WHERE id = ?1 AND is_forgotten = 0",
+                rusqlite::params![id],
             )
             .map_err(rusqlite_to_eng_error)
         })
@@ -584,19 +583,19 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
 pub async fn list_trashed(db: &Database, user_id: i64, limit: usize) -> Result<Vec<Memory>> {
     let sql = format!(
         "SELECT {} FROM memories \
-         WHERE user_id = ?1 AND is_forgotten = 1 AND forget_reason = 'user_deleted' \
-         ORDER BY updated_at DESC LIMIT ?2",
+         WHERE is_forgotten = 1 AND forget_reason = 'user_deleted' \
+         ORDER BY updated_at DESC LIMIT ?1",
         MEMORY_COLUMNS
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id, limit as i64])
+            .query(rusqlite::params![limit as i64])
             .map_err(rusqlite_to_eng_error)?;
         // 6.9 capacity hint: LIMIT bounds the row count.
         let mut result = Vec::with_capacity(limit);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            result.push(row_to_memory(row)?);
+            result.push(row_to_memory(row, user_id)?);
         }
         Ok(result)
     })
@@ -614,8 +613,8 @@ pub async fn restore(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
                     is_forgotten = 0, \
                     forget_reason = NULL, \
                     updated_at = datetime('now') \
-                 WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 1 AND forget_reason = 'user_deleted'",
-                rusqlite::params![id, user_id],
+                 WHERE id = ?1 AND is_forgotten = 1 AND forget_reason = 'user_deleted'",
+                rusqlite::params![id],
             )
             .map_err(rusqlite_to_eng_error)
         })
@@ -650,9 +649,9 @@ pub async fn purge_trashed(db: &Database, retention_days: i64) -> Result<usize> 
 
 #[tracing::instrument(skip(db, req))]
 pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) -> Result<Memory> {
-    // 1. Get the existing memory, scoped to user_id (outside transaction - read only)
+    // 1. Get the existing memory (outside transaction - read only)
     let sql = format!(
-        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
+        "SELECT {} FROM memories WHERE id = ?1 AND is_forgotten = 0",
         MEMORY_COLUMNS
     );
 
@@ -661,10 +660,10 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
         .read(move |conn| {
             let mut stmt = conn.prepare(&sql_for_read).map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt
-                .query(rusqlite::params![id, user_id])
+                .query(rusqlite::params![id])
                 .map_err(rusqlite_to_eng_error)?;
             if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                row_to_memory(row)
+                row_to_memory(row, user_id)
             } else {
                 Err(EngError::NotFound(format!("memory {} not found", id)))
             }
@@ -749,17 +748,14 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
     }
     search::invalidate_search_cache(user_id);
 
-    let new_sql = format!(
-        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2",
-        MEMORY_COLUMNS
-    );
+    let new_sql = format!("SELECT {} FROM memories WHERE id = ?1", MEMORY_COLUMNS);
     db.read(move |conn| {
         let mut stmt = conn.prepare(&new_sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![new_id, user_id])
+            .query(rusqlite::params![new_id])
             .map_err(rusqlite_to_eng_error)?;
         if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            row_to_memory(row)
+            row_to_memory(row, user_id)
         } else {
             Err(EngError::Internal(
                 "failed to fetch newly created memory version".to_string(),
@@ -779,7 +775,7 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
 fn update_transactional_rusqlite(
     tx: &rusqlite::Transaction<'_>,
     old_id: i64,
-    user_id: i64,
+    _user_id: i64,
     old: &Memory,
     new_content: &str,
     new_category: &str,
@@ -794,8 +790,8 @@ fn update_transactional_rusqlite(
     let affected = tx
         .execute(
             "UPDATE memories SET is_latest = 0, updated_at = datetime('now') \
-             WHERE id = ?1 AND user_id = ?2 AND is_latest = 1",
-            rusqlite::params![old_id, user_id],
+             WHERE id = ?1 AND is_latest = 1",
+            rusqlite::params![old_id],
         )
         .map_err(rusqlite_to_eng_error)?;
     if affected == 0 {
@@ -809,17 +805,17 @@ fn update_transactional_rusqlite(
         "INSERT INTO memories (
             content, category, source, session_id, importance,
             version, is_latest, parent_memory_id, root_memory_id,
-            is_static, tags, status, user_id, space_id,
+            is_static, tags, status, space_id,
             fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength,
             fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at,
             confidence, model
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, 1, ?7, ?8,
-            ?9, ?10, ?11, ?12, ?13,
-            ?14, ?15, ?16, ?17,
-            ?18, ?19, ?20, ?21,
-            ?22, ?23
+            ?9, ?10, ?11, ?12,
+            ?13, ?14, ?15, ?16,
+            ?17, ?18, ?19, ?20,
+            ?21, ?22
         )",
         rusqlite::params![
             new_content,
@@ -833,7 +829,6 @@ fn update_transactional_rusqlite(
             new_is_static,
             new_tags_json,
             new_status,
-            old.user_id,
             old.space_id,
             old.fsrs_stability,
             old.fsrs_difficulty,
@@ -870,8 +865,8 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
     let affected = db
         .write(move |conn| {
             conn.execute(
-                "UPDATE memories SET is_forgotten = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-                rusqlite::params![id, user_id],
+                "UPDATE memories SET is_forgotten = 1, updated_at = datetime('now') WHERE id = ?1",
+                rusqlite::params![id],
             )
             .map_err(rusqlite_to_eng_error)
         })
@@ -903,8 +898,8 @@ pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
             conn.execute(
-                "UPDATE memories SET is_archived = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-                rusqlite::params![id, user_id],
+                "UPDATE memories SET is_archived = 1, updated_at = datetime('now') WHERE id = ?1",
+                rusqlite::params![id],
             )
             .map_err(rusqlite_to_eng_error)
         })
@@ -927,8 +922,8 @@ pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()>
     let affected = db
         .write(move |conn| {
             conn.execute(
-                "UPDATE memories SET is_archived = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-                rusqlite::params![id, user_id],
+                "UPDATE memories SET is_archived = 0, updated_at = datetime('now') WHERE id = ?1",
+                rusqlite::params![id],
             )
             .map_err(rusqlite_to_eng_error)
         })
@@ -956,8 +951,8 @@ pub async fn update_forget_reason(
     let reason = reason.to_string();
     db.write(move |conn| {
         conn.execute(
-            "UPDATE memories SET forget_reason = ?1 WHERE id = ?2 AND user_id = ?3",
-            rusqlite::params![reason, id, user_id],
+            "UPDATE memories SET forget_reason = ?1 WHERE id = ?2",
+            rusqlite::params![reason, id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -975,11 +970,11 @@ pub async fn adjust_importance(
 ) -> Result<()> {
     db.write(move |conn| {
         let sql = if delta > 0 {
-            "UPDATE memories SET importance = MIN(importance + ?1, 10) WHERE id = ?2 AND user_id = ?3"
+            "UPDATE memories SET importance = MIN(importance + ?1, 10) WHERE id = ?2"
         } else {
-            "UPDATE memories SET importance = MAX(importance + ?1, 0) WHERE id = ?2 AND user_id = ?3"
+            "UPDATE memories SET importance = MAX(importance + ?1, 0) WHERE id = ?2"
         };
-        conn.execute(sql, rusqlite::params![delta, memory_id, user_id])
+        conn.execute(sql, rusqlite::params![delta, memory_id])
             .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })
@@ -995,22 +990,21 @@ pub async fn insert_link(
     link_type: &str,
     user_id: i64,
 ) -> Result<()> {
-    // Validate both memories belong to this user before inserting the link
-    let count_sql =
-        "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0";
+    // Validate both memories exist and are not forgotten
+    let count_sql = "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND is_forgotten = 0";
     let link_type = link_type.to_string();
     db.write(move |conn| {
         let count: i64 = conn
             .query_row(
                 count_sql,
-                rusqlite::params![source_id, target_id, user_id],
+                rusqlite::params![source_id, target_id],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)?;
         if count < 2 {
             return Err(EngError::NotFound(format!(
-                "one or both memories ({}, {}) do not belong to user {}",
-                source_id, target_id, user_id
+                "one or both memories ({}, {}) not found",
+                source_id, target_id
             )));
         }
         conn.execute(
@@ -1040,8 +1034,8 @@ pub async fn update_source_count(
 ) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
-            "UPDATE memories SET source_count = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
-            rusqlite::params![source_count, id, user_id],
+            "UPDATE memories SET source_count = ?1, updated_at = datetime('now') WHERE id = ?2",
+            rusqlite::params![source_count, id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -1055,15 +1049,14 @@ pub async fn list_all_tags(db: &Database, user_id: i64) -> Result<Vec<TagCount>>
         let mut stmt = conn
             .prepare(
                 "SELECT tags FROM memories
-                 WHERE user_id = ?1
-                   AND is_forgotten = 0
+                 WHERE is_forgotten = 0
                    AND is_latest = 1
                    AND tags IS NOT NULL
                    AND tags != '[]'",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id])
+            .query(rusqlite::params![])
             .map_err(rusqlite_to_eng_error)?;
 
         let mut counts: HashMap<String, i64> = HashMap::new();
@@ -1105,15 +1098,14 @@ pub async fn search_by_tags(
     // Use json_each() to push tag filtering to SQL level instead of
     // scanning every row and deserializing in Rust.
     let tag_count = normalized.len();
-    let placeholders: Vec<String> = (0..tag_count).map(|i| format!("?{}", i + 2)).collect();
+    let placeholders: Vec<String> = (0..tag_count).map(|i| format!("?{}", i + 1)).collect();
 
     let sql = if match_all {
         // match_all: memory must contain ALL requested tags.
         // Count distinct matches from json_each; must equal tag_count.
         format!(
             "SELECT {} FROM memories m
-             WHERE m.user_id = ?1
-               AND m.is_forgotten = 0
+             WHERE m.is_forgotten = 0
                AND m.is_latest = 1
                AND m.tags IS NOT NULL
                AND (SELECT COUNT(DISTINCT je.value)
@@ -1130,8 +1122,7 @@ pub async fn search_by_tags(
         // match_any: memory must contain at least one requested tag.
         format!(
             "SELECT {} FROM memories m
-             WHERE m.user_id = ?1
-               AND m.is_forgotten = 0
+             WHERE m.is_forgotten = 0
                AND m.is_latest = 1
                AND m.tags IS NOT NULL
                AND EXISTS (
@@ -1148,10 +1139,8 @@ pub async fn search_by_tags(
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        // Bind user_id at index 1, then each tag at indices 2..N+1.
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(tag_count + 1);
-        params_vec.push(Box::new(user_id));
+        // Bind each tag at indices 1..N.
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(tag_count);
         for tag in &normalized {
             params_vec.push(Box::new(tag.clone()));
         }
@@ -1163,7 +1152,7 @@ pub async fn search_by_tags(
         // 6.9 capacity hint: LIMIT bounds the row count.
         let mut memories = Vec::with_capacity(limit);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            memories.push(row_to_memory(row)?);
+            memories.push(row_to_memory(row, user_id)?);
         }
         Ok(memories)
     })
@@ -1187,8 +1176,8 @@ pub async fn update_memory_tags(
 
     db.write(move |conn| {
         conn.execute(
-            "UPDATE memories SET tags = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
-            rusqlite::params![normalized, memory_id, user_id],
+            "UPDATE memories SET tags = ?1, updated_at = datetime('now') WHERE id = ?2",
+            rusqlite::params![normalized, memory_id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -1211,17 +1200,17 @@ pub async fn get_links_for(
                         m.content, m.category, m.is_forgotten
                  FROM memory_links ml
                  JOIN memories m ON m.id = ml.target_id
-                 WHERE ml.source_id = ?1 AND m.user_id = ?2
+                 WHERE ml.source_id = ?1
                  UNION
                  SELECT ml.source_id, ml.similarity, ml.type,
                         m.content, m.category, m.is_forgotten
                  FROM memory_links ml
                  JOIN memories m ON m.id = ml.source_id
-                 WHERE ml.target_id = ?1 AND m.user_id = ?2",
+                 WHERE ml.target_id = ?1",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![memory_id, user_id])
+            .query(rusqlite::params![memory_id])
             .map_err(rusqlite_to_eng_error)?;
 
         // 6.9 capacity hint: link fanout typically small.
@@ -1258,12 +1247,11 @@ pub async fn get_version_chain(
                 "SELECT id, content, version, is_latest
                  FROM memories
                  WHERE (root_memory_id = ?1 OR id = ?1)
-                   AND user_id = ?2
                  ORDER BY version ASC",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![root_id, user_id])
+            .query(rusqlite::params![root_id])
             .map_err(rusqlite_to_eng_error)?;
 
         // 6.9 capacity hint: version chains are usually short.
@@ -1297,8 +1285,8 @@ pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile
             conn.query_row(
                 "SELECT COUNT(*), MIN(created_at), MAX(created_at), AVG(importance)
                  FROM memories
-                 WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1",
-                rusqlite::params![user_id],
+                 WHERE is_forgotten = 0 AND is_latest = 1",
+                rusqlite::params![],
                 |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
@@ -1318,14 +1306,14 @@ pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile
                 .prepare(
                     "SELECT category, COUNT(*)
                      FROM memories
-                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1
+                     WHERE is_forgotten = 0 AND is_latest = 1
                      GROUP BY category
                      ORDER BY COUNT(*) DESC, category ASC
                      LIMIT 10",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt
-                .query(rusqlite::params![user_id])
+                .query(rusqlite::params![])
                 .map_err(rusqlite_to_eng_error)?;
 
             // 6.9 capacity hint: SQL caps at LIMIT 10.
@@ -1375,18 +1363,27 @@ pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile
 
 #[tracing::instrument(skip(db))]
 pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
-    let memories = count_user_rows(
-        db,
-        "SELECT COUNT(*) FROM memories WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1",
-        user_id,
-    )
-    .await?;
-    let archived = count_user_rows(
-        db,
-        "SELECT COUNT(*) FROM memories WHERE user_id = ?1 AND is_archived = 1 AND is_latest = 1",
-        user_id,
-    )
-    .await?;
+    // memories and archived use no user_id param (column dropped in Phase 5.1)
+    let memories: i64 = db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0 AND is_latest = 1",
+                rusqlite::params![],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+    let archived: i64 = db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE is_archived = 1 AND is_latest = 1",
+                rusqlite::params![],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
     let conversations = count_user_rows(
         db,
         "SELECT COUNT(*) FROM conversations WHERE user_id = ?1",
@@ -1418,13 +1415,13 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
                 .prepare(
                     "SELECT category, COUNT(*)
                      FROM memories
-                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1
+                     WHERE is_forgotten = 0 AND is_latest = 1
                      GROUP BY category
                      ORDER BY COUNT(*) DESC, category ASC",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt
-                .query(rusqlite::params![user_id])
+                .query(rusqlite::params![])
                 .map_err(rusqlite_to_eng_error)?;
             let mut categories = BTreeMap::new();
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -1478,9 +1475,9 @@ mod tests {
         let db = Database::connect_memory().await.expect("in-mem db");
         db.write(|conn| {
             conn.execute(
-                "INSERT INTO memories (content, category, source, user_id, importance, confidence, \
+                "INSERT INTO memories (content, category, source, importance, confidence, \
                  created_at, updated_at, is_latest, is_forgotten, is_archived) \
-                 VALUES ('col-audit', 'general', 'test', 1, 5, 1.0, \
+                 VALUES ('col-audit', 'general', 'test', 5, 1.0, \
                  datetime('now'), datetime('now'), 1, 0, 0)",
                 params![],
             )
@@ -1498,7 +1495,7 @@ mod tests {
                     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
                 let mem = stmt
                     .query_row(params![], |row| {
-                        row_to_memory(row).map_err(|e| {
+                        row_to_memory(row, 1).map_err(|e| {
                             rusqlite::Error::ToSqlConversionFailure(Box::new(
                                 std::io::Error::other(e.to_string()),
                             ))

@@ -96,11 +96,9 @@ fn try_open_encrypted(path: &Path, hex_key: &str, compat: u8) -> Result<SourceDb
 /// builds and can pass with a wrong key. `SELECT count(*) FROM sqlite_master`
 /// must decrypt at least one data page so it is the correct probe.
 fn verify_readable(conn: &Connection) -> Result<()> {
-    conn.query_row(
-        "SELECT count(*) FROM sqlite_master",
-        [],
-        |row| row.get::<_, i64>(0),
-    )
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
+        row.get::<_, i64>(0)
+    })
     .map(|_| ())
     .map_err(|_| anyhow!("source DB open failed: wrong key or not a database?"))
 }

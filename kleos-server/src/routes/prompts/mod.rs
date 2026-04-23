@@ -39,8 +39,7 @@ async fn get_prompt(
     let budget = q.tokens.unwrap_or(4000).clamp(100, 128000);
     let context = q.context.as_deref().unwrap_or("");
     let mut result =
-        kleos_lib::prompts::generate_prompt(&db, format, budget, context, auth.user_id)
-            .await?;
+        kleos_lib::prompts::generate_prompt(&db, format, budget, context, auth.user_id).await?;
     result.prompt = state
         .credd
         .resolve_text(&db, auth.user_id, &auth.key.name, &result.prompt)

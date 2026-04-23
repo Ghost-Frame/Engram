@@ -69,18 +69,18 @@ pub struct EpisodeSummary {
 #[tracing::instrument(skip(db))]
 pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memory>> {
     let sql = format!(
-        "SELECT {} FROM memories WHERE user_id = ?1 AND is_static = 1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 ORDER BY importance DESC",
+        "SELECT {} FROM memories WHERE is_static = 1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 ORDER BY importance DESC",
         MEMORY_COLUMNS,
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id])
+            .query(rusqlite::params![])
             .map_err(rusqlite_to_eng_error)?;
         // 6.9 capacity hint: static-memory sets are typically small per-user.
         let mut memories = Vec::with_capacity(16);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            memories.push(row_to_memory(row)?);
+            memories.push(row_to_memory(row, user_id)?);
         }
         Ok(memories)
     })
@@ -93,17 +93,14 @@ pub async fn get_memory_without_embedding(
     id: i64,
     user_id: i64,
 ) -> Result<Option<Memory>> {
-    let sql = format!(
-        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2",
-        MEMORY_COLUMNS
-    );
+    let sql = format!("SELECT {} FROM memories WHERE id = ?1", MEMORY_COLUMNS);
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
+            .query(rusqlite::params![id])
             .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
-            Some(row) => Ok(Some(row_to_memory(row)?)),
+            Some(row) => Ok(Some(row_to_memory(row, user_id)?)),
             None => Ok(None),
         }
     })
@@ -207,18 +204,18 @@ pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<L
 pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Result<Vec<Memory>> {
     let sql = format!(
         "SELECT {} FROM memories \
-         WHERE user_id = ?1 AND is_static = 0 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
-         ORDER BY created_at DESC LIMIT ?2",
+         WHERE is_static = 0 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
+         ORDER BY created_at DESC LIMIT ?1",
         MEMORY_COLUMNS,
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id, limit as i64])
+            .query(rusqlite::params![limit as i64])
             .map_err(rusqlite_to_eng_error)?;
         let mut memories = Vec::with_capacity(limit);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            memories.push(row_to_memory(row)?);
+            memories.push(row_to_memory(row, user_id)?);
         }
         Ok(memories)
     })

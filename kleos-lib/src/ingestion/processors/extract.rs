@@ -159,9 +159,7 @@ async fn extract_facts(llm: &LocalModelClient, chunk_text: &str) -> crate::Resul
     let response = llm
         .call(EXTRACT_SYSTEM_PROMPT, chunk_text, None)
         .await
-        .map_err(|e| {
-            crate::EngError::Internal(format!("extract LLM call failed: {}", e))
-        })?;
+        .map_err(|e| crate::EngError::Internal(format!("extract LLM call failed: {}", e)))?;
 
     let parsed = repair_and_parse_json(&response).ok_or_else(|| {
         crate::EngError::Internal(format!(

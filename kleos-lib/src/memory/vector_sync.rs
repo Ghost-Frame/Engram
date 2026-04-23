@@ -14,39 +14,35 @@ use rusqlite::params;
 use std::collections::HashMap;
 use tracing::warn;
 
-/// Batch-fetch embedding blobs for (memory_id, user_id) pairs.
-/// Returns a HashMap keyed by memory_id.  Rows whose embedding column is
+/// Batch-fetch embedding blobs for a set of memory IDs.
+/// Returns a HashMap keyed by memory_id. Rows whose embedding column is
 /// NULL (or that are missing entirely) are simply absent from the map, so
 /// callers can treat lookup misses as "skip".
 async fn fetch_embeddings_batch(
     db: &Database,
-    pairs: &[(i64, i64)],
+    memory_ids: &[i64],
 ) -> Result<HashMap<i64, Vec<u8>>> {
-    if pairs.is_empty() {
+    if memory_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let owned: Vec<(i64, i64)> = pairs.to_vec();
+    let owned: Vec<i64> = memory_ids.to_vec();
     db.read(move |conn| {
-        // Use a row-value IN filter so we do not pull embeddings that
-        // belong to a different user (tenant isolation). SQLite supports
-        // `(col1, col2) IN (VALUES (?, ?), ...)` natively.
         let mut sql = String::from(
             "SELECT id, embedding_vec_1024 FROM memories \
-             WHERE embedding_vec_1024 IS NOT NULL AND (id, user_id) IN (VALUES ",
+             WHERE embedding_vec_1024 IS NOT NULL AND id IN (",
         );
         for (i, _) in owned.iter().enumerate() {
             if i > 0 {
                 sql.push(',');
             }
-            sql.push_str("(?, ?)");
+            sql.push('?');
         }
         sql.push(')');
 
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(owned.len() * 2);
-        for (mid, uid) in &owned {
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(owned.len());
+        for mid in &owned {
             params.push(Box::new(*mid));
-            params.push(Box::new(*uid));
         }
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
@@ -92,17 +88,20 @@ fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// Rebuild the LanceDB vector index from all existing memory embeddings.
+/// `owner_user_id` is used as the user_id field in the LanceDB record (the
+/// memories table no longer stores user_id, so the caller supplies it).
 #[tracing::instrument(skip(db))]
-pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
+pub async fn build_lance_index_from_existing(db: &Database, owner_user_id: i64) -> Result<usize> {
     let Some(index) = db.vector_index.as_ref() else {
         return Ok(0);
     };
 
-    let rows: Vec<(i64, i64, Vec<u8>)> = db
+    let rows: Vec<(i64, Vec<u8>)> = db
         .read(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, user_id, embedding_vec_1024
+                    "SELECT id, embedding_vec_1024
                      FROM memories
                      WHERE embedding_vec_1024 IS NOT NULL
                        AND is_forgotten = 0
@@ -111,11 +110,7 @@ pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
                 .map_err(rusqlite_to_eng_error)?;
             let rows: Vec<_> = stmt
                 .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                    ))
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
                 })
                 .map_err(rusqlite_to_eng_error)?
                 .filter_map(|r| r.ok())
@@ -125,9 +120,9 @@ pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
         .await?;
 
     let mut count = 0usize;
-    for (memory_id, user_id, emb_blob) in rows {
+    for (memory_id, emb_blob) in rows {
         let embedding = blob_to_embedding(&emb_blob);
-        index.insert(memory_id, user_id, &embedding).await?;
+        index.insert(memory_id, owner_user_id, &embedding).await?;
         count += 1;
         #[allow(clippy::manual_is_multiple_of)]
         if count % 1000 == 0 {
@@ -142,6 +137,13 @@ pub async fn build_lance_index_from_existing(db: &Database) -> Result<usize> {
 /// LanceDB op and remove the row on success. Rows whose underlying memory
 /// no longer has an embedding (or has been hard-deleted) are considered
 /// skipped and also removed.
+/// Drain the vector_sync_pending ledger. For each row, retry the failed
+/// LanceDB op and remove the row on success. Rows whose underlying memory
+/// no longer has an embedding (or has been hard-deleted) are considered
+/// skipped and also removed.
+///
+/// `owner_user_id` is passed to LanceDB insert calls because user_id is no
+/// longer stored in vector_sync_pending (Phase 5.1).
 #[tracing::instrument(skip(db))]
 pub async fn replay_vector_sync_pending(
     db: &Database,
@@ -152,11 +154,12 @@ pub async fn replay_vector_sync_pending(
         return Ok(report);
     };
 
-    let pending: Vec<(i64, i64, i64, String)> = db
+    // Tuple: (ledger_id, memory_id, op)
+    let pending: Vec<(i64, i64, String)> = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, memory_id, user_id, op FROM vector_sync_pending \
+                    "SELECT id, memory_id, op FROM vector_sync_pending \
                      ORDER BY id ASC LIMIT ?1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
@@ -165,8 +168,7 @@ pub async fn replay_vector_sync_pending(
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(2)?,
                     ))
                 })
                 .map_err(rusqlite_to_eng_error)?
@@ -176,31 +178,39 @@ pub async fn replay_vector_sync_pending(
         })
         .await?;
 
-    process_pending_batch(db, index.as_ref(), pending, &mut report).await?;
+    // During the bypass window, only user 1 data exists on the monolith; use 0
+    // as a sentinel owner_user_id for the generic replay path. The LanceDB
+    // user_id field is removed in Phase 5.21.
+    process_pending_batch(db, index.as_ref(), pending, 0, &mut report).await?;
     Ok(report)
 }
 
 /// Process a batch of pending vector-sync rows with batched DB reads and
 /// a single batched DELETE for succeeded rows.  Failed rows still take an
 /// individual UPDATE because we stamp per-row error text.
+///
+/// `owner_user_id` is passed to LanceDB insert calls because user_id is no
+/// longer stored in vector_sync_pending (Phase 5.1). The LanceDB schema
+/// still carries the field until Phase 5.21.
 async fn process_pending_batch(
     db: &Database,
     index: &dyn crate::vector::VectorIndex,
-    pending: Vec<(i64, i64, i64, String)>,
+    pending: Vec<(i64, i64, String)>,
+    owner_user_id: i64,
     report: &mut VectorSyncReplayReport,
 ) -> Result<()> {
     // 1. One SQL read for every `insert` op we are about to retry.
-    let insert_pairs: Vec<(i64, i64)> = pending
+    let insert_ids: Vec<i64> = pending
         .iter()
-        .filter(|(_, _, _, op)| op == "insert")
-        .map(|(_, mid, uid, _)| (*mid, *uid))
+        .filter(|(_, _, op)| op == "insert")
+        .map(|(_, mid, _)| *mid)
         .collect();
-    let embeddings = fetch_embeddings_batch(db, &insert_pairs).await?;
+    let embeddings = fetch_embeddings_batch(db, &insert_ids).await?;
 
     // 2. Execute LanceDB ops sequentially (the trait is single-row) and
     //    collect ledger_ids by outcome so we can batch-delete successes.
     let mut succeeded_ids: Vec<i64> = Vec::with_capacity(pending.len());
-    for (ledger_id, memory_id, user_id, op) in pending {
+    for (ledger_id, memory_id, op) in pending {
         report.processed += 1;
         let outcome: std::result::Result<(), String> = match op.as_str() {
             "delete" => index.delete(memory_id).await.map_err(|e| e.to_string()),
@@ -208,7 +218,7 @@ async fn process_pending_batch(
                 Some(blob) => {
                     let embedding = blob_to_embedding(blob);
                     index
-                        .insert(memory_id, user_id, &embedding)
+                        .insert(memory_id, owner_user_id, &embedding)
                         .await
                         .map_err(|e| e.to_string())
                 }
@@ -254,26 +264,35 @@ async fn process_pending_batch(
     Ok(())
 }
 
-/// Returns the distinct user_ids that have rows in `vector_sync_pending`.
+/// Returns a Vec of user_ids that have pending entries in `vector_sync_pending`.
 /// Used by the background task for per-user round-robin scheduling (MT-F17).
+///
+/// Phase 5.1: user_id was dropped from vector_sync_pending. The table is now
+/// single-tenant (one DB = one owner). We return a single synthetic entry [0]
+/// when rows exist so the background task's round-robin loop still fires. The
+/// actual user_id is applied at index.insert time via replay_vector_sync_pending_for_user.
 #[tracing::instrument(skip(db))]
 pub async fn vector_sync_pending_users(db: &Database) -> Result<Vec<i64>> {
-    db.read(|conn| {
-        let mut stmt = conn
-            .prepare("SELECT DISTINCT user_id FROM vector_sync_pending ORDER BY user_id ASC")
-            .map_err(rusqlite_to_eng_error)?;
-        let users: Vec<i64> = stmt
-            .query_map([], |row| row.get(0))
-            .map_err(rusqlite_to_eng_error)?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(users)
-    })
-    .await
+    let count: i64 = db
+        .read(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM vector_sync_pending", [], |row| {
+                row.get(0)
+            })
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+    // Return a single synthetic entry so the background round-robin fires.
+    if count > 0 {
+        Ok(vec![0])
+    } else {
+        Ok(vec![])
+    }
 }
 
-/// Same as `replay_vector_sync_pending` but processes only entries belonging
-/// to a single user. Called by the per-user round-robin background task (MT-F17).
+/// Same as `replay_vector_sync_pending` but accepts a `user_id` that is used
+/// as `owner_user_id` for LanceDB insert calls. Phase 5.1 removed user_id from
+/// the vector_sync_pending table; the WHERE clause is dropped accordingly.
+/// Called by the per-user round-robin background task (MT-F17).
 #[tracing::instrument(skip(db))]
 pub async fn replay_vector_sync_pending_for_user(
     db: &Database,
@@ -285,21 +304,21 @@ pub async fn replay_vector_sync_pending_for_user(
         return Ok(report);
     };
 
-    let pending: Vec<(i64, i64, i64, String)> = db
+    // Tuple: (ledger_id, memory_id, op)
+    let pending: Vec<(i64, i64, String)> = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, memory_id, user_id, op FROM vector_sync_pending \
-                     WHERE user_id = ?1 ORDER BY id ASC LIMIT ?2",
+                    "SELECT id, memory_id, op FROM vector_sync_pending \
+                     ORDER BY id ASC LIMIT ?1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows: Vec<_> = stmt
-                .query_map(params![user_id, limit as i64], |row| {
+                .query_map(params![limit as i64], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(2)?,
                     ))
                 })
                 .map_err(rusqlite_to_eng_error)?
@@ -309,6 +328,6 @@ pub async fn replay_vector_sync_pending_for_user(
         })
         .await?;
 
-    process_pending_batch(db, index.as_ref(), pending, &mut report).await?;
+    process_pending_batch(db, index.as_ref(), pending, user_id, &mut report).await?;
     Ok(report)
 }

@@ -51,8 +51,7 @@ struct Args {
 async fn main() -> Result<()> {
     kleos_lib::config::migrate_env_prefix();
 
-    let _otel_guard =
-        kleos_lib::observability::init_tracing("kleos-migrate", "kleos_migrate=info");
+    let _otel_guard = kleos_lib::observability::init_tracing("kleos-migrate", "kleos_migrate=info");
 
     let args = Args::parse();
 
@@ -69,8 +68,7 @@ async fn main() -> Result<()> {
     let source = source::open(&args.source, Some(args.source_key_env.as_str()))?;
 
     if args.dry_run {
-        return dry_run_report(&source, args.filter_user_id, args.source_lance.as_deref())
-            .await;
+        return dry_run_report(&source, args.filter_user_id, args.source_lance.as_deref()).await;
     }
 
     // Safety check: refuse to overwrite a non-empty target unless --force.
@@ -148,11 +146,11 @@ async fn dry_run_report(
                 |r| r.get(0),
             )?
         } else {
-            source.conn.query_row(
-                &format!("SELECT COUNT(*) FROM \"{}\"", table),
-                [],
-                |r| r.get(0),
-            )?
+            source
+                .conn
+                .query_row(&format!("SELECT COUNT(*) FROM \"{}\"", table), [], |r| {
+                    r.get(0)
+                })?
         };
         rows.push((table.clone(), count));
         total += count;

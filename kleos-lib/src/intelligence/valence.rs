@@ -180,7 +180,7 @@ pub async fn store_valence(
     db: &Database,
     memory_id: i64,
     content: &str,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<ValenceResult> {
     let result = analyze_valence(content);
     if result.dominant_emotion != "neutral" {
@@ -189,8 +189,8 @@ pub async fn store_valence(
         let dominant_emotion = result.dominant_emotion.clone();
         db.write(move |conn| {
             conn.execute(
-                "UPDATE memories SET valence = ?1, arousal = ?2, dominant_emotion = ?3 WHERE id = ?4 AND user_id = ?5",
-                params![valence, arousal, dominant_emotion, memory_id, user_id],
+                "UPDATE memories SET valence = ?1, arousal = ?2, dominant_emotion = ?3 WHERE id = ?4",
+                params![valence, arousal, dominant_emotion, memory_id],
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             Ok(())

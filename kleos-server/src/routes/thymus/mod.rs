@@ -191,14 +191,8 @@ async fn get_metric_summary_handler(
     let agent = params.agent.as_deref().unwrap_or("*");
     let metric = params.metric.as_deref().unwrap_or("*");
 
-    let summary = get_metric_summary(
-        &db,
-        auth.user_id,
-        agent,
-        metric,
-        params.since.as_deref(),
-    )
-    .await?;
+    let summary =
+        get_metric_summary(&db, auth.user_id, agent, metric, params.since.as_deref()).await?;
     Ok(Json(summary))
 }
 
@@ -223,14 +217,8 @@ async fn get_session_quality_handler(
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
-    let records = get_session_quality(
-        &db,
-        auth.user_id,
-        agent,
-        params.since.as_deref(),
-        limit,
-    )
-    .await?;
+    let records =
+        get_session_quality(&db, auth.user_id, agent, params.since.as_deref(), limit).await?;
     Ok(Json(json!({ "session_quality": records })))
 }
 
