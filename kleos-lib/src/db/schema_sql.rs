@@ -676,15 +676,13 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             entry_key TEXT NOT NULL,
             value TEXT NOT NULL DEFAULT '',
             expires_at TEXT,
-            user_id INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(user_id, session, entry_key)
+            UNIQUE(session, agent, entry_key)
         );
         CREATE INDEX IF NOT EXISTS idx_scratchpad_agent ON scratchpad(agent);
+        CREATE INDEX IF NOT EXISTS idx_scratchpad_session ON scratchpad(session);
         CREATE INDEX IF NOT EXISTS idx_scratchpad_expires ON scratchpad(expires_at) WHERE expires_at IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS idx_scratchpad_user_expires ON scratchpad(user_id, expires_at);
-        CREATE INDEX IF NOT EXISTS idx_scratchpad_session ON scratchpad(user_id, session);
 
         -- Skill system: skill records
         CREATE TABLE IF NOT EXISTS skill_records (

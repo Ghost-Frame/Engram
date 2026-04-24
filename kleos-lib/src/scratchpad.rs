@@ -42,7 +42,7 @@ pub struct ScratchKV {
 #[tracing::instrument(skip(db, session, agent, model, key, value))]
 pub async fn upsert_entry(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     session: &str,
     agent: &str,
     model: &str,
@@ -58,8 +58,8 @@ pub async fn upsert_entry(
     let value = value.to_string();
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO scratchpad (user_id, session, agent, model, entry_key, value, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', '+' || ?7 || ' minutes')) ON CONFLICT(user_id, session, entry_key) DO UPDATE SET agent = excluded.agent, model = excluded.model, value = excluded.value, updated_at = datetime('now'), expires_at = datetime('now', '+' || ?8 || ' minutes')",
-            params![user_id, session, agent, model, key, value, ttl_str.clone(), ttl_str],
+            "INSERT INTO scratchpad (session, agent, model, entry_key, value, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now', '+' || ?6 || ' minutes')) ON CONFLICT(session, agent, entry_key) DO UPDATE SET model = excluded.model, value = excluded.value, updated_at = datetime('now'), expires_at = datetime('now', '+' || ?7 || ' minutes')",
+            params![session, agent, model, key, value, ttl_str.clone(), ttl_str],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -70,7 +70,7 @@ pub async fn upsert_entry(
 #[tracing::instrument(skip(db, agent, model, session))]
 pub async fn list_entries(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     agent: Option<&str>,
     model: Option<&str>,
     session: Option<&str>,
@@ -81,12 +81,12 @@ pub async fn list_entries(
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT session, agent, model, entry_key, value, created_at, updated_at, expires_at FROM scratchpad WHERE user_id = ?1 AND expires_at > datetime('now') AND (?2 IS NULL OR agent = ?3) AND (?4 IS NULL OR model = ?5) AND (?6 IS NULL OR session = ?7) ORDER BY updated_at DESC, agent, session, entry_key",
+                "SELECT session, agent, model, entry_key, value, created_at, updated_at, expires_at FROM scratchpad WHERE expires_at > datetime('now') AND (?1 IS NULL OR agent = ?2) AND (?3 IS NULL OR model = ?4) AND (?5 IS NULL OR session = ?6) ORDER BY updated_at DESC, agent, session, entry_key",
             )
             .map_err(rusqlite_to_eng_error)?;
         let rows = stmt
             .query_map(
-                params![user_id, agent.clone(), agent, model.clone(), model, session.clone(), session],
+                params![agent.clone(), agent, model.clone(), model, session.clone(), session],
                 row_to_entry_rusqlite,
             )
             .map_err(rusqlite_to_eng_error)?;
@@ -102,18 +102,18 @@ pub async fn list_entries(
 #[tracing::instrument(skip(db, session))]
 pub async fn get_session_entries(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     session: &str,
 ) -> Result<Vec<ScratchEntry>> {
     let session = session.to_string();
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT session, agent, model, entry_key, value, created_at, updated_at, expires_at FROM scratchpad WHERE user_id = ?1 AND session = ?2 ORDER BY created_at ASC",
+                "SELECT session, agent, model, entry_key, value, created_at, updated_at, expires_at FROM scratchpad WHERE session = ?1 ORDER BY created_at ASC",
             )
             .map_err(rusqlite_to_eng_error)?;
         let rows = stmt
-            .query_map(params![user_id, session], row_to_entry_rusqlite)
+            .query_map(params![session], row_to_entry_rusqlite)
             .map_err(rusqlite_to_eng_error)?;
         let mut result = Vec::new();
         for row in rows {
@@ -125,12 +125,12 @@ pub async fn get_session_entries(
 }
 
 #[tracing::instrument(skip(db, session))]
-pub async fn delete_session(db: &Database, user_id: i64, session: &str) -> Result<()> {
+pub async fn delete_session(db: &Database, _user_id: i64, session: &str) -> Result<()> {
     let session = session.to_string();
     db.write(move |conn| {
         conn.execute(
-            "DELETE FROM scratchpad WHERE user_id = ?1 AND session = ?2",
-            params![user_id, session],
+            "DELETE FROM scratchpad WHERE session = ?1",
+            params![session],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -141,7 +141,7 @@ pub async fn delete_session(db: &Database, user_id: i64, session: &str) -> Resul
 #[tracing::instrument(skip(db, session, key))]
 pub async fn delete_session_key(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     session: &str,
     key: &str,
 ) -> Result<()> {
@@ -149,8 +149,8 @@ pub async fn delete_session_key(
     let key = key.to_string();
     db.write(move |conn| {
         conn.execute(
-            "DELETE FROM scratchpad WHERE user_id = ?1 AND session = ?2 AND entry_key = ?3",
-            params![user_id, session, key],
+            "DELETE FROM scratchpad WHERE session = ?1 AND entry_key = ?2",
+            params![session, key],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())

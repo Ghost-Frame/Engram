@@ -254,6 +254,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 26,
+        description: "drop_user_id_scratchpad",
+        up: run_migration_drop_user_id_scratchpad,
+        // 12-step table rebuild; no safe inverse.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -285,6 +293,7 @@ const MIGRATION_SERVICE_DEAD_LETTERS: i64 = 22;
 const MIGRATION_MEMORIES_LIST_COVERING_INDEX: i64 = 23;
 const MIGRATION_COMMERCE_TABLES: i64 = 24;
 const MIGRATION_DROP_USER_ID_MEMORY_CORE: i64 = 25;
+const MIGRATION_DROP_USER_ID_SCRATCHPAD: i64 = 26;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -474,6 +483,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_DROP_USER_ID_MEMORY_CORE,
             "drop_user_id_memory_core",
+        )?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_SCRATCHPAD {
+        info!("Running migration 26: drop_user_id_scratchpad");
+        run_migration_drop_user_id_scratchpad(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_SCRATCHPAD,
+            "drop_user_id_scratchpad",
         )?;
     }
 
@@ -1431,6 +1450,69 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 25 complete: user_id dropped from memory core tables");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 26: drop user_id from scratchpad (12-step UNIQUE rebuild)
+// ---------------------------------------------------------------------------
+
+/// Migration 26: drop user_id from scratchpad via the 12-step rebuild path.
+/// scratchpad carried UNIQUE(user_id, session, entry_key), which blocks
+/// ALTER TABLE DROP COLUMN, so this rebuilds the table with the new
+/// UNIQUE(session, agent, entry_key) constraint. Idempotent: if scratchpad
+/// already lacks user_id the migration is a no-op.
+fn run_migration_drop_user_id_scratchpad(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        info!("scratchpad.user_id already absent, migration 26 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+
+         ALTER TABLE scratchpad RENAME TO _scratchpad_old_v25;
+
+         DROP INDEX IF EXISTS idx_scratchpad_agent;
+         DROP INDEX IF EXISTS idx_scratchpad_expires;
+         DROP INDEX IF EXISTS idx_scratchpad_user_expires;
+         DROP INDEX IF EXISTS idx_scratchpad_session;
+
+         CREATE TABLE scratchpad (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             agent TEXT NOT NULL DEFAULT 'unknown',
+             session TEXT NOT NULL DEFAULT 'default',
+             model TEXT NOT NULL DEFAULT '',
+             entry_key TEXT NOT NULL,
+             value TEXT NOT NULL DEFAULT '',
+             expires_at TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(session, agent, entry_key)
+         );
+
+         INSERT INTO scratchpad (id, agent, session, model, entry_key, value, expires_at, created_at, updated_at)
+         SELECT id, agent, session, model, entry_key, value, expires_at, created_at, updated_at
+         FROM _scratchpad_old_v25;
+
+         DROP TABLE _scratchpad_old_v25;
+
+         CREATE INDEX idx_scratchpad_agent ON scratchpad(agent);
+         CREATE INDEX idx_scratchpad_session ON scratchpad(session);
+         CREATE INDEX idx_scratchpad_expires ON scratchpad(expires_at) WHERE expires_at IS NOT NULL;
+
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 26 complete: user_id dropped from scratchpad");
     Ok(())
 }
 

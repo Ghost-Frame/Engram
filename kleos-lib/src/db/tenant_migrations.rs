@@ -135,6 +135,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "memories_user_id_drop",
         up: apply_schema_v22_memories_drop,
     },
+    TenantMigration {
+        version: 23,
+        description: "scratchpad_user_id_drop",
+        up: apply_schema_v23_scratchpad_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -247,6 +252,11 @@ fn apply_schema_v22_memories_drop(conn: &Connection) -> Result<()> {
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v22 failed: {e}")))
 }
 
+fn apply_schema_v23_scratchpad_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v23_scratchpad.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v23 failed: {e}")))
+}
+
 /// Run all pending tenant migrations against `conn`.
 ///
 /// Idempotent: safe to call on every tenant load. A freshly created tenant
@@ -350,8 +360,27 @@ mod tests {
 
     #[test]
     fn scratchpad_has_user_id_after_v2() {
+        // v2 added the user_id shim; v23 drops it. This test locks v2's
+        // behaviour by stopping the chain at v22 (before v23's rebuild).
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 23 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         // Column present: confirms v2 ran and reshaped scratchpad.
         let user_id_present: i64 = conn
@@ -395,6 +424,134 @@ mod tests {
         assert_eq!(value, "v2");
     }
 
+    /// v23: scratchpad must NOT have a user_id column after the full
+    /// migration chain completes.
+    #[test]
+    fn user_id_absent_from_scratchpad_after_v23() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 0, "scratchpad still has user_id column after v23");
+    }
+
+    /// v23: the new UNIQUE(session, agent, entry_key) supports per-agent
+    /// upsert within a session, and collisions on that triple still collapse.
+    #[test]
+    fn scratchpad_constraint_reshaped_after_v23() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        // Two different agents in the same (session, entry_key) coexist.
+        conn.execute(
+            "INSERT INTO scratchpad (session, agent, model, entry_key, value, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now', '+5 minutes')) \
+             ON CONFLICT(session, agent, entry_key) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["s1", "agentA", "m", "k1", "vA"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO scratchpad (session, agent, model, entry_key, value, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now', '+5 minutes')) \
+             ON CONFLICT(session, agent, entry_key) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["s1", "agentB", "m", "k1", "vB"],
+        )
+        .unwrap();
+        // Upsert on the same (session, agent, entry_key) collapses.
+        conn.execute(
+            "INSERT INTO scratchpad (session, agent, model, entry_key, value, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now', '+5 minutes')) \
+             ON CONFLICT(session, agent, entry_key) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["s1", "agentA", "m", "k1", "vA2"],
+        )
+        .unwrap();
+
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scratchpad", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 2, "two agents coexist; A's upsert stays collapsed");
+
+        let value_a: String = conn
+            .query_row(
+                "SELECT value FROM scratchpad WHERE session='s1' AND agent='agentA' AND entry_key='k1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(value_a, "vA2");
+    }
+
+    /// v23: rows inserted under the v2 shim shape survive the rebuild intact.
+    #[test]
+    fn scratchpad_rows_preserved_through_v23() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+
+        // Apply migrations v1..v22 (stop before v23).
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 23 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        // Insert a v2-shaped row carrying user_id.
+        conn.execute(
+            "INSERT INTO scratchpad (user_id, session, agent, model, entry_key, value, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', '+5 minutes'))",
+            rusqlite::params![1_i64, "sess-pre", "gir", "gpt", "mission", "items"],
+        )
+        .unwrap();
+        let pre_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+        assert!(pre_id > 0);
+
+        // Apply v23.
+        apply_schema_v23_scratchpad_drop(&conn).unwrap();
+
+        // Row still present with every non-user_id field intact.
+        let (session, agent, model, entry_key, value): (String, String, String, String, String) =
+            conn.query_row(
+                "SELECT session, agent, model, entry_key, value FROM scratchpad WHERE id = ?1",
+                rusqlite::params![pre_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(session, "sess-pre");
+        assert_eq!(agent, "gir");
+        assert_eq!(model, "gpt");
+        assert_eq!(entry_key, "mission");
+        assert_eq!(value, "items");
+
+        // user_id column is gone.
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_count, 0, "user_id column must be absent after v23");
+    }
+
     #[test]
     fn v1_only_db_upgrades_cleanly_to_v2() {
         let conn = Connection::open_in_memory().unwrap();
@@ -424,7 +581,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        // Run the chain; v2 should catch it up.
+        // Run the chain; v2 adds user_id, v23 later drops it. End state: absent.
         run_tenant_migrations(&conn).unwrap();
 
         let post: i64 = conn
@@ -434,7 +591,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(post, 1);
+        assert_eq!(post, 0);
     }
 
     #[test]
