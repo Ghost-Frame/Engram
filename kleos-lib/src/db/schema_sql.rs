@@ -253,7 +253,6 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         -- Webhooks
         CREATE TABLE IF NOT EXISTS webhooks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             url TEXT NOT NULL,
             events TEXT NOT NULL DEFAULT 'memory.created',
             secret TEXT,
@@ -263,7 +262,6 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             failure_count INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_webhooks_user ON webhooks(user_id);
         CREATE INDEX IF NOT EXISTS idx_webhooks_active ON webhooks(is_active);
 
         -- Rate limits
