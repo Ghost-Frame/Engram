@@ -144,7 +144,7 @@ pub async fn store_pattern_with_causal_edges(
 
     // Load content for existing patterns from the memories table.
     let existing_ids: Vec<i64> = existing_patterns.iter().map(|p| p.id).collect();
-    let content_map = load_memory_content(db, &existing_ids, user_id).await?;
+    let content_map = load_memory_content(db, &existing_ids).await?;
 
     let new_ts = parse_datetime_approx(created_at);
     let normalized_new = network::l2_normalize(embedding);
@@ -249,7 +249,6 @@ fn parse_datetime_approx(s: &str) -> f64 {
 async fn load_memory_content(
     db: &Database,
     ids: &[i64],
-    user_id: i64,
 ) -> Result<std::collections::HashMap<i64, String>> {
     if ids.is_empty() {
         return Ok(std::collections::HashMap::new());
@@ -261,21 +260,20 @@ async fn load_memory_content(
         return Ok(std::collections::HashMap::new());
     }
 
-    let user_id_cap = user_id;
     let ids_cap = positive_ids.clone();
 
     db.read(move |conn| {
         // Build parameterised query with one ?N per ID.
         let placeholders: Vec<String> =
-            (1..=ids_cap.len()).map(|i| format!("?{}", i + 1)).collect();
+            (1..=ids_cap.len()).map(|i| format!("?{}", i)).collect();
         let sql = format!(
-            "SELECT id, content FROM memories WHERE user_id = ?1 AND id IN ({})",
+            "SELECT id, content FROM memories WHERE id IN ({})",
             placeholders.join(", ")
         );
 
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
 
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(user_id_cap)];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids_cap.len());
         for id in &ids_cap {
             params.push(Box::new(*id));
         }
