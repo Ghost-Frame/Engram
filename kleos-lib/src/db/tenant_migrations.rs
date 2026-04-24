@@ -140,6 +140,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "scratchpad_user_id_drop",
         up: apply_schema_v23_scratchpad_drop,
     },
+    TenantMigration {
+        version: 24,
+        description: "sessions_user_id_drop",
+        up: apply_schema_v24_sessions_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -255,6 +260,11 @@ fn apply_schema_v22_memories_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v23_scratchpad_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v23_scratchpad.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v23 failed: {e}")))
+}
+
+fn apply_schema_v24_sessions_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v24_sessions_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v24 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -596,8 +606,27 @@ mod tests {
 
     #[test]
     fn sessions_has_user_id_after_v3() {
+        // v3 added the user_id shim on sessions; v24 drops it. This test
+        // locks v3's shape by capping the chain at v23 (before v24).
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 24 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         // user_id column present on sessions.
         let user_id_present: i64 = conn
@@ -625,7 +654,7 @@ mod tests {
             "tenant session_output table missing after v3"
         );
 
-        // Exercise the SQL shape kleos-lib sessions.rs actually uses.
+        // Exercise the SQL shape kleos-lib sessions.rs used pre-v24.
         conn.execute(
             "INSERT INTO sessions (id, agent, user_id) VALUES (?1, ?2, ?3)",
             rusqlite::params!["sess-1", "claude-code", 4_i64],
@@ -656,6 +685,146 @@ mod tests {
             )
             .unwrap();
         assert_eq!(line, "hello");
+    }
+
+    /// v24: sessions must NOT have a user_id column after the full chain.
+    #[test]
+    fn user_id_absent_from_sessions_after_v24() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 0, "sessions still has user_id column after v24");
+    }
+
+    /// v24: the post-drop sessions table supports the SQL shape kleos-lib
+    /// sessions.rs now uses (no user_id on INSERT, no user_id predicate on
+    /// SELECT). session_output remains untouched and writable.
+    #[test]
+    fn sessions_usable_after_v24() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (id, agent) VALUES (?1, ?2)",
+            rusqlite::params!["sess-v24", "claude-code"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_output (session_id, line) VALUES (?1, ?2)",
+            rusqlite::params!["sess-v24", "tacos"],
+        )
+        .unwrap();
+
+        let (id, agent): (String, String) = conn
+            .query_row(
+                "SELECT id, agent FROM sessions WHERE id = ?1",
+                rusqlite::params!["sess-v24"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(id, "sess-v24");
+        assert_eq!(agent, "claude-code");
+
+        let line: String = conn
+            .query_row(
+                "SELECT line FROM session_output WHERE session_id = ?1",
+                rusqlite::params!["sess-v24"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(line, "tacos");
+
+        // idx_sessions_user is gone.
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_sessions_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 0, "idx_sessions_user still present after v24");
+    }
+
+    /// v24: rows inserted under the v3 shim shape survive the drop with
+    /// every non-user_id field intact.
+    #[test]
+    fn sessions_rows_preserved_through_v24() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+
+        // Apply migrations v1..v23 (stop before v24).
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 24 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        // Insert a v3-shaped row carrying user_id.
+        conn.execute(
+            "INSERT INTO sessions (id, agent, user_id, status) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["sess-pre", "gir", 1_i64, "running"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_output (session_id, line) VALUES (?1, ?2)",
+            rusqlite::params!["sess-pre", "first"],
+        )
+        .unwrap();
+
+        // Apply v24.
+        apply_schema_v24_sessions_drop(&conn).unwrap();
+
+        // Row still present with every non-user_id field intact.
+        let (id, agent, status): (String, String, String) = conn
+            .query_row(
+                "SELECT id, agent, status FROM sessions WHERE id = ?1",
+                rusqlite::params!["sess-pre"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(id, "sess-pre");
+        assert_eq!(agent, "gir");
+        assert_eq!(status, "running");
+
+        // session_output row survived.
+        let line: String = conn
+            .query_row(
+                "SELECT line FROM session_output WHERE session_id = ?1",
+                rusqlite::params!["sess-pre"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(line, "first");
+
+        // user_id column is gone.
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_count, 0, "user_id column must be absent after v24");
     }
 
     #[test]
@@ -2600,7 +2769,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre_output, 0);
 
-        // Run chain; v3 catches it up.
+        // Run chain; v3 adds the shim, v24 later drops it. End state: absent.
         run_tenant_migrations(&conn).unwrap();
 
         let post_user: i64 = conn
@@ -2610,7 +2779,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(post_user, 1);
+        assert_eq!(post_user, 0);
 
         let post_output: i64 = conn
             .query_row(

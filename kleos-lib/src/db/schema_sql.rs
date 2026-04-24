@@ -572,12 +572,10 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             agent TEXT NOT NULL,
-            user_id INTEGER NOT NULL,
             status TEXT NOT NULL DEFAULT 'active',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
         -- Session output lines
         CREATE TABLE IF NOT EXISTS session_output (
