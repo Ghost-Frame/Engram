@@ -684,11 +684,11 @@ pub async fn get_changes_since(
             .prepare(
                 "SELECT id, content, category, source, importance, tags, confidence, sync_id, \
                  is_static, is_forgotten, is_archived, version, created_at, updated_at \
-                 FROM memories WHERE updated_at > ?1 AND user_id = ?2 ORDER BY updated_at ASC LIMIT ?3",
+                 FROM memories WHERE updated_at > ?1 ORDER BY updated_at ASC LIMIT ?2",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![since_s, user_id, limit])
+            .query(rusqlite::params![since_s, limit])
             .map_err(rusqlite_to_eng_error)?;
         let mut result = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {

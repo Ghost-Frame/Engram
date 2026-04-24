@@ -734,11 +734,11 @@ async fn import_json(
         } else {
             0i32
         };
-        let user_id = auth.user_id;
+        let _user_id = auth.user_id;
         match db.write(move |conn| {
             conn.execute(
-                "INSERT INTO memories (content, category, source, session_id, importance, tags, confidence, is_static, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![content, category, source, session_id, importance, tags_str, confidence, is_static, user_id, sync_id, created_at, updated_at],
+                "INSERT INTO memories (content, category, source, session_id, importance, tags, confidence, is_static, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![content, category, source, session_id, importance, tags_str, confidence, is_static, sync_id, created_at, updated_at],
             ).map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
             Ok(())
         }).await {
@@ -806,11 +806,11 @@ async fn import_mem0(
         let sync_id = Uuid::new_v4().to_string();
         let category_s = category.to_string();
         let source_s = source.to_string();
-        let user_id = auth.user_id;
+        let _user_id = auth.user_id;
         if db.write(move |conn| {
             conn.execute(
-                "INSERT INTO memories (content, category, source, importance, tags, confidence, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, datetime('now'), datetime('now'))",
-                params![content, category_s, source_s, importance, tags_str, user_id, sync_id],
+                "INSERT INTO memories (content, category, source, importance, tags, confidence, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, datetime('now'), datetime('now'))",
+                params![content, category_s, source_s, importance, tags_str, sync_id],
             ).map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
             Ok(())
         }).await.is_ok() {
@@ -923,11 +923,11 @@ async fn import_supermemory(
         let sync_id = Uuid::new_v4().to_string();
         let category_s = category.to_string();
         let source_s = source.to_string();
-        let user_id = auth.user_id;
+        let _user_id = auth.user_id;
         match db.write(move |conn| {
             conn.execute(
-                "INSERT INTO memories (content, category, source, importance, tags, confidence, user_id, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, datetime('now'), datetime('now'))",
-                params![content, category_s, source_s, importance, tags_str, user_id, sync_id],
+                "INSERT INTO memories (content, category, source, importance, tags, confidence, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, datetime('now'), datetime('now'))",
+                params![content, category_s, source_s, importance, tags_str, sync_id],
             ).map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
             Ok(())
         }).await {

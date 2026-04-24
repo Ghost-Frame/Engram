@@ -61,11 +61,11 @@ pub async fn compress_weekly(db: &Database, user_id: i64) -> Result<Vec<Compress
                 for id in &ids_to_fetch {
                     let mut stmt = conn
                         .prepare(
-                            "SELECT content, importance FROM memories WHERE id = ?1 AND user_id = ?2",
+                            "SELECT content, importance FROM memories WHERE id = ?1",
                         )
                         .map_err(rusqlite_to_eng_error)?;
                     let row = stmt
-                        .query_row(params![id, user_id], |row| {
+                        .query_row(params![id], |row| {
                             Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
                         })
                         .optional()
@@ -90,9 +90,9 @@ pub async fn compress_weekly(db: &Database, user_id: i64) -> Result<Vec<Compress
         let result_id: i64 = db
             .write(move |conn| {
                 conn.execute(
-                    "INSERT INTO memories (content, category, source, importance, is_latest, status, user_id) \
-                     VALUES (?1, 'general', 'compression', 7, 1, 'approved', ?2)",
-                    params![summary_clone, user_id],
+                    "INSERT INTO memories (content, category, source, importance, is_latest, status) \
+                     VALUES (?1, 'general', 'compression', 7, 1, 'approved')",
+                    params![summary_clone],
                 )
                 .map_err(rusqlite_to_eng_error)?;
                 Ok(conn.last_insert_rowid())

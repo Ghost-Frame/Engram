@@ -58,8 +58,8 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
     db.write(move |conn| {
         let result: Option<(String, String)> = conn
             .query_row(
-                "SELECT content, source FROM memories WHERE id = ?1 AND user_id = ?2 AND category = 'growth'",
-                rusqlite::params![observation_id, user_id],
+                "SELECT content, source FROM memories WHERE id = ?1 AND category = 'growth'",
+                rusqlite::params![observation_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
@@ -318,8 +318,8 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
                         SUM(CASE WHEN access_count = 0 THEN 1 ELSE 0 END) as never_accessed, \
                         SUM(CASE WHEN category = 'growth' THEN 1 ELSE 0 END) as growth_count, \
                         AVG(importance) as avg_importance \
-                 FROM memories WHERE is_forgotten = 0 AND user_id = ?1",
-                rusqlite::params![user_id],
+                 FROM memories WHERE is_forgotten = 0",
+                rusqlite::params![],
                 |row| {
                     Ok((
                         row.get::<_, i64>(0).unwrap_or(0),

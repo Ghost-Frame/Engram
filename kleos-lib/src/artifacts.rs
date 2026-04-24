@@ -191,8 +191,8 @@ pub async fn store_artifact(
     db.write(move |conn| {
         let owned = conn
             .query_row(
-                "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
-                params![memory_id, user_id],
+                "SELECT 1 FROM memories WHERE id = ?1",
+                params![memory_id],
                 |_| Ok(()),
             )
             .optional()

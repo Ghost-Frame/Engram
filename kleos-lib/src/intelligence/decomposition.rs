@@ -80,15 +80,15 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 /// Decompose a memory into atomic facts.
 /// Returns the decomposed memory IDs (newly created child facts).
 #[tracing::instrument(skip(db))]
-pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Vec<i64>> {
+pub async fn decompose(db: &Database, memory_id: i64, _user_id: i64) -> Result<Vec<i64>> {
     // Fetch the memory content - MUST belong to caller
     let row_opt = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT content, category, source, importance, space_id, \
                         episode_id, tags, session_id \
-                 FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
-                params![memory_id, user_id],
+                 FROM memories WHERE id = ?1 AND is_forgotten = 0",
+                params![memory_id],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -117,8 +117,8 @@ pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Ve
     if content.len() < MIN_LENGTH {
         db.write(move |conn| {
             conn.execute(
-                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
-                params![memory_id, user_id],
+                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
+                params![memory_id],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(())
@@ -143,8 +143,8 @@ pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Ve
         _ => {
             db.write(move |conn| {
                 conn.execute(
-                    "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
-                    params![memory_id, user_id],
+                    "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
+                    params![memory_id],
                 )
                 .map_err(rusqlite_to_eng_error)?;
                 Ok(())
@@ -170,14 +170,13 @@ pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Ve
                 conn.execute(
                     "INSERT INTO memories (content, category, source, importance, version, is_latest, \
                      parent_memory_id, source_count, is_static, is_forgotten, is_fact, confidence, \
-                     status, user_id, space_id, episode_id, tags, created_at, updated_at) \
+                     status, space_id, episode_id, tags, created_at, updated_at) \
                      VALUES (?1, 'fact', 'decomposition', ?2, 1, 1, ?3, 1, 0, 0, 1, 1.0, \
-                     'approved', ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))",
+                     'approved', ?4, ?5, ?6, datetime('now'), datetime('now'))",
                     params![
                         trimmed,
                         importance,
                         memory_id,
-                        user_id,
                         space_id,
                         episode_id,
                         tags_clone
@@ -206,8 +205,8 @@ pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Ve
     if !created_ids.is_empty() {
         db.write(move |conn| {
             conn.execute(
-                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
-                params![memory_id, user_id],
+                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
+                params![memory_id],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(())

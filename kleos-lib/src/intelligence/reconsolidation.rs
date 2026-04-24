@@ -33,11 +33,11 @@ pub async fn reconsolidate_memory(
                 .prepare(
                     "SELECT id, importance, confidence, is_static, access_count, \
                             recall_hits, recall_misses, fsrs_stability, created_at \
-                     FROM memories WHERE id = ?1 AND user_id = ?2",
+                     FROM memories WHERE id = ?1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt
-                .query(rusqlite::params![memory_id, user_id])
+                .query(rusqlite::params![memory_id])
                 .map_err(rusqlite_to_eng_error)?;
             if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 let importance: i32 = row.get(1).map_err(rusqlite_to_eng_error)?;
@@ -186,8 +186,8 @@ pub async fn reconsolidate_memory(
             .map_err(rusqlite_to_eng_error)?;
 
             conn.execute(
-                "UPDATE memories SET adaptive_score = ?1 WHERE id = ?2 AND user_id = ?3",
-                rusqlite::params![adaptive_score, memory_id, user_id],
+                "UPDATE memories SET adaptive_score = ?1 WHERE id = ?2",
+                rusqlite::params![adaptive_score, memory_id],
             )
             .map_err(rusqlite_to_eng_error)?;
 
@@ -304,14 +304,14 @@ pub async fn record_recall_outcome(
         .write(move |conn| {
             let n = if useful {
                 conn.execute(
-                    "UPDATE memories SET recall_hits = recall_hits + 1 WHERE id = ?1 AND user_id = ?2",
-                    rusqlite::params![memory_id, user_id],
+                    "UPDATE memories SET recall_hits = recall_hits + 1 WHERE id = ?1",
+                    rusqlite::params![memory_id],
                 )
                 .map_err(rusqlite_to_eng_error)?
             } else {
                 conn.execute(
-                    "UPDATE memories SET recall_misses = recall_misses + 1 WHERE id = ?1 AND user_id = ?2",
-                    rusqlite::params![memory_id, user_id],
+                    "UPDATE memories SET recall_misses = recall_misses + 1 WHERE id = ?1",
+                    rusqlite::params![memory_id],
                 )
                 .map_err(rusqlite_to_eng_error)?
             };

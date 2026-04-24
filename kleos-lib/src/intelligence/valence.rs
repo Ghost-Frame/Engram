@@ -238,18 +238,18 @@ pub async fn query_by_emotion(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_emotional_profile(db: &Database, user_id: i64) -> Result<EmotionalProfile> {
+pub async fn get_emotional_profile(db: &Database, _user_id: i64) -> Result<EmotionalProfile> {
     let emotions = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT dominant_emotion, COUNT(*) as count, AVG(valence), AVG(arousal) \
-                     FROM memories WHERE user_id = ?1 AND dominant_emotion IS NOT NULL AND is_forgotten = 0 \
+                     FROM memories WHERE dominant_emotion IS NOT NULL AND is_forgotten = 0 \
                      GROUP BY dominant_emotion ORDER BY count DESC",
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let rows = stmt
-                .query_map(params![user_id], |row| {
+                .query_map([], |row| {
                     Ok(EmotionStat {
                         dominant_emotion: row.get(0)?,
                         count: row.get(1)?,
@@ -271,11 +271,11 @@ pub async fn get_emotional_profile(db: &Database, user_id: i64) -> Result<Emotio
                      SUM(CASE WHEN valence > 0.2 THEN 1 ELSE 0 END), \
                      SUM(CASE WHEN valence < -0.2 THEN 1 ELSE 0 END), \
                      SUM(CASE WHEN valence BETWEEN -0.2 AND 0.2 THEN 1 ELSE 0 END) \
-                     FROM memories WHERE user_id = ?1 AND valence IS NOT NULL AND is_forgotten = 0",
+                     FROM memories WHERE valence IS NOT NULL AND is_forgotten = 0",
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let result = stmt
-                .query_row(params![user_id], |row| {
+                .query_row([], |row| {
                     Ok(OverallEmotionStats {
                         avg_valence: row.get::<_, Option<f64>>(0)?.unwrap_or(0.0),
                         avg_arousal: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),

@@ -291,8 +291,8 @@ pub async fn assign_memories_to_episode(
         for memory_id in &memory_ids {
             let count = conn
                 .execute(
-                    "UPDATE memories SET episode_id = ?1 WHERE id = ?2 AND user_id = ?3",
-                    params![episode_id, *memory_id, user_id],
+                    "UPDATE memories SET episode_id = ?1 WHERE id = ?2",
+                    params![episode_id, *memory_id],
                 )
                 .map_err(rusqlite_to_eng_error)?;
             assigned += count as i64;
@@ -301,7 +301,7 @@ pub async fn assign_memories_to_episode(
         conn.execute(
             "UPDATE episodes
              SET memory_count = (
-                 SELECT COUNT(*) FROM memories WHERE episode_id = ?1 AND user_id = ?2
+                 SELECT COUNT(*) FROM memories WHERE episode_id = ?1
              )
              WHERE id = ?1 AND user_id = ?2",
             params![episode_id, user_id],
@@ -320,7 +320,7 @@ pub async fn finalize_episode(db: &Database, id: i64, user_id: i64) -> Result<Ep
             "UPDATE episodes
              SET ended_at = COALESCE(ended_at, datetime('now')),
                  memory_count = (
-                     SELECT COUNT(*) FROM memories WHERE episode_id = ?1 AND user_id = ?2
+                     SELECT COUNT(*) FROM memories WHERE episode_id = ?1
                  )
              WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],

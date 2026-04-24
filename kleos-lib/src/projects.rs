@@ -217,8 +217,8 @@ pub async fn link_memory(
         // Verify memory ownership
         let memory_exists: bool = conn
             .query_row(
-                "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
-                rusqlite::params![memory_id, user_id],
+                "SELECT 1 FROM memories WHERE id = ?1",
+                rusqlite::params![memory_id],
                 |_| Ok(true),
             )
             .optional()

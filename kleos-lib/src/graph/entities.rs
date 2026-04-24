@@ -457,7 +457,7 @@ pub async fn unlink_memory_entity(
             .execute(
                 "DELETE FROM memory_entities \
                  WHERE memory_id = ?1 AND entity_id = ?2 \
-                   AND EXISTS (SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?3) \
+                   AND EXISTS (SELECT 1 FROM memories WHERE id = ?1) \
                    AND EXISTS (SELECT 1 FROM entities WHERE id = ?2 AND user_id = ?3)",
                 rusqlite::params![memory_id, entity_id, user_id],
             )

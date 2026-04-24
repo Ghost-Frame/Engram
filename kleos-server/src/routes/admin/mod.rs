@@ -982,20 +982,35 @@ async fn reset_user(
     // SECURITY (SEC-MED-2): destructive reset must require admin scope.
     require_admin(&auth)?;
     let uid = auth.user_id;
-    let tables = &[
-        "DELETE FROM memories WHERE user_id = ?1",
+    // Tables that are wiped by user_id (single-tenant: uid == the only tenant)
+    let uid_tables = &[
         "DELETE FROM conversations WHERE user_id = ?1",
         "DELETE FROM episodes WHERE user_id = ?1",
         "DELETE FROM user_preferences WHERE user_id = ?1",
-        "DELETE FROM structured_facts WHERE memory_id IN (SELECT id FROM memories WHERE user_id = ?1)",
+    ];
+    // Tables wiped whole-monolith (no user_id column, or single-tenant equivalent)
+    let global_tables = &[
+        "DELETE FROM memories",
+        "DELETE FROM structured_facts WHERE memory_id IN (SELECT id FROM memories)",
     ];
     let mut total = 0i64;
-    for sql in tables {
+    for sql in uid_tables {
         let sql_owned = sql.to_string();
         total += state
             .db
             .write(move |conn| {
                 conn.execute(&sql_owned, params![uid])
+                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            })
+            .await
+            .map_err(AppError)? as i64;
+    }
+    for sql in global_tables {
+        let sql_owned = sql.to_string();
+        total += state
+            .db
+            .write(move |conn| {
+                conn.execute(&sql_owned, [])
                     .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
             })
             .await
