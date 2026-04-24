@@ -620,10 +620,8 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             period_end TEXT,
             source_memory_ids TEXT,
             confidence REAL NOT NULL DEFAULT 1.0,
-            user_id INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_reflections_user ON reflections(user_id);
         CREATE INDEX IF NOT EXISTS idx_reflections_type ON reflections(reflection_type);
         CREATE INDEX IF NOT EXISTS idx_reflections_period ON reflections(period_end DESC);
 

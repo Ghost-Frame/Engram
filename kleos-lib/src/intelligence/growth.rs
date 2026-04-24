@@ -249,9 +249,9 @@ pub async fn reflect(
 
             conn.execute(
                 "INSERT INTO reflections (content, reflection_type, source_memory_ids, \
-                 confidence, user_id, created_at) \
-                 VALUES (?1, 'growth', ?2, 1.0, ?3, datetime('now'))",
-                rusqlite::params![trimmed_refl, format!("[{}]", memory_id), user_id],
+                 confidence, created_at) \
+                 VALUES (?1, 'growth', ?2, 1.0, datetime('now'))",
+                rusqlite::params![trimmed_refl, format!("[{}]", memory_id)],
             )
             .map_err(rusqlite_to_eng_error)?;
 
