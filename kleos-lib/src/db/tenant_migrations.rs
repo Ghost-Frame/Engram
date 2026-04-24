@@ -150,6 +150,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "chiasm_user_id_drop",
         up: apply_schema_v25_chiasm_drop,
     },
+    TenantMigration {
+        version: 26,
+        description: "approvals_user_id_drop",
+        up: apply_schema_v26_approvals_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -275,6 +280,11 @@ fn apply_schema_v24_sessions_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v25_chiasm_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v25_chiasm_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v25 failed: {e}")))
+}
+
+fn apply_schema_v26_approvals_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v26_approvals_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v26 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -1149,8 +1159,27 @@ mod tests {
 
     #[test]
     fn approvals_usable_after_v5() {
+        // v5 introduced approvals with a user_id shim; v26 drops it.
+        // Cap the chain at v25 so this test still locks the v5 shape.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 26 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let table: i64 = conn
             .query_row(
@@ -1161,7 +1190,7 @@ mod tests {
             .unwrap();
         assert_eq!(table, 1, "approvals table missing after v5");
 
-        // Exercise the SQL shape kleos-lib approvals/mod.rs actually uses.
+        // Exercise the SQL shape kleos-lib approvals/mod.rs used pre-v26.
         conn.execute(
             "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -1198,6 +1227,154 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pending_count, 1);
+    }
+
+    /// v26: approvals must NOT have a user_id column after the full chain.
+    #[test]
+    fn user_id_absent_from_approvals_after_v26() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 0, "approvals still has user_id column after v26");
+
+        // Both shim indexes are gone.
+        for idx in &["idx_approvals_user", "idx_approvals_user_status"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'", idx),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "index '{}' still present after v26", idx);
+        }
+    }
+
+    /// v26: the post-drop approvals table supports the SQL shape kleos-lib
+    /// approvals/mod.rs now uses (no user_id on INSERT, no user_id
+    /// predicate on SELECT/UPDATE).
+    #[test]
+    fn approvals_usable_after_v26() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "appr-v26",
+                "run tacos",
+                None::<String>,
+                "gir",
+                "pending",
+                "2026-04-22T00:00:00Z",
+                "2026-04-22T00:02:00Z",
+            ],
+        )
+        .unwrap();
+
+        let (id, status): (String, String) = conn
+            .query_row(
+                "SELECT id, status FROM approvals WHERE id = ?1",
+                rusqlite::params!["appr-v26"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(id, "appr-v26");
+        assert_eq!(status, "pending");
+
+        // UPDATE without user_id predicate also works.
+        conn.execute(
+            "UPDATE approvals SET status = 'approved' WHERE id = ?1",
+            rusqlite::params!["appr-v26"],
+        )
+        .unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM approvals WHERE id = ?1",
+                rusqlite::params!["appr-v26"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "approved");
+    }
+
+    /// v26: rows inserted under the v5 shim shape survive the drop with
+    /// every non-user_id field intact.
+    #[test]
+    fn approvals_rows_preserved_through_v26() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 26 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "appr-pre",
+                "ship 5.5",
+                Some("{\"ctx\": true}"),
+                "gir",
+                "pending",
+                "2026-04-22T00:00:00Z",
+                "2026-04-22T00:05:00Z",
+                1_i64,
+            ],
+        )
+        .unwrap();
+
+        apply_schema_v26_approvals_drop(&conn).unwrap();
+
+        let (id, action, context, requester, status): (
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT id, action, context, requester, status FROM approvals WHERE id = ?1",
+                rusqlite::params!["appr-pre"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(id, "appr-pre");
+        assert_eq!(action, "ship 5.5");
+        assert_eq!(context.as_deref(), Some("{\"ctx\": true}"));
+        assert_eq!(requester, "gir");
+        assert_eq!(status, "pending");
+
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_count, 0);
     }
 
     #[test]

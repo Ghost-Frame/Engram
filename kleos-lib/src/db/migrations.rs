@@ -278,6 +278,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 29,
+        description: "drop_user_id_approvals",
+        up: run_migration_drop_user_id_approvals,
+        // DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -312,6 +320,7 @@ const MIGRATION_DROP_USER_ID_MEMORY_CORE: i64 = 25;
 const MIGRATION_DROP_USER_ID_SCRATCHPAD: i64 = 26;
 const MIGRATION_DROP_USER_ID_SESSIONS: i64 = 27;
 const MIGRATION_DROP_USER_ID_CHIASM: i64 = 28;
+const MIGRATION_DROP_USER_ID_APPROVALS: i64 = 29;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -528,6 +537,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 28: drop_user_id_chiasm");
         run_migration_drop_user_id_chiasm(conn)?;
         record_migration(conn, MIGRATION_DROP_USER_ID_CHIASM, "drop_user_id_chiasm")?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_APPROVALS {
+        info!("Running migration 29: drop_user_id_approvals");
+        run_migration_drop_user_id_approvals(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_APPROVALS,
+            "drop_user_id_approvals",
+        )?;
     }
 
     Ok(())
@@ -1614,6 +1633,40 @@ fn run_migration_drop_user_id_chiasm(conn: &rusqlite::Connection) -> Result<()> 
     }
 
     info!("Migration 28 complete: user_id dropped from chiasm tables");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 29: drop user_id from approvals (simple DROP INDEX + DROP COLUMN)
+// ---------------------------------------------------------------------------
+
+/// Migration 29: drop user_id shim from approvals. Both the simple
+/// idx_approvals_user and the composite idx_approvals_user_status
+/// indexes are dropped before the column goes. No UNIQUE or FK references
+/// the column. Idempotent: skips if user_id already absent.
+fn run_migration_drop_user_id_approvals(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        info!("approvals.user_id already absent, migration 29 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_approvals_user;
+         DROP INDEX IF EXISTS idx_approvals_user_status;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    conn.execute("ALTER TABLE approvals DROP COLUMN user_id", [])
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 29 complete: user_id dropped from approvals");
     Ok(())
 }
 
