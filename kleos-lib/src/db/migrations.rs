@@ -262,6 +262,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 27,
+        description: "drop_user_id_sessions",
+        up: run_migration_drop_user_id_sessions,
+        // DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -294,6 +302,7 @@ const MIGRATION_MEMORIES_LIST_COVERING_INDEX: i64 = 23;
 const MIGRATION_COMMERCE_TABLES: i64 = 24;
 const MIGRATION_DROP_USER_ID_MEMORY_CORE: i64 = 25;
 const MIGRATION_DROP_USER_ID_SCRATCHPAD: i64 = 26;
+const MIGRATION_DROP_USER_ID_SESSIONS: i64 = 27;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -493,6 +502,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_DROP_USER_ID_SCRATCHPAD,
             "drop_user_id_scratchpad",
+        )?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_SESSIONS {
+        info!("Running migration 27: drop_user_id_sessions");
+        run_migration_drop_user_id_sessions(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_SESSIONS,
+            "drop_user_id_sessions",
         )?;
     }
 
@@ -1513,6 +1532,36 @@ fn run_migration_drop_user_id_scratchpad(conn: &rusqlite::Connection) -> Result<
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 26 complete: user_id dropped from scratchpad");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 27: drop user_id from sessions (simple DROP INDEX + DROP COLUMN)
+// ---------------------------------------------------------------------------
+
+/// Migration 27: drop user_id shim from sessions. No UNIQUE or FK references
+/// the column, so ALTER TABLE DROP COLUMN is safe. session_output never had
+/// user_id, so it is not touched. Idempotent: no-op if user_id already absent.
+fn run_migration_drop_user_id_sessions(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        info!("sessions.user_id already absent, migration 27 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch("DROP INDEX IF EXISTS idx_sessions_user;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    conn.execute("ALTER TABLE sessions DROP COLUMN user_id", [])
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 27 complete: user_id dropped from sessions");
     Ok(())
 }
 

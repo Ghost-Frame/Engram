@@ -349,8 +349,8 @@ pub async fn create_session(
     let id_for_insert = id.clone();
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO sessions (id, agent, user_id) VALUES (?1, ?2, ?3)",
-            params![id_for_insert, agent, user_id],
+            "INSERT INTO sessions (id, agent) VALUES (?1, ?2)",
+            params![id_for_insert, agent],
         )
         .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         Ok(())
@@ -366,9 +366,9 @@ pub async fn get_session(db: &Database, session_id: &str, user_id: i64) -> Resul
     let session_id = session_id.to_string();
     db.read(move |conn| {
         conn.query_row(
-            "SELECT id, agent, user_id, status, created_at, updated_at FROM sessions WHERE id = ?1 AND user_id = ?2",
-            params![session_id, user_id],
-            row_to_session,
+            "SELECT id, agent, status, created_at, updated_at FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| row_to_session(row, user_id),
         )
         .optional()
         .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
@@ -390,12 +390,12 @@ pub async fn list_sessions(
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, agent, user_id, status, created_at, updated_at FROM sessions \
-                 WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+                "SELECT id, agent, status, created_at, updated_at FROM sessions \
+                 ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
             )
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         let rows = stmt
-            .query_map(params![user_id, limit, offset], row_to_session)
+            .query_map(params![limit, offset], |row| row_to_session(row, user_id))
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         let mut sessions = Vec::new();
         for row in rows {
@@ -411,19 +411,20 @@ pub async fn append_output(
     db: &Database,
     session_id: &str,
     line: &str,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<()> {
     let session_id_owned = session_id.to_string();
     let line_owned = line.to_string();
 
-    // Verify session exists and belongs to user
+    // Verify session exists (tenant isolation is enforced by the shard,
+    // so the user_id predicate is no longer needed here).
     let sid_check = session_id_owned.clone();
     let exists = db
         .read(move |conn| {
             let result = conn
                 .query_row(
-                    "SELECT id FROM sessions WHERE id = ?1 AND user_id = ?2",
-                    params![sid_check, user_id],
+                    "SELECT id FROM sessions WHERE id = ?1",
+                    params![sid_check],
                     |_| Ok(()),
                 )
                 .optional()
@@ -469,18 +470,18 @@ pub async fn append_output(
 pub async fn get_session_output(
     db: &Database,
     session_id: &str,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Vec<String>> {
     let session_id_owned = session_id.to_string();
 
-    // Verify ownership
+    // Verify the session exists (tenant isolation is at the shard level).
     let sid_check = session_id_owned.clone();
     let exists = db
         .read(move |conn| {
             let result = conn
                 .query_row(
-                    "SELECT id FROM sessions WHERE id = ?1 AND user_id = ?2",
-                    params![sid_check, user_id],
+                    "SELECT id FROM sessions WHERE id = ?1",
+                    params![sid_check],
                     |_| Ok(()),
                 )
                 .optional()
@@ -515,14 +516,17 @@ pub async fn get_session_output(
     .await
 }
 
-fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionInfo> {
+fn row_to_session(
+    row: &rusqlite::Row<'_>,
+    owner_user_id: i64,
+) -> rusqlite::Result<SessionInfo> {
     Ok(SessionInfo {
         id: row.get(0)?,
         agent: row.get(1)?,
-        user_id: row.get(2)?,
-        status: row.get(3)?,
-        created_at: row.get(4)?,
-        updated_at: row.get(5)?,
+        user_id: owner_user_id,
+        status: row.get(2)?,
+        created_at: row.get(3)?,
+        updated_at: row.get(4)?,
     })
 }
 
