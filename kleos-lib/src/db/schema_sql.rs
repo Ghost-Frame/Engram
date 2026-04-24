@@ -1213,7 +1213,6 @@ pub const SYNTHEOS_SERVICES_SQL: &str = r#"
         filter_type TEXT,
         webhook_url TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        user_id INTEGER NOT NULL DEFAULT 1,
         UNIQUE(agent, channel)
     );
     CREATE INDEX IF NOT EXISTS idx_axon_subs_channel ON axon_subscriptions(channel);
@@ -1223,7 +1222,6 @@ pub const SYNTHEOS_SERVICES_SQL: &str = r#"
         channel TEXT NOT NULL,
         last_event_id INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        user_id INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY(agent, channel)
     );
 
