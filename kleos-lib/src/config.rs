@@ -166,7 +166,7 @@ fn default_skill_evolution_derive_similarity() -> f32 {
 }
 
 fn default_web_search_url() -> String {
-    "http://100.64.0.13:8888".to_string()
+    "http://127.0.0.1:8888".to_string()
 }
 
 fn default_web_search_timeout_ms() -> u64 {
@@ -500,8 +500,8 @@ pub struct Config {
     #[serde(default = "default_skill_evolution_derive_similarity")]
     pub skill_evolution_derive_similarity: f32,
     /// Base URL of the SearXNG instance proxied by the /search/web route.
-    /// Must include scheme and port. Default: http://100.64.0.13:8888
-    /// (the private Zanverse Headscale SearXNG instance).
+    /// Must include scheme and port. Default: http://127.0.0.1:8888 (local
+    /// SearXNG). Point at your own SearXNG deployment in production.
     #[serde(default = "default_web_search_url")]
     pub web_search_url: String,
     /// Upstream request timeout in milliseconds for /search/web.

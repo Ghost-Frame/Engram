@@ -8,7 +8,7 @@ _EIDOLON_KEY=""
 # Lazy-resolve Eidolon key (only calls cred once per hook invocation)
 eidolon_key() {
   if [ -z "$_EIDOLON_KEY" ]; then
-    _EIDOLON_KEY="$(cred get eidolon hetzner --raw 2>/dev/null || echo '')"
+    _EIDOLON_KEY="${EIDOLON_API_KEY:-$(cred get eidolon "${EIDOLON_CRED_KEY:-default}" --raw 2>/dev/null || echo '')}"
   fi
   printf '%s' "$_EIDOLON_KEY"
 }

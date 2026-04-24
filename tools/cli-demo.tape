@@ -22,7 +22,7 @@ Set PlaybackSpeed 1.0
 # Isolate the recording from the user's rc files / local aliases.
 Hide
 Type `export PS1='$ '` Enter
-Type `alias kleos-cli='~/build-cache/kleos-target/release/kleos-cli'` Enter
+Type `alias kleos-cli="$(pwd)/../target/release/kleos-cli"` Enter
 Type `clear` Enter
 Show
 
