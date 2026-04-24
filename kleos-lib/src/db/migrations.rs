@@ -310,6 +310,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 33,
+        description: "drop_user_id_webhooks",
+        up: run_migration_drop_user_id_webhooks,
+        // DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -348,6 +356,7 @@ const MIGRATION_DROP_USER_ID_APPROVALS: i64 = 29;
 const MIGRATION_DROP_USER_ID_BROCA: i64 = 30;
 const MIGRATION_DROP_USER_ID_PROJECTS: i64 = 31;
 const MIGRATION_DROP_USER_ID_ACTIVITY: i64 = 32;
+const MIGRATION_DROP_USER_ID_WEBHOOKS: i64 = 33;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -600,6 +609,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             MIGRATION_DROP_USER_ID_ACTIVITY,
             "drop_user_id_activity",
         )?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_WEBHOOKS {
+        info!("Running migration 33: drop_user_id_webhooks");
+        run_migration_drop_user_id_webhooks(conn)?;
+        record_migration(conn, MIGRATION_DROP_USER_ID_WEBHOOKS, "drop_user_id_webhooks")?;
     }
 
     Ok(())
@@ -1856,6 +1871,36 @@ fn run_migration_drop_user_id_activity(conn: &rusqlite::Connection) -> Result<()
     }
 
     info!("Migration 32 complete: user_id dropped from axon_events + soma_agents");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 33: drop user_id from webhooks (DROP INDEX + DROP COLUMN)
+// ---------------------------------------------------------------------------
+
+/// Migration 33: drop user_id shim from webhooks. No UNIQUE references the
+/// column (the tenant shard dropped the FK in v9). Idempotent: skips if
+/// user_id already absent.
+fn run_migration_drop_user_id_webhooks(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        info!("webhooks.user_id already absent, migration 33 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch("DROP INDEX IF EXISTS idx_webhooks_user;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    conn.execute("ALTER TABLE webhooks DROP COLUMN user_id", [])
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 33 complete: user_id dropped from webhooks");
     Ok(())
 }
 

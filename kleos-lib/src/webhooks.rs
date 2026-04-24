@@ -32,7 +32,7 @@ const WEBHOOK_FAILURE_THRESHOLD: i64 = 10;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Webhook {
     pub id: i64,
-    pub user_id: i64,
+    pub user_id: i64, // populated from caller context; not stored in tenant shards after v30
     pub url: String,
     pub events: Vec<String>,
     /// SECURITY: set to `Some(true)` when a shared secret is configured so the
@@ -269,8 +269,8 @@ pub async fn create_webhook(
 
     db.write(move |conn| {
         conn.query_row(
-            "INSERT INTO webhooks (url, events, secret, user_id) VALUES (?1, ?2, ?3, ?4) RETURNING id, created_at",
-            rusqlite::params![url_s, events_json, secret_s, user_id],
+            "INSERT INTO webhooks (url, events, secret) VALUES (?1, ?2, ?3) RETURNING id, created_at",
+            rusqlite::params![url_s, events_json, secret_s],
             |row| {
                 let id: i64 = row.get(0)?;
                 let created_at: String = row.get(1)?;
@@ -287,35 +287,35 @@ pub async fn list_webhooks(db: &Database, user_id: i64) -> Result<Vec<Webhook>> 
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, user_id, url, events, secret, is_active, failure_count, last_triggered_at, created_at \
-                 FROM webhooks WHERE user_id = ?1",
+                "SELECT id, url, events, secret, is_active, failure_count, last_triggered_at, created_at \
+                 FROM webhooks ORDER BY created_at DESC",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id])
+            .query([])
             .map_err(rusqlite_to_eng_error)?;
         let mut result = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             let events_str: String = row
-                .get::<_, String>(3)
+                .get::<_, String>(2)
                 .unwrap_or_else(|_| "[\"*\"]".to_string());
             let events: Vec<String> =
                 serde_json::from_str(&events_str).unwrap_or_else(|_| vec!["*".to_string()]);
             // SECURITY: never emit the raw secret from this function. Only record
             // whether one is configured so the API can show "signing enabled".
-            let stored_secret: Option<String> = row.get(4).unwrap_or(None);
+            let stored_secret: Option<String> = row.get(3).unwrap_or(None);
             let has_secret = stored_secret.as_deref().is_some_and(|s| !s.is_empty());
             result.push(Webhook {
                 id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                user_id: row.get(1).map_err(rusqlite_to_eng_error)?,
-                url: row.get(2).map_err(rusqlite_to_eng_error)?,
+                user_id,
+                url: row.get(1).map_err(rusqlite_to_eng_error)?,
                 events,
                 secret: None,
                 has_secret,
-                is_active: row.get::<_, i64>(5).unwrap_or(1) != 0,
-                failure_count: row.get(6).unwrap_or(0),
-                last_triggered_at: row.get(7).unwrap_or(None),
-                created_at: row.get(8).map_err(rusqlite_to_eng_error)?,
+                is_active: row.get::<_, i64>(4).unwrap_or(1) != 0,
+                failure_count: row.get(5).unwrap_or(0),
+                last_triggered_at: row.get(6).unwrap_or(None),
+                created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
             });
         }
         Ok(result)
@@ -330,33 +330,33 @@ async fn list_webhooks_with_secrets(db: &Database, user_id: i64) -> Result<Vec<W
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, user_id, url, events, secret, is_active, failure_count, last_triggered_at, created_at \
-                 FROM webhooks WHERE user_id = ?1",
+                "SELECT id, url, events, secret, is_active, failure_count, last_triggered_at, created_at \
+                 FROM webhooks ORDER BY created_at DESC",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id])
+            .query([])
             .map_err(rusqlite_to_eng_error)?;
         let mut result = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             let events_str: String = row
-                .get::<_, String>(3)
+                .get::<_, String>(2)
                 .unwrap_or_else(|_| "[\"*\"]".to_string());
             let events: Vec<String> =
                 serde_json::from_str(&events_str).unwrap_or_else(|_| vec!["*".to_string()]);
-            let secret: Option<String> = row.get(4).unwrap_or(None);
+            let secret: Option<String> = row.get(3).unwrap_or(None);
             let has_secret = secret.as_deref().is_some_and(|s| !s.is_empty());
             result.push(Webhook {
                 id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                user_id: row.get(1).map_err(rusqlite_to_eng_error)?,
-                url: row.get(2).map_err(rusqlite_to_eng_error)?,
+                user_id,
+                url: row.get(1).map_err(rusqlite_to_eng_error)?,
                 events,
                 secret,
                 has_secret,
-                is_active: row.get::<_, i64>(5).unwrap_or(1) != 0,
-                failure_count: row.get(6).unwrap_or(0),
-                last_triggered_at: row.get(7).unwrap_or(None),
-                created_at: row.get(8).map_err(rusqlite_to_eng_error)?,
+                is_active: row.get::<_, i64>(4).unwrap_or(1) != 0,
+                failure_count: row.get(5).unwrap_or(0),
+                last_triggered_at: row.get(6).unwrap_or(None),
+                created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
             });
         }
         Ok(result)
@@ -365,11 +365,11 @@ async fn list_webhooks_with_secrets(db: &Database, user_id: i64) -> Result<Vec<W
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn delete_webhook(db: &Database, id: i64, user_id: i64) -> Result<()> {
+pub async fn delete_webhook(db: &Database, id: i64, _user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
-            "DELETE FROM webhooks WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![id, user_id],
+            "DELETE FROM webhooks WHERE id = ?1",
+            rusqlite::params![id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -464,22 +464,21 @@ async fn insert_dead_letter(
 pub async fn list_dead_letters(
     db: &Database,
     webhook_id: i64,
-    user_id: i64,
+    _user_id: i64,
     limit: i64,
 ) -> Result<Vec<WebhookDeadLetter>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT dl.id, dl.webhook_id, dl.event, dl.payload, dl.attempts, \
-                 dl.last_error, dl.last_status_code, dl.created_at \
-                 FROM webhook_dead_letters dl \
-                 JOIN webhooks w ON w.id = dl.webhook_id \
-                 WHERE dl.webhook_id = ?1 AND w.user_id = ?2 \
-                 ORDER BY dl.created_at DESC LIMIT ?3",
+                "SELECT id, webhook_id, event, payload, attempts, \
+                 last_error, last_status_code, created_at \
+                 FROM webhook_dead_letters \
+                 WHERE webhook_id = ?1 \
+                 ORDER BY created_at DESC LIMIT ?2",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![webhook_id, user_id, limit])
+            .query(rusqlite::params![webhook_id, limit])
             .map_err(rusqlite_to_eng_error)?;
         let mut result = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {

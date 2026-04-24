@@ -170,6 +170,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "activity_user_id_drop",
         up: apply_schema_v29_activity_drop,
     },
+    TenantMigration {
+        version: 30,
+        description: "webhooks_user_id_drop",
+        up: apply_schema_v30_webhooks_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -315,6 +320,11 @@ fn apply_schema_v28_projects_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v29_activity_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v29_activity_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v29 failed: {e}")))
+}
+
+fn apply_schema_v30_webhooks_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v30_webhooks_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v30 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -2090,8 +2100,27 @@ mod tests {
 
     #[test]
     fn webhooks_usable_after_v9() {
+        // v9 introduced webhooks with a user_id shim; v30 drops it.
+        // Cap the chain at v29 so this test still locks the v9 shape.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 30 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let tables: i64 = conn
             .query_row(
@@ -2102,6 +2131,7 @@ mod tests {
             .unwrap();
         assert_eq!(tables, 2, "webhooks/webhook_dead_letters missing after v9");
 
+        // Exercise the INSERT shape webhooks.rs used pre-v30.
         conn.execute(
             "INSERT INTO webhooks (user_id, url, events, secret) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![
@@ -3836,5 +3866,139 @@ mod tests {
             )
             .unwrap();
         assert_eq!(col_count, 0, "user_id column must be absent after v22");
+    }
+
+    /// v30: webhooks must NOT have a user_id column after the full migration
+    /// chain, and idx_webhooks_user must be gone.
+    #[test]
+    fn user_id_absent_from_webhooks_after_v30() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 0, "webhooks still has user_id column after v30");
+
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_webhooks_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 0, "idx_webhooks_user still exists after v30");
+    }
+
+    /// v30: webhooks supports the SQL shape kleos-lib/src/webhooks.rs now
+    /// uses (no user_id on INSERT or SELECT).
+    #[test]
+    fn webhooks_usable_after_v30() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO webhooks (url, events) VALUES (?1, ?2)",
+            rusqlite::params!["https://hooks.test/v30", "[\"memory.created\"]"],
+        )
+        .unwrap();
+        let wid = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO webhook_dead_letters (webhook_id, event, payload, attempts) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![wid, "memory.created", "{}", 1_i64],
+        )
+        .unwrap();
+
+        let url: String = conn
+            .query_row(
+                "SELECT url FROM webhooks WHERE id = ?1",
+                rusqlite::params![wid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(url, "https://hooks.test/v30");
+
+        let dl: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM webhook_dead_letters WHERE webhook_id = ?1",
+                rusqlite::params![wid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dl, 1);
+
+        // idx_webhooks_active survives the drop.
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_webhooks_active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1, "idx_webhooks_active must survive v30");
+    }
+
+    /// v30: rows inserted under the v9 shim shape survive the drop with
+    /// every non-user_id field intact.
+    #[test]
+    fn webhooks_rows_preserved_through_v30() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 30 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO webhooks (url, events, secret, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                "https://preserve.test/hook",
+                "[\"memory.created\"]",
+                None::<String>,
+                1_i64,
+            ],
+        )
+        .unwrap();
+        let pre_id = conn.last_insert_rowid();
+
+        apply_schema_v30_webhooks_drop(&conn).unwrap();
+
+        let (url, events): (String, String) = conn
+            .query_row(
+                "SELECT url, events FROM webhooks WHERE id = ?1",
+                rusqlite::params![pre_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(url, "https://preserve.test/hook");
+        assert_eq!(events, "[\"memory.created\"]");
+
+        let col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col, 0, "webhooks still has user_id after v30");
     }
 }
