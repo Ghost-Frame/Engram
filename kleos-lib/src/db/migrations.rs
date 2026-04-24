@@ -286,6 +286,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 30,
+        description: "drop_user_id_broca",
+        up: run_migration_drop_user_id_broca,
+        // DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -321,6 +329,7 @@ const MIGRATION_DROP_USER_ID_SCRATCHPAD: i64 = 26;
 const MIGRATION_DROP_USER_ID_SESSIONS: i64 = 27;
 const MIGRATION_DROP_USER_ID_CHIASM: i64 = 28;
 const MIGRATION_DROP_USER_ID_APPROVALS: i64 = 29;
+const MIGRATION_DROP_USER_ID_BROCA: i64 = 30;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -547,6 +556,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             MIGRATION_DROP_USER_ID_APPROVALS,
             "drop_user_id_approvals",
         )?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_BROCA {
+        info!("Running migration 30: drop_user_id_broca");
+        run_migration_drop_user_id_broca(conn)?;
+        record_migration(conn, MIGRATION_DROP_USER_ID_BROCA, "drop_user_id_broca")?;
     }
 
     Ok(())
@@ -1667,6 +1682,35 @@ fn run_migration_drop_user_id_approvals(conn: &rusqlite::Connection) -> Result<(
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 29 complete: user_id dropped from approvals");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 30: drop user_id from broca_actions (simple DROP INDEX + DROP COLUMN)
+// ---------------------------------------------------------------------------
+
+/// Migration 30: drop user_id shim from broca_actions. No UNIQUE or FK
+/// references the column. Idempotent: skips if user_id already absent.
+fn run_migration_drop_user_id_broca(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('broca_actions') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        info!("broca_actions.user_id already absent, migration 30 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch("DROP INDEX IF EXISTS idx_broca_actions_user;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    conn.execute("ALTER TABLE broca_actions DROP COLUMN user_id", [])
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 30 complete: user_id dropped from broca_actions");
     Ok(())
 }
 

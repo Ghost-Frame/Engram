@@ -1242,14 +1242,12 @@ pub const KLEOS_SERVICES_SQL: &str = r#"
         payload TEXT NOT NULL DEFAULT '{}',
         narrative TEXT,
         axon_event_id INTEGER,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        user_id INTEGER NOT NULL DEFAULT 1
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_broca_actions_agent ON broca_actions(agent, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_broca_actions_service ON broca_actions(service, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_broca_actions_action ON broca_actions(action, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_broca_actions_created ON broca_actions(created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_broca_actions_user ON broca_actions(user_id);
 
     -- Chiasm: task tracking with history ------------------------------
     CREATE TABLE IF NOT EXISTS chiasm_tasks (

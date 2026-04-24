@@ -155,6 +155,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "approvals_user_id_drop",
         up: apply_schema_v26_approvals_drop,
     },
+    TenantMigration {
+        version: 27,
+        description: "broca_user_id_drop",
+        up: apply_schema_v27_broca_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -285,6 +290,11 @@ fn apply_schema_v25_chiasm_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v26_approvals_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v26_approvals_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v26 failed: {e}")))
+}
+
+fn apply_schema_v27_broca_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v27_broca_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v27 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -1422,8 +1432,27 @@ mod tests {
 
     #[test]
     fn broca_actions_usable_after_v6() {
+        // v6 introduced broca_actions with a user_id shim; v27 drops it.
+        // Cap the chain at v26 so this test still locks the v6 shape.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 27 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let table: i64 = conn
             .query_row(
@@ -1434,7 +1463,7 @@ mod tests {
             .unwrap();
         assert_eq!(table, 1, "broca_actions table missing after v6");
 
-        // Exercise the INSERT shape kleos-lib services/broca.rs uses.
+        // Exercise the INSERT shape kleos-lib services/broca.rs used pre-v27.
         conn.execute(
             "INSERT INTO broca_actions (agent, service, action, payload, narrative, axon_event_id, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1460,6 +1489,144 @@ mod tests {
         assert_eq!(agent, "claude-code");
         assert_eq!(service, "cred");
         assert_eq!(uid, 4);
+    }
+
+    /// v27: broca_actions must NOT have a user_id column after the chain.
+    #[test]
+    fn user_id_absent_from_broca_after_v27() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('broca_actions') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 0, "broca_actions still has user_id column after v27");
+
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_broca_actions_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 0);
+    }
+
+    /// v27: broca_actions supports the SQL shape kleos-lib services/broca.rs
+    /// now uses (no user_id on INSERT, no user_id predicate on SELECT).
+    #[test]
+    fn broca_actions_usable_after_v27() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO broca_actions (agent, service, action, payload, narrative, axon_event_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "gir",
+                "items",
+                "bake",
+                r#"{"temp":"molten"}"#,
+                None::<String>,
+                None::<i64>,
+            ],
+        )
+        .unwrap();
+
+        let (agent, service): (String, String) = conn
+            .query_row(
+                "SELECT agent, service FROM broca_actions ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(agent, "gir");
+        assert_eq!(service, "items");
+
+        // Per-agent index still covers the ordered query.
+        let agent_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM broca_actions WHERE agent = ?1",
+                rusqlite::params!["gir"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(agent_count, 1);
+    }
+
+    /// v27: rows inserted under the v6 shim shape survive the drop with
+    /// every non-user_id field intact.
+    #[test]
+    fn broca_actions_rows_preserved_through_v27() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 27 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO broca_actions (agent, service, action, payload, narrative, axon_event_id, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "gir",
+                "kleos",
+                "ship-5.6",
+                "{\"batch\":\"5.3-5.6\"}",
+                Some("items"),
+                None::<i64>,
+                1_i64,
+            ],
+        )
+        .unwrap();
+        let pre_id = conn.last_insert_rowid();
+
+        apply_schema_v27_broca_drop(&conn).unwrap();
+
+        let (agent, service, action, payload, narrative): (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT agent, service, action, payload, narrative FROM broca_actions WHERE id = ?1",
+                rusqlite::params![pre_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(agent, "gir");
+        assert_eq!(service, "kleos");
+        assert_eq!(action, "ship-5.6");
+        assert_eq!(payload, "{\"batch\":\"5.3-5.6\"}");
+        assert_eq!(narrative.as_deref(), Some("items"));
+
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('broca_actions') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_count, 0);
     }
 
     #[test]

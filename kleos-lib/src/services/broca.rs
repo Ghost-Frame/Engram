@@ -39,13 +39,13 @@ pub struct BrocaStats {
 }
 
 const ACTION_COLUMNS: &str =
-    "id, agent, service, action, payload, narrative, axon_event_id, user_id, created_at";
+    "id, agent, service, action, payload, narrative, axon_event_id, created_at";
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-fn row_to_action_entry(row: &rusqlite::Row<'_>) -> Result<ActionEntry> {
+fn row_to_action_entry(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<ActionEntry> {
     let payload_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let payload: serde_json::Value = serde_json::from_str(&payload_str)?;
     Ok(ActionEntry {
@@ -56,8 +56,8 @@ fn row_to_action_entry(row: &rusqlite::Row<'_>) -> Result<ActionEntry> {
         payload,
         narrative: row.get(5).map_err(rusqlite_to_eng_error)?,
         axon_event_id: row.get(6).map_err(rusqlite_to_eng_error)?,
-        user_id: row.get(7).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(8).map_err(rusqlite_to_eng_error)?,
+        user_id: owner_user_id,
+        created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
     })
 }
 
@@ -82,8 +82,8 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
         .write(move |conn| {
             conn.execute(
                 "INSERT INTO broca_actions
-                    (agent, service, action, payload, narrative, axon_event_id, user_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    (agent, service, action, payload, narrative, axon_event_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
                     agent,
                     svc,
@@ -91,7 +91,6 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
                     payload_str,
                     narrative,
                     axon_event_id,
-                    user_id
                 ],
             )
             .map_err(rusqlite_to_eng_error)?;
@@ -112,25 +111,29 @@ pub async fn query_actions(
     offset: usize,
     user_id: i64,
 ) -> Result<Vec<ActionEntry>> {
-    let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE user_id = ?1");
-    let mut param_idx = 2usize;
-    let mut params_vec: Vec<rusqlite::types::Value> =
-        vec![rusqlite::types::Value::Integer(user_id)];
+    let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions");
+    let mut clauses: Vec<String> = Vec::new();
+    let mut param_idx = 1usize;
+    let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
 
     if let Some(a) = agent {
-        sql.push_str(&format!(" AND agent = ?{}", param_idx));
+        clauses.push(format!("agent = ?{}", param_idx));
         params_vec.push(rusqlite::types::Value::Text(a.to_string()));
         param_idx += 1;
     }
     if let Some(s) = service {
-        sql.push_str(&format!(" AND service = ?{}", param_idx));
+        clauses.push(format!("service = ?{}", param_idx));
         params_vec.push(rusqlite::types::Value::Text(s.to_string()));
         param_idx += 1;
     }
     if let Some(act) = action {
-        sql.push_str(&format!(" AND action = ?{}", param_idx));
+        clauses.push(format!("action = ?{}", param_idx));
         params_vec.push(rusqlite::types::Value::Text(act.to_string()));
         param_idx += 1;
+    }
+    if !clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&clauses.join(" AND "));
     }
     sql.push_str(&format!(
         " ORDER BY id DESC LIMIT ?{} OFFSET ?{}",
@@ -146,7 +149,7 @@ pub async fn query_actions(
         let mut rows = stmt.query(params).map_err(rusqlite_to_eng_error)?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            results.push(row_to_action_entry(row)?);
+            results.push(row_to_action_entry(row, user_id)?);
         }
         Ok(results)
     })
@@ -155,55 +158,38 @@ pub async fn query_actions(
 
 #[tracing::instrument(skip(db), fields(action_id = id, user_id))]
 pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEntry> {
-    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
+    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1");
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
+            .query(rusqlite::params![id])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
             .next()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::NotFound(format!("action {}", id)))?;
-        row_to_action_entry(row)
+        row_to_action_entry(row, user_id)
     })
     .await
 }
 
-#[tracing::instrument(skip(db), fields(user_id = ?user_id))]
-pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<BrocaStats> {
+#[tracing::instrument(skip(db), fields(user_id = ?_user_id))]
+pub async fn get_stats(db: &Database, _user_id: Option<i64>) -> Result<BrocaStats> {
     db.read(move |conn| {
-        let stats = if let Some(uid) = user_id {
-            conn.query_row(
-                "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
-                 FROM broca_actions WHERE user_id = ?1",
-                rusqlite::params![uid],
-                |row| {
-                    Ok(BrocaStats {
-                        total_actions: row.get(0)?,
-                        agents: row.get(1)?,
-                        services: row.get(2)?,
-                    })
-                },
-            )
-            .map_err(rusqlite_to_eng_error)?
-        } else {
-            conn.query_row(
-                "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
-                 FROM broca_actions",
-                [],
-                |row| {
-                    Ok(BrocaStats {
-                        total_actions: row.get(0)?,
-                        agents: row.get(1)?,
-                        services: row.get(2)?,
-                    })
-                },
-            )
-            .map_err(rusqlite_to_eng_error)?
-        };
-        Ok(stats)
+        conn.query_row(
+            "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
+             FROM broca_actions",
+            [],
+            |row| {
+                Ok(BrocaStats {
+                    total_actions: row.get(0)?,
+                    agents: row.get(1)?,
+                    services: row.get(2)?,
+                })
+            },
+        )
+        .map_err(rusqlite_to_eng_error)
     })
     .await
 }
@@ -240,7 +226,13 @@ mod tests {
         assert_eq!(fetched.id, entry.id);
     }
 
+    /// Phase 5.6 dropped user_id from broca_actions: tenant isolation is
+    /// at the database level now, so a shared in-memory DB no longer
+    /// separates user 1 and user 2. The tenant-aware form of this
+    /// invariant lands in kleos-server/tests once Phase 4.2 wires the
+    /// tenant-aware test harness.
     #[tokio::test]
+    #[ignore]
     async fn query_is_scoped_by_user() {
         let db = setup().await;
         log_action(
