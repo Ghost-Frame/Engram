@@ -52,8 +52,8 @@ pub async fn set_fact_validity(
     let row = db
         .read(move |conn| {
             conn.query_row(
-                "SELECT date_approx, date_ref FROM structured_facts WHERE id = ?1 AND user_id = ?2",
-                params![fact_id, user_id],
+                "SELECT date_approx, date_ref FROM structured_facts WHERE id = ?1",
+                params![fact_id],
                 |row| {
                     let date_approx: Option<String> = row.get(0)?;
                     let date_ref: Option<String> = row.get(1)?;
@@ -80,8 +80,8 @@ pub async fn set_fact_validity(
 
     db.write(move |conn| {
         conn.execute(
-            "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2 AND user_id = ?3",
-            params![valid_at, fact_id, user_id],
+            "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2",
+            params![valid_at, fact_id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -368,8 +368,8 @@ pub async fn invalidate_contradicted_facts(
             for (new_fact_id, old_fact_id) in &contradiction_ids {
                 let affected = conn
                     .execute(
-                        "UPDATE structured_facts SET invalid_at = datetime('now'), invalidated_by = ?1 WHERE id = ?2 AND user_id = ?3 AND invalid_at IS NULL",
-                        params![new_fact_id, old_fact_id, user_id],
+                        "UPDATE structured_facts SET invalid_at = datetime('now'), invalidated_by = ?1 WHERE id = ?2 AND invalid_at IS NULL",
+                        params![new_fact_id, old_fact_id],
                     )
                     .map_err(rusqlite_to_eng_error)?;
                 if affected > 0 {
@@ -405,8 +405,8 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
     let created_at = db
         .read(move |conn| {
             conn.query_row(
-                "SELECT created_at FROM memories WHERE id = ?1 AND user_id = ?2",
-                params![memory_id, user_id],
+                "SELECT created_at FROM memories WHERE id = ?1",
+                params![memory_id],
                 |row| row.get::<_, String>(0),
             )
             .optional()
@@ -425,12 +425,12 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
             let mut stmt = conn
                 .prepare(
                     "SELECT id, subject, verb, object, quantity
-                     FROM structured_facts WHERE memory_id = ?1 AND user_id = ?2 AND valid_at IS NULL",
+                     FROM structured_facts WHERE memory_id = ?1 AND valid_at IS NULL",
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
-                .query_map(params![memory_id, user_id], |row| {
+                .query_map(params![memory_id], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
@@ -532,8 +532,8 @@ pub async fn backfill_fact_validity(db: &Database, user_id: i64) -> Result<i32> 
             let mut count = 0i32;
             for (id, valid_at) in &updates {
                 conn.execute(
-                    "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2 AND user_id = ?3",
-                    params![valid_at, id, user_id],
+                    "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2",
+                    params![valid_at, id],
                 )
                 .map_err(rusqlite_to_eng_error)?;
                 count += 1;

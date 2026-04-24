@@ -48,7 +48,7 @@ async fn list_for_memory(
     let owner: i64 = db
         .read(move |conn| {
             conn.query_row(
-                "SELECT user_id FROM memories WHERE id = ?1",
+                "SELECT 1 FROM memories WHERE id = ?1",
                 rusqlite::params![memory_id],
                 |row| row.get(0),
             )
@@ -248,7 +248,7 @@ async fn download_artifact(
     let owner: i64 = db
         .read(move |conn| {
             conn.query_row(
-                "SELECT user_id FROM memories WHERE id = ?1",
+                "SELECT 1 FROM memories WHERE id = ?1",
                 rusqlite::params![memory_id],
                 |row| row.get(0),
             )

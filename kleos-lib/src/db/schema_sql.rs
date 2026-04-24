@@ -426,15 +426,14 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         CREATE INDEX IF NOT EXISTS idx_facts_subject ON structured_facts(subject);
         CREATE INDEX IF NOT EXISTS idx_facts_predicate ON structured_facts(predicate);
         CREATE INDEX IF NOT EXISTS idx_facts_memory ON structured_facts(memory_id);
-        CREATE INDEX IF NOT EXISTS idx_facts_user ON structured_facts(user_id);
         CREATE INDEX IF NOT EXISTS idx_sf_verb ON structured_facts(verb);
         CREATE INDEX IF NOT EXISTS idx_sf_date ON structured_facts(date_approx);
         CREATE INDEX IF NOT EXISTS idx_sf_episode ON structured_facts(episode_id) WHERE episode_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_sf_location ON structured_facts(location COLLATE NOCASE) WHERE location IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_sf_valid ON structured_facts(valid_at) WHERE valid_at IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_sf_invalid ON structured_facts(invalid_at) WHERE invalid_at IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS idx_sf_subject_verb ON structured_facts(subject COLLATE NOCASE, verb, user_id);
-        CREATE INDEX IF NOT EXISTS idx_facts_user_subject_predicate ON structured_facts(user_id, subject, predicate);
+        CREATE INDEX IF NOT EXISTS idx_sf_subject_verb ON structured_facts(subject COLLATE NOCASE, verb);
+        CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate ON structured_facts(subject, predicate);
 
         -- Current state (per-agent key-value store)
         CREATE TABLE IF NOT EXISTS current_state (
@@ -1177,13 +1176,6 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
             VALUES ('delete', old.id, old.name, old.content);
             INSERT INTO artifacts_fts(rowid, name, content)
             VALUES (new.id, new.name, new.content);
-        END"#,
-    r#"CREATE TRIGGER IF NOT EXISTS prevent_cross_tenant_links
-        BEFORE INSERT ON memory_links
-        BEGIN
-            SELECT RAISE(ABORT, 'cross-tenant memory links are not permitted')
-            WHERE (SELECT user_id FROM memories WHERE id = NEW.source_id)
-               != (SELECT user_id FROM memories WHERE id = NEW.target_id);
         END"#,
     r#"INSERT OR IGNORE INTO users (id, username, role, is_admin) VALUES (1, 'owner', 'admin', 1)"#,
     r#"INSERT OR IGNORE INTO spaces (user_id, name) VALUES (1, 'default')"#,

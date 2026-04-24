@@ -281,14 +281,14 @@ pub async fn get_structured_facts(
     placeholders.extend(mem_ids.iter().map(|id| id.to_string()));
     let sql = format!(
         "SELECT subject, verb, object, quantity, unit, date_ref, date_approx, valid_at, invalid_at \
-         FROM structured_facts WHERE user_id = ?1 AND memory_id IN ({}) AND invalid_at IS NULL \
+         FROM structured_facts WHERE memory_id IN ({}) AND invalid_at IS NULL \
          ORDER BY valid_at DESC NULLS LAST, date_approx DESC NULLS LAST",
         placeholders.join(",")
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id])
+            .query([])
             .map_err(rusqlite_to_eng_error)?;
         let mut facts = Vec::with_capacity(mem_ids_len);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -324,13 +324,13 @@ pub async fn get_structured_facts(
 }
 
 #[tracing::instrument(skip(db, ids), fields(id_count = ids.len()))]
-pub async fn track_access(db: &Database, ids: &[i64], user_id: i64) {
+pub async fn track_access(db: &Database, ids: &[i64], _user_id: i64) {
     for &id in ids {
         if let Err(e) = db
             .write(move |conn| {
                 conn.execute(
-                    "UPDATE memories SET access_count = access_count + 1, last_accessed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2",
-                    rusqlite::params![id, user_id],
+                    "UPDATE memories SET access_count = access_count + 1, last_accessed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                    rusqlite::params![id],
                 )
                 .map_err(rusqlite_to_eng_error)?;
                 Ok(())

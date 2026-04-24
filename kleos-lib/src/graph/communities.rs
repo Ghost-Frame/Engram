@@ -133,8 +133,8 @@ pub async fn detect_communities(
         db.transaction(move |tx| {
             for (idx, &id) in ids_clone.iter().enumerate() {
                 tx.execute(
-                    "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
-                    rusqlite::params![idx as i64, id, user_id],
+                    "UPDATE memories SET community_id = ?1 WHERE id = ?2",
+                    rusqlite::params![idx as i64, id],
                 )
                 .map_err(rusqlite_to_eng_error)?;
             }
@@ -227,8 +227,8 @@ pub async fn detect_communities(
     db.transaction(move |tx| {
         for (node_id, cid) in &updates {
             tx.execute(
-                "UPDATE memories SET community_id = ?1 WHERE id = ?2 AND user_id = ?3",
-                rusqlite::params![cid, node_id, user_id],
+                "UPDATE memories SET community_id = ?1 WHERE id = ?2",
+                rusqlite::params![cid, node_id],
             )
             .map_err(rusqlite_to_eng_error)?;
         }
@@ -302,12 +302,12 @@ pub async fn get_community_stats(db: &Database, user_id: i64) -> Result<Vec<Comm
             .prepare(
                 "SELECT community_id, COUNT(*) as count, ROUND(AVG(importance), 1) as avg_importance, \
                  GROUP_CONCAT(DISTINCT category) as categories \
-                 FROM memories WHERE user_id = ?1 AND community_id IS NOT NULL AND is_forgotten = 0 AND is_archived = 0 \
+                 FROM memories WHERE community_id IS NOT NULL AND is_forgotten = 0 AND is_archived = 0 \
                  GROUP BY community_id ORDER BY count DESC LIMIT 50",
             )
             .map_err(rusqlite_to_eng_error)?;
         let stats = stmt
-            .query_map(rusqlite::params![user_id], |row| {
+            .query_map([], |row| {
                 Ok(CommunityStats {
                     community_id: row.get(0)?,
                     count: row.get(1)?,

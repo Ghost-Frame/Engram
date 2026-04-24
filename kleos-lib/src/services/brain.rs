@@ -1035,17 +1035,17 @@ impl BrainBackend for HopfieldBrainManager {
 /// Falls back to a minimal record if the memory doesn't exist in the
 /// memories table (pattern may have been created directly).
 #[cfg(feature = "brain_hopfield")]
-async fn load_brain_memory(db: &Database, memory_id: i64, user_id: i64) -> Result<BrainMemory> {
+async fn load_brain_memory(db: &Database, memory_id: i64, _user_id: i64) -> Result<BrainMemory> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT id, content, category, source, importance, created_at, tags
-                 FROM memories WHERE id = ?1 AND user_id = ?2",
+                 FROM memories WHERE id = ?1",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let mut rows = stmt
-            .query(rusqlite::params![memory_id, user_id])
+            .query(rusqlite::params![memory_id])
             .map_err(rusqlite_to_eng_error)?;
 
         if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -1172,18 +1172,18 @@ pub struct AbsorbMemoryData {
 pub async fn get_memory_for_absorb(
     db: &Database,
     id: i64,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<AbsorbMemoryData> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT id, content, category, source, importance, created_at, tags
-                 FROM memories WHERE id = ?1 AND user_id = ?2",
+                 FROM memories WHERE id = ?1",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
+            .query(rusqlite::params![id])
             .map_err(rusqlite_to_eng_error)?;
 
         let row = rows
@@ -1218,7 +1218,7 @@ pub async fn get_memory_for_absorb(
 pub async fn verify_memory_ownership(
     db: &Database,
     memory_ids: &[i64],
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<bool> {
     if memory_ids.is_empty() {
         return Ok(true);
@@ -1226,16 +1226,14 @@ pub async fn verify_memory_ownership(
 
     let placeholders: Vec<String> = (1..=memory_ids.len()).map(|i| format!("?{}", i)).collect();
     let sql = format!(
-        "SELECT COUNT(*) FROM memories WHERE id IN ({}) AND user_id = ?{}",
+        "SELECT COUNT(*) FROM memories WHERE id IN ({})",
         placeholders.join(","),
-        memory_ids.len() + 1
     );
 
-    let mut params: Vec<rusqlite::types::Value> = memory_ids
+    let params: Vec<rusqlite::types::Value> = memory_ids
         .iter()
         .map(|id| rusqlite::types::Value::Integer(*id))
         .collect();
-    params.push(rusqlite::types::Value::Integer(user_id));
 
     let expected = memory_ids.len() as i64;
 

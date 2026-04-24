@@ -141,7 +141,7 @@ async fn import_handler(
 
 async fn import_engram_export(
     db: &Arc<Database>,
-    user_id: i64,
+    _user_id: i64,
     obj: &serde_json::Map<String, Value>,
 ) -> Result<Json<Value>, AppError> {
     let mut imported = 0i64;
@@ -191,9 +191,9 @@ async fn import_engram_export(
                 .to_string();
             match db.write(move |conn| {
                 conn.execute(
-                    "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    params![content, category, source, importance, user_id, sync_id, created_at, updated_at],
+                    "INSERT INTO memories (content, category, source, importance, sync_id, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![content, category, source, importance, sync_id, created_at, updated_at],
                 ).map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
             }).await {
                 Ok(_) => imported += 1,
@@ -208,7 +208,7 @@ async fn import_engram_export(
 
 async fn import_array(
     db: &Arc<Database>,
-    user_id: i64,
+    _user_id: i64,
     arr: &[Value],
 ) -> Result<Json<Value>, AppError> {
     let mut imported = 0i64;
@@ -241,9 +241,9 @@ async fn import_array(
         let sync_id = Uuid::new_v4().to_string();
         match db.write(move |conn| {
             conn.execute(
-                "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
-                params![content, category, source, importance, user_id, sync_id],
+                "INSERT INTO memories (content, category, source, importance, sync_id, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))",
+                params![content, category, source, importance, sync_id],
             ).map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
         }).await {
             Ok(_) => imported += 1,
@@ -257,7 +257,7 @@ async fn import_array(
 
 async fn import_mem0_array(
     db: &Arc<Database>,
-    user_id: i64,
+    _user_id: i64,
     arr: &[Value],
 ) -> Result<Json<Value>, AppError> {
     let mut imported = 0i64;
@@ -296,9 +296,9 @@ async fn import_mem0_array(
         let sync_id = Uuid::new_v4().to_string();
         match db.write(move |conn| {
             conn.execute(
-                "INSERT INTO memories (content, category, source, importance, user_id, sync_id, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
-                params![content, category, source, importance, user_id, sync_id],
+                "INSERT INTO memories (content, category, source, importance, sync_id, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))",
+                params![content, category, source, importance, sync_id],
             ).map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
         }).await {
             Ok(_) => imported += 1,

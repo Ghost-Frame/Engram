@@ -1028,11 +1028,11 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     let facts = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
-            "SELECT subject, verb, object FROM structured_facts WHERE user_id = ?1 LIMIT 50",
+            "SELECT subject, verb, object FROM structured_facts LIMIT 50",
         ).map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| {
+                .query_map([], |row| {
                     Ok(FactRow {
                         subject: row.get(0)?,
                         verb: row.get(1)?,
@@ -1052,10 +1052,10 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     // Gather static memories
     let static_memories = db.read(move |conn| {
         let mut stmt = conn.prepare(
-            "SELECT content FROM memories WHERE user_id = ?1 AND is_static = 1 AND is_forgotten = 0 ORDER BY importance DESC LIMIT 20",
+            "SELECT content FROM memories WHERE is_static = 1 AND is_forgotten = 0 ORDER BY importance DESC LIMIT 20",
         ).map_err(rusqlite_to_eng_error)?;
 
-        let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+        let rows = stmt.query_map([], |row| {
             Ok(StaticMemoryRow {
                 content: row.get(0)?,
             })

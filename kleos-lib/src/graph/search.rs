@@ -289,10 +289,9 @@ pub async fn neighborhood_filtered(
                     "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
                      FROM memory_links ml \
                      WHERE (ml.source_id IN ({placeholders}) OR ml.target_id IN ({placeholders})) \
-                       AND EXISTS (SELECT 1 FROM memories WHERE id = ml.source_id AND user_id = ?{uid_param}) \
-                       AND EXISTS (SELECT 1 FROM memories WHERE id = ml.target_id AND user_id = ?{uid_param}){type_clause}",
+                       AND EXISTS (SELECT 1 FROM memories WHERE id = ml.source_id) \
+                       AND EXISTS (SELECT 1 FROM memories WHERE id = ml.target_id){type_clause}",
                     placeholders = placeholders,
-                    uid_param = frontier_clone.len() + 1,
                     type_clause = type_clause,
                 );
 
@@ -305,13 +304,11 @@ pub async fn neighborhood_filtered(
                 // this block so &i64 / &String refs are stable.
                 let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(
                     frontier_clone.len()
-                        + 1
                         + type_filter_clone.as_ref().map_or(0, |t| t.len()),
                 );
                 for id in &frontier_clone {
                     params.push(id);
                 }
-                params.push(&user_id);
                 if let Some(ref types) = type_filter_clone {
                     for t in types {
                         params.push(t);
@@ -389,7 +386,7 @@ pub async fn neighborhood_filtered(
 async fn batch_fetch_memory_nodes(
     db: &Database,
     ids: &[i64],
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Vec<GraphNode>> {
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -409,9 +406,8 @@ async fn batch_fetch_memory_nodes(
                 "SELECT id, content, category, importance, pagerank_score, \
                         source, created_at, is_static, source_count, \
                         decay_score, community_id \
-                 FROM memories WHERE id IN ({}) AND user_id = ?{}",
-                placeholders,
-                ids_owned.len() + 1
+                 FROM memories WHERE id IN ({})",
+                placeholders
             );
 
             let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
@@ -420,7 +416,6 @@ async fn batch_fetch_memory_nodes(
             for &id in &ids_owned {
                 params.push(Box::new(id));
             }
-            params.push(Box::new(user_id));
 
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                 params.iter().map(|p| p.as_ref()).collect();

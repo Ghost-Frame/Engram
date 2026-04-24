@@ -73,12 +73,9 @@ pub async fn compact(db: &Database) -> Result<CompactResult> {
 pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
     let forgotten: i64 = db
         .write(move |conn| {
-            let n = if let Some(uid) = user_id {
-                conn.execute(
-                    "DELETE FROM memories WHERE is_forgotten = 1 AND user_id = ?1",
-                    params![uid],
-                )
-                .map_err(rusqlite_to_eng_error)?
+            let n = if let Some(_uid) = user_id {
+                conn.execute("DELETE FROM memories WHERE is_forgotten = 1", [])
+                    .map_err(rusqlite_to_eng_error)?
             } else {
                 conn.execute("DELETE FROM memories WHERE is_forgotten = 1", [])
                     .map_err(rusqlite_to_eng_error)?
@@ -89,10 +86,10 @@ pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
 
     let expired: i64 = db
         .write(move |conn| {
-            let n = if let Some(uid) = user_id {
+            let n = if let Some(_uid) = user_id {
                 conn.execute(
-                    "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now') AND user_id = ?1",
-                    params![uid],
+                    "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now')",
+                    [],
                 )
                 .map_err(rusqlite_to_eng_error)?
             } else {
@@ -300,7 +297,7 @@ pub async fn get_usage(db: &Database) -> Result<Vec<UsageRow>> {
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username, COALESCE(m.cnt, 0), COALESCE(c.cnt, 0), COALESCE(k.cnt, 0) \
              FROM users u \
-             LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM memories GROUP BY user_id) m ON u.id = m.user_id \
+             LEFT JOIN (SELECT 1 AS user_id, COUNT(*) as cnt FROM memories) m ON u.id = m.user_id \
              LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM conversations GROUP BY user_id) c ON u.id = c.user_id \
              LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM api_keys WHERE is_active = 1 GROUP BY user_id) k ON u.id = k.user_id \
              ORDER BY u.id",
@@ -330,7 +327,7 @@ pub async fn get_tenants(db: &Database) -> Result<Vec<TenantRow>> {
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username, u.role, COALESCE(m.cnt, 0), COALESCE(k.cnt, 0), u.created_at \
              FROM users u \
-             LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM memories GROUP BY user_id) m ON u.id = m.user_id \
+             LEFT JOIN (SELECT 1 AS user_id, COUNT(*) as cnt FROM memories) m ON u.id = m.user_id \
              LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM api_keys WHERE is_active = 1 GROUP BY user_id) k ON u.id = k.user_id \
              ORDER BY u.id",
         )
@@ -421,8 +418,8 @@ pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
             .map_err(rusqlite_to_eng_error)?;
         // Soft-delete memories (mark forgotten)
         conn.execute(
-            "UPDATE memories SET is_forgotten = 1 WHERE user_id = ?1",
-            params![user_id],
+            "UPDATE memories SET is_forgotten = 1",
+            [],
         )
         .map_err(rusqlite_to_eng_error)?;
         // Delete user
@@ -544,13 +541,12 @@ pub async fn list_state(db: &Database) -> Result<Vec<StateRow>> {
 
 #[tracing::instrument(skip(db))]
 pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport> {
-    let memories = export_table_user(
+    let memories = export_table(
         db,
         "SELECT id, content, category, source, importance, tags, \
          created_at, updated_at, space_id, is_archived \
-         FROM memories WHERE user_id = ?1 AND is_forgotten = 0 \
+         FROM memories WHERE is_forgotten = 0 \
          ORDER BY created_at DESC",
-        user_id,
     )
     .await?;
     let conversations = export_table_user(
@@ -644,7 +640,7 @@ async fn export_table_user(
 #[tracing::instrument(skip(db))]
 pub async fn export_data(db: &Database) -> Result<ExportData> {
     let users = export_table(db, "SELECT * FROM users").await?;
-    let memories = export_table(db, "SELECT id, content, category, source, importance, user_id, space_id, created_at FROM memories WHERE is_forgotten = 0").await?;
+    let memories = export_table(db, "SELECT id, content, category, source, importance, space_id, created_at FROM memories WHERE is_forgotten = 0").await?;
     let conversations = export_table(db, "SELECT * FROM conversations").await?;
     let api_keys = export_table(db, "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active, created_at FROM api_keys").await?;
     Ok(ExportData {
@@ -692,11 +688,11 @@ async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>
 #[tracing::instrument(skip(db))]
 pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
     db.write(move |conn| {
-        let n = if let Some(uid) = user_id {
+        let n = if let Some(_uid) = user_id {
             conn.execute(
                 "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
-                 WHERE user_id = ?1 AND is_forgotten = 0",
-                params![uid],
+                 WHERE is_forgotten = 0",
+                [],
             )
             .map_err(rusqlite_to_eng_error)?
         } else {
@@ -725,7 +721,7 @@ pub async fn get_memories_without_facts(
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT m.id, m.content, m.user_id FROM memories m \
+                "SELECT m.id, m.content, 1 FROM memories m \
                  WHERE m.is_forgotten = 0 \
                  AND NOT EXISTS (SELECT 1 FROM structured_facts f WHERE f.memory_id = m.id) \
                  LIMIT ?1",

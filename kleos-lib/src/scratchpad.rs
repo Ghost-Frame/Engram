@@ -222,8 +222,8 @@ pub async fn promote_entries(
             );
             let source = filtered[0].agent.clone();
             conn.execute(
-                "INSERT INTO memories (content, category, source, importance, source_count, is_latest, user_id) VALUES (?1, ?2, ?3, 5, 1, 1, ?4)",
-                params![content, category, source, user_id],
+                "INSERT INTO memories (content, category, source, importance, source_count, is_latest) VALUES (?1, ?2, ?3, 5, 1, 1)",
+                params![content, category, source],
             )
             .map_err(rusqlite_to_eng_error)?;
             promoted.push(conn.last_insert_rowid());
@@ -232,8 +232,8 @@ pub async fn promote_entries(
                 let content = format!("{}: {}", r.key, r.value);
                 let source = r.agent.clone();
                 conn.execute(
-                    "INSERT INTO memories (content, category, source, importance, source_count, is_latest, user_id) VALUES (?1, ?2, ?3, 5, 1, 1, ?4)",
-                    params![content, category, source, user_id],
+                    "INSERT INTO memories (content, category, source, importance, source_count, is_latest) VALUES (?1, ?2, ?3, 5, 1, 1)",
+                    params![content, category, source],
                 )
                 .map_err(rusqlite_to_eng_error)?;
                 promoted.push(conn.last_insert_rowid());

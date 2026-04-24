@@ -52,10 +52,10 @@ pub async fn receive_sync(
                 let exists = db
                     .read(move |conn| {
                         let mut stmt = conn
-                            .prepare("SELECT id FROM memories WHERE sync_id = ?1 AND user_id = ?2")
+                            .prepare("SELECT id FROM memories WHERE sync_id = ?1")
                             .map_err(rusqlite_to_eng_error)?;
                         let mut rows = stmt
-                            .query(rusqlite::params![sync_id, user_id])
+                            .query(rusqlite::params![sync_id])
                             .map_err(rusqlite_to_eng_error)?;
                         Ok(rows.next().map_err(rusqlite_to_eng_error)?.is_some())
                     })
@@ -89,8 +89,8 @@ pub async fn receive_sync(
                 let affected = db
                     .write(move |conn| {
                         conn.execute(
-                            "UPDATE memories SET is_forgotten = 1 WHERE sync_id = ?1 AND user_id = ?2",
-                            rusqlite::params![sync_id, user_id],
+                            "UPDATE memories SET is_forgotten = 1 WHERE sync_id = ?1",
+                            rusqlite::params![sync_id],
                         )
                         .map_err(rusqlite_to_eng_error)
                     })

@@ -81,7 +81,7 @@ fn row_to_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<CurrentState> {
 /// Create a new structured fact.
 #[tracing::instrument(skip(db, req), fields(user_id = ?req.user_id, subject = %req.subject, predicate = %req.predicate, memory_id = ?req.memory_id))]
 pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<StructuredFact> {
-    let user_id = req
+    let _user_id = req
         .user_id
         .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
     let confidence = req.confidence.unwrap_or(1.0);
@@ -91,8 +91,8 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
             .read(move |conn| {
                 let result = conn
                     .query_row(
-                        "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
-                        params![mid, user_id],
+                        "SELECT 1 FROM memories WHERE id = ?1",
+                        params![mid],
                         |_| Ok(()),
                     )
                     .optional()
@@ -117,9 +117,9 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
         .write(move |conn| {
             conn.execute(
                 "INSERT INTO structured_facts \
-                 (memory_id, subject, predicate, object, confidence, user_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![memory_id, subject, predicate, object, confidence, user_id],
+                 (memory_id, subject, predicate, object, confidence) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![memory_id, subject, predicate, object, confidence],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(conn.last_insert_rowid())
@@ -130,11 +130,11 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
     // inserted the row. Defense-in-depth against any future change that
     // moves the insert and select onto separate connections.
     let sql = format!(
-        "SELECT {} FROM structured_facts WHERE id = ?1 AND user_id = ?2",
+        "SELECT {} FROM structured_facts WHERE id = ?1",
         FACT_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![new_id, user_id], row_to_fact)
+        conn.query_row(&sql, params![new_id], row_to_fact)
             .optional()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::Internal("failed to fetch newly created fact".to_string()))
@@ -153,7 +153,7 @@ pub async fn list_facts(
     let sql = if let Some(mid) = memory_id_filter {
         format!(
             "SELECT {cols} FROM structured_facts \
-             WHERE user_id = ?1 AND memory_id = {mid} \
+             WHERE memory_id = {mid} \
              ORDER BY id DESC LIMIT {limit}",
             cols = FACT_COLUMNS,
             mid = mid,
@@ -162,7 +162,6 @@ pub async fn list_facts(
     } else {
         format!(
             "SELECT {cols} FROM structured_facts \
-             WHERE user_id = ?1 \
              ORDER BY id DESC LIMIT {limit}",
             cols = FACT_COLUMNS,
             limit = limit
@@ -172,7 +171,7 @@ pub async fn list_facts(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let rows = stmt
-            .query_map(params![user_id], row_to_fact)
+            .query_map([], row_to_fact)
             .map_err(rusqlite_to_eng_error)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -189,8 +188,8 @@ pub async fn delete_fact(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
             conn.execute(
-                "DELETE FROM structured_facts WHERE id = ?1 AND user_id = ?2",
-                params![id, user_id],
+                "DELETE FROM structured_facts WHERE id = ?1",
+                params![id],
             )
             .map_err(rusqlite_to_eng_error)
         })

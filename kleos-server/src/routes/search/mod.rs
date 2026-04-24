@@ -27,15 +27,15 @@ async fn refresh_decay(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     // Recalculate decay scores for all non-static memories
-    let user_id = auth.user_id;
+    let _user_id = auth.user_id;
     let updates: Vec<(i64, f64)> = state
         .db
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, importance, created_at, access_count, last_accessed_at, is_static, source_count, fsrs_stability \
-                 FROM memories WHERE user_id = ?1 AND is_static = 0 AND is_forgotten = 0",
+                 FROM memories WHERE is_static = 0 AND is_forgotten = 0",
             )?;
-            let rows = stmt.query_map(params![user_id], |r| {
+            let rows = stmt.query_map([], |r| {
                 let id: i64 = r.get(0)?;
                 let importance: f64 = r.get::<_, Option<f64>>(1)?.unwrap_or(5.0);
                 let created_at: String = r.get::<_, Option<String>>(2)?.unwrap_or_default();
@@ -88,22 +88,22 @@ async fn get_decay_scores(
 ) -> Result<Json<Value>, AppError> {
     let limit = query_params.limit.unwrap_or(20).min(100) as i64;
     let order_asc = query_params.order.as_deref() == Some("asc");
-    let user_id = auth.user_id;
+    let _user_id = auth.user_id;
 
     let memories: Vec<Value> = state
         .db
         .read(move |conn| {
             let sql = if order_asc {
                 "SELECT id, content, category, importance, decay_score, created_at \
-                 FROM memories WHERE user_id = ?1 AND is_forgotten = 0 \
-                 ORDER BY decay_score ASC LIMIT ?2"
+                 FROM memories WHERE is_forgotten = 0 \
+                 ORDER BY decay_score ASC LIMIT ?1"
             } else {
                 "SELECT id, content, category, importance, decay_score, created_at \
-                 FROM memories WHERE user_id = ?1 AND is_forgotten = 0 \
-                 ORDER BY decay_score DESC LIMIT ?2"
+                 FROM memories WHERE is_forgotten = 0 \
+                 ORDER BY decay_score DESC LIMIT ?1"
             };
             let mut stmt = conn.prepare(sql)?;
-            let rows = stmt.query_map(params![user_id, limit], |r| {
+            let rows = stmt.query_map(params![limit], |r| {
                 let id: i64 = r.get(0)?;
                 let content: String = r.get::<_, Option<String>>(1)?.unwrap_or_default();
                 let category: Option<String> = r.get(2)?;

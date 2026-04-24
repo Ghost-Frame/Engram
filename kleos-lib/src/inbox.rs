@@ -75,8 +75,8 @@ pub async fn list_pending(
 pub async fn count_pending(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
         conn.query_row(
-            "SELECT COUNT(*) FROM memories WHERE status = 'pending' AND is_forgotten = 0 AND user_id = ?1",
-            rusqlite::params![user_id],
+            "SELECT COUNT(*) FROM memories WHERE status = 'pending' AND is_forgotten = 0",
+            [],
             |row| row.get::<_, i64>(0),
         )
         .map_err(rusqlite_to_eng_error)
@@ -88,8 +88,8 @@ pub async fn count_pending(db: &Database, user_id: i64) -> Result<i64> {
 pub async fn approve_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
-            "UPDATE memories SET status = 'approved', updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![id, user_id],
+            "UPDATE memories SET status = 'approved', updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -101,8 +101,8 @@ pub async fn approve_memory(db: &Database, id: i64, user_id: i64) -> Result<()> 
 pub async fn reject_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
-            "UPDATE memories SET status = 'rejected', is_archived = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![id, user_id],
+            "UPDATE memories SET status = 'rejected', is_archived = 1, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -115,8 +115,8 @@ pub async fn set_forget_reason(db: &Database, id: i64, reason: &str, user_id: i6
     let reason = reason.to_string();
     db.write(move |conn| {
         conn.execute(
-            "UPDATE memories SET forget_reason = ?1 WHERE id = ?2 AND user_id = ?3",
-            rusqlite::params![reason, id, user_id],
+            "UPDATE memories SET forget_reason = ?1 WHERE id = ?2",
+            rusqlite::params![reason, id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -161,12 +161,10 @@ pub async fn edit_and_approve(
         idx += 1;
     }
     vals.push(rusqlite::types::Value::Integer(id));
-    vals.push(rusqlite::types::Value::Integer(user_id));
     let sql = format!(
-        "UPDATE memories SET {} WHERE id = ?{} AND user_id = ?{}",
+        "UPDATE memories SET {} WHERE id = ?{}",
         sets.join(", "),
-        idx,
-        idx + 1
+        idx
     );
     db.write(move |conn| {
         conn.execute(&sql, rusqlite::params_from_iter(vals.iter().cloned()))
