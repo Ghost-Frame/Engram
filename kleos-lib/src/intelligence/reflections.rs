@@ -62,9 +62,9 @@ pub async fn create_reflection(
     let id = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO reflections (content, reflection_type, source_memory_ids, confidence, user_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![content_owned, reflection_type_owned, ids_json, confidence, user_id],
+                "INSERT INTO reflections (content, reflection_type, source_memory_ids, confidence) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![content_owned, reflection_type_owned, ids_json, confidence],
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             Ok(conn.last_insert_rowid())
@@ -361,12 +361,12 @@ pub async fn list_reflections(
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, content, reflection_type, source_memory_ids, confidence, user_id, created_at \
-                 FROM reflections WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
+                "SELECT id, content, reflection_type, source_memory_ids, confidence, created_at \
+                 FROM reflections ORDER BY id DESC LIMIT ?1",
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let rows = stmt
-            .query_map(params![user_id, limit as i64], |row| {
+            .query_map(params![limit as i64], |row| {
                 let ids_json: Option<String> = row.get(3)?;
                 let source_memory_ids: Vec<i64> = ids_json
                     .as_deref()
@@ -378,8 +378,8 @@ pub async fn list_reflections(
                     reflection_type: row.get(2)?,
                     source_memory_ids,
                     confidence: row.get(4)?,
-                    user_id: row.get(5)?,
-                    created_at: row.get(6)?,
+                    user_id,
+                    created_at: row.get(5)?,
                 })
             })
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;

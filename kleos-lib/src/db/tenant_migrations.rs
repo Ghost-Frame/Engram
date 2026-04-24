@@ -180,6 +180,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "axon_user_id_drop",
         up: apply_schema_v31_axon_drop,
     },
+    TenantMigration {
+        version: 32,
+        description: "growth_user_id_drop",
+        up: apply_schema_v32_growth_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -335,6 +340,11 @@ fn apply_schema_v30_webhooks_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v31_axon_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v31_axon_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v31 failed: {e}")))
+}
+
+fn apply_schema_v32_growth_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v32_growth_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v32 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -3236,8 +3246,27 @@ mod tests {
 
     #[test]
     fn reflections_usable_after_v17() {
+        // v17 introduced reflections with a user_id shim; v32 drops it.
+        // Cap the chain at v31 so this test still locks the v17 shape.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 32 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let table: i64 = conn
             .query_row(
@@ -3248,6 +3277,7 @@ mod tests {
             .unwrap();
         assert_eq!(table, 1, "reflections table missing after v17");
 
+        // Exercise the INSERT shape intelligence/reflections.rs used pre-v32.
         conn.execute(
             "INSERT INTO reflections \
              (content, reflection_type, themes, source_memory_ids, confidence, user_id) \
@@ -4181,5 +4211,126 @@ mod tests {
                 .unwrap();
             assert_eq!(col, 0, "'{}' still has user_id after v31", table);
         }
+    }
+
+    /// v32: reflections must NOT have a user_id column after the full
+    /// migration chain, and idx_reflections_user must be gone.
+    #[test]
+    fn user_id_absent_from_reflections_after_v32() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('reflections') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 0, "reflections still has user_id column after v32");
+
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_reflections_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 0, "idx_reflections_user still exists after v32");
+
+        // idx_reflections_type and idx_reflections_period survive.
+        for surviving in &["idx_reflections_type", "idx_reflections_period"] {
+            let n: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        surviving
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "'{}' must survive v32", surviving);
+        }
+    }
+
+    /// v32: reflections supports the SQL shape intelligence/reflections.rs
+    /// now uses (no user_id on INSERT or SELECT).
+    #[test]
+    fn reflections_usable_after_v32() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO reflections (content, reflection_type, source_memory_ids, confidence) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["taco observation", "insight", "[1,2]", 0.9_f64],
+        )
+        .unwrap();
+
+        let (content, rtype): (String, String) = conn
+            .query_row(
+                "SELECT content, reflection_type FROM reflections ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "taco observation");
+        assert_eq!(rtype, "insight");
+    }
+
+    /// v32: rows inserted under the v17 shim shape survive the drop with
+    /// every non-user_id field intact.
+    #[test]
+    fn reflections_rows_preserved_through_v32() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 32 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO reflections (content, reflection_type, source_memory_ids, confidence, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["pre-drop content", "enrich", "[7,8]", 0.8_f64, 1_i64],
+        )
+        .unwrap();
+        let pre_id = conn.last_insert_rowid();
+
+        apply_schema_v32_growth_drop(&conn).unwrap();
+
+        let (content, rtype, confidence): (String, String, f64) = conn
+            .query_row(
+                "SELECT content, reflection_type, confidence FROM reflections WHERE id = ?1",
+                rusqlite::params![pre_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "pre-drop content");
+        assert_eq!(rtype, "enrich");
+        assert!((confidence - 0.8).abs() < 1e-9);
+
+        let col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('reflections') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col, 0, "reflections still has user_id after v32");
     }
 }

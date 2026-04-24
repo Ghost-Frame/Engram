@@ -326,6 +326,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 35,
+        description: "drop_user_id_growth",
+        up: run_migration_drop_user_id_growth,
+        // DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -366,6 +374,7 @@ const MIGRATION_DROP_USER_ID_PROJECTS: i64 = 31;
 const MIGRATION_DROP_USER_ID_ACTIVITY: i64 = 32;
 const MIGRATION_DROP_USER_ID_WEBHOOKS: i64 = 33;
 const MIGRATION_DROP_USER_ID_AXON: i64 = 34;
+const MIGRATION_DROP_USER_ID_GROWTH: i64 = 35;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -630,6 +639,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 34: drop_user_id_axon");
         run_migration_drop_user_id_axon(conn)?;
         record_migration(conn, MIGRATION_DROP_USER_ID_AXON, "drop_user_id_axon")?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_GROWTH {
+        info!("Running migration 35: drop_user_id_growth");
+        run_migration_drop_user_id_growth(conn)?;
+        record_migration(conn, MIGRATION_DROP_USER_ID_GROWTH, "drop_user_id_growth")?;
     }
 
     Ok(())
@@ -1963,6 +1978,36 @@ fn run_migration_drop_user_id_axon(conn: &rusqlite::Connection) -> Result<()> {
     }
 
     info!("Migration 34 complete: user_id dropped from axon_subscriptions + axon_cursors");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 35: drop user_id from reflections (DROP INDEX + DROP COLUMN)
+// ---------------------------------------------------------------------------
+
+/// Migration 35: drop user_id shim from reflections. No UNIQUE or FK
+/// references the column. idx_reflections_user must drop first;
+/// idx_reflections_type and idx_reflections_period stay. Idempotent.
+fn run_migration_drop_user_id_growth(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('reflections') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        info!("reflections.user_id already absent, migration 35 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch("DROP INDEX IF EXISTS idx_reflections_user;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    conn.execute("ALTER TABLE reflections DROP COLUMN user_id", [])
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 35 complete: user_id dropped from reflections");
     Ok(())
 }
 
