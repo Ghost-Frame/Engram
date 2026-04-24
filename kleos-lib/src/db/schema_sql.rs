@@ -381,13 +381,11 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             name TEXT NOT NULL,
             description TEXT,
             status TEXT NOT NULL DEFAULT 'active',
-            user_id INTEGER NOT NULL DEFAULT 1,
             metadata TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(name, user_id)
+            UNIQUE(name)
         );
-        CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
         CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 
         -- Memory-project join

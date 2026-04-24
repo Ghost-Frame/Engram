@@ -160,6 +160,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "broca_user_id_drop",
         up: apply_schema_v27_broca_drop,
     },
+    TenantMigration {
+        version: 28,
+        description: "projects_user_id_drop",
+        up: apply_schema_v28_projects_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -295,6 +300,11 @@ fn apply_schema_v26_approvals_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v27_broca_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v27_broca_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v27 failed: {e}")))
+}
+
+fn apply_schema_v28_projects_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v28_projects_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v28 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -1677,7 +1687,27 @@ mod tests {
     #[test]
     fn projects_usable_after_v7() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        // Cap the chain before v28 so the shim shape (with user_id) is the
+        // one under test. After v28 lands, projects.user_id is gone and the
+        // INSERT + SELECT shape below no longer applies.
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 28 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let tables: i64 = conn
             .query_row(
@@ -1730,6 +1760,164 @@ mod tests {
             .unwrap();
         assert_eq!(name, "p1");
         assert_eq!(uid, 4);
+    }
+
+    /// v28: user_id column and idx_projects_user are gone after the drop.
+    #[test]
+    fn user_id_absent_from_projects_after_v28() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_count, 0, "projects.user_id still present after v28");
+
+        let idx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_projects_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_count, 0, "idx_projects_user still present after v28");
+
+        // memory_projects survives the rebuild and its FK to projects(id)
+        // still resolves.
+        let mp: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_projects'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mp, 1);
+    }
+
+    /// v28: INSERT + SELECT without user_id works, and the memory_projects
+    /// FK cascade on project deletion still fires (FK was preserved across
+    /// the rebuild via legacy_alter_table=1).
+    #[test]
+    fn projects_usable_after_v28() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+
+        conn.execute(
+            "INSERT INTO memories (content, category, source) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["seed", "general", "test"],
+        )
+        .unwrap();
+        let memory_id = conn.last_insert_rowid();
+
+        let (project_id, _created_at): (i64, String) = conn
+            .query_row(
+                "INSERT INTO projects (name, description, status, metadata) \
+                 VALUES (?1, ?2, ?3, ?4) RETURNING id, created_at",
+                rusqlite::params!["p1", None::<String>, "active", None::<String>],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_projects (memory_id, project_id) VALUES (?1, ?2)",
+            rusqlite::params![memory_id, project_id],
+        )
+        .unwrap();
+
+        // UNIQUE(name) enforced: second insert with same name fails.
+        let dup = conn.execute(
+            "INSERT INTO projects (name, description, status, metadata) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["p1", None::<String>, "active", None::<String>],
+        );
+        assert!(dup.is_err(), "UNIQUE(name) should reject duplicate names");
+
+        // FK cascade: deleting the project removes the memory_projects row.
+        conn.execute(
+            "DELETE FROM projects WHERE id = ?1",
+            rusqlite::params![project_id],
+        )
+        .unwrap();
+        let linked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_projects WHERE project_id = ?1",
+                rusqlite::params![project_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked, 0, "memory_projects FK cascade did not fire");
+    }
+
+    /// v28: rows inserted under the v7 shim shape survive the rebuild with
+    /// every non-user_id field intact.
+    #[test]
+    fn projects_rows_preserved_through_v28() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 28 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO projects (name, description, status, metadata, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                "alpha",
+                Some("the first"),
+                "active",
+                Some("{\"k\":1}"),
+                1_i64,
+            ],
+        )
+        .unwrap();
+        let pre_id = conn.last_insert_rowid();
+
+        apply_schema_v28_projects_drop(&conn).unwrap();
+
+        let (name, description, status, metadata): (
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT name, description, status, metadata FROM projects WHERE id = ?1",
+                rusqlite::params![pre_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "alpha");
+        assert_eq!(description.as_deref(), Some("the first"));
+        assert_eq!(status, "active");
+        assert_eq!(metadata.as_deref(), Some("{\"k\":1}"));
+
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_count, 0);
     }
 
     #[test]

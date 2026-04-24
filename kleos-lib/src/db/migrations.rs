@@ -294,6 +294,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 31,
+        description: "drop_user_id_projects",
+        up: run_migration_drop_user_id_projects,
+        // 12-step table rebuild; no safe inverse.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -330,6 +338,7 @@ const MIGRATION_DROP_USER_ID_SESSIONS: i64 = 27;
 const MIGRATION_DROP_USER_ID_CHIASM: i64 = 28;
 const MIGRATION_DROP_USER_ID_APPROVALS: i64 = 29;
 const MIGRATION_DROP_USER_ID_BROCA: i64 = 30;
+const MIGRATION_DROP_USER_ID_PROJECTS: i64 = 31;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -562,6 +571,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 30: drop_user_id_broca");
         run_migration_drop_user_id_broca(conn)?;
         record_migration(conn, MIGRATION_DROP_USER_ID_BROCA, "drop_user_id_broca")?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_PROJECTS {
+        info!("Running migration 31: drop_user_id_projects");
+        run_migration_drop_user_id_projects(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_PROJECTS,
+            "drop_user_id_projects",
+        )?;
     }
 
     Ok(())
@@ -1711,6 +1730,67 @@ fn run_migration_drop_user_id_broca(conn: &rusqlite::Connection) -> Result<()> {
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 30 complete: user_id dropped from broca_actions");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 31: drop user_id from projects (12-step UNIQUE rebuild)
+// ---------------------------------------------------------------------------
+
+/// Migration 31: drop user_id from projects via the 12-step rebuild path.
+/// projects carried UNIQUE(name, user_id), which blocks ALTER TABLE DROP
+/// COLUMN, so this rebuilds the table with UNIQUE(name). memory_projects
+/// references projects(id); legacy_alter_table=1 keeps that FK referring
+/// to "projects" by name through the rename so it resolves to the new
+/// table. Idempotent: if projects already lacks user_id the migration is
+/// a no-op.
+fn run_migration_drop_user_id_projects(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        info!("projects.user_id already absent, migration 31 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         ALTER TABLE projects RENAME TO _projects_old_v30;
+
+         DROP INDEX IF EXISTS idx_projects_user;
+         DROP INDEX IF EXISTS idx_projects_status;
+
+         CREATE TABLE projects (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             name TEXT NOT NULL,
+             description TEXT,
+             status TEXT NOT NULL DEFAULT 'active',
+             metadata TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(name)
+         );
+
+         INSERT INTO projects (id, name, description, status, metadata, created_at, updated_at)
+         SELECT id, name, description, status, metadata, created_at, updated_at
+         FROM _projects_old_v30;
+
+         DROP TABLE _projects_old_v30;
+
+         CREATE INDEX idx_projects_status ON projects(status);
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 31 complete: user_id dropped from projects");
     Ok(())
 }
 
