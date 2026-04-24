@@ -145,6 +145,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "sessions_user_id_drop",
         up: apply_schema_v24_sessions_drop,
     },
+    TenantMigration {
+        version: 25,
+        description: "chiasm_user_id_drop",
+        up: apply_schema_v25_chiasm_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -265,6 +270,11 @@ fn apply_schema_v23_scratchpad_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v24_sessions_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v24_sessions_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v24 failed: {e}")))
+}
+
+fn apply_schema_v25_chiasm_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v25_chiasm_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v25 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -829,8 +839,28 @@ mod tests {
 
     #[test]
     fn chiasm_tasks_usable_after_v4() {
+        // v4 introduced the chiasm tables with a user_id shim; v25 drops
+        // that shim. Cap the chain at v24 so this test still locks the
+        // v4 shape.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 25 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         // Both tables exist.
         let tables: i64 = conn
@@ -845,7 +875,7 @@ mod tests {
             "chiasm_tasks and/or chiasm_task_updates missing after v4"
         );
 
-        // Exercise the SQL shape kleos-lib chiasm.rs actually uses.
+        // Exercise the SQL shape kleos-lib chiasm.rs used pre-v25.
         conn.execute(
             "INSERT INTO chiasm_tasks (agent, project, title, status, summary, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -887,6 +917,191 @@ mod tests {
             )
             .unwrap();
         assert_eq!(update_count, 1);
+    }
+
+    /// v25: chiasm_tasks and chiasm_task_updates must NOT have a user_id
+    /// column after the full migration chain completes.
+    #[test]
+    fn user_id_absent_from_chiasm_after_v25() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        for table in &["chiasm_tasks", "chiasm_task_updates"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(
+                count, 0,
+                "table '{}' still has user_id column after v25",
+                table
+            );
+        }
+
+        // idx_chiasm_tasks_user is gone.
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_chiasm_tasks_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 0);
+    }
+
+    /// v25: the post-drop chiasm tables support the SQL shape kleos-lib
+    /// services/chiasm.rs now uses (no user_id on INSERT, no user_id
+    /// predicate on SELECT/UPDATE/DELETE). FK cascade from
+    /// chiasm_tasks.id to chiasm_task_updates.task_id still works.
+    #[test]
+    fn chiasm_usable_after_v25() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+
+        conn.execute(
+            "INSERT INTO chiasm_tasks (agent, project, title, status, summary) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["gir", "kleos", "t1", "active", None::<String>],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO chiasm_task_updates (task_id, agent, status, summary) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![task_id, "gir", "active", "started"],
+        )
+        .unwrap();
+
+        let (agent, project): (String, String) = conn
+            .query_row(
+                "SELECT agent, project FROM chiasm_tasks WHERE id = ?1",
+                rusqlite::params![task_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(agent, "gir");
+        assert_eq!(project, "kleos");
+
+        let update_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chiasm_task_updates WHERE task_id = ?1",
+                rusqlite::params![task_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(update_count, 1);
+
+        // FK cascade: delete the task, the update row goes with it.
+        conn.execute(
+            "DELETE FROM chiasm_tasks WHERE id = ?1",
+            rusqlite::params![task_id],
+        )
+        .unwrap();
+        let leftover: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chiasm_task_updates",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftover, 0, "FK cascade broken after v25");
+    }
+
+    /// v25: rows inserted under the v4 shim shape survive the drop with
+    /// every non-user_id field intact on both chiasm_tasks and
+    /// chiasm_task_updates.
+    #[test]
+    fn chiasm_rows_preserved_through_v25() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 25 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        // Insert v4-shaped rows carrying user_id.
+        conn.execute(
+            "INSERT INTO chiasm_tasks (agent, project, title, status, summary, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["gir", "kleos", "phase 5.4", "active", Some("shipping"), 1_i64],
+        )
+        .unwrap();
+        let task_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chiasm_task_updates (task_id, agent, status, summary, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![task_id, "gir", "active", "first update", 1_i64],
+        )
+        .unwrap();
+
+        // Apply v25.
+        apply_schema_v25_chiasm_drop(&conn).unwrap();
+
+        let (agent, project, title, status, summary): (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT agent, project, title, status, summary FROM chiasm_tasks WHERE id = ?1",
+                rusqlite::params![task_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(agent, "gir");
+        assert_eq!(project, "kleos");
+        assert_eq!(title, "phase 5.4");
+        assert_eq!(status, "active");
+        assert_eq!(summary.as_deref(), Some("shipping"));
+
+        let (upd_agent, upd_status, upd_summary): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT agent, status, summary FROM chiasm_task_updates WHERE task_id = ?1",
+                rusqlite::params![task_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(upd_agent, "gir");
+        assert_eq!(upd_status, "active");
+        assert_eq!(upd_summary.as_deref(), Some("first update"));
+
+        for table in &["chiasm_tasks", "chiasm_task_updates"] {
+            let col_count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(col_count, 0, "{} still has user_id after v25", table);
+        }
     }
 
     #[test]

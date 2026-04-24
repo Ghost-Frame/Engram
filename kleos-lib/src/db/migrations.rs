@@ -270,6 +270,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 28,
+        description: "drop_user_id_chiasm",
+        up: run_migration_drop_user_id_chiasm,
+        // DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -303,6 +311,7 @@ const MIGRATION_COMMERCE_TABLES: i64 = 24;
 const MIGRATION_DROP_USER_ID_MEMORY_CORE: i64 = 25;
 const MIGRATION_DROP_USER_ID_SCRATCHPAD: i64 = 26;
 const MIGRATION_DROP_USER_ID_SESSIONS: i64 = 27;
+const MIGRATION_DROP_USER_ID_CHIASM: i64 = 28;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -513,6 +522,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             MIGRATION_DROP_USER_ID_SESSIONS,
             "drop_user_id_sessions",
         )?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_CHIASM {
+        info!("Running migration 28: drop_user_id_chiasm");
+        run_migration_drop_user_id_chiasm(conn)?;
+        record_migration(conn, MIGRATION_DROP_USER_ID_CHIASM, "drop_user_id_chiasm")?;
     }
 
     Ok(())
@@ -1562,6 +1577,43 @@ fn run_migration_drop_user_id_sessions(conn: &rusqlite::Connection) -> Result<()
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 27 complete: user_id dropped from sessions");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 28: drop user_id from chiasm_tasks + chiasm_task_updates
+// ---------------------------------------------------------------------------
+
+/// Migration 28: drop user_id shim from chiasm_tasks and chiasm_task_updates.
+/// No UNIQUE or FK references the column on either table, so ALTER TABLE
+/// DROP COLUMN is safe. chiasm_task_updates has no user_id index, so only
+/// the column drop runs there. Idempotent: skips each table that already
+/// lacks user_id.
+fn run_migration_drop_user_id_chiasm(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch("DROP INDEX IF EXISTS idx_chiasm_tasks_user;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    for table in &["chiasm_tasks", "chiasm_task_updates"] {
+        let has_user_id: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = 'user_id'",
+                    table
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        if has_user_id == 0 {
+            info!("{}.user_id already absent, skipping", table);
+            continue;
+        }
+        conn.execute(&format!("ALTER TABLE {} DROP COLUMN user_id", table), [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Dropped {}.user_id (migration 28)", table);
+    }
+
+    info!("Migration 28 complete: user_id dropped from chiasm tables");
     Ok(())
 }
 

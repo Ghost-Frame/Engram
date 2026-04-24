@@ -1261,13 +1261,11 @@ pub const KLEOS_SERVICES_SQL: &str = r#"
             CHECK(status IN ('active','paused','blocked','completed')),
         summary TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        user_id INTEGER NOT NULL DEFAULT 1
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_status ON chiasm_tasks(status);
     CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_agent ON chiasm_tasks(agent);
     CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_project ON chiasm_tasks(project);
-    CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_user ON chiasm_tasks(user_id);
 
     CREATE TABLE IF NOT EXISTS chiasm_task_updates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1275,8 +1273,7 @@ pub const KLEOS_SERVICES_SQL: &str = r#"
         agent TEXT NOT NULL,
         status TEXT NOT NULL,
         summary TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        user_id INTEGER NOT NULL DEFAULT 1
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_chiasm_task_updates_task_id ON chiasm_task_updates(task_id);
 
