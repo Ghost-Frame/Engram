@@ -1203,12 +1203,10 @@ pub const KLEOS_SERVICES_SQL: &str = r#"
         source TEXT NOT NULL,
         type TEXT NOT NULL,
         payload TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        user_id INTEGER NOT NULL DEFAULT 1
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_axon_events_channel ON axon_events(channel, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_axon_events_type ON axon_events(type);
-    CREATE INDEX IF NOT EXISTS idx_axon_events_user ON axon_events(user_id);
 
     CREATE TABLE IF NOT EXISTS axon_subscriptions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1287,12 +1285,10 @@ pub const KLEOS_SERVICES_SQL: &str = r#"
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         quality_score REAL,
-        drift_flags TEXT DEFAULT '[]',
-        user_id INTEGER NOT NULL DEFAULT 1
+        drift_flags TEXT DEFAULT '[]'
     );
     CREATE INDEX IF NOT EXISTS idx_soma_agents_type ON soma_agents(type);
     CREATE INDEX IF NOT EXISTS idx_soma_agents_status ON soma_agents(status);
-    CREATE INDEX IF NOT EXISTS idx_soma_agents_user ON soma_agents(user_id);
 
     CREATE TABLE IF NOT EXISTS soma_groups (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

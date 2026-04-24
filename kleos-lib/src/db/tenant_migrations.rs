@@ -165,6 +165,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "projects_user_id_drop",
         up: apply_schema_v28_projects_drop,
     },
+    TenantMigration {
+        version: 29,
+        description: "activity_user_id_drop",
+        up: apply_schema_v29_activity_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -305,6 +310,11 @@ fn apply_schema_v27_broca_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v28_projects_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v28_projects_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v28 failed: {e}")))
+}
+
+fn apply_schema_v29_activity_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v29_activity_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v29 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -1969,8 +1979,28 @@ mod tests {
 
     #[test]
     fn activity_tables_usable_after_v8() {
+        // v8 introduced axon_events and soma_agents with user_id shims; v29
+        // drops them. Cap the chain at v28 so this test still locks the v8
+        // shape (with user_id still present).
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 29 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let tables: i64 = conn
             .query_row(
@@ -1981,7 +2011,7 @@ mod tests {
             .unwrap();
         assert_eq!(tables, 2, "axon_events or soma_agents missing after v8");
 
-        // axon_events INSERT matches services/axon.rs publish_event.
+        // Exercise the INSERT shape services/axon.rs and soma.rs used pre-v29.
         conn.execute(
             "INSERT INTO axon_events (channel, source, type, payload, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1989,7 +2019,6 @@ mod tests {
         )
         .unwrap();
 
-        // soma_agents upsert / heartbeat shape.
         conn.execute(
             "INSERT INTO soma_agents (name, type, description, capabilities, config, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -2390,6 +2419,9 @@ mod tests {
 
     #[test]
     fn soma_family_usable_after_v12() {
+        // v12 added soma_groups/soma_agent_groups/soma_agent_logs. v29 drops
+        // user_id from soma_agents; after the full chain user_id is absent from
+        // soma_agents but soma_groups / soma_agent_logs retain their own columns.
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn).unwrap();
 
@@ -2402,11 +2434,11 @@ mod tests {
             .unwrap();
         assert_eq!(tables, 3, "soma family tables missing after v12");
 
-        // Seed a soma_agents row so FKs have a target.
+        // Seed a soma_agents row (no user_id after v29).
         conn.execute(
-            "INSERT INTO soma_agents (name, type, description, capabilities, config, user_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params!["claude-code", "cli", None::<String>, "[]", "{}", 4_i64],
+            "INSERT INTO soma_agents (name, type, description, capabilities, config) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["claude-code", "cli", None::<String>, "[]", "{}"],
         )
         .unwrap();
         let agent_id = conn.last_insert_rowid();
@@ -3587,6 +3619,157 @@ mod tests {
             )
             .unwrap();
         assert_eq!(hit, 1, "FTS trigger must fire and index the new memory");
+    }
+
+    /// v29: axon_events and soma_agents must NOT have a user_id column after
+    /// the full migration chain completes, and their user-indexes must be gone.
+    #[test]
+    fn user_id_absent_from_activity_after_v29() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        for table in &["axon_events", "soma_agents"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(
+                count, 0,
+                "table '{}' still has user_id column after v29",
+                table
+            );
+        }
+
+        for idx_name in &["idx_axon_events_user", "idx_soma_agents_user"] {
+            let idx: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        idx_name
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(idx, 0, "index '{}' still exists after v29", idx_name);
+        }
+    }
+
+    /// v29: axon_events and soma_agents support the SQL shape services/axon.rs
+    /// and services/soma.rs now use (no user_id on INSERT or SELECT).
+    #[test]
+    fn activity_tables_usable_after_v29() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO axon_events (channel, source, type, payload) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["agent.reports", "activity", "task.completed", "{}"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO soma_agents (name, type, capabilities, config) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["claude-code", "cli", "[]", "{}"],
+        )
+        .unwrap();
+
+        let (event_count, agent_count): (i64, i64) = conn
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM axon_events WHERE channel = 'agent.reports'), \
+                   (SELECT COUNT(*) FROM soma_agents WHERE name = 'claude-code')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(event_count, 1);
+        assert_eq!(agent_count, 1);
+    }
+
+    /// v29: rows inserted under the v8 shim shape survive the drop with
+    /// every non-user_id field intact on both tables.
+    #[test]
+    fn activity_rows_preserved_through_v29() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 29 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO axon_events (channel, source, type, payload, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["sys", "gir", "taco.baked", "{}", 1_i64],
+        )
+        .unwrap();
+        let event_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO soma_agents (name, type, capabilities, config, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["test-agent", "sir", "[]", "{}", 1_i64],
+        )
+        .unwrap();
+        let agent_id = conn.last_insert_rowid();
+
+        apply_schema_v29_activity_drop(&conn).unwrap();
+
+        let (channel, type_): (String, String) = conn
+            .query_row(
+                "SELECT channel, type FROM axon_events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(channel, "sys");
+        assert_eq!(type_, "taco.baked");
+
+        let (name, type2): (String, String) = conn
+            .query_row(
+                "SELECT name, type FROM soma_agents WHERE id = ?1",
+                rusqlite::params![agent_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "test-agent");
+        assert_eq!(type2, "sir");
+
+        for table in &["axon_events", "soma_agents"] {
+            let col: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(col, 0, "'{}' still has user_id after v29", table);
+        }
     }
 
     /// v22: rows inserted before v22 survive the DROP COLUMN migration intact.

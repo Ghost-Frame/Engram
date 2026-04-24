@@ -44,7 +44,7 @@ pub struct SomaStats {
 
 const AGENT_COLUMNS: &str =
     "id, name, type, description, capabilities, status, config, heartbeat_at, \
-     created_at, updated_at, quality_score, drift_flags, user_id";
+     created_at, updated_at, quality_score, drift_flags";
 
 const VALID_STATUSES: &[&str] = &["pending", "online", "offline", "error"];
 
@@ -56,7 +56,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-fn row_to_agent(row: &rusqlite::Row<'_>) -> Result<Agent> {
+fn row_to_agent(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Agent> {
     let capabilities_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let config_str: String = row.get(6).map_err(rusqlite_to_eng_error)?;
     let drift_flags_opt: Option<String> = row.get(11).map_err(rusqlite_to_eng_error)?;
@@ -76,19 +76,17 @@ fn row_to_agent(row: &rusqlite::Row<'_>) -> Result<Agent> {
             .as_deref()
             .map(|s| parse_json(s, serde_json::json!([])))
             .unwrap_or_else(|| serde_json::json!([])),
-        user_id: row.get(12).map_err(rusqlite_to_eng_error)?,
+        user_id: owner_user_id,
     })
 }
 
-/// Register-or-upsert a soma agent by (user_id, name). Existing rows have
-/// their type/description/capabilities/config overwritten so callers can
-/// evolve an agent's registration without deleting the old row (and losing
-/// the `agents.id` references held by soma_agent_groups / soma_agent_logs).
+/// Register-or-upsert a soma agent by name. Existing rows have their
+/// type/description/capabilities/config overwritten so callers can evolve an
+/// agent's registration without deleting the old row (and losing the `agents.id`
+/// references held by soma_agent_groups / soma_agent_logs).
 #[tracing::instrument(skip(db, req), fields(name = %req.name, type_ = %req.type_))]
 pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<Agent> {
-    let user_id = req
-        .user_id
-        .ok_or_else(|| EngError::InvalidInput("user_id required".into()))?;
+    let user_id = req.user_id.unwrap_or(1);
     if req.name.trim().is_empty() {
         return Err(EngError::InvalidInput("agent name required".into()));
     }
@@ -109,22 +107,15 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
     db.write(move |conn| {
         conn.execute(
             "INSERT INTO soma_agents
-                (name, type, description, capabilities, config, user_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                (name, type, description, capabilities, config)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(name) DO UPDATE SET
                 type = excluded.type,
                 description = excluded.description,
                 capabilities = excluded.capabilities,
                 config = excluded.config,
                 updated_at = datetime('now')",
-            rusqlite::params![
-                name,
-                type_,
-                description,
-                capabilities_str,
-                config_str,
-                user_id
-            ],
+            rusqlite::params![name, type_, description, capabilities_str, config_str],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -134,15 +125,15 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
 }
 
 #[tracing::instrument(skip(db), fields(agent_id, user_id))]
-pub async fn heartbeat(db: &Database, agent_id: i64, user_id: i64) -> Result<()> {
+pub async fn heartbeat(db: &Database, agent_id: i64, _user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
             "UPDATE soma_agents
              SET heartbeat_at = datetime('now'),
                  status = CASE WHEN status = 'offline' THEN 'online' ELSE status END,
                  updated_at = datetime('now')
-             WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![agent_id, user_id],
+             WHERE id = ?1",
+            rusqlite::params![agent_id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -151,7 +142,7 @@ pub async fn heartbeat(db: &Database, agent_id: i64, user_id: i64) -> Result<()>
 }
 
 #[tracing::instrument(skip(db), fields(agent_id, user_id, status = %status))]
-pub async fn set_status(db: &Database, agent_id: i64, user_id: i64, status: &str) -> Result<()> {
+pub async fn set_status(db: &Database, agent_id: i64, _user_id: i64, status: &str) -> Result<()> {
     if !VALID_STATUSES.contains(&status) {
         return Err(EngError::InvalidInput(format!(
             "invalid soma status '{}', must be one of pending, online, offline, error",
@@ -163,8 +154,8 @@ pub async fn set_status(db: &Database, agent_id: i64, user_id: i64, status: &str
     db.write(move |conn| {
         conn.execute(
             "UPDATE soma_agents SET status = ?1, updated_at = datetime('now')
-             WHERE id = ?2 AND user_id = ?3",
-            rusqlite::params![status, agent_id, user_id],
+             WHERE id = ?2",
+            rusqlite::params![status, agent_id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -180,18 +171,23 @@ pub async fn list_agents(
     status_filter: Option<&str>,
     limit: usize,
 ) -> Result<Vec<Agent>> {
-    let mut sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE user_id = ?1");
-    let mut idx = 2usize;
-    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(user_id)];
+    let mut sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents");
+    let mut clauses: Vec<String> = Vec::new();
+    let mut idx = 1usize;
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(t) = type_filter {
-        sql.push_str(&format!(" AND type = ?{}", idx));
+        clauses.push(format!("type = ?{}", idx));
         params.push(rusqlite::types::Value::Text(t.to_string()));
         idx += 1;
     }
     if let Some(s) = status_filter {
-        sql.push_str(&format!(" AND status = ?{}", idx));
+        clauses.push(format!("status = ?{}", idx));
         params.push(rusqlite::types::Value::Text(s.to_string()));
         idx += 1;
+    }
+    if !clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&clauses.join(" AND "));
     }
     sql.push_str(&format!(" ORDER BY created_at DESC LIMIT ?{}", idx));
     params.push(rusqlite::types::Value::Integer(limit as i64));
@@ -202,7 +198,7 @@ pub async fn list_agents(
         let mut rows = stmt.query(converted).map_err(rusqlite_to_eng_error)?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            out.push(row_to_agent(row)?);
+            out.push(row_to_agent(row, user_id)?);
         }
         Ok(out)
     })
@@ -211,47 +207,47 @@ pub async fn list_agents(
 
 #[tracing::instrument(skip(db), fields(agent_id = id, user_id))]
 pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
-    let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE id = ?1 AND user_id = ?2");
+    let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE id = ?1");
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
+            .query(rusqlite::params![id])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
             .next()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::NotFound(format!("agent {}", id)))?;
-        row_to_agent(row)
+        row_to_agent(row, user_id)
     })
     .await
 }
 
 #[tracing::instrument(skip(db), fields(user_id, name = %name))]
 pub async fn get_agent_by_name(db: &Database, user_id: i64, name: &str) -> Result<Agent> {
-    let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE user_id = ?1 AND name = ?2");
+    let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE name = ?1");
     let name_owned = name.to_string();
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id, name_owned.clone()])
+            .query(rusqlite::params![name_owned.clone()])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
             .next()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::NotFound(format!("agent '{}'", name_owned)))?;
-        row_to_agent(row)
+        row_to_agent(row, user_id)
     })
     .await
 }
 
 #[tracing::instrument(skip(db), fields(agent_id = id, user_id))]
-pub async fn delete_agent(db: &Database, id: i64, user_id: i64) -> Result<()> {
+pub async fn delete_agent(db: &Database, id: i64, _user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
-            "DELETE FROM soma_agents WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![id, user_id],
+            "DELETE FROM soma_agents WHERE id = ?1",
+            rusqlite::params![id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -419,19 +415,18 @@ pub async fn log_event(
 pub async fn list_agent_logs(
     db: &Database,
     agent_id: i64,
-    user_id: i64,
+    _user_id: i64,
     limit: i64,
 ) -> Result<Vec<AgentLog>> {
     let sql = "SELECT l.id, l.agent_id, l.level, l.message, l.data, l.created_at
                FROM soma_agent_logs l
-               JOIN soma_agents a ON l.agent_id = a.id
-               WHERE l.agent_id = ?1 AND a.user_id = ?2
-               ORDER BY l.created_at DESC LIMIT ?3";
+               WHERE l.agent_id = ?1
+               ORDER BY l.created_at DESC LIMIT ?2";
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![agent_id, user_id, limit])
+            .query(rusqlite::params![agent_id, limit])
             .map_err(rusqlite_to_eng_error)?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -450,27 +445,11 @@ pub async fn list_agent_logs(
     .await
 }
 
-#[tracing::instrument(skip(db), fields(user_id = ?user_id))]
-pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<SomaStats> {
+#[tracing::instrument(skip(db), fields(user_id = ?_user_id))]
+pub async fn get_stats(db: &Database, _user_id: Option<i64>) -> Result<SomaStats> {
     db.read(move |conn| {
-        let row = if let Some(uid) = user_id {
-            conn.query_row(
-                "SELECT
-                    COUNT(*),
-                    SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END),
-                    COUNT(DISTINCT type)
-                 FROM soma_agents WHERE user_id = ?1",
-                rusqlite::params![uid],
-                |row| {
-                    let total: i64 = row.get(0)?;
-                    let online: Option<i64> = row.get(1)?;
-                    let types: i64 = row.get(2)?;
-                    Ok((total, online.unwrap_or(0), types))
-                },
-            )
-            .map_err(rusqlite_to_eng_error)?
-        } else {
-            conn.query_row(
+        let row = conn
+            .query_row(
                 "SELECT
                     COUNT(*),
                     SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END),
@@ -484,8 +463,7 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<SomaStats>
                     Ok((total, online.unwrap_or(0), types))
                 },
             )
-            .map_err(rusqlite_to_eng_error)?
-        };
+            .map_err(rusqlite_to_eng_error)?;
         Ok(SomaStats {
             total_agents: row.0,
             online_agents: row.1,
@@ -582,7 +560,13 @@ mod tests {
         assert!(after.heartbeat_at.is_some());
     }
 
+    /// Phase 5.8 dropped user_id from soma_agents: tenant isolation is now
+    /// at the database level. A shared in-memory DB no longer separates user
+    /// 1 from user 2 on soma_agents. The tenant-aware form of this invariant
+    /// lands in kleos-server/tests once Phase 4.2 wires the tenant-aware
+    /// test harness.
     #[tokio::test]
+    #[ignore]
     async fn list_is_scoped_by_user() {
         let db = setup().await;
         register_agent(

@@ -302,6 +302,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 32,
+        description: "drop_user_id_activity",
+        up: run_migration_drop_user_id_activity,
+        // DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -339,6 +347,7 @@ const MIGRATION_DROP_USER_ID_CHIASM: i64 = 28;
 const MIGRATION_DROP_USER_ID_APPROVALS: i64 = 29;
 const MIGRATION_DROP_USER_ID_BROCA: i64 = 30;
 const MIGRATION_DROP_USER_ID_PROJECTS: i64 = 31;
+const MIGRATION_DROP_USER_ID_ACTIVITY: i64 = 32;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -580,6 +589,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_DROP_USER_ID_PROJECTS,
             "drop_user_id_projects",
+        )?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_ACTIVITY {
+        info!("Running migration 32: drop_user_id_activity");
+        run_migration_drop_user_id_activity(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_ACTIVITY,
+            "drop_user_id_activity",
         )?;
     }
 
@@ -1791,6 +1810,52 @@ fn run_migration_drop_user_id_projects(conn: &rusqlite::Connection) -> Result<()
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 31 complete: user_id dropped from projects");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 32: drop user_id from axon_events + soma_agents
+// ---------------------------------------------------------------------------
+
+/// Migration 32: drop user_id shim from axon_events and soma_agents. No UNIQUE
+/// or FK references the column on either table. Idempotent: each table is
+/// checked independently before its DROP INDEX + DROP COLUMN pair.
+fn run_migration_drop_user_id_activity(conn: &rusqlite::Connection) -> Result<()> {
+    let axon_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if axon_has_user_id > 0 {
+        conn.execute_batch("DROP INDEX IF EXISTS idx_axon_events_user;")
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE axon_events DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Migration 32: user_id dropped from axon_events");
+    } else {
+        info!("axon_events.user_id already absent, skipping");
+    }
+
+    let soma_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('soma_agents') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if soma_has_user_id > 0 {
+        conn.execute_batch("DROP INDEX IF EXISTS idx_soma_agents_user;")
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE soma_agents DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Migration 32: user_id dropped from soma_agents");
+    } else {
+        info!("soma_agents.user_id already absent, skipping");
+    }
+
+    info!("Migration 32 complete: user_id dropped from axon_events + soma_agents");
     Ok(())
 }
 
