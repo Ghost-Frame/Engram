@@ -318,6 +318,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 34,
+        description: "drop_user_id_axon",
+        up: run_migration_drop_user_id_axon,
+        // DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -357,6 +365,7 @@ const MIGRATION_DROP_USER_ID_BROCA: i64 = 30;
 const MIGRATION_DROP_USER_ID_PROJECTS: i64 = 31;
 const MIGRATION_DROP_USER_ID_ACTIVITY: i64 = 32;
 const MIGRATION_DROP_USER_ID_WEBHOOKS: i64 = 33;
+const MIGRATION_DROP_USER_ID_AXON: i64 = 34;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -615,6 +624,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 33: drop_user_id_webhooks");
         run_migration_drop_user_id_webhooks(conn)?;
         record_migration(conn, MIGRATION_DROP_USER_ID_WEBHOOKS, "drop_user_id_webhooks")?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_AXON {
+        info!("Running migration 34: drop_user_id_axon");
+        run_migration_drop_user_id_axon(conn)?;
+        record_migration(conn, MIGRATION_DROP_USER_ID_AXON, "drop_user_id_axon")?;
     }
 
     Ok(())
@@ -1901,6 +1916,53 @@ fn run_migration_drop_user_id_webhooks(conn: &rusqlite::Connection) -> Result<()
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 33 complete: user_id dropped from webhooks");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 34: drop user_id from axon_subscriptions + axon_cursors
+// ---------------------------------------------------------------------------
+
+/// Migration 34: drop user_id shim from axon_subscriptions and axon_cursors.
+/// UNIQUE(agent, channel) on axon_subscriptions and PRIMARY KEY(agent, channel)
+/// on axon_cursors do NOT include user_id -- plain DROP COLUMN works for both.
+/// No idx_*_user indexes exist on either table. Idempotent: each table
+/// checked independently.
+fn run_migration_drop_user_id_axon(conn: &rusqlite::Connection) -> Result<()> {
+    let subs_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('axon_subscriptions') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if subs_has_user_id > 0 {
+        conn.execute(
+            "ALTER TABLE axon_subscriptions DROP COLUMN user_id",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Migration 34: user_id dropped from axon_subscriptions");
+    } else {
+        info!("axon_subscriptions.user_id already absent, skipping");
+    }
+
+    let cursors_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('axon_cursors') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if cursors_has_user_id > 0 {
+        conn.execute("ALTER TABLE axon_cursors DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Migration 34: user_id dropped from axon_cursors");
+    } else {
+        info!("axon_cursors.user_id already absent, skipping");
+    }
+
+    info!("Migration 34 complete: user_id dropped from axon_subscriptions + axon_cursors");
     Ok(())
 }
 

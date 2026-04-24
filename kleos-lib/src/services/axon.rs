@@ -47,7 +47,7 @@ pub struct Subscription {
     pub channel: String,
     pub filter_type: Option<String>,
     pub webhook_url: Option<String>,
-    pub user_id: i64,
+    pub user_id: i64, // populated from caller context; not stored after v31
     pub created_at: String,
 }
 
@@ -57,7 +57,7 @@ pub struct Cursor {
     pub channel: String,
     pub last_event_id: i64,
     pub updated_at: String,
-    pub user_id: i64,
+    pub user_id: i64, // populated from caller context; not stored after v31
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -244,8 +244,8 @@ pub async fn upsert_subscription(
     req: SubscribeRequest,
     user_id: i64,
 ) -> Result<Subscription> {
-    let sql = "INSERT INTO axon_subscriptions (agent, channel, filter_type, webhook_url, user_id)
-               VALUES (?1, ?2, ?3, ?4, ?5)
+    let sql = "INSERT INTO axon_subscriptions (agent, channel, filter_type, webhook_url)
+               VALUES (?1, ?2, ?3, ?4)
                ON CONFLICT(agent, channel) DO UPDATE SET
                    filter_type = excluded.filter_type,
                    webhook_url = excluded.webhook_url";
@@ -255,7 +255,7 @@ pub async fn upsert_subscription(
     let ft = req.filter_type.clone();
     let wh = req.webhook_url.clone();
     db.write(move |conn| {
-        conn.execute(sql, rusqlite::params![a, c, ft, wh, user_id])
+        conn.execute(sql, rusqlite::params![a, c, ft, wh])
             .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })
@@ -270,16 +270,16 @@ pub async fn get_subscription(
     channel: &str,
     user_id: i64,
 ) -> Result<Subscription> {
-    let sql = "SELECT id, agent, channel, filter_type, webhook_url, user_id, created_at
+    let sql = "SELECT id, agent, channel, filter_type, webhook_url, created_at
                FROM axon_subscriptions
-               WHERE agent = ?1 AND channel = ?2 AND user_id = ?3";
+               WHERE agent = ?1 AND channel = ?2";
     let agent_s = agent.to_string();
     let channel_s = channel.to_string();
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![agent_s, channel_s, user_id])
+            .query(rusqlite::params![agent_s, channel_s])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
             .next()
@@ -291,8 +291,8 @@ pub async fn get_subscription(
             channel: row.get(2).map_err(rusqlite_to_eng_error)?,
             filter_type: row.get(3).map_err(rusqlite_to_eng_error)?,
             webhook_url: row.get(4).map_err(rusqlite_to_eng_error)?,
-            user_id: row.get(5).map_err(rusqlite_to_eng_error)?,
-            created_at: row.get(6).map_err(rusqlite_to_eng_error)?,
+            user_id,
+            created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
         })
     })
     .await
@@ -303,15 +303,15 @@ pub async fn delete_subscription(
     db: &Database,
     agent: &str,
     channel: &str,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<bool> {
-    let sql = "DELETE FROM axon_subscriptions WHERE agent = ?1 AND channel = ?2 AND user_id = ?3";
+    let sql = "DELETE FROM axon_subscriptions WHERE agent = ?1 AND channel = ?2";
     let a = agent.to_string();
     let c = channel.to_string();
 
     let n = db
         .write(move |conn| {
-            conn.execute(sql, rusqlite::params![a, c, user_id])
+            conn.execute(sql, rusqlite::params![a, c])
                 .map_err(rusqlite_to_eng_error)
         })
         .await?;
@@ -324,16 +324,16 @@ pub async fn list_subscriptions_for_agent(
     agent: &str,
     user_id: i64,
 ) -> Result<Vec<Subscription>> {
-    let sql = "SELECT id, agent, channel, filter_type, webhook_url, user_id, created_at
+    let sql = "SELECT id, agent, channel, filter_type, webhook_url, created_at
                FROM axon_subscriptions
-               WHERE agent = ?1 AND user_id = ?2
+               WHERE agent = ?1
                ORDER BY channel ASC";
     let a = agent.to_string();
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![a, user_id])
+            .query(rusqlite::params![a])
             .map_err(rusqlite_to_eng_error)?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -343,8 +343,8 @@ pub async fn list_subscriptions_for_agent(
                 channel: row.get(2).map_err(rusqlite_to_eng_error)?,
                 filter_type: row.get(3).map_err(rusqlite_to_eng_error)?,
                 webhook_url: row.get(4).map_err(rusqlite_to_eng_error)?,
-                user_id: row.get(5).map_err(rusqlite_to_eng_error)?,
-                created_at: row.get(6).map_err(rusqlite_to_eng_error)?,
+                user_id,
+                created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
             });
         }
         Ok(results)
@@ -354,16 +354,16 @@ pub async fn list_subscriptions_for_agent(
 
 #[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel, user_id))]
 pub async fn get_cursor(db: &Database, agent: &str, channel: &str, user_id: i64) -> Result<Cursor> {
-    let sql = "SELECT agent, channel, last_event_id, updated_at, user_id
+    let sql = "SELECT agent, channel, last_event_id, updated_at
                FROM axon_cursors
-               WHERE agent = ?1 AND channel = ?2 AND user_id = ?3";
+               WHERE agent = ?1 AND channel = ?2";
     let a = agent.to_string();
     let c = channel.to_string();
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![a.clone(), c.clone(), user_id])
+            .query(rusqlite::params![a.clone(), c.clone()])
             .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => Ok(Cursor {
@@ -371,7 +371,7 @@ pub async fn get_cursor(db: &Database, agent: &str, channel: &str, user_id: i64)
                 channel: row.get(1).map_err(rusqlite_to_eng_error)?,
                 last_event_id: row.get(2).map_err(rusqlite_to_eng_error)?,
                 updated_at: row.get(3).map_err(rusqlite_to_eng_error)?,
-                user_id: row.get(4).map_err(rusqlite_to_eng_error)?,
+                user_id,
             }),
             None => Ok(Cursor {
                 agent: a,
@@ -390,19 +390,18 @@ async fn upsert_cursor(
     agent: &str,
     channel: &str,
     last_event_id: i64,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<()> {
-    let sql = "INSERT INTO axon_cursors (agent, channel, last_event_id, updated_at, user_id)
-               VALUES (?1, ?2, ?3, datetime('now'), ?4)
+    let sql = "INSERT INTO axon_cursors (agent, channel, last_event_id, updated_at)
+               VALUES (?1, ?2, ?3, datetime('now'))
                ON CONFLICT(agent, channel) DO UPDATE SET
                    last_event_id = excluded.last_event_id,
-                   updated_at = excluded.updated_at,
-                   user_id = excluded.user_id";
+                   updated_at = excluded.updated_at";
     let a = agent.to_string();
     let c = channel.to_string();
 
     db.write(move |conn| {
-        conn.execute(sql, rusqlite::params![a, c, last_event_id, user_id])
+        conn.execute(sql, rusqlite::params![a, c, last_event_id])
             .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })

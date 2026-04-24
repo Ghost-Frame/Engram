@@ -175,6 +175,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "webhooks_user_id_drop",
         up: apply_schema_v30_webhooks_drop,
     },
+    TenantMigration {
+        version: 31,
+        description: "axon_user_id_drop",
+        up: apply_schema_v31_axon_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -325,6 +330,11 @@ fn apply_schema_v29_activity_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v30_webhooks_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v30_webhooks_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v30 failed: {e}")))
+}
+
+fn apply_schema_v31_axon_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v31_axon_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v31 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -2339,8 +2349,28 @@ mod tests {
 
     #[test]
     fn axon_family_usable_after_v11() {
+        // v11 introduced axon_channels, axon_subscriptions, axon_cursors with
+        // user_id shims; v31 drops them. Cap the chain at v30 so this test
+        // still locks the v11 shape (with user_id still present).
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 31 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let tables: i64 = conn
             .query_row(
@@ -2357,6 +2387,7 @@ mod tests {
         )
         .unwrap();
 
+        // Exercise the INSERT shape services/axon.rs used pre-v31.
         conn.execute(
             "INSERT INTO axon_subscriptions (agent, channel, filter_type, webhook_url, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -4000,5 +4031,155 @@ mod tests {
             )
             .unwrap();
         assert_eq!(col, 0, "webhooks still has user_id after v30");
+    }
+
+    /// v31: axon_subscriptions and axon_cursors must NOT have a user_id column
+    /// after the full migration chain.
+    #[test]
+    fn user_id_absent_from_axon_after_v31() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        for table in &["axon_subscriptions", "axon_cursors"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(
+                count, 0,
+                "table '{}' still has user_id column after v31",
+                table
+            );
+        }
+
+        // UNIQUE(agent, channel) and PRIMARY KEY(agent, channel) survive.
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_axon_subs_channel'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1, "idx_axon_subs_channel must survive v31");
+    }
+
+    /// v31: axon_subscriptions and axon_cursors support the SQL shape
+    /// services/axon.rs now uses (no user_id on INSERT or SELECT).
+    #[test]
+    fn axon_tables_usable_after_v31() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO axon_subscriptions (agent, channel) VALUES (?1, ?2)",
+            rusqlite::params!["gir", "taco.channel"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO axon_cursors (agent, channel, last_event_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["gir", "taco.channel", 42_i64],
+        )
+        .unwrap();
+
+        let (agent, channel): (String, String) = conn
+            .query_row(
+                "SELECT agent, channel FROM axon_subscriptions ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(agent, "gir");
+        assert_eq!(channel, "taco.channel");
+
+        let last_id: i64 = conn
+            .query_row(
+                "SELECT last_event_id FROM axon_cursors WHERE agent = ?1 AND channel = ?2",
+                rusqlite::params!["gir", "taco.channel"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_id, 42);
+    }
+
+    /// v31: rows inserted under the v11 shim shape survive the drop with
+    /// every non-user_id field intact.
+    #[test]
+    fn axon_rows_preserved_through_v31() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 31 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO axon_subscriptions (agent, channel, filter_type, webhook_url, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["gir", "ship.channel", None::<String>, None::<String>, 1_i64],
+        )
+        .unwrap();
+        let sub_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO axon_cursors (agent, channel, last_event_id, user_id) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["gir", "ship.channel", 99_i64, 1_i64],
+        )
+        .unwrap();
+
+        apply_schema_v31_axon_drop(&conn).unwrap();
+
+        let (agent, channel): (String, String) = conn
+            .query_row(
+                "SELECT agent, channel FROM axon_subscriptions WHERE id = ?1",
+                rusqlite::params![sub_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(agent, "gir");
+        assert_eq!(channel, "ship.channel");
+
+        let last_id: i64 = conn
+            .query_row(
+                "SELECT last_event_id FROM axon_cursors WHERE agent = ?1 AND channel = ?2",
+                rusqlite::params!["gir", "ship.channel"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_id, 99);
+
+        for table in &["axon_subscriptions", "axon_cursors"] {
+            let col: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(col, 0, "'{}' still has user_id after v31", table);
+        }
     }
 }
