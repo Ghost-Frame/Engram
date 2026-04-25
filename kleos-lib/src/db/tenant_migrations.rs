@@ -215,6 +215,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "intelligence_user_id_drop",
         up: apply_schema_v38_intelligence_drop,
     },
+    TenantMigration {
+        version: 39,
+        description: "skills_user_id_drop",
+        up: apply_schema_v39_skills_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -407,6 +412,11 @@ fn apply_schema_v37_portability_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v38_intelligence_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v38_intelligence_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v38 failed: {e}")))
+}
+
+fn apply_schema_v39_skills_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v39_skills_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v39 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -3572,8 +3582,27 @@ mod tests {
 
     #[test]
     fn skills_family_usable_after_v19() {
+        // v19 added the skills family; v39 drops user_id from skill_records.
+        // Cap this test at v38 so the pre-drop INSERT with user_id still works.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 39 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let tables: i64 = conn
             .query_row(
@@ -5873,5 +5902,136 @@ mod tests {
                 .unwrap();
             assert_eq!(col_count, 0, "{} still has user_id after v38", table);
         }
+    }
+
+    /// v39: user_id must be absent from skill_records and
+    /// idx_skill_records_user must be dropped after the full migration chain.
+    #[test]
+    fn user_id_absent_from_skill_records_after_v39() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('skill_records') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(col_count, 0, "skill_records still has user_id column after v39");
+
+        // Dropped index must be gone.
+        let idx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND name='idx_skill_records_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(idx_count, 0, "idx_skill_records_user still present after v39");
+
+        // Preserved indexes must still exist.
+        let preserved = [
+            "idx_skill_records_agent",
+            "idx_skill_records_name",
+            "idx_skill_records_active",
+            "idx_skill_records_category",
+            "idx_skill_records_parent",
+        ];
+        for idx in &preserved {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        idx
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(count, 1, "preserved index {} missing after v39", idx);
+        }
+    }
+
+    /// v39: INSERT works without user_id, UNIQUE(name, agent, version) is
+    /// enforced, and child FK CASCADE is preserved.
+    #[test]
+    fn skill_records_usable_after_v39() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        // Insert a skill without user_id -- must succeed.
+        conn.execute(
+            "INSERT INTO skill_records (name, agent, code) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["tacos-skill", "gir", "# find tacos"],
+        )
+        .unwrap();
+        let sid = conn.last_insert_rowid();
+
+        // Second insert with the same (name, agent, version=1) must be rejected.
+        let dup_result = conn.execute(
+            "INSERT INTO skill_records (name, agent, code) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["tacos-skill", "gir", "# duplicate"],
+        );
+        assert!(dup_result.is_err(), "UNIQUE(name, agent, version) must reject duplicate");
+
+        // Child FK: execution_analyses ON DELETE CASCADE.
+        conn.execute(
+            "INSERT INTO execution_analyses (skill_id, success) VALUES (?1, 1)",
+            rusqlite::params![sid],
+        )
+        .unwrap();
+
+        // Deleting the parent cascades to execution_analyses.
+        conn.execute(
+            "DELETE FROM skill_records WHERE id = ?1",
+            rusqlite::params![sid],
+        )
+        .unwrap();
+
+        let child_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM execution_analyses WHERE skill_id = ?1",
+                rusqlite::params![sid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(child_count, 0, "execution_analyses CASCADE DELETE failed after v39");
+    }
+
+    /// v39: insert a skill record, then search via skills_fts MATCH to confirm
+    /// the FTS shadow was rebuilt and the trigger fires correctly.
+    #[test]
+    fn skill_records_fts_works_after_v39() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO skill_records (name, agent, code, description) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["brew-waffles", "gir", "# waffle logic", "makes waffles fast"],
+        )
+        .unwrap();
+
+        // FTS trigger must have inserted the row into the shadow table.
+        let hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM skills_fts WHERE skills_fts MATCH 'waffle'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "skills_fts insert trigger did not fire after v39 rebuild");
+
+        // Description is also indexed.
+        let desc_hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM skills_fts WHERE skills_fts MATCH 'waffles'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(desc_hits, 1, "skills_fts description not indexed after v39");
     }
 }

@@ -37,11 +37,11 @@ pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result
     let name = name.to_string();
     db.read(move |conn| {
         let mut stmt = conn
-            .prepare("SELECT name FROM skill_records WHERE user_id = ?1 AND is_active = 1")
+            .prepare("SELECT name FROM skill_records WHERE is_active = 1")
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
         let names: Vec<String> = stmt
-            .query_map(params![user_id], |row| row.get(0))
+            .query_map(params![], |row| row.get(0))
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
             .filter_map(|r| r.ok())
             .collect();
@@ -145,10 +145,10 @@ pub async fn get_usage_stats(db: &Database, user_id: i64) -> Result<serde_json::
     db.read(move |conn| {
         // Underused: active skills with < 5 executions
         let mut stmt = conn.prepare(
-            "SELECT id, name, execution_count, trust_score FROM skill_records WHERE user_id = ?1 AND is_active = 1 AND execution_count < 5 ORDER BY execution_count ASC LIMIT 20"
+            "SELECT id, name, execution_count, trust_score FROM skill_records WHERE is_active = 1 AND execution_count < 5 ORDER BY execution_count ASC LIMIT 20"
         ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-        let underused: Vec<serde_json::Value> = stmt.query_map(params![user_id], |row| {
+        let underused: Vec<serde_json::Value> = stmt.query_map(params![], |row| {
             Ok(serde_json::json!({
                 "id": row.get::<_, i64>(0)?,
                 "name": row.get::<_, String>(1)?,
@@ -162,10 +162,10 @@ pub async fn get_usage_stats(db: &Database, user_id: i64) -> Result<serde_json::
 
         // Failing: active skills with success_rate < 50%
         let mut stmt = conn.prepare(
-            "SELECT id, name, success_count, failure_count, trust_score FROM skill_records WHERE user_id = ?1 AND is_active = 1 AND execution_count > 0 AND CAST(success_count AS REAL) / execution_count < 0.5 ORDER BY trust_score ASC LIMIT 20"
+            "SELECT id, name, success_count, failure_count, trust_score FROM skill_records WHERE is_active = 1 AND execution_count > 0 AND CAST(success_count AS REAL) / execution_count < 0.5 ORDER BY trust_score ASC LIMIT 20"
         ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-        let failing: Vec<serde_json::Value> = stmt.query_map(params![user_id], |row| {
+        let failing: Vec<serde_json::Value> = stmt.query_map(params![], |row| {
             let sc: i32 = row.get(2)?;
             let fc: i32 = row.get(3)?;
             let total = sc + fc;
@@ -210,27 +210,24 @@ pub async fn get_failing_skill_candidates(
     let cooldown_clause = format!("-{} seconds", cooldown_secs as i64);
     db.read(move |conn| {
         let sql = "SELECT sr.id FROM skill_records sr \
-                   WHERE sr.user_id = ?1 \
-                     AND sr.is_active = 1 \
+                   WHERE sr.is_active = 1 \
                      AND sr.is_deprecated = 0 \
-                     AND sr.execution_count >= ?2 \
-                     AND CAST(sr.success_count AS REAL) / sr.execution_count < ?3 \
+                     AND sr.execution_count >= ?1 \
+                     AND CAST(sr.success_count AS REAL) / sr.execution_count < ?2 \
                      AND NOT EXISTS ( \
                          SELECT 1 FROM skill_records child \
                          WHERE child.parent_skill_id = sr.id \
-                           AND child.user_id = sr.user_id \
-                           AND child.created_at > datetime('now', ?4) \
+                           AND child.created_at > datetime('now', ?3) \
                      ) \
                    ORDER BY (CAST(sr.success_count AS REAL) / sr.execution_count) ASC, \
                             sr.trust_score ASC \
-                   LIMIT ?5";
+                   LIMIT ?4";
         let mut stmt = conn
             .prepare(sql)
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let ids: Vec<i64> = stmt
             .query_map(
                 params![
-                    user_id,
                     min_executions as i64,
                     max_success_rate as f64,
                     cooldown_clause,
@@ -272,21 +269,20 @@ pub async fn get_capture_candidates(
                      AND m.created_at > datetime('now', ?2) \
                      AND NOT EXISTS ( \
                          SELECT 1 FROM skill_records sr \
-                         WHERE sr.user_id = ?3 \
-                           AND sr.is_active = 1 \
+                         WHERE sr.is_active = 1 \
                            AND ( \
                                LOWER(m.content) LIKE '%' || LOWER(sr.name) || '%' \
                                OR LOWER(m.content) LIKE '%' || LOWER(COALESCE(sr.description, '')) || '%' \
                            ) \
                      ) \
                    ORDER BY m.created_at DESC \
-                   LIMIT ?4";
+                   LIMIT ?3";
         let mut stmt = conn
             .prepare(sql)
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let rows: Vec<String> = stmt
             .query_map(
-                params![tag_needle, since_clause, user_id, limit as i64],
+                params![tag_needle, since_clause, limit as i64],
                 |row| row.get::<_, String>(0),
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
@@ -317,11 +313,11 @@ pub async fn get_derive_candidates(
                 "SELECT sr.id, sr.name, st.tag \
                  FROM skill_records sr \
                  INNER JOIN skill_tags st ON st.skill_id = sr.id \
-                 WHERE sr.user_id = ?1 AND sr.is_active = 1 AND sr.is_deprecated = 0",
+                 WHERE sr.is_active = 1 AND sr.is_deprecated = 0",
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let rows = stmt
-            .query_map(params![user_id], |row| {
+            .query_map(params![], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -344,13 +340,11 @@ pub async fn get_derive_candidates(
         // derived child already exists.
         let mut parents_stmt = conn
             .prepare(
-                "SELECT slp.skill_id, slp.parent_id FROM skill_lineage_parents slp \
-                 INNER JOIN skill_records child ON child.id = slp.skill_id \
-                 WHERE child.user_id = ?1",
+                "SELECT slp.skill_id, slp.parent_id FROM skill_lineage_parents slp",
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let parent_rows = parents_stmt
-            .query_map(params![user_id], |row| {
+            .query_map(params![], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
             })
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
@@ -456,15 +450,14 @@ mod tests {
             conn.execute(
                 "INSERT INTO skill_records \
                     (name, agent, description, code, execution_count, success_count, \
-                     failure_count, is_active, is_deprecated, user_id, created_at) \
-                 VALUES (?1, 'test', '', '', ?2, ?3, ?4, 1, 0, ?5, \
-                         datetime('now', ?6))",
+                     failure_count, is_active, is_deprecated, created_at) \
+                 VALUES (?1, 'test', '', '', ?2, ?3, ?4, 1, 0, \
+                         datetime('now', ?5))",
                 params![
                     name,
                     executions,
                     successes,
                     executions - successes,
-                    user_id,
                     format!("-{} seconds", created_offset_secs),
                 ],
             )
@@ -532,9 +525,9 @@ mod tests {
                 conn.execute(
                     "INSERT INTO skill_records \
                         (name, agent, description, code, execution_count, success_count, \
-                         failure_count, is_active, is_deprecated, user_id, \
+                         failure_count, is_active, is_deprecated, \
                          parent_skill_id, created_at) \
-                     VALUES ('flaky-v2', 'test', '', '', 0, 0, 0, 1, 0, 1, ?1, \
+                     VALUES ('flaky-v2', 'test', '', '', 0, 0, 0, 1, 0, ?1, \
                              datetime('now', '-60 seconds'))",
                     params![parent],
                 )
