@@ -28,6 +28,7 @@
 //! ```
 
 pub mod edges;
+pub mod interference;
 pub mod network;
 pub mod pattern;
 pub mod recall;

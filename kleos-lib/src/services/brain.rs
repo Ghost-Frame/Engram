@@ -52,6 +52,11 @@ pub trait BrainBackend: Send + Sync {
     ) -> Result<BrainResponse>;
     async fn evolution_train(&self) -> Result<BrainResponse>;
     async fn evolution_stats(&self) -> Result<BrainResponse>;
+    async fn reapply_instincts(&self) -> Result<BrainResponse> {
+        Err(crate::EngError::Internal(
+            "reapply_instincts not supported by this backend".to_string(),
+        ))
+    }
 }
 // ---------------------------------------------------------------------------
 // Types (from types.ts)
@@ -1027,6 +1032,21 @@ impl BrainBackend for HopfieldBrainManager {
                 serde_json::to_value(&stats)
                     .map_err(|e| EngError::Internal(format!("evolution_stats serialize: {}", e)))?,
             ),
+        })
+    }
+
+    async fn reapply_instincts(&self) -> Result<BrainResponse> {
+        use crate::brain::instincts;
+
+        let user_id = self.current_user_id();
+        let mut network = self.network.lock().await;
+        let report = instincts::reapply_instincts(&self.db, &mut network, user_id).await?;
+
+        Ok(BrainResponse {
+            seq: None,
+            ok: true,
+            error: None,
+            data: Some(serde_json::to_value(&report).unwrap_or(Value::Null)),
         })
     }
 }

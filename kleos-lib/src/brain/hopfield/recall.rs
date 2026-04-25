@@ -216,7 +216,7 @@ const TEMPORAL_WINDOW_SECS: f64 = 86400.0;
 /// Handles the two common formats produced by this codebase:
 /// - "YYYY-MM-DD HH:MM:SS" (SQLite datetime())
 /// - "YYYY-MM-DDTHH:MM:SSZ" (ISO 8601)
-fn parse_datetime_approx(s: &str) -> f64 {
+pub(crate) fn parse_datetime_approx(s: &str) -> f64 {
     // Normalise: replace 'T' with ' ' and strip trailing 'Z'
     let s = s.replace('T', " ").replace('Z', "");
     let parts: Vec<&str> = s.split(' ').collect();

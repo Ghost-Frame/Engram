@@ -5,6 +5,7 @@
 //! idle gating. Runs unconditionally each tick so that merge/prune/discover
 //! observably fire on a changing corpus.
 
+use kleos_lib::brain::dream::types::DreamCycleResult;
 use kleos_lib::config::Config;
 use kleos_lib::db::Database;
 use kleos_lib::intelligence::growth;
@@ -324,6 +325,11 @@ async fn run_cycle(
         }
     }
 
+    // Deserialize dream cycle result for growth context enrichment.
+    let dream_cycle: Option<DreamCycleResult> = brain_result
+        .as_ref()
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+
     // Post-dream hook 2: probabilistic growth reflection per user.
     let mut growth_calls = 0u64;
     let mut growth_stored = 0u64;
@@ -334,9 +340,16 @@ async fn run_cycle(
         }
         match recent_memory_contents(db, *user_id, GROWTH_CONTEXT_SIZE).await {
             Ok(ctx) if !ctx.is_empty() => {
+                let mut merged_ctx = Vec::new();
+                if let Some(ref dc) = dream_cycle {
+                    // TODO: pass real pattern/edge counts once brain stats are accessible here
+                    merged_ctx = growth::build_dream_context(dc, 0, 0);
+                }
+                merged_ctx.extend(ctx);
+
                 let req = GrowthReflectRequest {
                     service: "dreamer".to_string(),
-                    context: ctx,
+                    context: merged_ctx,
                     existing_growth: None,
                     prompt_override: None,
                 };

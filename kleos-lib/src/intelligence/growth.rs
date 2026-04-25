@@ -3,6 +3,7 @@
 //! Observes recent activity, generates observations about patterns, and
 //! stores them as growth memories.
 
+use crate::brain::dream::types::DreamCycleResult;
 use crate::config::Config;
 use crate::cred::{has_secret_patterns, CreddClient};
 use crate::db::Database;
@@ -147,6 +148,38 @@ async fn resolve_growth_observation(
     let config = Config::from_env();
     let credd = CreddClient::from_config(&config);
     credd.resolve_text(db, user_id, service, observation).await
+}
+
+/// Build context lines from a dream cycle result for growth reflection.
+///
+/// Extracts per-stage telemetry (items processed/changed) from the
+/// `DreamCycleResult` and formats them into human-readable lines that
+/// describe what the consolidation cycle did. These are prepended to the
+/// recent-memory context so the LLM reflects on both what happened in
+/// the brain and what the agent recently experienced.
+pub fn build_dream_context(
+    result: &DreamCycleResult,
+    pattern_count: usize,
+    edge_count: usize,
+) -> Vec<String> {
+    let mut lines = Vec::with_capacity(result.stages.len() + 2);
+    lines.push(format!(
+        "Dream cycle completed in {}ms",
+        result.total_duration_ms
+    ));
+
+    for stage in &result.stages {
+        lines.push(format!(
+            "Stage '{}': processed {}, changed {}",
+            stage.stage, stage.items_processed, stage.items_changed
+        ));
+    }
+
+    lines.push(format!(
+        "Current substrate: {} patterns, {} edges",
+        pattern_count, edge_count
+    ));
+    lines
 }
 
 /// Perform a growth reflection -- observe recent activity and generate an observation.

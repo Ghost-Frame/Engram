@@ -14,11 +14,14 @@ pub mod types;
 
 pub use types::*;
 
+use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::Path;
 
+use crate::brain::hopfield::edges;
 use crate::brain::hopfield::network::{self, HopfieldNetwork};
 use crate::brain::hopfield::recall;
+use crate::brain::hopfield::types::EdgeType;
 use crate::db::Database;
 use crate::{EngError, Result};
 
@@ -36,6 +39,13 @@ const INST_MAGIC: &[u8; 4] = b"INST";
 // generator source declares version 2 but has not yet regenerated the corpus.
 const INST_VERSION_MIN: u32 = 1;
 const INST_VERSION_MAX: u32 = 2;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReapplyReport {
+    pub patterns_added: usize,
+    pub patterns_skipped_existing: usize,
+    pub edges_rewritten: usize,
+}
 
 // ---- Binary loader ----
 
@@ -201,6 +211,68 @@ async fn mark_seeded(db: &Database, user_id: i64) -> Result<()> {
         Ok(())
     })
     .await
+}
+
+// ---- Reapply instincts ----
+
+/// Re-apply instinct corpus to a populated brain.
+///
+/// Unlike `seed_instincts`, this skips the blank-brain guard and the
+/// `brain_meta` seeded flag. Patterns whose ID already exists in the
+/// network are skipped. Edges from the corpus are always rewritten
+/// (upserted) so that new corpus edges reach existing brains.
+#[tracing::instrument(skip(db, network), fields(user_id))]
+pub async fn reapply_instincts(
+    db: &Database,
+    network: &mut HopfieldNetwork,
+    user_id: i64,
+) -> Result<ReapplyReport> {
+    let bin_path = instincts_bin_path();
+    if !bin_path.exists() {
+        return Err(EngError::Internal(format!(
+            "instincts: corpus file not found at {:?}",
+            bin_path
+        )));
+    }
+
+    let corpus = load_instincts_bin(&bin_path)?;
+
+    let mut patterns_added = 0usize;
+    let mut patterns_skipped = 0usize;
+
+    for mem in &corpus.memories {
+        if mem.embedding.is_empty() {
+            continue;
+        }
+        if network.strength(mem.id).is_some() {
+            patterns_skipped += 1;
+            continue;
+        }
+        recall::store_pattern(
+            db,
+            network,
+            mem.id,
+            &mem.embedding,
+            user_id,
+            mem.importance,
+            GHOST_STRENGTH,
+        )
+        .await?;
+        patterns_added += 1;
+    }
+
+    let mut edges_rewritten = 0usize;
+    for edge in &corpus.edges {
+        let etype = EdgeType::from_str_loose(&edge.edge_type);
+        edges::store_edge(db, edge.source_id, edge.target_id, edge.weight, etype, user_id).await?;
+        edges_rewritten += 1;
+    }
+
+    Ok(ReapplyReport {
+        patterns_added,
+        patterns_skipped_existing: patterns_skipped,
+        edges_rewritten,
+    })
 }
 
 // ---- Corpus generation ----

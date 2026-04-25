@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::brain::hopfield::edges::{self, EdgeType};
+use crate::brain::hopfield::interference::{resolve_interference, PatternState};
 use crate::brain::hopfield::network::HopfieldNetwork;
 use crate::brain::hopfield::pattern;
+use crate::brain::hopfield::recall::parse_datetime_approx;
 use crate::db::Database;
 use crate::{EngError, Result};
 use tracing::warn;
@@ -13,18 +16,11 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-/// Strength boost applied to the winner of a contradiction pair.
-const WINNER_BOOST: f32 = 0.05;
-
-/// Strength reduction applied to the loser of a contradiction pair.
-const LOSER_PENALTY: f32 = 0.05;
-
-/// Resolve contradictions by boosting the winner and weakening the loser.
+/// Resolve contradictions using full interference resolution.
 ///
-/// Scans all `contradiction` edges. For each pair, the pattern with higher
-/// current strength is the winner -- it receives a small boost. The loser
-/// receives a small penalty. This gradually resolves conflicting memories
-/// by reinforcing the dominant version.
+/// Scans all `contradiction` edges. For each pair, computes effective
+/// strength factoring in activation, decay, importance, and recency,
+/// then boosts the winner and suppresses the loser.
 ///
 /// Budget limits the number of contradiction edges processed per cycle.
 #[tracing::instrument(skip(db, network), fields(user_id, budget))]
@@ -36,7 +32,6 @@ pub async fn resolve(
 ) -> Result<StageReport> {
     let start = Instant::now();
 
-    // Load all contradiction edges for this user
     let edge_type_str = EdgeType::Contradiction.to_string();
     let contradiction_pairs: Vec<(i64, i64)> = db
         .read(move |conn| {
@@ -65,6 +60,23 @@ pub async fn resolve(
     let items_processed = contradiction_pairs.len().min(budget as usize);
     let mut items_changed = 0usize;
 
+    if items_processed == 0 {
+        return Ok(StageReport {
+            stage: "resolve".to_string(),
+            items_processed: 0,
+            items_changed: 0,
+            duration_ms: start.elapsed().as_millis() as u64,
+        });
+    }
+
+    let db_patterns = pattern::list_patterns(db, user_id).await?;
+    let pattern_map: HashMap<i64, &_> = db_patterns.iter().map(|p| (p.id, p)).collect();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+
     for (src, tgt) in contradiction_pairs.iter().take(budget as usize) {
         let s_src = match network.strength(*src) {
             Some(s) => s,
@@ -75,28 +87,50 @@ pub async fn resolve(
             None => continue,
         };
 
-        let (winner, loser, winner_strength, loser_strength) = if s_src >= s_tgt {
-            (*src, *tgt, s_src, s_tgt)
+        let src_pat = pattern_map.get(src);
+        let tgt_pat = pattern_map.get(tgt);
+
+        let src_importance = src_pat.map(|p| p.importance).unwrap_or(5);
+        let tgt_importance = tgt_pat.map(|p| p.importance).unwrap_or(5);
+        let src_decay = src_pat.map(|p| p.strength).unwrap_or(1.0);
+        let tgt_decay = tgt_pat.map(|p| p.strength).unwrap_or(1.0);
+        let src_age = src_pat
+            .map(|p| ((now - parse_datetime_approx(&p.created_at)) / 86400.0) as f32)
+            .unwrap_or(30.0);
+        let tgt_age = tgt_pat
+            .map(|p| ((now - parse_datetime_approx(&p.created_at)) / 86400.0) as f32)
+            .unwrap_or(30.0);
+
+        let src_state = PatternState {
+            activation: s_src,
+            decay_factor: src_decay,
+            importance: src_importance,
+            age_days: src_age,
+        };
+        let tgt_state = PatternState {
+            activation: s_tgt,
+            decay_factor: tgt_decay,
+            importance: tgt_importance,
+            age_days: tgt_age,
+        };
+        let (new_src, new_tgt, src_won) = resolve_interference(&src_state, &tgt_state);
+
+        let (winner, loser) = if src_won {
+            (*src, *tgt)
         } else {
-            (*tgt, *src, s_tgt, s_src)
+            (*tgt, *src)
         };
 
-        // Boost winner
-        let new_winner_strength =
-            (winner_strength + WINNER_BOOST * (1.0 - winner_strength)).min(1.0);
-        network.update_strength(winner, new_winner_strength);
-        if let Err(e) = pattern::update_strength(db, winner, user_id, new_winner_strength).await {
-            warn!(pattern_id = winner, user_id, error = %e, "resolve: failed to persist winner strength");
+        network.update_strength(*src, new_src);
+        if let Err(e) = pattern::update_strength(db, *src, user_id, new_src).await {
+            warn!(pattern_id = *src, user_id, error = %e, "resolve: failed to persist strength");
         }
 
-        // Penalise loser
-        let new_loser_strength = (loser_strength - LOSER_PENALTY).max(0.0);
-        network.update_strength(loser, new_loser_strength);
-        if let Err(e) = pattern::update_strength(db, loser, user_id, new_loser_strength).await {
-            warn!(pattern_id = loser, user_id, error = %e, "resolve: failed to persist loser strength");
+        network.update_strength(*tgt, new_tgt);
+        if let Err(e) = pattern::update_strength(db, *tgt, user_id, new_tgt).await {
+            warn!(pattern_id = *tgt, user_id, error = %e, "resolve: failed to persist strength");
         }
 
-        // Strengthen the contradiction edge itself -- it becomes more certain
         if let Err(e) =
             edges::strengthen_edge(db, winner, loser, EdgeType::Contradiction, 0.02, user_id).await
         {

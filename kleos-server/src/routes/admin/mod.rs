@@ -107,6 +107,11 @@ pub fn router() -> Router<AppState> {
         // Migrations
         .route("/admin/migrations", get(admin_migration_status))
         .route("/admin/migrations/down", post(admin_migrate_down))
+        // Brain instincts
+        .route(
+            "/admin/brain/instincts/reapply",
+            post(admin_reapply_instincts),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -1154,6 +1159,23 @@ async fn admin_migrate_down(
         kleos_lib::db::migrations::migrate_down(&state.db, body.target_version, body.dry_run)
             .await?;
     to_json(plan)
+}
+
+async fn admin_reapply_instincts(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::Internal(
+            "brain backend not available".to_string(),
+        ))
+    })?;
+    let resp = brain.reapply_instincts().await?;
+    Ok(Json(json!({
+        "ok": resp.ok,
+        "data": resp.data,
+    })))
 }
 
 #[cfg(test)]
