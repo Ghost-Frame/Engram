@@ -366,6 +366,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 40,
+        description: "drop_user_id_portability",
+        up: run_migration_drop_user_id_portability,
+        // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -411,6 +419,7 @@ const MIGRATION_DROP_USER_ID_INGESTION_HASHES: i64 = 36;
 const MIGRATION_DROP_USER_ID_LOOM: i64 = 37;
 const MIGRATION_DROP_USER_ID_GRAPH: i64 = 38;
 const MIGRATION_DROP_USER_ID_THYMUS: i64 = 39;
+const MIGRATION_DROP_USER_ID_PORTABILITY: i64 = 40;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -709,6 +718,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 39: drop_user_id_thymus");
         run_migration_drop_user_id_thymus(conn)?;
         record_migration(conn, MIGRATION_DROP_USER_ID_THYMUS, "drop_user_id_thymus")?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_PORTABILITY {
+        info!("Running migration 40: drop_user_id_portability");
+        run_migration_drop_user_id_portability(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_PORTABILITY,
+            "drop_user_id_portability",
+        )?;
     }
 
     Ok(())
@@ -2429,6 +2448,78 @@ fn run_migration_drop_user_id_thymus(conn: &rusqlite::Connection) -> Result<()> 
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 39 complete: user_id dropped from thymus cluster (5 tables)");
+    Ok(())
+}
+
+fn run_migration_drop_user_id_portability(conn: &rusqlite::Connection) -> Result<()> {
+    // Idempotent guard: check both tables. user_preferences is Shape B (table
+    // rebuild required due to in-table UNIQUE constraint); conversations is
+    // Shape A (simple DROP COLUMN).
+    let up_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('user_preferences') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let conv_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    if up_has_user_id == 0 && conv_has_user_id == 0 {
+        info!("user_preferences and conversations user_id already absent, migration 40 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         -- user_preferences: Shape B rebuild (in-table UNIQUE(user_id, key) prevents
+         -- simple DROP COLUMN; full 12-step table rebuild required).
+         ALTER TABLE user_preferences RENAME TO _user_preferences_old_v39;
+
+         DROP INDEX IF EXISTS idx_up_domain_pref_user;
+         DROP INDEX IF EXISTS idx_user_prefs_user;
+         DROP INDEX IF EXISTS idx_up_domain;
+
+         CREATE TABLE user_preferences (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             key TEXT NOT NULL,
+             value TEXT NOT NULL,
+             domain TEXT,
+             preference TEXT,
+             strength REAL NOT NULL DEFAULT 1.0,
+             evidence_memory_id INTEGER REFERENCES memories(id) ON DELETE SET NULL,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(key)
+         );
+
+         INSERT INTO user_preferences (id, key, value, domain, preference, strength, evidence_memory_id, created_at, updated_at)
+         SELECT id, key, value, domain, preference, strength, evidence_memory_id, created_at, updated_at
+         FROM _user_preferences_old_v39;
+
+         DROP TABLE _user_preferences_old_v39;
+
+         CREATE INDEX IF NOT EXISTS idx_up_domain ON user_preferences(domain COLLATE NOCASE);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_up_domain_pref ON user_preferences(domain, preference);
+
+         -- conversations: Shape A (simple DROP COLUMN)
+         DROP INDEX IF EXISTS idx_conversations_user;
+         ALTER TABLE conversations DROP COLUMN user_id;
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 40 complete: user_id dropped from user_preferences (rebuild) and conversations");
     Ok(())
 }
 

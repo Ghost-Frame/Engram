@@ -298,7 +298,7 @@ pub async fn get_usage(db: &Database) -> Result<Vec<UsageRow>> {
             "SELECT u.id, u.username, COALESCE(m.cnt, 0), COALESCE(c.cnt, 0), COALESCE(k.cnt, 0) \
              FROM users u \
              LEFT JOIN (SELECT 1 AS user_id, COUNT(*) as cnt FROM memories) m ON u.id = m.user_id \
-             LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM conversations GROUP BY user_id) c ON u.id = c.user_id \
+             LEFT JOIN (SELECT 0 as user_id, COUNT(*) as cnt FROM conversations) c ON u.id = c.user_id \
              LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM api_keys WHERE is_active = 1 GROUP BY user_id) k ON u.id = k.user_id \
              ORDER BY u.id",
         )
@@ -549,11 +549,10 @@ pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport>
          ORDER BY created_at DESC",
     )
     .await?;
-    let conversations = export_table_user(
+    let conversations = export_table(
         db,
         "SELECT id, session_id, agent, model, title, message_count, created_at, updated_at \
-         FROM conversations WHERE user_id = ?1 ORDER BY created_at DESC",
-        user_id,
+         FROM conversations ORDER BY created_at DESC",
     )
     .await?;
     let episodes = export_table_user(
@@ -578,11 +577,10 @@ pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport>
         user_id,
     )
     .await?;
-    let preferences = export_table_user(
+    let preferences = export_table(
         db,
         "SELECT id, key, value, created_at, updated_at \
-         FROM user_preferences WHERE user_id = ?1 ORDER BY key",
-        user_id,
+         FROM user_preferences ORDER BY key",
     )
     .await?;
     let skills = export_table_user(

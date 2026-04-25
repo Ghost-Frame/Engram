@@ -205,6 +205,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "thymus_user_id_drop",
         up: apply_schema_v36_thymus_drop,
     },
+    TenantMigration {
+        version: 37,
+        description: "portability_user_id_drop",
+        up: apply_schema_v37_portability_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -387,6 +392,11 @@ fn apply_schema_v35_graph_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v36_thymus_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v36_thymus_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v36 failed: {e}")))
+}
+
+fn apply_schema_v37_portability_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v37_portability_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v37 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -3186,8 +3196,28 @@ mod tests {
 
     #[test]
     fn portability_family_usable_after_v16() {
+        // v16 introduced user_preferences and conversations with user_id shims;
+        // v37 drops user_id from both tables. Cap this test at v36 so it still
+        // locks the v16 shape (user_id present).
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 37 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let tables: i64 = conn
             .query_row(
@@ -3654,8 +3684,27 @@ mod tests {
 
     #[test]
     fn messages_and_fts_usable_after_v21() {
+        // v21 added messages + FTS. conversations.user_id shim was added in v16;
+        // v37 drops it. Cap at v36 so the INSERT below uses the pre-drop shape.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 37 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let has_messages: i64 = conn
             .query_row(
@@ -5225,6 +5274,239 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(col_count, 0, "{} still has user_id after v36", table);
+        }
+    }
+
+    /// v37: user_id must be absent from both user_preferences and conversations
+    /// after the full migration chain. All related user-scoped indexes must be gone
+    /// and the new idx_up_domain_pref must exist.
+    #[test]
+    fn user_id_absent_from_portability_after_v37() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).expect("migrations");
+
+        for table in &["user_preferences", "conversations"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                count, 0,
+                "user_id still present in {} after v37",
+                table
+            );
+        }
+
+        // Old user-scoped indexes must be gone.
+        for idx in &[
+            "idx_conversations_user",
+            "idx_up_domain_pref_user",
+            "idx_user_prefs_user",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        idx
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "index {} still present after v37", idx);
+        }
+
+        // New UNIQUE INDEX idx_up_domain_pref must exist.
+        let new_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_up_domain_pref'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_idx, 1, "idx_up_domain_pref missing after v37");
+
+        // idx_up_domain (non-user-scoped) must be preserved.
+        let domain_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_up_domain'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(domain_idx, 1, "idx_up_domain missing after v37");
+    }
+
+    /// v37: both tables accept inserts using the new schema (no user_id).
+    /// UNIQUE(key) on user_preferences rejects duplicate keys.
+    /// Messages can still be inserted via a parent conversation (FK preserved).
+    #[test]
+    fn portability_usable_after_v37() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).expect("migrations");
+
+        // user_preferences: insert without user_id
+        conn.execute(
+            "INSERT INTO user_preferences (key, value, domain, preference) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["persona", "gir", "identity", "name"],
+        )
+        .expect("insert preference");
+
+        // UNIQUE(key) must reject a duplicate key.
+        let dup = conn.execute(
+            "INSERT INTO user_preferences (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["persona", "other"],
+        );
+        assert!(dup.is_err(), "duplicate key should be rejected by UNIQUE(key)");
+
+        // conversations: insert without user_id
+        conn.execute(
+            "INSERT INTO conversations (agent, session_id, title) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["claude-code", "sess-v37", "v37 test"],
+        )
+        .expect("insert conversation");
+        let conv_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        // messages FK to conversations(id) must still work.
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?1, ?2, ?3)",
+            rusqlite::params![conv_id, "user", "hello after v37"],
+        )
+        .expect("insert message referencing conversation");
+
+        let msg_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                rusqlite::params![conv_id],
+                |r| r.get(0),
+            )
+            .expect("count messages");
+        assert_eq!(msg_count, 1, "message not found after v37");
+
+        // UNIQUE INDEX idx_up_domain_pref: duplicate (domain, preference) rejected.
+        let dup_domain = conn.execute(
+            "INSERT INTO user_preferences (key, value, domain, preference) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["other-key", "other-val", "identity", "name"],
+        );
+        assert!(
+            dup_domain.is_err(),
+            "duplicate (domain, preference) should be rejected by idx_up_domain_pref"
+        );
+    }
+
+    /// v37: rows inserted under the v16 shim shape (with user_id) survive the
+    /// rebuild with every non-user_id field intact. The FK from messages to
+    /// conversations(id) must remain intact after the conversations column drop.
+    #[test]
+    fn portability_rows_preserved_through_v37() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+
+        // Apply migrations v1..v36 (stop before v37).
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 37 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        // Insert user_preferences row in old shape (with user_id).
+        conn.execute(
+            "INSERT INTO user_preferences (user_id, key, value, domain, preference, strength) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![1_i64, "old-key", "old-value", "old-domain", "old-pref", 2.5_f64],
+        )
+        .expect("insert old preference");
+        let pref_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        // Insert a conversation in old shape (with user_id).
+        conn.execute(
+            "INSERT INTO conversations (agent, session_id, title, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["old-agent", "old-sess", "old title", 1_i64],
+        )
+        .expect("insert old conversation");
+        let conv_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        // Insert a message so we can verify the FK survives.
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content) VALUES (?1, ?2, ?3)",
+            rusqlite::params![conv_id, "user", "pre-v37 message"],
+        )
+        .expect("insert old message");
+
+        // Apply v37.
+        apply_schema_v37_portability_drop(&conn).expect("apply v37");
+
+        // user_preferences row survived with all non-user_id fields intact.
+        let (pkey, pval, pdomain, pstrength): (String, String, Option<String>, f64) = conn
+            .query_row(
+                "SELECT key, value, domain, strength FROM user_preferences WHERE id = ?1",
+                rusqlite::params![pref_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("select preference after v37");
+        assert_eq!(pkey, "old-key");
+        assert_eq!(pval, "old-value");
+        assert_eq!(pdomain.as_deref(), Some("old-domain"));
+        assert!((pstrength - 2.5).abs() < 1e-9);
+
+        // conversations row survived with agent and title intact.
+        let (agent, title): (String, Option<String>) = conn
+            .query_row(
+                "SELECT agent, title FROM conversations WHERE id = ?1",
+                rusqlite::params![conv_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("select conversation after v37");
+        assert_eq!(agent, "old-agent");
+        assert_eq!(title.as_deref(), Some("old title"));
+
+        // Message row survived and FK to conversations is intact.
+        let msg_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                rusqlite::params![conv_id],
+                |r| r.get(0),
+            )
+            .expect("count messages after v37");
+        assert_eq!(msg_count, 1, "message lost after v37 column drop");
+
+        // user_id gone from both tables.
+        for table in &["user_preferences", "conversations"] {
+            let col_count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(col_count, 0, "{} still has user_id after v37", table);
         }
     }
 }
