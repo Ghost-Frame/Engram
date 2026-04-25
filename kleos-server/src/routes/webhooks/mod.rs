@@ -71,7 +71,7 @@ async fn delete_webhook_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::webhooks::delete_webhook(&db, id, auth.user_id).await?;
+    kleos_lib::webhooks::delete_webhook(&db, id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 

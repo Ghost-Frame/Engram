@@ -10,7 +10,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 
 /// Generate a health report for a user's memory store.
 #[tracing::instrument(skip(db))]
-pub async fn memory_health(db: &Database, _user_id: i64) -> Result<MemoryHealthReport> {
+pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
     let report = db
         .read(move |conn| {
             // Total active memories

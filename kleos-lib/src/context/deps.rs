@@ -324,7 +324,7 @@ pub async fn get_structured_facts(
 }
 
 #[tracing::instrument(skip(db, ids), fields(id_count = ids.len()))]
-pub async fn track_access(db: &Database, ids: &[i64], _user_id: i64) {
+pub async fn track_access(db: &Database, ids: &[i64]) {
     for &id in ids {
         if let Err(e) = db
             .write(move |conn| {

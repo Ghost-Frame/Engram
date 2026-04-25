@@ -84,7 +84,7 @@ async fn create_task_handler(
 }
 
 async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
-    let stats = get_task_stats(&db, Some(auth.user_id)).await?;
+    let stats = get_task_stats(&db).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -130,7 +130,7 @@ async fn delete_task_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_task(&db, id, auth.user_id).await?;
+    delete_task(&db, id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -142,6 +142,6 @@ async fn get_feed(
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
     let items = get_task_feed(&db, auth.user_id, limit, offset).await?;
-    let total = get_task_stats(&db, Some(auth.user_id)).await?.total;
+    let total = get_task_stats(&db).await?.total;
     Ok(Json(json!({ "items": items, "total": total })))
 }

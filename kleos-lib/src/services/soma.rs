@@ -124,8 +124,8 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
     get_agent_by_name(db, user_id, &req.name).await
 }
 
-#[tracing::instrument(skip(db), fields(agent_id, user_id))]
-pub async fn heartbeat(db: &Database, agent_id: i64, _user_id: i64) -> Result<()> {
+#[tracing::instrument(skip(db), fields(agent_id))]
+pub async fn heartbeat(db: &Database, agent_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
             "UPDATE soma_agents
@@ -141,8 +141,8 @@ pub async fn heartbeat(db: &Database, agent_id: i64, _user_id: i64) -> Result<()
     .await
 }
 
-#[tracing::instrument(skip(db), fields(agent_id, user_id, status = %status))]
-pub async fn set_status(db: &Database, agent_id: i64, _user_id: i64, status: &str) -> Result<()> {
+#[tracing::instrument(skip(db), fields(agent_id, status = %status))]
+pub async fn set_status(db: &Database, agent_id: i64, status: &str) -> Result<()> {
     if !VALID_STATUSES.contains(&status) {
         return Err(EngError::InvalidInput(format!(
             "invalid soma status '{}', must be one of pending, online, offline, error",
@@ -242,8 +242,8 @@ pub async fn get_agent_by_name(db: &Database, user_id: i64, name: &str) -> Resul
     .await
 }
 
-#[tracing::instrument(skip(db), fields(agent_id = id, user_id))]
-pub async fn delete_agent(db: &Database, id: i64, _user_id: i64) -> Result<()> {
+#[tracing::instrument(skip(db), fields(agent_id = id))]
+pub async fn delete_agent(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
             "DELETE FROM soma_agents WHERE id = ?1",
@@ -445,8 +445,8 @@ pub async fn list_agent_logs(
     .await
 }
 
-#[tracing::instrument(skip(db), fields(user_id = ?_user_id))]
-pub async fn get_stats(db: &Database, _user_id: Option<i64>) -> Result<SomaStats> {
+#[tracing::instrument(skip(db))]
+pub async fn get_stats(db: &Database) -> Result<SomaStats> {
     db.read(move |conn| {
         let row = conn
             .query_row(
@@ -555,7 +555,7 @@ mod tests {
         .await
         .unwrap();
         assert!(a.heartbeat_at.is_none());
-        heartbeat(&db, a.id, 1).await.unwrap();
+        heartbeat(&db, a.id).await.unwrap();
         let after = get_agent(&db, a.id, 1).await.unwrap();
         assert!(after.heartbeat_at.is_some());
     }

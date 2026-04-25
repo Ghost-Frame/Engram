@@ -16,7 +16,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 }
 
 #[tracing::instrument(skip(_db))]
-pub async fn detect_patterns(_db: &Database, _user_id: i64) -> Result<Vec<TemporalPattern>> {
+pub async fn detect_patterns(_db: &Database) -> Result<Vec<TemporalPattern>> {
     Ok(Vec::new())
 }
 

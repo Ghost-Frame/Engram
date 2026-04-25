@@ -63,14 +63,14 @@ pub async fn decompose(app: &App, args: Value) -> Result<Value> {
         .get("memory_id")
         .and_then(Value::as_i64)
         .ok_or_else(|| invalid_input("memory_id required"))?;
-    Ok(json!({"child_ids": decomposition::decompose(&app.db, memory_id, auth.user_id).await?}))
+    Ok(json!({"child_ids": decomposition::decompose(&app.db, memory_id).await?}))
 }
 
 #[tracing::instrument(skip(app, args), fields(tool = "intelligence.temporal_summary"))]
 pub async fn temporal_summary(app: &App, args: Value) -> Result<Value> {
     let auth = resolve_auth(app, &args).await?;
     if args.get("detect").and_then(Value::as_bool).unwrap_or(true) {
-        let patterns = temporal::detect_patterns(&app.db, auth.user_id).await?;
+        let patterns = temporal::detect_patterns(&app.db).await?;
         return Ok(json!({"patterns": patterns, "count": patterns.len()}));
     }
     let patterns = temporal::list_patterns(

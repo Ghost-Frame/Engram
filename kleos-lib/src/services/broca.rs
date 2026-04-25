@@ -174,8 +174,8 @@ pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEn
     .await
 }
 
-#[tracing::instrument(skip(db), fields(user_id = ?_user_id))]
-pub async fn get_stats(db: &Database, _user_id: Option<i64>) -> Result<BrocaStats> {
+#[tracing::instrument(skip(db))]
+pub async fn get_stats(db: &Database) -> Result<BrocaStats> {
     db.read(move |conn| {
         conn.query_row(
             "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)

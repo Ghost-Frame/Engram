@@ -80,7 +80,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 /// Decompose a memory into atomic facts.
 /// Returns the decomposed memory IDs (newly created child facts).
 #[tracing::instrument(skip(db))]
-pub async fn decompose(db: &Database, memory_id: i64, _user_id: i64) -> Result<Vec<i64>> {
+pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
     // Fetch the memory content - MUST belong to caller
     let row_opt = db
         .read(move |conn| {

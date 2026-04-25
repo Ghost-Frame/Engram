@@ -212,15 +212,6 @@ pub async fn expire_stale(db: &Database) -> Result<u64> {
     .await
 }
 
-/// Expire stale approvals for a specific user. Tenant-per-shard makes the
-/// user_id filter redundant: every row in this shard belongs to the shard
-/// owner. The signature is preserved so callers stay source-compatible
-/// until Phase 4.2 sweeps it.
-#[tracing::instrument(skip(db))]
-pub async fn expire_stale_for_user(db: &Database, _user_id: i64) -> Result<u64> {
-    expire_stale(db).await
-}
-
 fn row_to_approval(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Approval> {
     let id: String = row.get(0)?;
     let action: String = row.get(1)?;

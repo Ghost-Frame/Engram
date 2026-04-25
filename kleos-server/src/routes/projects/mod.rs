@@ -115,7 +115,7 @@ async fn delete_project_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::projects::delete_project(&db, id, auth.user_id).await?;
+    kleos_lib::projects::delete_project(&db, id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 

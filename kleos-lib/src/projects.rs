@@ -174,8 +174,8 @@ pub async fn update_project(
     .await
 }
 
-#[tracing::instrument(skip(db), fields(project_id = id, user_id))]
-pub async fn delete_project(db: &Database, id: i64, _user_id: i64) -> Result<()> {
+#[tracing::instrument(skip(db), fields(project_id = id))]
+pub async fn delete_project(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
             "DELETE FROM projects WHERE id = ?1",
