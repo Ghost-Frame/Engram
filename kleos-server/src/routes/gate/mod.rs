@@ -3,7 +3,7 @@ use rusqlite::params;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::gate::{
     check_command_with_context, check_ssh_dns_rebind, cleanup_expired_approvals, complete_gate,
@@ -25,6 +25,7 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn check_handler(
+    ResolvedDb(db): ResolvedDb,
     State(state): State<AppState>,
     Auth(auth): Auth,
     Json(body): Json<GateCheckRequest>,
@@ -33,13 +34,11 @@ async fn check_handler(
     // declared agent must match that agent's name. Prevents one agent's key
     // being used under another agent's identity.
     if let Some(bound_id) = auth.key.agent_id {
-        let user_id = auth.user_id;
-        let expected: Option<String> = state
-            .db
+        let expected: Option<String> = db
             .read(move |conn| {
                 conn.query_row(
-                    "SELECT name FROM agents WHERE id = ?1 AND user_id = ?2",
-                    params![bound_id, user_id],
+                    "SELECT name FROM agents WHERE id = ?1",
+                    params![bound_id],
                     |row| row.get::<_, String>(0),
                 )
                 .map(Some)
@@ -68,19 +67,19 @@ async fn check_handler(
 
     let resolved_command = state
         .credd
-        .resolve_text(&state.db, auth.user_id, &body.agent, &body.command)
+        .resolve_text(&db, auth.user_id, &body.agent, &body.command)
         .await?;
     let mut resolved_patterns = Vec::new();
     for pattern in &state.config.eidolon.gate.blocked_patterns {
         resolved_patterns.push(
             state
                 .credd
-                .resolve_text(&state.db, auth.user_id, &body.agent, pattern)
+                .resolve_text(&db, auth.user_id, &body.agent, pattern)
                 .await?,
         );
     }
     let mut result = check_command_with_context(
-        &state.db,
+        &db,
         &body,
         auth.user_id,
         Some(&resolved_command),
@@ -97,7 +96,7 @@ async fn check_handler(
     if result.allowed {
         if let Some(reason) = brain_grounded_check(&state, auth.user_id, &resolved_command).await {
             let gate_id = store_gate_request(
-                &state.db,
+                &db,
                 auth.user_id,
                 &body.agent,
                 &body.command,
@@ -126,7 +125,7 @@ async fn check_handler(
             let port = target.port.unwrap_or(22);
             if let Some(block_reason) = check_ssh_dns_rebind(&target.host, port).await {
                 let gate_id = store_gate_request(
-                    &state.db,
+                    &db,
                     auth.user_id,
                     &body.agent,
                     &body.command,
@@ -199,10 +198,10 @@ async fn check_handler(
                     // Timeout or channel dropped. Atomically CAS the row to
                     // denied-timeout. If the CAS loses, a concurrent
                     // respond_handler already decided; read and honour that.
-                    match mark_gate_timed_out(&state.db, gate_id, auth.user_id).await {
+                    match mark_gate_timed_out(&db, gate_id, auth.user_id).await {
                         Ok(true) => false,
                         Ok(false) => {
-                            match read_gate_decision(&state.db, gate_id, auth.user_id).await {
+                            match read_gate_decision(&db, gate_id, auth.user_id).await {
                                 Ok(Some(d)) => d.status == "approved",
                                 _ => false,
                             }
@@ -254,6 +253,7 @@ async fn check_handler(
 }
 
 async fn respond_handler(
+    ResolvedDb(db): ResolvedDb,
     State(state): State<AppState>,
     Auth(auth): Auth,
     Json(body): Json<RespondBody>,
@@ -263,7 +263,7 @@ async fn respond_handler(
     // responder or the timeout path already decided, respond_to_gate returns
     // EngError::Conflict (-> 409) and we must not touch the map or the tx.
     let result = respond_to_gate(
-        &state.db,
+        &db,
         body.gate_id,
         body.approved,
         body.reason.as_deref(),
@@ -284,7 +284,7 @@ async fn respond_handler(
 }
 
 async fn complete_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<CompleteBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -293,8 +293,7 @@ async fn complete_handler(
     // This is how we enforce "store outcomes after completing any task".
     let gate_id = body.gate_id;
     let user_id = auth.user_id;
-    let (agent, opened_at): (String, String) = state
-        .db
+    let (agent, opened_at): (String, String) = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT agent, created_at FROM gate_requests WHERE id = ?1 AND user_id = ?2",
@@ -312,8 +311,7 @@ async fn complete_handler(
 
     let agent_filter = agent.clone();
     let opened_at_filter = opened_at.clone();
-    let stored_count: i64 = state
-        .db
+    let stored_count: i64 = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT COUNT(*) FROM memories
@@ -334,7 +332,7 @@ async fn complete_handler(
     }
 
     complete_gate(
-        &state.db,
+        &db,
         body.gate_id,
         &body.output,
         &body.known_secrets,
@@ -347,7 +345,7 @@ async fn complete_handler(
 /// Simple guard endpoint that checks if an action conflicts with high-importance static rules.
 /// This is a simplified version without LLM integration - it only does keyword matching.
 async fn guard_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<GuardBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -359,8 +357,7 @@ async fn guard_handler(
 
     // Search for high-importance static memories that might conflict
     let user_id = auth.user_id;
-    let rules: Vec<Value> = state
-        .db
+    let rules: Vec<Value> = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, content, importance FROM memories
