@@ -124,13 +124,12 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             ON memory_links(target_id, source_id, similarity, type);
 
         -- Ingestion dedup hashes -- prevents duplicate document ingestion.
-        -- Keyed by SHA-256 of the raw input content, scoped per user.
+        -- Keyed by SHA-256 of the raw input content.
         CREATE TABLE IF NOT EXISTS ingestion_hashes (
             sha256 TEXT NOT NULL,
-            user_id INTEGER NOT NULL,
             first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
             job_id TEXT,
-            PRIMARY KEY (sha256, user_id)
+            PRIMARY KEY (sha256)
         );
 
         -- Agents (Soma) -- defined before api_keys which references it
