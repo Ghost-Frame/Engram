@@ -506,11 +506,18 @@ async fn main() {
     let _otel_guard = kleos_lib::observability::init_tracing("engram-cli", "warn");
 
     let cli = Cli::parse();
-    let api_key = cli
-        .key
-        .clone()
-        .or_else(|| std::env::var("ENGRAM_API_KEY").ok())
-        .or_else(|| std::env::var("ENGRAM_KEY").ok());
+    let api_key = if let Some(k) = cli.key.clone() {
+        Some(k)
+    } else {
+        let slot = kleos_lib::cred::bootstrap::current_agent_slot();
+        match kleos_lib::cred::bootstrap::resolve_api_key(&slot).await {
+            Ok(k) => Some(k),
+            Err(e) => {
+                eprintln!("warning: could not resolve API key: {}", e);
+                None
+            }
+        }
+    };
     let client = Client::new(cli.server.clone(), api_key.clone());
 
     match &cli.command {

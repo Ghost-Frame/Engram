@@ -95,6 +95,32 @@ enum Commands {
         #[command(subcommand)]
         action: AgentKeyAction,
     },
+    /// Run a command with a secret injected as env var or stdin.
+    /// cred itself prints nothing of its own to stdout, so the secret never
+    /// reaches a captured tool result. This is the agent-safe way to use creds.
+    ///
+    /// Examples:
+    ///   cred exec engram-rust claude-code-wsl --env EIDOLON_KEY -- \
+    ///       curl -H "Authorization: Bearer $EIDOLON_KEY" http://host/x
+    ///   cred exec ssh some-host --field private_key --stdin -- ssh-add -
+    Exec {
+        /// Service name
+        service: String,
+        /// Key name
+        key: String,
+        /// Extract a specific field (default: bare value for ApiKey/Note)
+        #[arg(short, long)]
+        field: Option<String>,
+        /// Env var name to inject the secret as (default: CRED_VALUE)
+        #[arg(short = 'e', long, conflicts_with = "stdin")]
+        env: Option<String>,
+        /// Pipe secret to child stdin instead of an env var
+        #[arg(long)]
+        stdin: bool,
+        /// Command and args to run. Use `--` to separate from cred's flags.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     /// Interactive TUI for browsing and managing secrets
     Tui,
     /// Manage the YubiKey-encrypted bootstrap blob (credd's master Kleos key)
@@ -232,6 +258,26 @@ async fn main() -> Result<()> {
                 Commands::Import { dry_run } => cmd_import(&db, &key, dry_run).await,
                 Commands::Export => cmd_export(&db, &key).await,
                 Commands::AgentKey { action } => cmd_agent_key(&db, action).await,
+                Commands::Exec {
+                    service,
+                    key: secret_key,
+                    field,
+                    env,
+                    stdin,
+                    command,
+                } => {
+                    cmd_exec(
+                        &db,
+                        &key,
+                        &service,
+                        &secret_key,
+                        field.as_deref(),
+                        env.as_deref(),
+                        stdin,
+                        command,
+                    )
+                    .await
+                }
                 Commands::Tui => cmd_tui(&db, &key).await,
                 Commands::Bootstrap { cmd: bcmd } => match bcmd {
                     BootstrapCmd::Wrap {
@@ -439,6 +485,77 @@ async fn cmd_get(
     }
 
     Ok(())
+}
+
+/// Run a child command with a stored secret injected as env var or stdin.
+/// cred prints nothing of its own to stdout. Used to keep secrets out of
+/// captured tool results in agent contexts.
+#[allow(clippy::too_many_arguments)]
+async fn cmd_exec(
+    db: &Database,
+    master_key: &[u8; KEY_SIZE],
+    service: &str,
+    key: &str,
+    field: Option<&str>,
+    env_name: Option<&str>,
+    use_stdin: bool,
+    command: Vec<String>,
+) -> Result<()> {
+    if command.is_empty() {
+        anyhow::bail!("no command specified after `--`");
+    }
+
+    let (_row, data) = storage::get_secret(db, 0, service, key, master_key)
+        .await
+        .context("secret not found")?;
+
+    let mut value = if let Some(field_name) = field {
+        data.get_field(field_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "field `{}` not found on secret type {}",
+                field_name,
+                data.type_name()
+            )
+        })?
+    } else {
+        data.bare_value().ok_or_else(|| {
+            anyhow::anyhow!(
+                "secret type {} has no bare value -- pass --field <name>",
+                data.type_name()
+            )
+        })?
+    };
+
+    let program = command[0].clone();
+    let args: Vec<String> = command[1..].to_vec();
+
+    let mut cmd = tokio::process::Command::new(&program);
+    cmd.args(&args);
+
+    if use_stdin {
+        cmd.stdin(std::process::Stdio::piped());
+    } else {
+        let var = env_name.unwrap_or("CRED_VALUE");
+        cmd.env(var, &value);
+    }
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to spawn `{}`", program))?;
+
+    if use_stdin {
+        if let Some(mut child_stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            child_stdin.write_all(value.as_bytes()).await?;
+            // dropping closes stdin so the child sees EOF
+        }
+    }
+
+    // Best effort: zeroize our copy now that the child has its own.
+    value.zeroize();
+
+    let status = child.wait().await?;
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 async fn cmd_list(

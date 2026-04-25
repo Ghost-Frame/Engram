@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::json_io::Output;
-use crate::tools::{ToolError, ToolResult};
+use crate::tools::{set_session_active, ToolError, ToolResult};
 use chrono::Utc;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -84,6 +84,8 @@ pub fn spec_task(db: &Database, input: SpecTaskInput) -> ToolResult {
             ],
         )
         .map_err(|e| ToolError::DatabaseError(e.to_string()))?;
+
+    set_session_active(&id, &task_type);
 
     Ok(Output::ok_with_id(id, "Spec created"))
 }

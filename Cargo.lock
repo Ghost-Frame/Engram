@@ -4628,6 +4628,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm 0.28.1",
+ "kleos-lib",
  "ratatui 0.30.0",
  "reqwest",
  "serde",

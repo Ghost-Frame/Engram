@@ -701,9 +701,14 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_API_KEY") {
+        // Fast-path for tests and explicit overrides. In production, callers should
+        // leave these unset and call cred::bootstrap::resolve_api_key() instead.
+        if let Ok(v) = std::env::var("KLEOS_API_KEY") {
+            config.api_key = Some(SecretString::new(v));
+        } else if let Ok(v) = std::env::var("ENGRAM_API_KEY") {
             config.api_key = Some(SecretString::new(v));
         }
+        // If neither is set, api_key stays None -- callers invoke the resolver.
         if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_DIM") {
             match v.parse() {
                 Ok(d) => config.embedding_dim = d,

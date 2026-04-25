@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::json_io::Output;
-use crate::tools::{ToolError, ToolResult};
+use crate::tools::{set_session_active, ToolError, ToolResult};
 use chrono::Utc;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -40,6 +40,8 @@ pub fn log_hypothesis(db: &Database, input: LogHypothesisInput) -> ToolResult {
             rusqlite::params![id, now, bug_description, hypothesis, confidence],
         )
         .map_err(|e| ToolError::DatabaseError(e.to_string()))?;
+
+    set_session_active(&id, "hypothesis");
 
     Ok(Output::ok_with_id(id, "Hypothesis logged"))
 }

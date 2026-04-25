@@ -11,6 +11,7 @@ name = "engram-approval-tui"
 path = "src/main.rs"
 
 [dependencies]
+kleos-lib = { path = "../kleos-lib", version = "0.3.2" }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
