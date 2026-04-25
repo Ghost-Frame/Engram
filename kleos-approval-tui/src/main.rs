@@ -26,9 +26,9 @@ struct Args {
     )]
     url: String,
 
-    /// API key for authentication
-    #[arg(short = 'k', long, env = "KLEOS_API_KEY")]
-    api_key: String,
+    /// API key for authentication. If not provided, resolved from credd daemon.
+    #[arg(short = 'k', long)]
+    api_key: Option<String>,
 
     /// Poll interval in milliseconds
     #[arg(short, long, default_value = "1000")]
@@ -368,6 +368,21 @@ fn make_time_bar(seconds: i64) -> String {
 async fn main() -> io::Result<()> {
     let args = Args::parse();
 
+    // Resolve API key: CLI arg > credd daemon.
+    let api_key = if let Some(k) = args.api_key {
+        k
+    } else {
+        let slot = kleos_lib::cred::bootstrap::current_agent_slot();
+        match kleos_lib::cred::bootstrap::resolve_api_key(&slot).await {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("error: could not resolve API key: {}", e);
+                eprintln!("hint: set CREDD_AGENT_KEY and CREDD_SOCKET, or pass --api-key");
+                std::process::exit(1);
+            }
+        }
+    };
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -375,7 +390,7 @@ async fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(args.url, args.api_key);
+    let mut app = App::new(args.url, api_key);
     let poll_duration = Duration::from_millis(args.poll_ms);
 
     // Initial fetch

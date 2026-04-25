@@ -265,7 +265,21 @@ async fn main() {
         .map(load_config_file)
         .unwrap_or_default();
 
-    let rc = resolve_config(cli, cfg_file);
+    let mut rc = resolve_config(cli, cfg_file);
+
+    // If no API key came from CLI/env/config, try credd.
+    if rc.kleos_api_key.is_none() {
+        let slot = kleos_lib::cred::bootstrap::current_agent_slot();
+        match kleos_lib::cred::bootstrap::resolve_api_key(&slot).await {
+            Ok(k) => {
+                tracing::debug!(slot = %slot, "resolved kleos API key from credd");
+                rc.kleos_api_key = Some(k);
+            }
+            Err(e) => {
+                tracing::warn!("could not resolve kleos API key from credd: {}", e);
+            }
+        }
+    }
 
     // Init tracing. JSON format wires a JSON layer; text uses the default fmt.
     if rc.log_format == "json" {
