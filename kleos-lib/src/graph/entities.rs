@@ -7,7 +7,7 @@ use crate::db::Database;
 use crate::memory::fts::sanitize_fts_query;
 use crate::{EngError, Result};
 
-const ENTITY_COLUMNS: &str = "id, name, entity_type, description, aliases, user_id, space_id, confidence, occurrence_count, first_seen_at, last_seen_at, created_at";
+const ENTITY_COLUMNS: &str = "id, name, entity_type, description, aliases, space_id, confidence, occurrence_count, first_seen_at, last_seen_at, created_at";
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
@@ -20,28 +20,24 @@ fn row_to_entity(row: &rusqlite::Row<'_>) -> Result<Entity> {
         entity_type: row.get(2)?,
         description: row.get(3)?,
         aliases: row.get(4)?,
-        user_id: row.get(5)?,
-        space_id: row.get(6)?,
-        confidence: row.get(7)?,
-        occurrence_count: row.get(8)?,
-        first_seen_at: row.get(9)?,
-        last_seen_at: row.get(10)?,
-        created_at: row.get(11)?,
+        user_id: 0,
+        space_id: row.get(5)?,
+        confidence: row.get(6)?,
+        occurrence_count: row.get(7)?,
+        first_seen_at: row.get(8)?,
+        last_seen_at: row.get(9)?,
+        created_at: row.get(10)?,
     })
 }
 
 // -- Entity CRUD --
 
-/// Upsert an entity by (name, entity_type, user_id). On conflict, increments
+/// Upsert an entity by (name, entity_type). On conflict, increments
 /// occurrence_count and updates last_seen_at, then returns the stored entity.
 #[tracing::instrument(skip(db, req), fields(name = %req.name))]
 pub async fn create_entity(db: &Database, req: CreateEntityRequest) -> Result<Entity> {
     let entity_type = req.entity_type.unwrap_or_else(|| "general".to_string());
-    // SECURITY: fail closed when user_id is missing so an unauthenticated path
-    // cannot silently create tenant-0 rows that other callers may trust.
-    let user_id = req
-        .user_id
-        .ok_or_else(|| EngError::InvalidInput("user_id is required to create an entity".into()))?;
+    let _user_id = req.user_id;
     let aliases_json = match req.aliases {
         Some(ref v) => Some(serde_json::to_string(v)?),
         None => None,
@@ -55,10 +51,10 @@ pub async fn create_entity(db: &Database, req: CreateEntityRequest) -> Result<En
     db.write(move |conn| {
         conn.execute(
             "INSERT INTO entities \
-             (name, entity_type, description, aliases, user_id, space_id, confidence, occurrence_count, \
+             (name, entity_type, description, aliases, space_id, confidence, occurrence_count, \
               first_seen_at, last_seen_at, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1.0, 1, datetime('now'), datetime('now'), datetime('now')) \
-             ON CONFLICT(name, entity_type, user_id) DO UPDATE SET \
+             VALUES (?1, ?2, ?3, ?4, ?5, 1.0, 1, datetime('now'), datetime('now'), datetime('now')) \
+             ON CONFLICT(name, entity_type) DO UPDATE SET \
                occurrence_count = occurrence_count + 1, \
                last_seen_at = datetime('now')",
             rusqlite::params![
@@ -66,7 +62,6 @@ pub async fn create_entity(db: &Database, req: CreateEntityRequest) -> Result<En
                 entity_type_clone,
                 description,
                 aliases_json,
-                user_id,
                 space_id,
             ],
         )
@@ -76,7 +71,7 @@ pub async fn create_entity(db: &Database, req: CreateEntityRequest) -> Result<En
     .await?;
 
     // Fetch the row that was just upserted
-    let entity = find_entity_by_name_type(db, &req.name, &entity_type, user_id)
+    let entity = find_entity_by_name_type(db, &req.name, &entity_type)
         .await?
         .ok_or_else(|| {
             EngError::Internal("entity upsert succeeded but fetch returned nothing".to_string())
@@ -85,24 +80,23 @@ pub async fn create_entity(db: &Database, req: CreateEntityRequest) -> Result<En
     Ok(entity)
 }
 
-/// Internal helper: look up an entity by (name, entity_type, user_id).
+/// Internal helper: look up an entity by (name, entity_type).
 async fn find_entity_by_name_type(
     db: &Database,
     name: &str,
     entity_type: &str,
-    user_id: i64,
 ) -> Result<Option<Entity>> {
     let name = name.to_string();
     let entity_type = entity_type.to_string();
     let query = format!(
-        "SELECT {} FROM entities WHERE name = ?1 AND entity_type = ?2 AND user_id = ?3 LIMIT 1",
+        "SELECT {} FROM entities WHERE name = ?1 AND entity_type = ?2 LIMIT 1",
         ENTITY_COLUMNS
     );
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&query).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![name, entity_type, user_id])
+            .query(rusqlite::params![name, entity_type])
             .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => Ok(Some(row_to_entity(row)?)),
@@ -113,16 +107,16 @@ async fn find_entity_by_name_type(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_entity(db: &Database, id: i64, user_id: i64) -> Result<Entity> {
+pub async fn get_entity(db: &Database, id: i64, _user_id: i64) -> Result<Entity> {
     let query = format!(
-        "SELECT {} FROM entities WHERE id = ?1 AND user_id = ?2 LIMIT 1",
+        "SELECT {} FROM entities WHERE id = ?1 LIMIT 1",
         ENTITY_COLUMNS
     );
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&query).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
+            .query(rusqlite::params![id])
             .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => row_to_entity(row),
@@ -132,25 +126,25 @@ pub async fn get_entity(db: &Database, id: i64, user_id: i64) -> Result<Entity> 
     .await
 }
 
-/// List entities for a user, ordered by occurrence_count descending.
+/// List entities, ordered by occurrence_count descending.
 #[tracing::instrument(skip(db))]
 pub async fn list_entities(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     limit: usize,
     offset: usize,
 ) -> Result<Vec<Entity>> {
     let query = format!(
-        "SELECT {} FROM entities WHERE user_id = ?1 \
+        "SELECT {} FROM entities \
          ORDER BY occurrence_count DESC \
-         LIMIT ?2 OFFSET ?3",
+         LIMIT ?1 OFFSET ?2",
         ENTITY_COLUMNS
     );
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&query).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id, limit as i64, offset as i64])
+            .query(rusqlite::params![limit as i64, offset as i64])
             .map_err(rusqlite_to_eng_error)?;
         let mut entities = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -161,23 +155,23 @@ pub async fn list_entities(
     .await
 }
 
-/// Find an entity by name (case-sensitive) for a given user.
+/// Find an entity by name (case-sensitive).
 #[tracing::instrument(skip(db, name))]
 pub async fn find_entity_by_name(
     db: &Database,
     name: &str,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Option<Entity>> {
     let name = name.to_string();
     let query = format!(
-        "SELECT {} FROM entities WHERE name = ?1 AND user_id = ?2 LIMIT 1",
+        "SELECT {} FROM entities WHERE name = ?1 LIMIT 1",
         ENTITY_COLUMNS
     );
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&query).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![name, user_id])
+            .query(rusqlite::params![name])
             .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => Ok(Some(row_to_entity(row)?)),
@@ -188,12 +182,12 @@ pub async fn find_entity_by_name(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn delete_entity(db: &Database, id: i64, user_id: i64) -> Result<()> {
+pub async fn delete_entity(db: &Database, id: i64, _user_id: i64) -> Result<()> {
     db.write(move |conn| {
         let affected = conn
             .execute(
-                "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
-                rusqlite::params![id, user_id],
+                "DELETE FROM entities WHERE id = ?1",
+                rusqlite::params![id],
             )
             .map_err(rusqlite_to_eng_error)?;
         if affected == 0 {
@@ -244,13 +238,11 @@ pub async fn update_entity(
     }
 
     let sql = format!(
-        "UPDATE entities SET {}, updated_at = datetime('now') WHERE id = ?{} AND user_id = ?{}",
+        "UPDATE entities SET {}, updated_at = datetime('now') WHERE id = ?{}",
         sets.join(", "),
-        idx,
-        idx + 1
+        idx
     );
     params.push(id.into());
-    params.push(user_id.into());
 
     db.write(move |conn| {
         let affected = conn
@@ -286,10 +278,10 @@ pub async fn create_relationship(
     let owned: i64 = db
         .read(move |conn| {
             let mut stmt = conn
-                .prepare("SELECT COUNT(*) FROM entities WHERE id IN (?1, ?2) AND user_id = ?3")
+                .prepare("SELECT COUNT(*) FROM entities WHERE id IN (?1, ?2)")
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt
-                .query(rusqlite::params![source_id, target_id, user_id])
+                .query(rusqlite::params![source_id, target_id])
                 .map_err(rusqlite_to_eng_error)?;
             match rows.next().map_err(rusqlite_to_eng_error)? {
                 Some(row) => Ok(row.get(0)?),
@@ -366,15 +358,14 @@ pub async fn get_entity_relationships(
                 "SELECT id, source_entity_id, target_entity_id, relationship_type, strength, evidence_count, created_at \
                  FROM entity_relationships \
                  WHERE (source_entity_id = ?1 OR target_entity_id = ?1) \
-                   AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2) \
+                   AND EXISTS (SELECT 1 FROM entities WHERE id = ?1) \
                  ORDER BY strength DESC \
-                 LIMIT ?3",
+                 LIMIT ?2",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
             .query(rusqlite::params![
                 entity_id,
-                user_id,
                 MAX_ENTITY_RELATIONSHIPS as i64
             ])
             .map_err(rusqlite_to_eng_error)?;
@@ -413,11 +404,11 @@ pub async fn link_memory_entity(
                     "SELECT COUNT(*) \
                      FROM entities e \
                      JOIN memories m ON m.id = ?1 \
-                     WHERE e.id = ?2 AND e.user_id = ?3 AND m.user_id = ?3",
+                     WHERE e.id = ?2",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt
-                .query(rusqlite::params![memory_id, entity_id, user_id])
+                .query(rusqlite::params![memory_id, entity_id])
                 .map_err(rusqlite_to_eng_error)?;
             match rows.next().map_err(rusqlite_to_eng_error)? {
                 Some(row) => Ok(row.get(0)?),
@@ -458,8 +449,8 @@ pub async fn unlink_memory_entity(
                 "DELETE FROM memory_entities \
                  WHERE memory_id = ?1 AND entity_id = ?2 \
                    AND EXISTS (SELECT 1 FROM memories WHERE id = ?1) \
-                   AND EXISTS (SELECT 1 FROM entities WHERE id = ?2 AND user_id = ?3)",
-                rusqlite::params![memory_id, entity_id, user_id],
+                   AND EXISTS (SELECT 1 FROM entities WHERE id = ?2)",
+                rusqlite::params![memory_id, entity_id],
             )
             .map_err(rusqlite_to_eng_error)?;
         if affected == 0 {
@@ -510,7 +501,7 @@ pub async fn get_memory_entities(
 
 /// Return the IDs of all memories linked to the given entity.
 #[tracing::instrument(skip(db))]
-pub async fn get_entity_memories(db: &Database, entity_id: i64, user_id: i64) -> Result<Vec<i64>> {
+pub async fn get_entity_memories(db: &Database, entity_id: i64, _user_id: i64) -> Result<Vec<i64>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -518,11 +509,11 @@ pub async fn get_entity_memories(db: &Database, entity_id: i64, user_id: i64) ->
                  FROM memory_entities me \
                  JOIN memories m ON m.id = me.memory_id \
                  JOIN entities e ON e.id = me.entity_id \
-                 WHERE me.entity_id = ?1 AND e.user_id = ?2 AND m.user_id = ?2",
+                 WHERE me.entity_id = ?1",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![entity_id, user_id])
+            .query(rusqlite::params![entity_id])
             .map_err(rusqlite_to_eng_error)?;
         let mut memory_ids = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -589,20 +580,20 @@ pub async fn delete_relationship(
     relationship_type: Option<&str>,
 ) -> Result<()> {
     let mut params: Vec<rusqlite::types::Value> =
-        vec![entity_id.into(), target_entity_id.into(), user_id.into()];
+        vec![entity_id.into(), target_entity_id.into()];
     let sql = if let Some(value) = relationship_type {
         params.push(value.to_string().into());
         "DELETE FROM entity_relationships \
          WHERE source_entity_id = ?1 AND target_entity_id = ?2 \
-           AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?3) \
-           AND EXISTS (SELECT 1 FROM entities WHERE id = ?2 AND user_id = ?3) \
-           AND relationship_type = ?4"
+           AND EXISTS (SELECT 1 FROM entities WHERE id = ?1) \
+           AND EXISTS (SELECT 1 FROM entities WHERE id = ?2) \
+           AND relationship_type = ?3"
             .to_string()
     } else {
         "DELETE FROM entity_relationships \
          WHERE source_entity_id = ?1 AND target_entity_id = ?2 \
-           AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?3) \
-           AND EXISTS (SELECT 1 FROM entities WHERE id = ?2 AND user_id = ?3)"
+           AND EXISTS (SELECT 1 FROM entities WHERE id = ?1) \
+           AND EXISTS (SELECT 1 FROM entities WHERE id = ?2)"
             .to_string()
     };
 
@@ -786,7 +777,7 @@ pub async fn extract_and_link_entities(
             entity_type: Some(entity_type.clone()),
             description: None,
             aliases: None,
-            user_id: Some(user_id),
+            user_id: None,
             space_id: None,
         };
         let entity = create_entity(db, req).await?;

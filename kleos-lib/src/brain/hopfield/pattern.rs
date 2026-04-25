@@ -163,8 +163,8 @@ pub async fn delete_pattern(db: &Database, id: i64, user_id: i64) -> Result<()> 
         .map_err(rusqlite_to_eng_error)?;
         // Also clean up edges referencing this pattern
         conn.execute(
-            "DELETE FROM brain_edges WHERE (source_id = ?1 OR target_id = ?1) AND user_id = ?2",
-            rusqlite::params![id, user_id],
+            "DELETE FROM brain_edges WHERE (source_id = ?1 OR target_id = ?1)",
+            rusqlite::params![id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -206,8 +206,8 @@ pub async fn delete_weak_patterns(db: &Database, user_id: i64, threshold: f32) -
         // Clean edges referencing dead patterns
         for id in &dead_ids {
             conn.execute(
-                "DELETE FROM brain_edges WHERE (source_id = ?1 OR target_id = ?1) AND user_id = ?2",
-                rusqlite::params![*id, user_id],
+                "DELETE FROM brain_edges WHERE (source_id = ?1 OR target_id = ?1)",
+                rusqlite::params![*id],
             )
             .map_err(rusqlite_to_eng_error)?;
         }

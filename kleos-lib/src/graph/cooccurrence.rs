@@ -91,13 +91,12 @@ pub async fn build_cooccurrence_edges(
         // Upsert into entity_cooccurrences table
         db.write(move |conn| {
             conn.execute(
-                "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count, user_id) \
-                 VALUES (?1, ?2, ?3, ?4) \
+                "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count) \
+                 VALUES (?1, ?2, ?3) \
                  ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET \
                    count = count + ?3, \
-                   user_id = excluded.user_id, \
                    last_seen_at = datetime('now')",
-                rusqlite::params![entity_a, entity_b, count, user_id],
+                rusqlite::params![entity_a, entity_b, count],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(())
@@ -132,7 +131,7 @@ pub async fn record_cooccurrence(
     db: &Database,
     entity_a: i64,
     entity_b: i64,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<()> {
     let (lo, hi) = if entity_a <= entity_b {
         (entity_a, entity_b)
@@ -141,13 +140,12 @@ pub async fn record_cooccurrence(
     };
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count, user_id) \
-             VALUES (?1, ?2, 1, ?3) \
+            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count) \
+             VALUES (?1, ?2, 1) \
              ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET \
                count = count + 1, \
-               user_id = excluded.user_id, \
                last_seen_at = datetime('now')",
-            rusqlite::params![lo, hi, user_id],
+            rusqlite::params![lo, hi],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -156,17 +154,15 @@ pub async fn record_cooccurrence(
     Ok(())
 }
 
-/// Full rebuild of co-occurrence table for a user.
-/// Clears existing co-occurrences and recomputes from all memory-entity links.
+/// Full rebuild of co-occurrence table.
+/// Clears all existing co-occurrences and recomputes from all memory-entity links.
 #[tracing::instrument(skip(db))]
 pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
-    // Clear existing co-occurrences for entities owned by this user
+    // Clear all co-occurrences
     db.write(move |conn| {
         conn.execute(
-            "DELETE FROM entity_cooccurrences \
-             WHERE entity_a_id IN (SELECT id FROM entities WHERE user_id = ?1) \
-                OR entity_b_id IN (SELECT id FROM entities WHERE user_id = ?1)",
-            rusqlite::params![user_id],
+            "DELETE FROM entity_cooccurrences",
+            [],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -238,7 +234,7 @@ pub async fn get_cooccurring_entities(
         let mut stmt = conn
             .prepare(
                 "SELECT e.id, e.name, e.entity_type, e.description, e.aliases, \
-                        e.user_id, e.space_id, e.confidence, e.occurrence_count, \
+                        e.space_id, e.confidence, e.occurrence_count, \
                         e.first_seen_at, e.last_seen_at, e.created_at, \
                         co.count as cooccurrence_count \
                  FROM entity_cooccurrences co \
@@ -247,28 +243,26 @@ pub async fn get_cooccurring_entities(
                      ELSE co.entity_a_id \
                  END \
                  WHERE (co.entity_a_id = ?1 OR co.entity_b_id = ?1) \
-                   AND e.user_id = ?2 \
-                   AND co.user_id = ?2 \
                  ORDER BY co.count DESC \
-                 LIMIT ?3",
+                 LIMIT ?2",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let rows = stmt
-            .query_map(rusqlite::params![entity_id, user_id, limit as i64], |row| {
+            .query_map(rusqlite::params![entity_id, limit as i64], |row| {
                 Ok(Entity {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     entity_type: row.get(2)?,
                     description: row.get(3)?,
                     aliases: row.get(4)?,
-                    user_id: row.get(5)?,
-                    space_id: row.get(6)?,
-                    confidence: row.get(7)?,
-                    occurrence_count: row.get(8)?,
-                    first_seen_at: row.get(9)?,
-                    last_seen_at: row.get(10)?,
-                    created_at: row.get(11)?,
+                    user_id: 0,
+                    space_id: row.get(5)?,
+                    confidence: row.get(6)?,
+                    occurrence_count: row.get(7)?,
+                    first_seen_at: row.get(8)?,
+                    last_seen_at: row.get(9)?,
+                    created_at: row.get(10)?,
                 })
             })
             .map_err(rusqlite_to_eng_error)?;

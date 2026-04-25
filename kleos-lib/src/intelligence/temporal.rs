@@ -492,12 +492,12 @@ pub async fn backfill_fact_validity(db: &Database, user_id: i64) -> Result<i32> 
                     "SELECT sf.id, sf.date_approx, sf.date_ref, m.created_at as memory_created_at
                      FROM structured_facts sf
                      JOIN memories m ON m.id = sf.memory_id
-                     WHERE sf.valid_at IS NULL AND sf.user_id = ?1 AND m.user_id = ?1",
+                     WHERE sf.valid_at IS NULL",
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
-                .query_map(params![user_id], |row| {
+                .query_map(params![], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, Option<String>>(1)?,

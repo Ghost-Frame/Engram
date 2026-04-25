@@ -195,6 +195,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "loom_user_id_drop",
         up: apply_schema_v34_loom_drop,
     },
+    TenantMigration {
+        version: 35,
+        description: "graph_cluster_user_id_drop",
+        up: apply_schema_v35_graph_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -367,6 +372,11 @@ fn apply_schema_v33_ingestion_hashes_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v34_loom_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v34_loom_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v34 failed: {e}")))
+}
+
+fn apply_schema_v35_graph_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v35_graph_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v35 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -2816,14 +2826,13 @@ mod tests {
         let memory_id = conn.last_insert_rowid();
 
         conn.execute(
-            "INSERT INTO entities (name, entity_type, description, aliases, user_id, space_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO entities (name, entity_type, description, aliases, space_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
                 "alpha",
                 "concept",
                 None::<String>,
                 None::<String>,
-                4_i64,
                 None::<i64>
             ],
         )
@@ -2831,14 +2840,13 @@ mod tests {
         let a_id = conn.last_insert_rowid();
 
         conn.execute(
-            "INSERT INTO entities (name, entity_type, description, aliases, user_id, space_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO entities (name, entity_type, description, aliases, space_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
                 "beta",
                 "concept",
                 None::<String>,
                 None::<String>,
-                4_i64,
                 None::<i64>
             ],
         )
@@ -2860,47 +2868,48 @@ mod tests {
         .unwrap();
 
         conn.execute(
-            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count, user_id) \
-             VALUES (?1, ?2, 1, ?3) \
+            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count) \
+             VALUES (?1, ?2, 1) \
              ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET count = count + 1",
-            rusqlite::params![a_id, b_id, 4_i64],
+            rusqlite::params![a_id, b_id],
         )
         .unwrap();
 
         conn.execute(
-            "INSERT INTO structured_facts (memory_id, subject, predicate, object, confidence, user_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![memory_id, "alpha", "relates_to", "beta", 0.9_f64, 4_i64],
+            "INSERT INTO structured_facts (memory_id, subject, predicate, object, confidence) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![memory_id, "alpha", "relates_to", "beta", 0.9_f64],
         )
         .unwrap();
 
-        // PageRank upsert (monolith shape: memory_id PK, user_id, INTEGER computed_at).
+        // PageRank upsert (post-v35 shape: memory_id PK only, no user_id).
         conn.execute(
-            "INSERT INTO memory_pagerank (memory_id, user_id, score, computed_at) \
-             VALUES (?1, ?2, ?3, ?4) \
+            "INSERT INTO memory_pagerank (memory_id, score, computed_at) \
+             VALUES (?1, ?2, ?3) \
              ON CONFLICT(memory_id) DO UPDATE SET score = excluded.score",
-            rusqlite::params![memory_id, 4_i64, 0.5_f64, 1_700_000_000_i64],
+            rusqlite::params![memory_id, 0.5_f64, 1_700_000_000_i64],
         )
         .unwrap();
 
+        // pagerank_dirty is now a singleton row with id=1 (CHECK constraint).
         conn.execute(
-            "INSERT INTO pagerank_dirty (user_id, dirty_count, last_refresh) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(user_id) DO UPDATE SET dirty_count = dirty_count + ?2",
-            rusqlite::params![4_i64, 3_i64, 1_700_000_000_i64],
+            "INSERT INTO pagerank_dirty (id, dirty_count, last_refresh) VALUES (1, ?1, ?2) \
+             ON CONFLICT(id) DO UPDATE SET dirty_count = dirty_count + ?1",
+            rusqlite::params![3_i64, 1_700_000_000_i64],
         )
         .unwrap();
 
         let (e, r, me, co, f, pr, pd): (i64, i64, i64, i64, i64, i64, i64) = conn
             .query_row(
                 "SELECT \
-                   (SELECT COUNT(*) FROM entities WHERE user_id = ?1), \
+                   (SELECT COUNT(*) FROM entities), \
                    (SELECT COUNT(*) FROM entity_relationships), \
                    (SELECT COUNT(*) FROM memory_entities), \
-                   (SELECT COUNT(*) FROM entity_cooccurrences WHERE user_id = ?1), \
-                   (SELECT COUNT(*) FROM structured_facts WHERE user_id = ?1), \
-                   (SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1), \
-                   (SELECT COUNT(*) FROM pagerank_dirty WHERE user_id = ?1)",
-                rusqlite::params![4_i64],
+                   (SELECT COUNT(*) FROM entity_cooccurrences), \
+                   (SELECT COUNT(*) FROM structured_facts), \
+                   (SELECT COUNT(*) FROM memory_pagerank), \
+                   (SELECT COUNT(*) FROM pagerank_dirty)",
+                [],
                 |r| {
                     Ok((
                         r.get(0)?,
@@ -2995,7 +3004,8 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(post_user_id, 1, "v14 should reshape entities with user_id");
+        // v14 added user_id; v35 removed it. Full migration chain lands at 0.
+        assert_eq!(post_user_id, 0, "entities.user_id absent after v35 graph drop");
 
         let post_tables: i64 = conn
             .query_row(
@@ -4610,6 +4620,193 @@ mod tests {
             rusqlite::params!["test-wf", "other", "[]"],
         );
         assert!(dup.is_err(), "duplicate workflow name should be rejected by UNIQUE(name)");
+    }
+
+    /// v35: user_id must be absent from all 6 graph-cluster tables after the
+    /// full migration chain completes. Corresponding user indexes must be gone.
+    #[test]
+    fn user_id_absent_from_graph_cluster_after_v35() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).expect("migrations");
+
+        // brain_edges is NOT present on tenant shards (monolith-only table).
+        for table in &[
+            "entities",
+            "structured_facts",
+            "entity_cooccurrences",
+            "memory_pagerank",
+            "pagerank_dirty",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                count, 0,
+                "user_id still present in {} after v35",
+                table
+            );
+        }
+
+        for idx in &[
+            "idx_entities_user",
+            "idx_ec_user",
+            "idx_pagerank_user",
+            "idx_facts_user",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        idx
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "index {} still present after v35", idx);
+        }
+    }
+
+    /// v35: all 6 tables accept inserts using the new schema (no user_id).
+    /// pagerank_dirty singleton seed row exists at id=1.
+    #[test]
+    fn graph_cluster_usable_after_v35() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).expect("migrations");
+
+        // entities: insert without user_id
+        conn.execute(
+            "INSERT INTO entities (name, entity_type) VALUES (?1, ?2)",
+            rusqlite::params!["TestEntity", "concept"],
+        )
+        .expect("insert entity");
+        let entity_id: i64 = conn
+            .query_row("SELECT id FROM entities WHERE name = ?1", rusqlite::params!["TestEntity"], |r| r.get(0))
+            .expect("get entity id");
+
+        // structured_facts: insert without user_id
+        conn.execute(
+            "INSERT INTO structured_facts (subject, predicate, object, verb) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["Alice", "knows", "Bob", "know"],
+        )
+        .expect("insert structured_fact");
+
+        // entity_cooccurrences: insert without user_id
+        let entity_id2: i64 = {
+            conn.execute(
+                "INSERT INTO entities (name, entity_type) VALUES (?1, ?2)",
+                rusqlite::params!["OtherEntity", "concept"],
+            )
+            .expect("insert entity2");
+            conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0)).unwrap()
+        };
+        conn.execute(
+            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count) VALUES (?1, ?2, 1)",
+            rusqlite::params![entity_id, entity_id2],
+        )
+        .expect("insert cooccurrence");
+
+        // pagerank_dirty: seed row must exist at id=1
+        let pd_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pagerank_dirty WHERE id = 1", [], |r| r.get(0))
+            .expect("count pagerank_dirty");
+        assert_eq!(pd_count, 1, "pagerank_dirty seed row missing at id=1");
+
+        // entities UNIQUE(name, entity_type) -- duplicate should fail
+        let dup = conn.execute(
+            "INSERT INTO entities (name, entity_type) VALUES (?1, ?2)",
+            rusqlite::params!["TestEntity", "concept"],
+        );
+        assert!(dup.is_err(), "duplicate (name, entity_type) should be rejected");
+    }
+
+    /// v35: rows inserted in the old shape (with user_id) survive the
+    /// migration with every non-user_id field intact.
+    #[test]
+    fn graph_cluster_rows_preserved_through_v35() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+
+        // Apply migrations v1..v34 (stop before v35).
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 35 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        // Insert entity in old shape (with user_id).
+        conn.execute(
+            "INSERT INTO entities (name, entity_type, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["OldEntity", "concept", 1_i64],
+        )
+        .expect("insert old entity");
+        let entity_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        // Insert structured_fact in old shape (with user_id).
+        conn.execute(
+            "INSERT INTO structured_facts (subject, predicate, object, verb, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["subj", "pred", "obj", "verb", 1_i64],
+        )
+        .expect("insert old structured_fact");
+
+        // Apply v35.
+        apply_schema_v35_graph_drop(&conn).expect("apply v35");
+
+        // Entity row survived with name intact.
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM entities WHERE id = ?1",
+                rusqlite::params![entity_id],
+                |r| r.get(0),
+            )
+            .expect("select entity after v35");
+        assert_eq!(name, "OldEntity");
+
+        // structured_facts row survived.
+        let sf_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM structured_facts", [], |r| r.get(0))
+            .expect("count structured_facts");
+        assert_eq!(sf_count, 1);
+
+        // user_id gone from both tables.
+        let e_col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(e_col, 0, "entities still has user_id after v35");
+
+        let sf_col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('structured_facts') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sf_col, 0, "structured_facts still has user_id after v35");
     }
 
     /// v34: rows inserted under the v13 shim shape (with user_id) survive the
