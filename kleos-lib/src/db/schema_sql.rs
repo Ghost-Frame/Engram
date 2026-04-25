@@ -974,12 +974,10 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             name TEXT NOT NULL,
             description TEXT,
             steps TEXT NOT NULL DEFAULT '[]',
-            user_id INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(user_id, name)
+            UNIQUE(name)
         );
-        CREATE INDEX IF NOT EXISTS idx_loom_workflows_user ON loom_workflows(user_id);
 
         -- Loom: Workflow runs
         CREATE TABLE IF NOT EXISTS loom_runs (
@@ -989,7 +987,6 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             input TEXT NOT NULL DEFAULT '{}',
             output TEXT NOT NULL DEFAULT '{}',
             error TEXT,
-            user_id INTEGER NOT NULL DEFAULT 1,
             started_at TEXT,
             completed_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -997,7 +994,6 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         );
         CREATE INDEX IF NOT EXISTS idx_loom_runs_workflow ON loom_runs(workflow_id);
         CREATE INDEX IF NOT EXISTS idx_loom_runs_status ON loom_runs(status);
-        CREATE INDEX IF NOT EXISTS idx_loom_runs_user ON loom_runs(user_id);
 
         -- Loom: Workflow steps
         CREATE TABLE IF NOT EXISTS loom_steps (
