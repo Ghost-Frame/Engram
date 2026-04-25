@@ -334,6 +334,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 36,
+        description: "drop_user_id_ingestion_hashes",
+        up: run_migration_drop_user_id_ingestion_hashes,
+        // DROP COLUMN / PK rebuild is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -375,6 +383,7 @@ const MIGRATION_DROP_USER_ID_ACTIVITY: i64 = 32;
 const MIGRATION_DROP_USER_ID_WEBHOOKS: i64 = 33;
 const MIGRATION_DROP_USER_ID_AXON: i64 = 34;
 const MIGRATION_DROP_USER_ID_GROWTH: i64 = 35;
+const MIGRATION_DROP_USER_ID_INGESTION_HASHES: i64 = 36;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -645,6 +654,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 35: drop_user_id_growth");
         run_migration_drop_user_id_growth(conn)?;
         record_migration(conn, MIGRATION_DROP_USER_ID_GROWTH, "drop_user_id_growth")?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_INGESTION_HASHES {
+        info!("Running migration 36: drop_user_id_ingestion_hashes");
+        run_migration_drop_user_id_ingestion_hashes(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_INGESTION_HASHES,
+            "drop_user_id_ingestion_hashes",
+        )?;
     }
 
     Ok(())
@@ -2008,6 +2027,58 @@ fn run_migration_drop_user_id_growth(conn: &rusqlite::Connection) -> Result<()> 
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 35 complete: user_id dropped from reflections");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 36: drop user_id from ingestion_hashes (PK rebuild)
+// ---------------------------------------------------------------------------
+
+/// Migration 36: drop user_id from ingestion_hashes via the 12-step rebuild
+/// path. ingestion_hashes carried PRIMARY KEY (sha256, user_id), which blocks
+/// ALTER TABLE DROP COLUMN on the PK column, so we rebuild with PRIMARY KEY
+/// (sha256). INSERT OR IGNORE in the row copy handles the edge case where
+/// multiple rows shared the same sha256 under the old composite PK.
+/// Idempotent: if ingestion_hashes already lacks user_id the migration is
+/// a no-op.
+fn run_migration_drop_user_id_ingestion_hashes(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('ingestion_hashes') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        info!("ingestion_hashes.user_id already absent, migration 36 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         ALTER TABLE ingestion_hashes RENAME TO _ingestion_hashes_old_v35;
+
+         CREATE TABLE ingestion_hashes (
+             sha256 TEXT NOT NULL,
+             first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+             job_id TEXT,
+             PRIMARY KEY (sha256)
+         );
+
+         INSERT OR IGNORE INTO ingestion_hashes (sha256, first_seen_at, job_id)
+         SELECT sha256, first_seen_at, job_id
+         FROM _ingestion_hashes_old_v35;
+
+         DROP TABLE _ingestion_hashes_old_v35;
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 36 complete: user_id dropped from ingestion_hashes");
     Ok(())
 }
 

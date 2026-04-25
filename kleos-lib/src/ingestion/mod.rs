@@ -30,13 +30,13 @@ fn content_hash(input: &[u8]) -> String {
 
 /// Check if this content has already been ingested for the given user.
 /// Returns true if a matching hash exists (skip this ingestion).
-async fn is_duplicate(db: &Database, hash: &str, user_id: i64) -> bool {
+async fn is_duplicate(db: &Database, hash: &str, _user_id: i64) -> bool {
     let h = hash.to_string();
     db.read(move |conn| {
         let exists: bool = conn
             .query_row(
-                "SELECT 1 FROM ingestion_hashes WHERE sha256 = ?1 AND user_id = ?2",
-                rusqlite::params![h, user_id],
+                "SELECT 1 FROM ingestion_hashes WHERE sha256 = ?1",
+                rusqlite::params![h],
                 |_| Ok(true),
             )
             .unwrap_or(false);
@@ -47,14 +47,14 @@ async fn is_duplicate(db: &Database, hash: &str, user_id: i64) -> bool {
 }
 
 /// Record a content hash after successful ingestion.
-async fn record_hash(db: &Database, hash: &str, user_id: i64, job_id: &str) {
+async fn record_hash(db: &Database, hash: &str, _user_id: i64, job_id: &str) {
     let h = hash.to_string();
     let j = job_id.to_string();
     let _ = db
         .write(move |conn| {
             conn.execute(
-                "INSERT OR IGNORE INTO ingestion_hashes (sha256, user_id, job_id) VALUES (?1, ?2, ?3)",
-                rusqlite::params![h, user_id, j],
+                "INSERT OR IGNORE INTO ingestion_hashes (sha256, job_id) VALUES (?1, ?2)",
+                rusqlite::params![h, j],
             )
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))
         })

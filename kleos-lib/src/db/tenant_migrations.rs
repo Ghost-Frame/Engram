@@ -185,6 +185,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "growth_user_id_drop",
         up: apply_schema_v32_growth_drop,
     },
+    TenantMigration {
+        version: 33,
+        description: "ingestion_hashes_user_id_drop",
+        up: apply_schema_v33_ingestion_hashes_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -345,6 +350,13 @@ fn apply_schema_v31_axon_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v32_growth_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v32_growth_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v32 failed: {e}")))
+}
+
+fn apply_schema_v33_ingestion_hashes_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!(
+        "../tenant/schema_v33_ingestion_hashes_drop.sql"
+    ))
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v33 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -2244,8 +2256,28 @@ mod tests {
 
     #[test]
     fn ingestion_tables_usable_after_v10() {
+        // v10 introduced upload_sessions, upload_chunks, and ingestion_hashes
+        // with user_id shims; v33 drops user_id from ingestion_hashes. Cap the
+        // chain at v32 so this test still locks the v10 shape (user_id present).
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 33 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let tables: i64 = conn
             .query_row(
@@ -4332,5 +4364,125 @@ mod tests {
             )
             .unwrap();
         assert_eq!(col, 0, "reflections still has user_id after v32");
+    }
+
+    /// v33: ingestion_hashes must NOT have a user_id column after the full
+    /// migration chain, and no idx_ingestion_hashes_user index should exist.
+    #[test]
+    fn user_id_absent_from_ingestion_hashes_after_v33() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).expect("migrations");
+
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('ingestion_hashes')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            !cols.iter().any(|c| c == "user_id"),
+            "user_id still present in ingestion_hashes: {:?}",
+            cols
+        );
+
+        let idx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_ingestion_hashes_user'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_count, 0, "idx_ingestion_hashes_user still present");
+    }
+
+    /// v33: ingestion_hashes supports the SQL shape ingestion/mod.rs now uses
+    /// (no user_id on INSERT or SELECT).
+    #[test]
+    fn ingestion_hashes_usable_after_v33() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).expect("migrations");
+
+        conn.execute(
+            "INSERT OR IGNORE INTO ingestion_hashes (sha256, job_id) VALUES (?1, ?2)",
+            rusqlite::params!["abc123def456", "job-test-1"],
+        )
+        .expect("insert");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ingestion_hashes", [], |row| {
+                row.get(0)
+            })
+            .expect("count");
+        assert_eq!(count, 1);
+
+        // Second insert of same sha256 must be silently ignored (PK dedup).
+        conn.execute(
+            "INSERT OR IGNORE INTO ingestion_hashes (sha256, job_id) VALUES (?1, ?2)",
+            rusqlite::params!["abc123def456", "job-test-2"],
+        )
+        .expect("second insert or ignore");
+
+        let count2: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ingestion_hashes", [], |row| {
+                row.get(0)
+            })
+            .expect("count after dedup");
+        assert_eq!(count2, 1, "duplicate sha256 should be deduped by PK");
+    }
+
+    /// v33: rows inserted under the v10 shim shape (with user_id) survive the
+    /// PK rebuild with every non-user_id field intact.
+    #[test]
+    fn ingestion_hashes_rows_preserved_through_v33() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 33 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        // Insert a row in the old shape (sha256, user_id, job_id).
+        conn.execute(
+            "INSERT OR IGNORE INTO ingestion_hashes (sha256, user_id, job_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["cafebabe", 1_i64, "job-pre-v33"],
+        )
+        .expect("insert old shape");
+
+        // Apply v33 -- PK rebuild drops user_id.
+        apply_schema_v33_ingestion_hashes_drop(&conn).expect("apply v33");
+
+        // Verify the row survived with sha256 and job_id intact.
+        let (sha256, job_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT sha256, job_id FROM ingestion_hashes WHERE sha256 = ?1",
+                rusqlite::params!["cafebabe"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("select after migration");
+        assert_eq!(sha256, "cafebabe");
+        assert_eq!(job_id.as_deref(), Some("job-pre-v33"));
+
+        let col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('ingestion_hashes') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col, 0, "ingestion_hashes still has user_id after v33");
     }
 }
