@@ -998,11 +998,11 @@ async fn reset_user(
     // Tables that are wiped by user_id (single-tenant: uid == the only tenant)
     let uid_tables = &[
         "DELETE FROM conversations WHERE user_id = ?1",
-        "DELETE FROM episodes WHERE user_id = ?1",
         "DELETE FROM user_preferences WHERE user_id = ?1",
     ];
     // Tables wiped whole-monolith (no user_id column, or single-tenant equivalent)
     let global_tables = &[
+        "DELETE FROM episodes",
         "DELETE FROM memories",
         "DELETE FROM structured_facts WHERE memory_id IN (SELECT id FROM memories)",
     ];

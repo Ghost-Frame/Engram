@@ -390,6 +390,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 43,
+        description: "drop_user_id_episodes",
+        up: run_migration_drop_user_id_episodes,
+        // DROP INDEX + DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -438,6 +446,7 @@ const MIGRATION_DROP_USER_ID_THYMUS: i64 = 39;
 const MIGRATION_DROP_USER_ID_PORTABILITY: i64 = 40;
 const MIGRATION_DROP_USER_ID_INTELLIGENCE: i64 = 41;
 const MIGRATION_DROP_USER_ID_SKILLS: i64 = 42;
+const MIGRATION_DROP_USER_ID_EPISODES: i64 = 43;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -765,6 +774,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_DROP_USER_ID_SKILLS,
             "drop_user_id_skills",
+        )?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_EPISODES {
+        info!("Running migration 43: drop_user_id_episodes");
+        run_migration_drop_user_id_episodes(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_EPISODES,
+            "drop_user_id_episodes",
         )?;
     }
 
@@ -2858,6 +2877,38 @@ pub fn validate_post_import(conn: &rusqlite::Connection) -> Result<PostImportVal
         session_quality_zero_user,
         behavioral_drift_zero_user,
     })
+}
+
+fn run_migration_drop_user_id_episodes(conn: &rusqlite::Connection) -> Result<()> {
+    // Idempotent guard: if user_id is already absent from episodes, skip.
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    if has_user_id == 0 {
+        info!("episodes user_id already absent, migration 43 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         DROP INDEX IF EXISTS idx_episodes_user;
+
+         ALTER TABLE episodes DROP COLUMN user_id;
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 43 complete: user_id dropped from episodes (Shape A, FTS triggers unaffected)");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

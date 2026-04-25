@@ -220,6 +220,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "skills_user_id_drop",
         up: apply_schema_v39_skills_drop,
     },
+    TenantMigration {
+        version: 40,
+        description: "episodes_user_id_drop",
+        up: apply_schema_v40_episodes_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -417,6 +422,11 @@ fn apply_schema_v38_intelligence_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v39_skills_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v39_skills_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v39 failed: {e}")))
+}
+
+fn apply_schema_v40_episodes_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v40_episodes_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v40 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -3699,10 +3709,29 @@ mod tests {
 
     #[test]
     fn episodes_user_id_and_fts_after_v20() {
+        // v20 added the episodes family; v40 drops user_id from episodes.
+        // Cap this test at v39 so the pre-drop INSERT with user_id still works.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 40 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
-        // episodes now carries user_id.
+        // episodes now carries user_id (before v40 drop).
         let has_user_id: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name='user_id'",
@@ -6033,5 +6062,111 @@ mod tests {
             )
             .unwrap();
         assert_eq!(desc_hits, 1, "skills_fts description not indexed after v39");
+    }
+
+    /// v40: user_id must be absent from episodes and idx_episodes_user must be
+    /// dropped after the full migration chain.
+    #[test]
+    fn user_id_absent_from_episodes_after_v40() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(col_count, 0, "episodes still has user_id column after v40");
+
+        // Dropped index must be gone.
+        let idx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND name='idx_episodes_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(idx_count, 0, "idx_episodes_user still present after v40");
+
+        // Preserved indexes must still exist.
+        let preserved = ["idx_episodes_session", "idx_episodes_agent"];
+        for idx in &preserved {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        idx
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(count, 1, "preserved index {} missing after v40", idx);
+        }
+    }
+
+    /// v40: INSERT works without user_id and the FTS trigger still fires on
+    /// the post-drop table shape.
+    #[test]
+    fn episodes_usable_after_v40() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        // Insert without user_id must succeed.
+        conn.execute(
+            "INSERT INTO episodes (title, session_id, agent, summary) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["items", "sess-gir", "gir", "found items near Dib"],
+        )
+        .unwrap();
+        let eid = conn.last_insert_rowid();
+
+        // Row must be readable.
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM episodes WHERE id = ?1",
+                rusqlite::params![eid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "items");
+    }
+
+    /// v40: episodes_fts triggers reference (id, title, summary, agent) and
+    /// never user_id, so the FTS shadow is still functional after the column
+    /// drop.
+    #[test]
+    fn episodes_fts_works_after_v40() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO episodes (title, agent, summary) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["waffles", "gir", "mission to acquire waffles"],
+        )
+        .unwrap();
+
+        // FTS insert trigger must have populated the shadow.
+        let hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM episodes_fts WHERE episodes_fts MATCH 'waffles'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "episodes_fts insert trigger did not fire after v40");
+
+        // Summary is also indexed.
+        let summary_hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM episodes_fts WHERE episodes_fts MATCH 'acquire'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(summary_hits, 1, "episodes_fts summary not indexed after v40");
     }
 }
