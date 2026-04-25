@@ -14,9 +14,8 @@ pub struct VectorHit {
 
 #[async_trait]
 pub trait VectorIndex: Send + Sync {
-    async fn insert(&self, memory_id: i64, user_id: i64, embedding: &[f32]) -> Result<()>;
-    async fn search(&self, embedding: &[f32], limit: usize, user_id: i64)
-        -> Result<Vec<VectorHit>>;
+    async fn insert(&self, memory_id: i64, embedding: &[f32]) -> Result<()>;
+    async fn search(&self, embedding: &[f32], limit: usize) -> Result<Vec<VectorHit>>;
     async fn delete(&self, memory_id: i64) -> Result<()>;
     async fn count(&self) -> Result<usize>;
 

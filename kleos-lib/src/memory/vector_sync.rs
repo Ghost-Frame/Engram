@@ -89,10 +89,10 @@ fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
 }
 
 /// Rebuild the LanceDB vector index from all existing memory embeddings.
-/// `owner_user_id` is used as the user_id field in the LanceDB record (the
-/// memories table no longer stores user_id, so the caller supplies it).
+/// `_owner_user_id` is retained for call-site compatibility (Stage 18 audit
+/// will remove it once all callers are updated).
 #[tracing::instrument(skip(db))]
-pub async fn build_lance_index_from_existing(db: &Database, owner_user_id: i64) -> Result<usize> {
+pub async fn build_lance_index_from_existing(db: &Database, _owner_user_id: i64) -> Result<usize> {
     let Some(index) = db.vector_index.as_ref() else {
         return Ok(0);
     };
@@ -122,7 +122,7 @@ pub async fn build_lance_index_from_existing(db: &Database, owner_user_id: i64) 
     let mut count = 0usize;
     for (memory_id, emb_blob) in rows {
         let embedding = blob_to_embedding(&emb_blob);
-        index.insert(memory_id, owner_user_id, &embedding).await?;
+        index.insert(memory_id, &embedding).await?;
         count += 1;
         #[allow(clippy::manual_is_multiple_of)]
         if count % 1000 == 0 {
@@ -137,13 +137,9 @@ pub async fn build_lance_index_from_existing(db: &Database, owner_user_id: i64) 
 /// LanceDB op and remove the row on success. Rows whose underlying memory
 /// no longer has an embedding (or has been hard-deleted) are considered
 /// skipped and also removed.
-/// Drain the vector_sync_pending ledger. For each row, retry the failed
-/// LanceDB op and remove the row on success. Rows whose underlying memory
-/// no longer has an embedding (or has been hard-deleted) are considered
-/// skipped and also removed.
 ///
-/// `owner_user_id` is passed to LanceDB insert calls because user_id is no
-/// longer stored in vector_sync_pending (Phase 5.1).
+/// Phase 5.21: user_id is removed from the LanceDB schema. insert() no longer
+/// takes a user_id argument; this function passes none.
 #[tracing::instrument(skip(db))]
 pub async fn replay_vector_sync_pending(
     db: &Database,
@@ -178,34 +174,17 @@ pub async fn replay_vector_sync_pending(
         })
         .await?;
 
-    // Phase 5.1 transitional: owner_user_id is no longer stored in
-    // vector_sync_pending. Callers that know the tenant owner should use
-    // replay_vector_sync_pending_for_user. This generic path stamps 0 as a
-    // sentinel because LanceDB still carries a user_id field until Phase 5.21;
-    // searches that filter by user_id will NOT match these rows. The table is
-    // empty on production shards today, so hitting this warn! is a real signal.
-    if !pending.is_empty() {
-        warn!(
-            pending_rows = pending.len(),
-            "replay_vector_sync_pending using owner_user_id=0 sentinel; LanceDB rows may be invisible to per-user filters until Phase 5.21"
-        );
-    }
-    process_pending_batch(db, index.as_ref(), pending, 0, &mut report).await?;
+    process_pending_batch(db, index.as_ref(), pending, &mut report).await?;
     Ok(report)
 }
 
 /// Process a batch of pending vector-sync rows with batched DB reads and
 /// a single batched DELETE for succeeded rows.  Failed rows still take an
 /// individual UPDATE because we stamp per-row error text.
-///
-/// `owner_user_id` is passed to LanceDB insert calls because user_id is no
-/// longer stored in vector_sync_pending (Phase 5.1). The LanceDB schema
-/// still carries the field until Phase 5.21.
 async fn process_pending_batch(
     db: &Database,
     index: &dyn crate::vector::VectorIndex,
     pending: Vec<(i64, i64, String)>,
-    owner_user_id: i64,
     report: &mut VectorSyncReplayReport,
 ) -> Result<()> {
     // 1. One SQL read for every `insert` op we are about to retry.
@@ -227,7 +206,7 @@ async fn process_pending_batch(
                 Some(blob) => {
                     let embedding = blob_to_embedding(blob);
                     index
-                        .insert(memory_id, owner_user_id, &embedding)
+                        .insert(memory_id, &embedding)
                         .await
                         .map_err(|e| e.to_string())
                 }
@@ -298,14 +277,14 @@ pub async fn vector_sync_pending_users(db: &Database) -> Result<Vec<i64>> {
     }
 }
 
-/// Same as `replay_vector_sync_pending` but accepts a `user_id` that is used
-/// as `owner_user_id` for LanceDB insert calls. Phase 5.1 removed user_id from
-/// the vector_sync_pending table; the WHERE clause is dropped accordingly.
-/// Called by the per-user round-robin background task (MT-F17).
+/// Same as `replay_vector_sync_pending` but accepts a `_user_id` retained for
+/// call-site compatibility (Stage 18 audit will remove it). Phase 5.21 removed
+/// user_id from the LanceDB schema, so the parameter is no longer forwarded to
+/// index.insert(). Called by the per-user round-robin background task (MT-F17).
 #[tracing::instrument(skip(db))]
 pub async fn replay_vector_sync_pending_for_user(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     limit: usize,
 ) -> Result<VectorSyncReplayReport> {
     let mut report = VectorSyncReplayReport::default();
@@ -337,6 +316,6 @@ pub async fn replay_vector_sync_pending_for_user(
         })
         .await?;
 
-    process_pending_batch(db, index.as_ref(), pending, user_id, &mut report).await?;
+    process_pending_batch(db, index.as_ref(), pending, &mut report).await?;
     Ok(report)
 }
