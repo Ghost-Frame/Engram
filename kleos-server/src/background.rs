@@ -1,6 +1,7 @@
 //! Background tasks that run on a timer for the duration of the server process.
 
 use kleos_lib::db::Database;
+use kleos_lib::tenant::TenantRegistry;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -193,12 +194,18 @@ pub fn start_job_cleanup_task(
 /// Replays failed LanceDB vector sync operations on a 10-minute interval.
 /// Skips silently when no vector index is configured.
 /// RB-L5: failures back off exponentially (doubling each time, capped at 5 min).
-/// MT-F17: per-user round-robin scheduling prevents a single user with many
-/// pending rows from starving other users. A monotonic sequence counter tracks
-/// when each user was last served; the user with the lowest counter (i.e. served
+/// MT-F17: per-tenant round-robin scheduling prevents a single tenant with many
+/// pending rows from starving others. A monotonic sequence counter tracks when
+/// each tenant was last served; the tenant with the lowest counter (i.e. served
 /// least recently, or never) is chosen each tick.
+///
+/// When `registry` is Some (tenant-sharding mode), iterates over active tenants
+/// via `registry.list()` and replays each tenant shard independently. When
+/// `registry` is None (single-DB / non-multi-tenant mode), the original monolith
+/// path is used: query `vector_sync_pending_users` against `db` and replay there.
 pub fn start_vector_sync_replay_task(
     db: Arc<Database>,
+    registry: Option<Arc<TenantRegistry>>,
 ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let token = CancellationToken::new();
     let cancel = token.clone();
@@ -206,8 +213,9 @@ pub fn start_vector_sync_replay_task(
     let handle = tokio::spawn(async move {
         let base_interval = Duration::from_secs(600);
         let mut consecutive_failures: u32 = 0;
-        // MT-F17: last-served sequence number per user (lower = served longer ago).
-        let mut last_served: HashMap<i64, u64> = HashMap::new();
+        // MT-F17: last-served sequence number keyed on tenant_id (String).
+        // In single-DB mode the key is the stringified user_id for consistency.
+        let mut last_served: HashMap<String, u64> = HashMap::new();
         let mut serve_seq: u64 = 0;
 
         loop {
@@ -223,57 +231,151 @@ pub fn start_vector_sync_replay_task(
                     break;
                 }
                 _ = tokio::time::sleep(sleep_dur) => {
-                    // Discover which users have pending work this tick.
-                    let user_ids = match kleos_lib::memory::vector_sync_pending_users(&db).await {
-                        Ok(ids) => ids,
-                        Err(e) => {
-                            consecutive_failures += 1;
-                            error!(error = %e, consecutive_failures, "vector sync: failed to query pending users");
+                    if let Some(ref reg) = registry {
+                        // Tenant-sharding mode: enumerate active tenants from registry.
+                        let tenants = match reg.list() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                consecutive_failures += 1;
+                                error!(error = %e, consecutive_failures, "vector sync: failed to list tenants");
+                                continue;
+                            }
+                        };
+
+                        // Collect (tenant_id, user_id, db) for active tenants only.
+                        let mut candidates: Vec<(String, i64, Arc<Database>)> = Vec::new();
+                        for tenant_row in tenants {
+                            if tenant_row.status != kleos_lib::tenant::TenantStatus::Active {
+                                continue;
+                            }
+                            let user_id = match tenant_row.user_id.parse::<i64>() {
+                                Ok(uid) => uid,
+                                Err(e) => {
+                                    warn!(
+                                        tenant = %tenant_row.tenant_id,
+                                        error = %e,
+                                        "vector sync: tenant_row.user_id not parseable as i64; skipping"
+                                    );
+                                    continue;
+                                }
+                            };
+                            let handle = match reg.get(&tenant_row.user_id).await {
+                                Ok(Some(h)) => h,
+                                Ok(None) => continue,
+                                Err(e) => {
+                                    warn!(
+                                        tenant = %tenant_row.tenant_id,
+                                        error = %e,
+                                        "vector sync: failed to open tenant shard; skipping"
+                                    );
+                                    continue;
+                                }
+                            };
+                            candidates.push((tenant_row.tenant_id.clone(), user_id, Arc::clone(&handle.db)));
+                        }
+
+                        if candidates.is_empty() {
+                            consecutive_failures = 0;
                             continue;
                         }
-                    };
 
-                    if user_ids.is_empty() {
-                        consecutive_failures = 0;
-                        continue;
-                    }
+                        // Round-robin: pick tenant served least recently (lowest sequence).
+                        let idx = candidates
+                            .iter()
+                            .enumerate()
+                            .min_by_key(|(_, (tid, _, _))| last_served.get(tid.as_str()).copied().unwrap_or(0))
+                            .map(|(i, _)| i)
+                            .expect("non-empty vec has a minimum");
+                        let (tenant_id, user_id, tenant_db) = candidates.swap_remove(idx);
 
-                    // Round-robin: pick user served least recently (lowest sequence).
-                    let next_user = user_ids
-                        .into_iter()
-                        .min_by_key(|uid| last_served.get(uid).copied().unwrap_or(0))
-                        .expect("non-empty vec has a minimum");
-
-                    match kleos_lib::memory::replay_vector_sync_pending_for_user(
-                        &db,
-                        next_user,
-                        100,
-                    )
-                    .await
-                    {
-                        Ok(report) => {
-                            consecutive_failures = 0;
-                            serve_seq += 1;
-                            last_served.insert(next_user, serve_seq);
-                            if report.processed > 0 {
-                                info!(
-                                    user_id = next_user,
-                                    processed = report.processed,
-                                    succeeded = report.succeeded,
-                                    failed = report.failed,
-                                    skipped = report.skipped,
-                                    "vector sync replay complete"
+                        match kleos_lib::memory::replay_vector_sync_pending_for_user(
+                            &tenant_db,
+                            user_id,
+                            100,
+                        )
+                        .await
+                        {
+                            Ok(report) => {
+                                consecutive_failures = 0;
+                                serve_seq += 1;
+                                last_served.insert(tenant_id.clone(), serve_seq);
+                                if report.processed > 0 {
+                                    info!(
+                                        tenant = %tenant_id,
+                                        user_id,
+                                        processed = report.processed,
+                                        succeeded = report.succeeded,
+                                        failed = report.failed,
+                                        skipped = report.skipped,
+                                        "vector sync replay complete"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                consecutive_failures += 1;
+                                error!(
+                                    error = %e,
+                                    tenant = %tenant_id,
+                                    user_id,
+                                    consecutive_failures,
+                                    "vector sync replay failed"
                                 );
                             }
                         }
-                        Err(e) => {
-                            consecutive_failures += 1;
-                            error!(
-                                error = %e,
-                                user_id = next_user,
-                                consecutive_failures,
-                                "vector sync replay failed"
-                            );
+                    } else {
+                        // Single-DB (monolith) mode: query pending users from the monolith db.
+                        let user_ids = match kleos_lib::memory::vector_sync_pending_users(&db).await {
+                            Ok(ids) => ids,
+                            Err(e) => {
+                                consecutive_failures += 1;
+                                error!(error = %e, consecutive_failures, "vector sync: failed to query pending users");
+                                continue;
+                            }
+                        };
+
+                        if user_ids.is_empty() {
+                            consecutive_failures = 0;
+                            continue;
+                        }
+
+                        // Round-robin: pick user served least recently (lowest sequence).
+                        let next_user = user_ids
+                            .iter()
+                            .copied()
+                            .min_by_key(|uid| last_served.get(&uid.to_string()).copied().unwrap_or(0))
+                            .expect("non-empty vec has a minimum");
+
+                        match kleos_lib::memory::replay_vector_sync_pending_for_user(
+                            &db,
+                            next_user,
+                            100,
+                        )
+                        .await
+                        {
+                            Ok(report) => {
+                                consecutive_failures = 0;
+                                serve_seq += 1;
+                                last_served.insert(next_user.to_string(), serve_seq);
+                                if report.processed > 0 {
+                                    info!(
+                                        user_id = next_user,
+                                        processed = report.processed,
+                                        succeeded = report.succeeded,
+                                        failed = report.failed,
+                                        skipped = report.skipped,
+                                        "vector sync replay complete"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                consecutive_failures += 1;
+                                error!(
+                                    error = %e,
+                                    user_id = next_user,
+                                    consecutive_failures,
+                                    "vector sync replay failed"
+                                );
+                            }
                         }
                     }
                 }
