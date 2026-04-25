@@ -16,9 +16,9 @@ use kleos_lib::llm::{local::LocalModelClient, OllamaConfig};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Construct a SidecarState with sane test defaults. `engram_url` is the
+/// Construct a SidecarState with sane test defaults. `kleos_url` is the
 /// address of the mock upstream server used in integration tests.
-pub fn build_test_state(engram_url: String, token: Option<String>) -> SidecarState {
+pub fn build_test_state(kleos_url: String, token: Option<String>) -> SidecarState {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -28,14 +28,14 @@ pub fn build_test_state(engram_url: String, token: Option<String>) -> SidecarSta
     let manager = session::SessionManager::new("test-default".to_string());
     let syntheos = Arc::new(syntheos::SyntheosClient::new_from_env(
         client.clone(),
-        engram_url.clone(),
+        kleos_url.clone(),
         None,
     ));
 
     SidecarState {
         client,
-        engram_url,
-        engram_api_key: None,
+        kleos_url,
+        kleos_api_key: None,
         llm,
         sessions: Arc::new(RwLock::new(manager)),
         source: "test".to_string(),

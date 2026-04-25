@@ -14,20 +14,20 @@ use std::io;
 use std::time::Duration;
 
 #[derive(Parser)]
-#[command(name = "engram-approval-tui")]
+#[command(name = "kleos-approval-tui")]
 #[command(about = "Terminal UI for human approval workflow")]
 struct Args {
-    /// Engram server URL
+    /// Kleos server URL
     #[arg(
         short,
         long,
-        env = "ENGRAM_URL",
+        env = "KLEOS_URL",
         default_value = "http://localhost:4200"
     )]
     url: String,
 
     /// API key for authentication
-    #[arg(short = 'k', long, env = "ENGRAM_API_KEY")]
+    #[arg(short = 'k', long, env = "KLEOS_API_KEY")]
     api_key: String,
 
     /// Poll interval in milliseconds

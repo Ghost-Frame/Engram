@@ -98,7 +98,7 @@ async fn resume_session(
     }
 
     // Query Kleos for the count of observations stored for this session.
-    let url_str = format!("{}/memory/search", state.engram_url);
+    let url_str = format!("{}/memory/search", state.kleos_url);
     let url = kleos_lib::net::validate_outbound_url(&url_str).map_err(|e| {
         tracing::error!(error = %e, "resume: engram url rejected");
         (
@@ -118,7 +118,7 @@ async fn resume_session(
     });
 
     let mut req = state.client.post(url).json(&search_req);
-    if let Some(ref api_key) = state.engram_api_key {
+    if let Some(ref api_key) = state.kleos_api_key {
         req = req.header("Authorization", format!("Bearer {}", api_key));
     }
 
@@ -180,7 +180,7 @@ async fn health(State(state): State<SidecarState>) -> Json<Value> {
         "retry_in_flight": false,
         "active_sessions": active_sessions,
         "llm_available": llm_available,
-        "engram_url": state.engram_url,
+        "kleos_url": state.kleos_url,
     }))
 }
 
@@ -191,11 +191,11 @@ async fn probe_upstream_cached(state: &SidecarState) -> bool {
         return cached.upstream_reachable;
     }
 
-    let url_str = format!("{}/health", state.engram_url);
+    let url_str = format!("{}/health", state.kleos_url);
     let reachable = match kleos_lib::net::validate_outbound_url(&url_str) {
         Ok(url) => {
             let mut req = state.client.head(url);
-            if let Some(ref api_key) = state.engram_api_key {
+            if let Some(ref api_key) = state.kleos_api_key {
                 req = req.header("Authorization", format!("Bearer {}", api_key));
             }
             match tokio::time::timeout(HEALTH_PROBE_TIMEOUT, req.send()).await {
@@ -398,7 +398,7 @@ async fn post_with_fallback(
     fallback: &str,
     body: &Value,
 ) -> Result<reqwest::Response, (StatusCode, Json<Value>)> {
-    let url_str = format!("{}{}", state.engram_url, primary);
+    let url_str = format!("{}{}", state.kleos_url, primary);
     let url = kleos_lib::net::validate_outbound_url(&url_str).map_err(|e| {
         tracing::error!(error = %e, "engram url rejected");
         (
@@ -407,7 +407,7 @@ async fn post_with_fallback(
         )
     })?;
     let mut req = state.client.post(url).json(body);
-    if let Some(ref api_key) = state.engram_api_key {
+    if let Some(ref api_key) = state.kleos_api_key {
         req = req.header("Authorization", format!("Bearer {}", api_key));
     }
 
@@ -421,7 +421,7 @@ async fn post_with_fallback(
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         tracing::debug!(primary = %primary, fallback = %fallback, "trying fallback path");
-        let url_str = format!("{}{}", state.engram_url, fallback);
+        let url_str = format!("{}{}", state.kleos_url, fallback);
         let url = kleos_lib::net::validate_outbound_url(&url_str).map_err(|e| {
             tracing::error!(error = %e, "engram fallback url rejected");
             (
@@ -430,7 +430,7 @@ async fn post_with_fallback(
             )
         })?;
         let mut req = state.client.post(url).json(body);
-        if let Some(ref api_key) = state.engram_api_key {
+        if let Some(ref api_key) = state.kleos_api_key {
             req = req.header("Authorization", format!("Bearer {}", api_key));
         }
         return req.send().await.map_err(|e| {
@@ -830,7 +830,7 @@ pub async fn flush_pending(state: &SidecarState, session_id: &str) -> usize {
         .collect();
     let batch_req = json!({ "ops": ops });
 
-    let url_str = format!("{}/batch", state.engram_url);
+    let url_str = format!("{}/batch", state.kleos_url);
     let url = match kleos_lib::net::validate_outbound_url(&url_str) {
         Ok(u) => u,
         Err(e) => {
@@ -843,7 +843,7 @@ pub async fn flush_pending(state: &SidecarState, session_id: &str) -> usize {
 
     let total = observations.len();
     let client = state.client.clone();
-    let api_key = state.engram_api_key.clone();
+    let api_key = state.kleos_api_key.clone();
     let sid = session_id.to_string();
 
     // Closure returns Option<Vec<bool>>: None means /batch is unavailable

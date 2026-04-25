@@ -2,11 +2,11 @@ use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 
 #[derive(Parser)]
-#[command(name = "engram-cli")]
-#[command(about = "Engram memory system CLI", long_about = None)]
+#[command(name = "kleos-cli")]
+#[command(about = "Kleos memory system CLI", long_about = None)]
 struct Cli {
     /// Server URL
-    #[arg(long, default_value = "http://127.0.0.1:4200", env = "ENGRAM_URL")]
+    #[arg(long, default_value = "http://127.0.0.1:4200", env = "KLEOS_URL")]
     server: String,
 
     /// Credd daemon URL

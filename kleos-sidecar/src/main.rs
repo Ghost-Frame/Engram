@@ -31,8 +31,10 @@ struct ConfigFile {
     source: Option<String>,
     user_id: Option<i64>,
     token: Option<String>,
-    engram_url: Option<String>,
-    engram_api_key: Option<String>,
+    #[serde(alias = "engram_url")]
+    kleos_url: Option<String>,
+    #[serde(alias = "engram_api_key")]
+    kleos_api_key: Option<String>,
     watch: Option<bool>,
     watch_dir: Option<String>,
     watcher_state_path: Option<String>,
@@ -100,13 +102,13 @@ struct Cli {
     #[arg(long, env = "ENGRAM_SIDECAR_TOKEN")]
     token: Option<String>,
 
-    /// Engram server URL for memory storage/retrieval.
-    #[arg(long, env = "ENGRAM_URL")]
-    engram_url: Option<String>,
+    /// Kleos server URL for memory storage/retrieval.
+    #[arg(long, env = "KLEOS_URL")]
+    kleos_url: Option<String>,
 
-    /// API key for authenticating with the Engram server.
-    #[arg(long, env = "ENGRAM_API_KEY")]
-    engram_api_key: Option<String>,
+    /// API key for authenticating with the Kleos server.
+    #[arg(long, env = "KLEOS_API_KEY")]
+    kleos_api_key: Option<String>,
 
     /// Enable file watcher for Claude Code session JSONL files.
     #[arg(long, env = "ENGRAM_SIDECAR_WATCH")]
@@ -165,8 +167,8 @@ struct ResolvedConfig {
     source: String,
     user_id: i64,
     token: Option<String>,
-    engram_url: String,
-    engram_api_key: Option<String>,
+    kleos_url: String,
+    kleos_api_key: Option<String>,
     watch: bool,
     watch_dir: Option<String>,
     watcher_state_path: Option<PathBuf>,
@@ -190,9 +192,9 @@ fn resolve_config(cli: Cli, cfg: ConfigFile) -> ResolvedConfig {
         };
     }
 
-    let engram_url = pick!(
-        cli.engram_url,
-        cfg.engram_url,
+    let kleos_url = pick!(
+        cli.kleos_url,
+        cfg.kleos_url,
         String::from("http://127.0.0.1:4200")
     );
 
@@ -203,7 +205,7 @@ fn resolve_config(cli: Cli, cfg: ConfigFile) -> ResolvedConfig {
         source: pick!(cli.source, cfg.source, String::from("sidecar")),
         user_id: pick!(cli.user_id, cfg.user_id, 1_i64),
         token: cli.token.or(cfg.token),
-        engram_api_key: cli.engram_api_key.or(cfg.engram_api_key),
+        kleos_api_key: cli.kleos_api_key.or(cfg.kleos_api_key),
         watch: cli.watch || cfg.watch.unwrap_or(false),
         watch_dir: cli.watch_dir.or(cfg.watch_dir),
         watcher_state_path: cli
@@ -242,7 +244,7 @@ fn resolve_config(cli: Cli, cfg: ConfigFile) -> ResolvedConfig {
                 cli.log_format
             }
         },
-        engram_url,
+        kleos_url,
     }
 }
 
@@ -334,14 +336,14 @@ async fn main() {
 
     let syntheos_client = Arc::new(syntheos::SyntheosClient::new_from_env(
         client.clone(),
-        rc.engram_url.clone(),
-        rc.engram_api_key.clone(),
+        rc.kleos_url.clone(),
+        rc.kleos_api_key.clone(),
     ));
 
     let state = SidecarState {
         client,
-        engram_url: rc.engram_url,
-        engram_api_key: rc.engram_api_key,
+        kleos_url: rc.kleos_url,
+        kleos_api_key: rc.kleos_api_key,
         llm,
         sessions: Arc::new(RwLock::new(manager)),
         source: rc.source,
