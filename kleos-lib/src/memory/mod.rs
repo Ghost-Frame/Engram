@@ -293,7 +293,7 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
 
     if let Some(ref emb) = req.embedding {
         if let Some(index) = db.vector_index.as_ref() {
-            if let Err(e) = index.insert(new_id, user_id, emb).await {
+            if let Err(e) = index.insert(new_id, emb).await {
                 warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
                 record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string()).await;
             }
@@ -729,7 +729,7 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
 
     if let Some(ref emb) = req.embedding {
         if let Some(index) = db.vector_index.as_ref() {
-            if let Err(e) = index.insert(new_id, user_id, emb).await {
+            if let Err(e) = index.insert(new_id, emb).await {
                 warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
                 record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string()).await;
             }

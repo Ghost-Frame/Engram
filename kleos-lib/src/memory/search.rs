@@ -580,7 +580,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     // Channel 1: Vector ANN search
     if let Some(ref embedding) = req.embedding {
         let vector_hits = if let Some(index) = db.vector_index.as_ref() {
-            match index.search(embedding, candidate_target, user_id).await {
+            match index.search(embedding, candidate_target).await {
                 Ok(hits) => Ok(hits
                     .into_iter()
                     .map(|hit| super::types::VectorHit {

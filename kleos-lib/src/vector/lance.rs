@@ -28,7 +28,6 @@ fn lance_err(context: &str, err: impl std::fmt::Display) -> EngError {
 fn vector_schema(dimensions: usize) -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("memory_id", DataType::Int64, false),
-        Field::new("user_id", DataType::Int64, false),
         Field::new(
             "vector",
             DataType::FixedSizeList(
@@ -42,7 +41,6 @@ fn vector_schema(dimensions: usize) -> SchemaRef {
 
 fn single_embedding_batch(
     memory_id: i64,
-    user_id: i64,
     embedding: &[f32],
     schema: SchemaRef,
     dimensions: usize,
@@ -66,7 +64,6 @@ fn single_embedding_batch(
         schema,
         vec![
             Arc::new(Int64Array::from(vec![memory_id])),
-            Arc::new(Int64Array::from(vec![user_id])),
             Arc::new(vectors),
         ],
     )
@@ -113,11 +110,43 @@ impl LanceIndex {
             .map_err(|e| lance_err("list LanceDB tables", e))?;
 
         let table = if table_names.iter().any(|name| name == TABLE_NAME) {
-            self.db
+            let existing = self
+                .db
                 .open_table(TABLE_NAME)
                 .execute()
                 .await
-                .map_err(|e| lance_err("open LanceDB vector table", e))?
+                .map_err(|e| lance_err("open LanceDB vector table", e))?;
+
+            // Phase 5.21 schema mismatch detection: if the on-disk schema still
+            // contains a "user_id" field (created before Phase 5.21), wipe and
+            // recreate the table with the new (memory_id, vector) schema.
+            // The table will be repopulated lazily by subsequent insert() calls
+            // or in bulk by build_lance_index_from_existing on the next dreamer
+            // / ingestion sweep.
+            let persisted_schema = existing
+                .schema()
+                .await
+                .map_err(|e| lance_err("read LanceDB table schema", e))?;
+            let has_stale_user_id = persisted_schema.field_with_name("user_id").is_ok();
+            if has_stale_user_id {
+                warn!(
+                    "LanceDB table '{}' has stale user_id column (pre-Phase-5.21 schema). \
+                     Dropping and recreating with new schema. \
+                     The index will be repopulated by the next ingestion/dreamer sweep.",
+                    TABLE_NAME
+                );
+                self.db
+                    .drop_table(TABLE_NAME, &[])
+                    .await
+                    .map_err(|e| lance_err("drop stale LanceDB vector table", e))?;
+                self.db
+                    .create_empty_table(TABLE_NAME, vector_schema(self.dimensions))
+                    .execute()
+                    .await
+                    .map_err(|e| lance_err("recreate LanceDB vector table after schema wipe", e))?
+            } else {
+                existing
+            }
         } else {
             self.db
                 .create_empty_table(TABLE_NAME, vector_schema(self.dimensions))
@@ -185,16 +214,10 @@ impl LanceIndex {
 
 #[async_trait]
 impl VectorIndex for LanceIndex {
-    async fn insert(&self, memory_id: i64, user_id: i64, embedding: &[f32]) -> Result<()> {
+    async fn insert(&self, memory_id: i64, embedding: &[f32]) -> Result<()> {
         let table = self.ensure_table().await?;
         let schema = vector_schema(self.dimensions);
-        let batch = single_embedding_batch(
-            memory_id,
-            user_id,
-            embedding,
-            schema.clone(),
-            self.dimensions,
-        )?;
+        let batch = single_embedding_batch(memory_id, embedding, schema.clone(), self.dimensions)?;
 
         table
             .delete(&format!("memory_id = {}", memory_id))
@@ -210,12 +233,7 @@ impl VectorIndex for LanceIndex {
         Ok(())
     }
 
-    async fn search(
-        &self,
-        embedding: &[f32],
-        limit: usize,
-        user_id: i64,
-    ) -> Result<Vec<VectorHit>> {
+    async fn search(&self, embedding: &[f32], limit: usize) -> Result<Vec<VectorHit>> {
         if embedding.len() != self.dimensions {
             return Err(EngError::InvalidInput(format!(
                 "embedding dimension mismatch: expected {}, got {}",
@@ -229,7 +247,6 @@ impl VectorIndex for LanceIndex {
             .query()
             .nearest_to(embedding)
             .map_err(|e| lance_err("create LanceDB vector query", e))?
-            .only_if(format!("user_id = {}", user_id))
             .limit(limit)
             .execute()
             .await
@@ -332,11 +349,11 @@ mod tests {
         let path = temp_path();
         let index = LanceIndex::open(&path, 4).await.expect("open lance");
         index
-            .insert(1, 1, &[0.1, 0.2, 0.3, 0.4])
+            .insert(1, &[0.1, 0.2, 0.3, 0.4])
             .await
             .expect("insert");
         index
-            .insert(2, 1, &[0.9, 0.8, 0.7, 0.6])
+            .insert(2, &[0.9, 0.8, 0.7, 0.6])
             .await
             .expect("insert");
         assert_eq!(index.count().await.expect("count"), 2);
@@ -356,16 +373,16 @@ mod tests {
         let path = temp_path();
         let index = LanceIndex::open(&path, 4).await.expect("open lance");
         index
-            .insert(42, 7, &[1.0, 0.0, 0.0, 0.0])
+            .insert(42, &[1.0, 0.0, 0.0, 0.0])
             .await
             .expect("insert");
         index
-            .insert(43, 7, &[0.0, 1.0, 0.0, 0.0])
+            .insert(43, &[0.0, 1.0, 0.0, 0.0])
             .await
             .expect("insert");
 
         let hits = index
-            .search(&[1.0, 0.0, 0.0, 0.0], 1, 7)
+            .search(&[1.0, 0.0, 0.0, 0.0], 1)
             .await
             .expect("search");
         assert_eq!(hits.len(), 1);
@@ -383,5 +400,16 @@ mod tests {
         assert!(!rebuilt);
 
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn lance_schema_v2_excludes_user_id() {
+        let schema = vector_schema(1024);
+        let field_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(
+            field_names,
+            vec!["memory_id", "vector"],
+            "Phase 5.21: schema must contain only memory_id and vector, not user_id"
+        );
     }
 }
