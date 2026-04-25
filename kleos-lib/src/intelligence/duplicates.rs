@@ -3,6 +3,7 @@
 use super::types::{DeduplicateResult, DuplicatePair};
 use crate::db::Database;
 use crate::{EngError, Result};
+use tracing::warn;
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
@@ -105,7 +106,7 @@ pub async fn deduplicate(
 
         if affected > 0 {
             // Create a 'supersedes' link from keeper to superseded
-            let _ = db
+            if let Err(e) = db
                 .write(move |conn| {
                     conn.execute(
                         "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) \
@@ -115,7 +116,10 @@ pub async fn deduplicate(
                     .map_err(rusqlite_to_eng_error)?;
                     Ok(())
                 })
-                .await;
+                .await
+            {
+                warn!(keep_id, supersede_id, error = %e, "duplicates: failed to insert supersedes memory_links row");
+            }
             merged += 1;
         }
     }
