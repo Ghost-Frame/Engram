@@ -342,6 +342,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 37,
+        description: "drop_user_id_loom",
+        up: run_migration_drop_user_id_loom,
+        // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -384,6 +392,7 @@ const MIGRATION_DROP_USER_ID_WEBHOOKS: i64 = 33;
 const MIGRATION_DROP_USER_ID_AXON: i64 = 34;
 const MIGRATION_DROP_USER_ID_GROWTH: i64 = 35;
 const MIGRATION_DROP_USER_ID_INGESTION_HASHES: i64 = 36;
+const MIGRATION_DROP_USER_ID_LOOM: i64 = 37;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -664,6 +673,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             MIGRATION_DROP_USER_ID_INGESTION_HASHES,
             "drop_user_id_ingestion_hashes",
         )?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_LOOM {
+        info!("Running migration 37: drop_user_id_loom");
+        run_migration_drop_user_id_loom(conn)?;
+        record_migration(conn, MIGRATION_DROP_USER_ID_LOOM, "drop_user_id_loom")?;
     }
 
     Ok(())
@@ -2079,6 +2094,65 @@ fn run_migration_drop_user_id_ingestion_hashes(conn: &rusqlite::Connection) -> R
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 36 complete: user_id dropped from ingestion_hashes");
+    Ok(())
+}
+
+fn run_migration_drop_user_id_loom(conn: &rusqlite::Connection) -> Result<()> {
+    // Idempotent guard: check loom_workflows first (Shape B rebuild).
+    let wf_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('loom_workflows') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let runs_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('loom_runs') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    if wf_has_user_id == 0 && runs_has_user_id == 0 {
+        info!("loom_workflows and loom_runs user_id already absent, migration 37 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         ALTER TABLE loom_workflows RENAME TO _loom_workflows_old_v36;
+
+         DROP INDEX IF EXISTS idx_loom_workflows_user;
+
+         CREATE TABLE loom_workflows (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             name TEXT NOT NULL,
+             description TEXT,
+             steps TEXT NOT NULL DEFAULT '[]',
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(name)
+         );
+
+         INSERT INTO loom_workflows (id, name, description, steps, created_at, updated_at)
+         SELECT id, name, description, steps, created_at, updated_at
+         FROM _loom_workflows_old_v36;
+
+         DROP TABLE _loom_workflows_old_v36;
+
+         DROP INDEX IF EXISTS idx_loom_runs_user;
+         ALTER TABLE loom_runs DROP COLUMN user_id;
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 37 complete: user_id dropped from loom_workflows and loom_runs");
     Ok(())
 }
 

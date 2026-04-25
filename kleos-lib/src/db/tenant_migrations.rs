@@ -190,6 +190,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "ingestion_hashes_user_id_drop",
         up: apply_schema_v33_ingestion_hashes_drop,
     },
+    TenantMigration {
+        version: 34,
+        description: "loom_user_id_drop",
+        up: apply_schema_v34_loom_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -357,6 +362,11 @@ fn apply_schema_v33_ingestion_hashes_drop(conn: &Connection) -> Result<()> {
         "../tenant/schema_v33_ingestion_hashes_drop.sql"
     ))
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v33 failed: {e}")))
+}
+
+fn apply_schema_v34_loom_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v34_loom_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v34 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -2639,8 +2649,27 @@ mod tests {
 
     #[test]
     fn loom_family_usable_after_v13() {
+        // v34 drops user_id from loom_workflows and loom_runs. Cap this test
+        // at v33 so it exercises the v13 shim shape before the column drop.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 34 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let tables: i64 = conn
             .query_row(
@@ -2652,7 +2681,7 @@ mod tests {
             .unwrap();
         assert_eq!(tables, 4, "loom family tables missing after v13");
 
-        // Exercise INSERT shapes services/loom.rs actually uses.
+        // Exercise INSERT shapes with user_id (v13 shim shape, before v34 drop).
         conn.execute(
             "INSERT INTO loom_workflows (name, description, steps, user_id) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params!["wf-1", None::<String>, "[]", 4_i64],
@@ -4484,5 +4513,194 @@ mod tests {
             )
             .unwrap();
         assert_eq!(col, 0, "ingestion_hashes still has user_id after v33");
+    }
+
+    /// v34: loom_workflows and loom_runs must NOT have a user_id column after
+    /// the full migration chain. idx_loom_workflows_user and
+    /// idx_loom_runs_user must not exist.
+    #[test]
+    fn user_id_absent_from_loom_after_v34() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).expect("migrations");
+
+        let wf_cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('loom_workflows')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            !wf_cols.iter().any(|c| c == "user_id"),
+            "user_id still present in loom_workflows: {:?}",
+            wf_cols
+        );
+
+        let runs_cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('loom_runs')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            !runs_cols.iter().any(|c| c == "user_id"),
+            "user_id still present in loom_runs: {:?}",
+            runs_cols
+        );
+
+        let wf_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_loom_workflows_user'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(wf_idx, 0, "idx_loom_workflows_user still present");
+
+        let runs_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_loom_runs_user'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(runs_idx, 0, "idx_loom_runs_user still present");
+    }
+
+    /// v34: loom_workflows and loom_runs support the SQL shape loom.rs now uses
+    /// (no user_id on INSERT or SELECT). A workflow and run can be inserted and
+    /// queried without user_id.
+    #[test]
+    fn loom_usable_after_v34() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).expect("migrations");
+
+        // Insert a workflow without user_id.
+        conn.execute(
+            "INSERT INTO loom_workflows (name, description, steps) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["test-wf", "desc", "[]"],
+        )
+        .expect("insert workflow");
+
+        let wf_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM loom_workflows", [], |row| row.get(0))
+            .expect("count workflows");
+        assert_eq!(wf_count, 1);
+
+        let wf_id: i64 = conn
+            .query_row("SELECT id FROM loom_workflows WHERE name = ?1", rusqlite::params!["test-wf"], |r| r.get(0))
+            .expect("get workflow id");
+
+        // Insert a run referencing the workflow without user_id.
+        conn.execute(
+            "INSERT INTO loom_runs (workflow_id, status, input, output) VALUES (?1, 'pending', '{}', '{}')",
+            rusqlite::params![wf_id],
+        )
+        .expect("insert run");
+
+        let run_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM loom_runs", [], |row| row.get(0))
+            .expect("count runs");
+        assert_eq!(run_count, 1);
+
+        // UNIQUE(name) on loom_workflows should reject a duplicate name.
+        let dup = conn.execute(
+            "INSERT INTO loom_workflows (name, description, steps) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["test-wf", "other", "[]"],
+        );
+        assert!(dup.is_err(), "duplicate workflow name should be rejected by UNIQUE(name)");
+    }
+
+    /// v34: rows inserted under the v13 shim shape (with user_id) survive the
+    /// rebuild with every non-user_id field intact. The FK from loom_runs to
+    /// loom_workflows must remain intact after the rebuild.
+    #[test]
+    fn loom_rows_preserved_through_v34() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+
+        // Apply migrations v1..v33 (stop before v34).
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 34 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        // Insert a workflow in the old shape (with user_id).
+        conn.execute(
+            "INSERT INTO loom_workflows (name, description, steps, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["pre-wf", "pre-desc", "[]", 1_i64],
+        )
+        .expect("insert old workflow");
+        let wf_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        // Insert a run in the old shape (with user_id).
+        conn.execute(
+            "INSERT INTO loom_runs (workflow_id, status, input, output, user_id) VALUES (?1, 'pending', '{}', '{}', ?2)",
+            rusqlite::params![wf_id, 1_i64],
+        )
+        .expect("insert old run");
+        let run_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        // Apply v34.
+        apply_schema_v34_loom_drop(&conn).expect("apply v34");
+
+        // Workflow row survived with name and description intact.
+        let (wf_name, wf_desc): (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, description FROM loom_workflows WHERE id = ?1",
+                rusqlite::params![wf_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("select workflow after v34");
+        assert_eq!(wf_name, "pre-wf");
+        assert_eq!(wf_desc.as_deref(), Some("pre-desc"));
+
+        // Run row survived with workflow_id FK intact.
+        let (run_wf_id, run_status): (i64, String) = conn
+            .query_row(
+                "SELECT workflow_id, status FROM loom_runs WHERE id = ?1",
+                rusqlite::params![run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("select run after v34");
+        assert_eq!(run_wf_id, wf_id, "loom_runs.workflow_id FK preserved");
+        assert_eq!(run_status, "pending");
+
+        // user_id column is gone from both tables.
+        let wf_col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('loom_workflows') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(wf_col, 0, "loom_workflows still has user_id after v34");
+
+        let runs_col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('loom_runs') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(runs_col, 0, "loom_runs still has user_id after v34");
     }
 }
