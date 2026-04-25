@@ -1006,10 +1006,10 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     // Gather preferences
     let preferences = db.read(move |conn| {
         let mut stmt = conn.prepare(
-            "SELECT domain, preference, strength FROM user_preferences WHERE user_id = ?1 ORDER BY strength DESC LIMIT 50",
+            "SELECT domain, preference, strength FROM user_preferences ORDER BY strength DESC LIMIT 50",
         ).map_err(rusqlite_to_eng_error)?;
 
-        let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+        let rows = stmt.query_map([], |row| {
             Ok(PreferenceRow {
                 domain: row.get(0)?,
                 preference: row.get(1)?,
