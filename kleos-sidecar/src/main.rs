@@ -31,7 +31,9 @@ struct ConfigFile {
     source: Option<String>,
     user_id: Option<i64>,
     token: Option<String>,
+    #[serde(alias = "kleos_url")]
     kleos_url: Option<String>,
+    #[serde(alias = "kleos_api_key")]
     kleos_api_key: Option<String>,
     watch: Option<bool>,
     watch_dir: Option<String>,
