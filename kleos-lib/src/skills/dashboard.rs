@@ -41,8 +41,8 @@ pub fn days_since(datetime_str: &str) -> f64 {
 pub async fn get_overview(db: &Database, user_id: i64) -> Result<SkillOverview> {
     db.read(move |conn| {
         conn.query_row(
-            "SELECT COUNT(*), SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), SUM(CASE WHEN is_deprecated = 1 THEN 1 ELSE 0 END), SUM(execution_count), AVG(trust_score) FROM skill_records WHERE user_id = ?1",
-            params![user_id],
+            "SELECT COUNT(*), SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), SUM(CASE WHEN is_deprecated = 1 THEN 1 ELSE 0 END), SUM(execution_count), AVG(trust_score) FROM skill_records",
+            params![],
             |row| {
                 Ok(SkillOverview {
                     total_skills: row.get(0)?,
@@ -79,7 +79,7 @@ pub async fn get_skill_stats(
         Some("name") => "name ASC",
         _ => "trust_score DESC",
     };
-    let sql = format!("SELECT id, name, execution_count, success_count, failure_count, trust_score, updated_at FROM skill_records WHERE user_id = ?1 AND is_active = 1 ORDER BY {} LIMIT ?2", order);
+    let sql = format!("SELECT id, name, execution_count, success_count, failure_count, trust_score, updated_at FROM skill_records WHERE is_active = 1 ORDER BY {} LIMIT ?1", order);
     let limit = limit as i64;
 
     db.read(move |conn| {
@@ -87,7 +87,7 @@ pub async fn get_skill_stats(
             .prepare(&sql)
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let rows = stmt
-            .query_map(params![user_id, limit], |row| {
+            .query_map(params![limit], |row| {
                 let updated: String = row.get(6)?;
                 let ec: i32 = row.get(2)?;
                 let sc: i32 = row.get(3)?;

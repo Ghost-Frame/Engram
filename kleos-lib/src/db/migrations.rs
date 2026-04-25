@@ -382,6 +382,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 42,
+        description: "drop_user_id_skills",
+        up: run_migration_drop_user_id_skills,
+        // Shape B + FTS shadow rebuild is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -429,6 +437,7 @@ const MIGRATION_DROP_USER_ID_GRAPH: i64 = 38;
 const MIGRATION_DROP_USER_ID_THYMUS: i64 = 39;
 const MIGRATION_DROP_USER_ID_PORTABILITY: i64 = 40;
 const MIGRATION_DROP_USER_ID_INTELLIGENCE: i64 = 41;
+const MIGRATION_DROP_USER_ID_SKILLS: i64 = 42;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -746,6 +755,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_DROP_USER_ID_INTELLIGENCE,
             "drop_user_id_intelligence",
+        )?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_SKILLS {
+        info!("Running migration 42: drop_user_id_skills");
+        run_migration_drop_user_id_skills(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_SKILLS,
+            "drop_user_id_skills",
         )?;
     }
 
@@ -2635,6 +2654,149 @@ fn run_migration_drop_user_id_intelligence(conn: &rusqlite::Connection) -> Resul
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 41 complete: user_id dropped from 7 intelligence tables (current_state rebuild + 6 DROP COLUMN)");
+    Ok(())
+}
+
+fn run_migration_drop_user_id_skills(conn: &rusqlite::Connection) -> Result<()> {
+    // Idempotent guard: check skill_records. If user_id is already absent,
+    // the migration already ran.
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('skill_records') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    if has_user_id == 0 {
+        info!("skill_records user_id already absent, migration 42 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         -- Drop FTS triggers before renaming the content table.
+         DROP TRIGGER IF EXISTS skills_fts_insert;
+         DROP TRIGGER IF EXISTS skills_fts_delete;
+         DROP TRIGGER IF EXISTS skills_fts_update;
+
+         -- Rename the old table out of the way.
+         ALTER TABLE skill_records RENAME TO _skill_records_old_v41;
+
+         -- Drop all indexes so they can be recreated against the new table.
+         DROP INDEX IF EXISTS idx_skill_records_user;
+         DROP INDEX IF EXISTS idx_skill_records_agent;
+         DROP INDEX IF EXISTS idx_skill_records_name;
+         DROP INDEX IF EXISTS idx_skill_records_active;
+         DROP INDEX IF EXISTS idx_skill_records_category;
+         DROP INDEX IF EXISTS idx_skill_records_parent;
+
+         -- Create the new table without user_id.
+         -- New in-table constraint: UNIQUE(name, agent, version).
+         CREATE TABLE skill_records (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             skill_id TEXT UNIQUE,
+             name TEXT NOT NULL,
+             agent TEXT NOT NULL,
+             description TEXT,
+             code TEXT NOT NULL,
+             path TEXT,
+             content TEXT NOT NULL DEFAULT '',
+             category TEXT NOT NULL DEFAULT 'workflow',
+             origin TEXT NOT NULL DEFAULT 'imported',
+             generation INTEGER NOT NULL DEFAULT 0,
+             lineage_change_summary TEXT,
+             creator_id TEXT,
+             language TEXT NOT NULL DEFAULT 'javascript',
+             version INTEGER NOT NULL DEFAULT 1,
+             parent_skill_id INTEGER REFERENCES skill_records(id),
+             root_skill_id INTEGER REFERENCES skill_records(id),
+             embedding BLOB,
+             embedding_vec_1024 FLOAT32(1024),
+             trust_score REAL NOT NULL DEFAULT 50,
+             success_count INTEGER NOT NULL DEFAULT 0,
+             failure_count INTEGER NOT NULL DEFAULT 0,
+             execution_count INTEGER NOT NULL DEFAULT 0,
+             avg_duration_ms REAL,
+             is_active BOOLEAN NOT NULL DEFAULT 1,
+             is_deprecated BOOLEAN NOT NULL DEFAULT 0,
+             total_selections INTEGER NOT NULL DEFAULT 0,
+             total_applied INTEGER NOT NULL DEFAULT 0,
+             total_completions INTEGER NOT NULL DEFAULT 0,
+             visibility TEXT NOT NULL DEFAULT 'private',
+             lineage_source_task_id TEXT,
+             lineage_content_diff TEXT NOT NULL DEFAULT '',
+             lineage_content_snapshot TEXT NOT NULL DEFAULT '{}',
+             total_fallbacks INTEGER NOT NULL DEFAULT 0,
+             metadata TEXT,
+             first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+             last_updated TEXT NOT NULL DEFAULT (datetime('now')),
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(name, agent, version)
+         );
+
+         -- Copy rows forward preserving id values so FK references stay valid.
+         -- On conflict (rows that differed only by user_id now share the same
+         -- (name, agent, version) triple), keep the row with the lower id.
+         INSERT OR IGNORE INTO skill_records (
+             id, skill_id, name, agent, description, code, path, content, category, origin,
+             generation, lineage_change_summary, creator_id, language, version,
+             parent_skill_id, root_skill_id, embedding, embedding_vec_1024,
+             trust_score, success_count, failure_count, execution_count, avg_duration_ms,
+             is_active, is_deprecated, total_selections, total_applied, total_completions,
+             visibility, lineage_source_task_id, lineage_content_diff, lineage_content_snapshot,
+             total_fallbacks, metadata, first_seen, last_updated, created_at, updated_at
+         )
+         SELECT
+             id, skill_id, name, agent, description, code, path, content, category, origin,
+             generation, lineage_change_summary, creator_id, language, version,
+             parent_skill_id, root_skill_id, embedding, embedding_vec_1024,
+             trust_score, success_count, failure_count, execution_count, avg_duration_ms,
+             is_active, is_deprecated, total_selections, total_applied, total_completions,
+             visibility, lineage_source_task_id, lineage_content_diff, lineage_content_snapshot,
+             total_fallbacks, metadata, first_seen, last_updated, created_at, updated_at
+         FROM _skill_records_old_v41
+         ORDER BY id ASC;
+
+         DROP TABLE _skill_records_old_v41;
+
+         -- Recreate the 5 preserved indexes.
+         CREATE INDEX IF NOT EXISTS idx_skill_records_agent ON skill_records(agent);
+         CREATE INDEX IF NOT EXISTS idx_skill_records_name ON skill_records(name);
+         CREATE INDEX IF NOT EXISTS idx_skill_records_active ON skill_records(is_active);
+         CREATE INDEX IF NOT EXISTS idx_skill_records_category ON skill_records(category);
+         CREATE INDEX IF NOT EXISTS idx_skill_records_parent ON skill_records(parent_skill_id);
+
+         -- Recreate the 3 FTS triggers verbatim (their bodies never referenced user_id).
+         CREATE TRIGGER IF NOT EXISTS skills_fts_insert AFTER INSERT ON skill_records BEGIN
+             INSERT INTO skills_fts(rowid, name, description, code)
+             VALUES (new.id, new.name, new.description, new.code);
+         END;
+
+         CREATE TRIGGER IF NOT EXISTS skills_fts_delete AFTER DELETE ON skill_records BEGIN
+             INSERT INTO skills_fts(skills_fts, rowid, name, description, code)
+             VALUES ('delete', old.id, old.name, old.description, old.code);
+         END;
+
+         CREATE TRIGGER IF NOT EXISTS skills_fts_update AFTER UPDATE ON skill_records BEGIN
+             INSERT INTO skills_fts(skills_fts, rowid, name, description, code)
+             VALUES ('delete', old.id, old.name, old.description, old.code);
+             INSERT INTO skills_fts(rowid, name, description, code)
+             VALUES (new.id, new.name, new.description, new.code);
+         END;
+
+         -- Rebuild the FTS shadow from the new skill_records content.
+         INSERT INTO skills_fts(skills_fts) VALUES('rebuild');
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 42 complete: user_id dropped from skill_records (Shape B + FTS shadow rebuild)");
     Ok(())
 }
 

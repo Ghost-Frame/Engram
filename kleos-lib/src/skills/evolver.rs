@@ -151,7 +151,7 @@ pub async fn persist_evolved_skill(
         };
 
         conn.execute(
-            "INSERT INTO skill_records (name, agent, description, code, language, version, parent_skill_id, root_skill_id, user_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO skill_records (name, agent, description, code, language, version, parent_skill_id, root_skill_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 name_owned,
                 agent_owned,
@@ -161,7 +161,6 @@ pub async fn persist_evolved_skill(
                 version,
                 parent_ids_owned.first().copied(),
                 root_id,
-                user_id
             ],
         )
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
