@@ -19,23 +19,27 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-/// Query users whose pagerank cache needs refreshing based on dirty_count or
-/// elapsed time since last_refresh.
+/// Check whether the pagerank cache needs refreshing based on dirty_count or
+/// elapsed time since last_refresh. Returns [0] (sentinel user id) if a
+/// refresh is needed, empty vec otherwise. The singleton-row pagerank_dirty
+/// table replaced the old per-user rows in migration 38.
 async fn dirty_users(db: &Database, threshold: u32, interval_secs: u64) -> crate::Result<Vec<i64>> {
     let threshold_i64 = threshold as i64;
     let interval_i64 = interval_secs as i64;
     db.read(move |conn| {
         let sql = format!(
-            "SELECT user_id FROM pagerank_dirty \
+            "SELECT COUNT(*) FROM pagerank_dirty \
              WHERE dirty_count >= ?1 \
                 OR last_refresh <= strftime('%s','now') - {interval_i64}",
         );
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let rows = stmt
-            .query_map(rusqlite::params![threshold_i64], |row| row.get(0))
+        let needs_refresh: i64 = conn
+            .query_row(&sql, rusqlite::params![threshold_i64], |row| row.get(0))
             .map_err(rusqlite_to_eng_error)?;
-        rows.collect::<std::result::Result<Vec<i64>, _>>()
-            .map_err(rusqlite_to_eng_error)
+        if needs_refresh > 0 {
+            Ok(vec![0i64]) // sentinel: single-tenant, user_id = 0
+        } else {
+            Ok(vec![])
+        }
     })
     .await
 }
@@ -211,11 +215,11 @@ mod tests {
         }
     }
 
-    async fn pagerank_count(db: &Database, user_id: i64) -> i64 {
+    async fn pagerank_count(db: &Database, _user_id: i64) -> i64 {
         db.read(move |conn| {
             conn.query_row(
-                "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
-                rusqlite::params![user_id],
+                "SELECT COUNT(*) FROM memory_pagerank",
+                [],
                 |row| row.get(0),
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))

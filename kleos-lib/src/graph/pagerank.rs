@@ -267,12 +267,12 @@ pub async fn compute_pagerank_for_user(db: &Database, user_id: i64) -> Result<Ve
 /// cleared. Any increments that arrived while the compute was running stay
 /// behind, and the next refresh cycle picks them up.
 #[tracing::instrument(skip(db))]
-pub async fn snapshot_pagerank_dirty(db: &Database, user_id: i64) -> Result<i64> {
+pub async fn snapshot_pagerank_dirty(db: &Database, _user_id: i64) -> Result<i64> {
     db.read(move |conn| {
         let result = conn
             .query_row(
-                "SELECT dirty_count FROM pagerank_dirty WHERE user_id = ?1",
-                rusqlite::params![user_id],
+                "SELECT dirty_count FROM pagerank_dirty WHERE id = 1",
+                [],
                 |row| row.get::<_, i64>(0),
             )
             .optional()
@@ -299,12 +299,12 @@ pub async fn persist_pagerank_with_snapshot(
     db.transaction(move |tx| {
         for &(memory_id, score) in &scores_owned {
             tx.execute(
-                "INSERT INTO memory_pagerank (memory_id, user_id, score, computed_at) \
-                 VALUES (?1, ?2, ?3, ?4) \
+                "INSERT INTO memory_pagerank (memory_id, score, computed_at) \
+                 VALUES (?1, ?2, ?3) \
                  ON CONFLICT(memory_id) DO UPDATE SET \
                    score = excluded.score, \
                    computed_at = excluded.computed_at",
-                rusqlite::params![memory_id, user_id, score, now],
+                rusqlite::params![memory_id, score, now],
             )
             .map_err(rusqlite_to_eng_error)?;
         }
@@ -313,12 +313,12 @@ pub async fn persist_pagerank_with_snapshot(
         // the counter and schedules the next refresh cycle. Clamped at 0 so a
         // spurious over-count cannot push the value negative.
         tx.execute(
-            "INSERT INTO pagerank_dirty (user_id, dirty_count, last_refresh) \
-             VALUES (?1, 0, ?2) \
-             ON CONFLICT(user_id) DO UPDATE SET \
-               dirty_count = MAX(0, dirty_count - ?3), \
+            "INSERT INTO pagerank_dirty (id, dirty_count, last_refresh) \
+             VALUES (1, 0, ?1) \
+             ON CONFLICT(id) DO UPDATE SET \
+               dirty_count = MAX(0, dirty_count - ?2), \
                last_refresh = excluded.last_refresh",
-            rusqlite::params![user_id, now, dirty_snapshot],
+            rusqlite::params![now, dirty_snapshot],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -326,7 +326,6 @@ pub async fn persist_pagerank_with_snapshot(
     .await?;
 
     info!(
-        user_id,
         scores = scores.len(),
         dirty_cleared = dirty_snapshot,
         "pagerank_persisted"
@@ -344,15 +343,15 @@ pub async fn persist_pagerank(db: &Database, user_id: i64, scores: &[(i64, f64)]
     persist_pagerank_with_snapshot(db, user_id, scores, snapshot).await
 }
 
-/// Increment the dirty counter for a user. Called after memory/edge mutations.
+/// Increment the dirty counter. Called after memory/edge mutations.
 #[tracing::instrument(skip(db))]
-pub async fn mark_pagerank_dirty(db: &Database, user_id: i64, delta: i64) -> Result<()> {
+pub async fn mark_pagerank_dirty(db: &Database, _user_id: i64, delta: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO pagerank_dirty (user_id, dirty_count, last_refresh) \
-             VALUES (?1, ?2, 0) \
-             ON CONFLICT(user_id) DO UPDATE SET dirty_count = dirty_count + ?2",
-            rusqlite::params![user_id, delta],
+            "INSERT INTO pagerank_dirty (id, dirty_count, last_refresh) \
+             VALUES (1, ?1, 0) \
+             ON CONFLICT(id) DO UPDATE SET dirty_count = dirty_count + ?1",
+            rusqlite::params![delta],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -371,14 +370,14 @@ const CONVERGENCE_THRESHOLD: f64 = 1e-6;
 /// Inserts the memory with base rank and does NOT trigger full recompute.
 /// The new node has no incoming links yet, so it gets the teleportation score only.
 #[tracing::instrument(skip(db))]
-pub async fn incremental_add_memory(db: &Database, memory_id: i64, user_id: i64) -> Result<()> {
+pub async fn incremental_add_memory(db: &Database, memory_id: i64, _user_id: i64) -> Result<()> {
     // Get current memory count to compute base rank
     let n: i64 = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT COUNT(*) FROM memories \
-                 WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1",
-                rusqlite::params![user_id],
+                 WHERE is_forgotten = 0 AND is_latest = 1",
+                [],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)
@@ -391,11 +390,11 @@ pub async fn incremental_add_memory(db: &Database, memory_id: i64, user_id: i64)
 
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO memory_pagerank (memory_id, user_id, score, computed_at) \
-             VALUES (?1, ?2, ?3, ?4) \
+            "INSERT INTO memory_pagerank (memory_id, score, computed_at) \
+             VALUES (?1, ?2, ?3) \
              ON CONFLICT(memory_id) DO UPDATE SET \
                score = excluded.score, computed_at = excluded.computed_at",
-            rusqlite::params![memory_id, user_id, base_rank, now],
+            rusqlite::params![memory_id, base_rank, now],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -422,11 +421,11 @@ pub async fn incremental_add_link(
             let mut stmt = conn
                 .prepare(
                     "SELECT memory_id, score FROM memory_pagerank \
-                     WHERE memory_id IN (?1, ?2) AND user_id = ?3",
+                     WHERE memory_id IN (?1, ?2)",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(rusqlite::params![source_id, target_id, user_id], |row| {
+                .query_map(rusqlite::params![source_id, target_id], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
                 })
                 .map_err(rusqlite_to_eng_error)?;
@@ -470,11 +469,11 @@ pub async fn incremental_add_link(
 
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO memory_pagerank (memory_id, user_id, score, computed_at) \
-             VALUES (?1, ?2, ?3, ?4) \
+            "INSERT INTO memory_pagerank (memory_id, score, computed_at) \
+             VALUES (?1, ?2, ?3) \
              ON CONFLICT(memory_id) DO UPDATE SET \
                score = excluded.score, computed_at = excluded.computed_at",
-            rusqlite::params![target_id, user_id, new_target, now],
+            rusqlite::params![target_id, new_target, now],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -515,8 +514,8 @@ pub async fn incremental_add_link(
             db.write(move |conn| {
                 conn.execute(
                     "UPDATE memory_pagerank SET score = score + ?1, computed_at = ?2 \
-                     WHERE memory_id = ?3 AND user_id = ?4",
-                    rusqlite::params![neighbor_contribution, now, neighbor_id, user_id],
+                     WHERE memory_id = ?3",
+                    rusqlite::params![neighbor_contribution, now, neighbor_id],
                 )
                 .map_err(rusqlite_to_eng_error)?;
                 Ok(())
@@ -540,14 +539,14 @@ pub async fn incremental_add_link(
 /// Incremental PageRank update when a memory is deleted.
 /// Removes the score and redistributes to remaining nodes.
 #[tracing::instrument(skip(db))]
-pub async fn incremental_remove_memory(db: &Database, memory_id: i64, user_id: i64) -> Result<()> {
+pub async fn incremental_remove_memory(db: &Database, memory_id: i64, _user_id: i64) -> Result<()> {
     // Get the score being removed
     let removed_score: Option<f64> = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT score FROM memory_pagerank \
-                 WHERE memory_id = ?1 AND user_id = ?2",
-                rusqlite::params![memory_id, user_id],
+                 WHERE memory_id = ?1",
+                rusqlite::params![memory_id],
                 |row| row.get::<_, f64>(0),
             )
             .optional()
@@ -563,8 +562,8 @@ pub async fn incremental_remove_memory(db: &Database, memory_id: i64, user_id: i
     // Delete the score
     db.write(move |conn| {
         conn.execute(
-            "DELETE FROM memory_pagerank WHERE memory_id = ?1 AND user_id = ?2",
-            rusqlite::params![memory_id, user_id],
+            "DELETE FROM memory_pagerank WHERE memory_id = ?1",
+            rusqlite::params![memory_id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -575,8 +574,8 @@ pub async fn incremental_remove_memory(db: &Database, memory_id: i64, user_id: i
     let remaining: i64 = db
         .read(move |conn| {
             conn.query_row(
-                "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
-                rusqlite::params![user_id],
+                "SELECT COUNT(*) FROM memory_pagerank",
+                [],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)
@@ -590,9 +589,8 @@ pub async fn incremental_remove_memory(db: &Database, memory_id: i64, user_id: i
 
         db.write(move |conn| {
             conn.execute(
-                "UPDATE memory_pagerank SET score = score + ?1, computed_at = ?2 \
-                 WHERE user_id = ?3",
-                rusqlite::params![redistribution, now, user_id],
+                "UPDATE memory_pagerank SET score = score + ?1, computed_at = ?2",
+                rusqlite::params![redistribution, now],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(())
@@ -621,8 +619,8 @@ pub async fn needs_full_recompute(
     db.read(move |conn| {
         let result = conn
             .query_row(
-                "SELECT SUM(score), COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
-                rusqlite::params![user_id],
+                "SELECT SUM(score), COUNT(*) FROM memory_pagerank",
+                [],
                 |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, i64>(1)?)),
             )
             .optional()
@@ -663,12 +661,12 @@ pub async fn compute_pagerank_for_community(
             let mut stmt = conn
                 .prepare(
                     "SELECT id FROM memories \
-                     WHERE user_id = ?1 AND community_id = ?2 \
+                     WHERE community_id = ?1 \
                        AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(rusqlite::params![user_id, community_id], |row| row.get(0))
+                .query_map(rusqlite::params![community_id], |row| row.get(0))
                 .map_err(rusqlite_to_eng_error)?;
             rows.collect::<std::result::Result<Vec<i64>, _>>()
                 .map_err(rusqlite_to_eng_error)
@@ -803,18 +801,18 @@ pub async fn compute_pagerank_by_communities(
     db: &Database,
     user_id: i64,
 ) -> Result<Vec<(i64, f64)>> {
-    // Get all distinct community IDs for this user
+    // Get all distinct community IDs
     let community_ids: Vec<i64> = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT DISTINCT community_id FROM memories \
-                     WHERE user_id = ?1 AND community_id IS NOT NULL \
+                     WHERE community_id IS NOT NULL \
                        AND is_forgotten = 0 AND is_latest = 1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| row.get(0))
+                .query_map([], |row| row.get(0))
                 .map_err(rusqlite_to_eng_error)?;
             rows.collect::<std::result::Result<Vec<i64>, _>>()
                 .map_err(rusqlite_to_eng_error)
@@ -827,12 +825,12 @@ pub async fn compute_pagerank_by_communities(
             let mut stmt = conn
                 .prepare(
                     "SELECT id FROM memories \
-                     WHERE user_id = ?1 AND community_id IS NULL \
+                     WHERE community_id IS NULL \
                        AND is_forgotten = 0 AND is_latest = 1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| row.get(0))
+                .query_map([], |row| row.get(0))
                 .map_err(rusqlite_to_eng_error)?;
             rows.collect::<std::result::Result<Vec<i64>, _>>()
                 .map_err(rusqlite_to_eng_error)
@@ -859,7 +857,6 @@ pub async fn compute_pagerank_by_communities(
     }
 
     info!(
-        user_id,
         total_scores = all_scores.len(),
         "community_pagerank_merged"
     );
@@ -875,8 +872,8 @@ pub async fn ensure_pagerank_for_user(db: &Database, user_id: i64) -> Result<()>
     let count: i64 = db
         .read(move |conn| {
             conn.query_row(
-                "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1 LIMIT 1",
-                rusqlite::params![user_id],
+                "SELECT COUNT(*) FROM memory_pagerank LIMIT 1",
+                [],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)
@@ -952,11 +949,11 @@ mod tests {
         }
     }
 
-    async fn dirty_state(db: &Database, user_id: i64) -> (i64, i64) {
+    async fn dirty_state(db: &Database, _user_id: i64) -> (i64, i64) {
         db.read(move |conn| {
             conn.query_row(
-                "SELECT dirty_count, last_refresh FROM pagerank_dirty WHERE user_id = ?1",
-                rusqlite::params![user_id],
+                "SELECT dirty_count, last_refresh FROM pagerank_dirty WHERE id = 1",
+                [],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
             )
             .map_err(rusqlite_to_eng_error)
@@ -965,11 +962,11 @@ mod tests {
         .expect("query pagerank_dirty")
     }
 
-    async fn pagerank_count(db: &Database, user_id: i64) -> i64 {
+    async fn pagerank_count(db: &Database, _user_id: i64) -> i64 {
         db.read(move |conn| {
             conn.query_row(
-                "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
-                rusqlite::params![user_id],
+                "SELECT COUNT(*) FROM memory_pagerank",
+                [],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)

@@ -146,15 +146,15 @@ pub async fn graph_search(
                 .prepare(
                     "SELECT id, name, entity_type \
                      FROM entities \
-                     WHERE user_id = ?1 AND (name LIKE ?2 OR aliases LIKE ?2 OR description LIKE ?2) \
+                     WHERE (name LIKE ?1 OR aliases LIKE ?1 OR description LIKE ?1) \
                      ORDER BY occurrence_count DESC \
-                     LIMIT ?3",
+                     LIMIT ?2",
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
                 .query_map(
-                    rusqlite::params![user_id, pattern, limit as i64],
+                    rusqlite::params![pattern, limit as i64],
                     |row| {
                         let id: i64 = row.get(0)?;
                         let name: String = row.get(1)?;

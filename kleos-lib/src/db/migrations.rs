@@ -350,6 +350,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 38,
+        description: "drop_user_id_graph",
+        up: run_migration_drop_user_id_graph,
+        // UNIQUE/PK rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -393,6 +401,7 @@ const MIGRATION_DROP_USER_ID_AXON: i64 = 34;
 const MIGRATION_DROP_USER_ID_GROWTH: i64 = 35;
 const MIGRATION_DROP_USER_ID_INGESTION_HASHES: i64 = 36;
 const MIGRATION_DROP_USER_ID_LOOM: i64 = 37;
+const MIGRATION_DROP_USER_ID_GRAPH: i64 = 38;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -679,6 +688,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 37: drop_user_id_loom");
         run_migration_drop_user_id_loom(conn)?;
         record_migration(conn, MIGRATION_DROP_USER_ID_LOOM, "drop_user_id_loom")?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_GRAPH {
+        info!("Running migration 38: drop_user_id_graph");
+        run_migration_drop_user_id_graph(conn)?;
+        record_migration(conn, MIGRATION_DROP_USER_ID_GRAPH, "drop_user_id_graph")?;
     }
 
     Ok(())
@@ -2153,6 +2168,163 @@ fn run_migration_drop_user_id_loom(conn: &rusqlite::Connection) -> Result<()> {
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 37 complete: user_id dropped from loom_workflows and loom_runs");
+    Ok(())
+}
+
+fn run_migration_drop_user_id_graph(conn: &rusqlite::Connection) -> Result<()> {
+    // Idempotent guard: check entities (Shape B), memory_pagerank (Shape B),
+    // pagerank_dirty (CHECK rebuild), entity_cooccurrences (Shape A),
+    // brain_edges (Shape A).
+    //
+    // NOTE: structured_facts.user_id was already dropped by migration 25
+    // (run_migration_drop_user_id_memory_core) so we do NOT attempt to drop
+    // it here. Migration 38 only handles the remaining 5 tables.
+    let entities_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let ec_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('entity_cooccurrences') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let mp_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('memory_pagerank') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let pd_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('pagerank_dirty') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let be_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('brain_edges') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    if entities_has_user_id == 0
+        && ec_has_user_id == 0
+        && mp_has_user_id == 0
+        && pd_has_user_id == 0
+        && be_has_user_id == 0
+    {
+        info!("graph cluster user_id already absent, migration 38 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         -- entities: Shape B rebuild
+         ALTER TABLE entities RENAME TO _entities_old_v37;
+         DROP INDEX IF EXISTS idx_entities_user;
+         DROP INDEX IF EXISTS idx_entities_name;
+         DROP INDEX IF EXISTS idx_entities_type;
+
+         CREATE TABLE entities (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             name TEXT NOT NULL,
+             entity_type TEXT NOT NULL DEFAULT 'concept',
+             type TEXT NOT NULL DEFAULT 'generic',
+             description TEXT,
+             aliases TEXT,
+             aka TEXT,
+             metadata TEXT,
+             space_id INTEGER,
+             confidence REAL NOT NULL DEFAULT 1.0,
+             occurrence_count INTEGER NOT NULL DEFAULT 1,
+             first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+             last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(name, entity_type)
+         );
+
+         INSERT OR IGNORE INTO entities
+             (id, name, entity_type, type, description, aliases, aka, metadata,
+              space_id, confidence, occurrence_count,
+              first_seen_at, last_seen_at, created_at, updated_at)
+         SELECT
+             id, name, entity_type, type, description, aliases, aka, metadata,
+             space_id, confidence, occurrence_count,
+             first_seen_at, last_seen_at, created_at, updated_at
+         FROM _entities_old_v37;
+
+         DROP TABLE _entities_old_v37;
+
+         CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+         CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
+
+         -- entity_cooccurrences: Shape A
+         DROP INDEX IF EXISTS idx_ec_user;
+         ALTER TABLE entity_cooccurrences DROP COLUMN user_id;
+
+         -- memory_pagerank: Shape B rebuild
+         ALTER TABLE memory_pagerank RENAME TO _memory_pagerank_old_v37;
+         DROP INDEX IF EXISTS idx_pagerank_user;
+
+         CREATE TABLE memory_pagerank (
+             memory_id INTEGER PRIMARY KEY,
+             score REAL NOT NULL,
+             computed_at INTEGER NOT NULL,
+             FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+         );
+
+         INSERT OR IGNORE INTO memory_pagerank (memory_id, score, computed_at)
+         SELECT memory_id, score, computed_at
+         FROM _memory_pagerank_old_v37;
+
+         DROP TABLE _memory_pagerank_old_v37;
+
+         CREATE INDEX IF NOT EXISTS idx_pagerank_score ON memory_pagerank(score DESC);
+
+         -- pagerank_dirty: CHECK constraint rebuild
+         ALTER TABLE pagerank_dirty RENAME TO _pagerank_dirty_old_v37;
+
+         CREATE TABLE pagerank_dirty (
+             id INTEGER PRIMARY KEY CHECK (id = 1),
+             dirty_count INTEGER NOT NULL DEFAULT 0,
+             last_refresh INTEGER NOT NULL DEFAULT 0
+         );
+
+         INSERT OR IGNORE INTO pagerank_dirty (id, dirty_count, last_refresh)
+         SELECT 1, COALESCE(dirty_count, 0), COALESCE(last_refresh, 0)
+         FROM _pagerank_dirty_old_v37
+         LIMIT 1;
+
+         INSERT OR IGNORE INTO pagerank_dirty (id, dirty_count, last_refresh)
+         VALUES (1, 0, 0);
+
+         DROP TABLE _pagerank_dirty_old_v37;
+
+         -- brain_edges: Shape A
+         DROP INDEX IF EXISTS idx_brain_edges_user;
+         ALTER TABLE brain_edges DROP COLUMN user_id;
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 38 complete: user_id dropped from graph cluster (5 tables; structured_facts.user_id was dropped in migration 25)");
     Ok(())
 }
 

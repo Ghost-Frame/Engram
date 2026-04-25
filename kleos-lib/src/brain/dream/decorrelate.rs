@@ -82,16 +82,16 @@ pub async fn decorrelate(
                         .execute(
                             "UPDATE brain_edges \
                              SET weight = weight * ?1 \
-                             WHERE source_id = ?2 AND target_id = ?3 AND user_id = ?4",
-                            rusqlite::params![decay_rate as f64, id_a, id_b, user_id],
+                             WHERE source_id = ?2 AND target_id = ?3",
+                            rusqlite::params![decay_rate as f64, id_a, id_b],
                         )
                         .map_err(rusqlite_to_eng_error)?;
                     let affected_ba = conn
                         .execute(
                             "UPDATE brain_edges \
                              SET weight = weight * ?1 \
-                             WHERE source_id = ?2 AND target_id = ?3 AND user_id = ?4",
-                            rusqlite::params![decay_rate as f64, id_b, id_a, user_id],
+                             WHERE source_id = ?2 AND target_id = ?3",
+                            rusqlite::params![decay_rate as f64, id_b, id_a],
                         )
                         .map_err(rusqlite_to_eng_error)?;
                     Ok(affected_ab + affected_ba)

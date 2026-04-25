@@ -38,13 +38,13 @@ pub async fn resolve(
             let mut stmt = conn
                 .prepare(
                     "SELECT source_id, target_id FROM brain_edges \
-                     WHERE user_id = ?1 AND edge_type = ?2 \
+                     WHERE edge_type = ?1 \
                      ORDER BY weight DESC",
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let pairs = stmt
-                .query_map(rusqlite::params![user_id, edge_type_str], |row| {
+                .query_map(rusqlite::params![edge_type_str], |row| {
                     let src: i64 = row.get(0)?;
                     let tgt: i64 = row.get(1)?;
                     Ok((src, tgt))
