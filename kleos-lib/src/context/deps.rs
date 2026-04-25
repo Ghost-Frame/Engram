@@ -223,13 +223,13 @@ pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Re
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_current_state(db: &Database, user_id: i64) -> Result<Vec<StateEntry>> {
+pub async fn get_current_state(db: &Database, _user_id: i64) -> Result<Vec<StateEntry>> {
     let sql = "SELECT key, value, updated_count FROM current_state \
-               WHERE user_id = ?1 ORDER BY updated_at DESC LIMIT 30";
+               ORDER BY updated_at DESC LIMIT 30";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id])
+            .query(rusqlite::params![])
             .map_err(rusqlite_to_eng_error)?;
         let mut entries = Vec::with_capacity(30);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {

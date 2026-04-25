@@ -47,7 +47,7 @@ pub struct CurrentState {
 const FACT_COLUMNS: &str =
     "id, memory_id, subject, predicate, object, confidence, user_id, created_at";
 
-const STATE_COLUMNS: &str = "id, agent, key, value, user_id, created_at, updated_at";
+const STATE_COLUMNS: &str = "id, agent, key, value, created_at, updated_at";
 
 // -- Helpers ---
 
@@ -70,9 +70,9 @@ fn row_to_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<CurrentState> {
         agent: row.get(1)?,
         key: row.get(2)?,
         value: row.get(3)?,
-        user_id: row.get(4)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
+        user_id: 1,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
     })
 }
 
@@ -221,12 +221,12 @@ pub async fn set_state(
     let key_for_get = key_owned.clone();
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO current_state (agent, key, value, user_id) \
-             VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT(agent, key, user_id) DO UPDATE SET \
+            "INSERT INTO current_state (agent, key, value) \
+             VALUES (?1, ?2, ?3) \
+             ON CONFLICT(agent, key) DO UPDATE SET \
                  value = excluded.value, \
                  updated_at = datetime('now')",
-            params![agent_owned, key_owned, value_owned, user_id],
+            params![agent_owned, key_owned, value_owned],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -242,35 +242,35 @@ pub async fn get_state(
     db: &Database,
     agent: &str,
     key: &str,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<CurrentState> {
     let agent = agent.to_string();
     let key = key.to_string();
     let sql = format!(
-        "SELECT {} FROM current_state WHERE agent = ?1 AND key = ?2 AND user_id = ?3",
+        "SELECT {} FROM current_state WHERE agent = ?1 AND key = ?2",
         STATE_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![agent, key, user_id], row_to_state)
+        conn.query_row(&sql, params![agent, key], row_to_state)
             .optional()
             .map_err(rusqlite_to_eng_error)?
-            .ok_or_else(|| EngError::NotFound(format!("state not found for user {}", user_id)))
+            .ok_or_else(|| EngError::NotFound("state not found".to_string()))
     })
     .await
 }
 
 /// List all state entries for the given agent and user.
 #[tracing::instrument(skip(db), fields(agent = %agent, user_id))]
-pub async fn list_state(db: &Database, agent: &str, user_id: i64) -> Result<Vec<CurrentState>> {
+pub async fn list_state(db: &Database, agent: &str, _user_id: i64) -> Result<Vec<CurrentState>> {
     let agent = agent.to_string();
     let sql = format!(
-        "SELECT {} FROM current_state WHERE agent = ?1 AND user_id = ?2 ORDER BY key ASC",
+        "SELECT {} FROM current_state WHERE agent = ?1 ORDER BY key ASC",
         STATE_COLUMNS
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let rows = stmt
-            .query_map(params![agent, user_id], row_to_state)
+            .query_map(params![agent], row_to_state)
             .map_err(rusqlite_to_eng_error)?;
         let mut entries = Vec::new();
         for row in rows {

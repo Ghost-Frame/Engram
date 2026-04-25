@@ -210,6 +210,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "portability_user_id_drop",
         up: apply_schema_v37_portability_drop,
     },
+    TenantMigration {
+        version: 38,
+        description: "intelligence_user_id_drop",
+        up: apply_schema_v38_intelligence_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -397,6 +402,11 @@ fn apply_schema_v36_thymus_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v37_portability_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v37_portability_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v37 failed: {e}")))
+}
+
+fn apply_schema_v38_intelligence_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v38_intelligence_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v38 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -3436,8 +3446,28 @@ mod tests {
 
     #[test]
     fn intelligence_family_usable_after_v18() {
+        // v18 added the intelligence family; v38 drops user_id from all 7
+        // intelligence tables. Cap this test at v37 so the pre-drop INSERT
+        // shapes and user_id WHERE predicates still work.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 38 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let tables: i64 = conn
             .query_row(
@@ -5507,6 +5537,341 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(col_count, 0, "{} still has user_id after v37", table);
+        }
+    }
+
+    /// v38: user_id must be absent from all 7 intelligence tables after the
+    /// full migration chain completes. causal_links never had user_id.
+    #[test]
+    fn user_id_absent_from_intelligence_after_v38() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        let tables = [
+            "consolidations",
+            "current_state",
+            "causal_chains",
+            "reconsolidations",
+            "temporal_patterns",
+            "digests",
+            "memory_feedback",
+        ];
+        for table in &tables {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(count, 0, "{} still has user_id column after v38", table);
+        }
+
+        // Verify dropped indexes are gone.
+        let dropped_indexes = [
+            "idx_current_state_user",
+            "idx_cs_key_user",
+            "idx_consolidations_user",
+            "idx_causal_chains_user",
+            "idx_temporal_patterns_user",
+            "idx_digests_user",
+            "idx_feedback_user",
+        ];
+        for idx in &dropped_indexes {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        idx
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(count, 0, "index {} still present after v38", idx);
+        }
+
+        // Verify preserved indexes still exist.
+        let preserved_indexes = [
+            "idx_current_state_agent",
+            "idx_cs_key",
+            "idx_digests_period",
+            "idx_digests_next",
+            "idx_feedback_memory",
+            "idx_reconsolidations_memory",
+        ];
+        for idx in &preserved_indexes {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        idx
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(count, 1, "preserved index {} missing after v38", idx);
+        }
+    }
+
+    /// v38: intelligence tables accept the new-shape INSERTs (no user_id) and
+    /// the in-table UNIQUE(agent, key) on current_state works correctly.
+    /// causal_links.chain_id FK to causal_chains(id) is preserved.
+    #[test]
+    fn intelligence_usable_after_v38() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO memories (content, category, source) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["seed", "general", "test"],
+        )
+        .unwrap();
+        let mid = conn.last_insert_rowid();
+
+        // consolidations (no user_id)
+        conn.execute(
+            "INSERT INTO consolidations (source_ids, strategy, confidence) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["[1,2,3]", "merge", 0.9_f64],
+        )
+        .unwrap();
+
+        // current_state UNIQUE(agent, key) -- upsert collapses duplicates
+        conn.execute(
+            "INSERT INTO current_state (agent, key, value) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(agent, key) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["claude", "location", "home"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO current_state (agent, key, value) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(agent, key) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["claude", "location", "office"],
+        )
+        .unwrap();
+        // Two different agents may share the same key name.
+        conn.execute(
+            "INSERT INTO current_state (agent, key, value) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(agent, key) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["gir", "location", "dumpster"],
+        )
+        .unwrap();
+
+        let cs_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM current_state", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cs_count, 2, "upsert must collapse claude/location to one row; gir/location is separate");
+
+        let val: String = conn
+            .query_row(
+                "SELECT value FROM current_state WHERE agent='claude' AND key='location'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(val, "office", "last upsert value must win");
+
+        // causal_chains (no user_id) + causal_links FK preserved
+        conn.execute(
+            "INSERT INTO causal_chains (root_memory_id, description) VALUES (?1, ?2)",
+            rusqlite::params![mid, "v38 chain"],
+        )
+        .unwrap();
+        let chain_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO causal_links (chain_id, cause_memory_id, effect_memory_id) \
+             VALUES (?1, ?2, ?2)",
+            rusqlite::params![chain_id, mid],
+        )
+        .unwrap();
+
+        let link_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM causal_links WHERE chain_id = ?1",
+                rusqlite::params![chain_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(link_count, 1, "causal_links FK to causal_chains must work");
+
+        // Shape A tables (no user_id)
+        conn.execute(
+            "INSERT INTO reconsolidations (memory_id, old_content, new_content) \
+             VALUES (?1, 'old', 'new')",
+            rusqlite::params![mid],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO temporal_patterns (pattern_type, description) VALUES (?1, ?2)",
+            rusqlite::params!["daily", "morning routine"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO digests (period, content, memory_count) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["daily", "digest body", 10_i64],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO memory_feedback (memory_id, rating) VALUES (?1, ?2)",
+            rusqlite::params![mid, "helpful"],
+        )
+        .unwrap();
+
+        // Spot-check row counts
+        let (c, tp, d, f): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM consolidations), \
+                   (SELECT COUNT(*) FROM temporal_patterns), \
+                   (SELECT COUNT(*) FROM digests), \
+                   (SELECT COUNT(*) FROM memory_feedback)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((c, tp, d, f), (1, 1, 1, 1));
+    }
+
+    /// v38: rows inserted under the v18 shim shape (with user_id) survive the
+    /// rebuild with all non-user_id fields intact.
+    #[test]
+    fn intelligence_rows_preserved_through_v38() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+
+        // Apply migrations v1..v37 (stop before v38).
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 38 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        // Insert pre-v38 rows with user_id.
+        conn.execute(
+            "INSERT INTO memories (content, category, source) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["seed", "general", "test"],
+        )
+        .unwrap();
+        let mid = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO current_state (agent, key, value, user_id) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(agent, key, user_id) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["gir", "mission", "collect items", 1_i64],
+        )
+        .unwrap();
+        let cs_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO causal_chains (root_memory_id, description, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params![mid, "pre-v38 chain", 1_i64],
+        )
+        .unwrap();
+        let chain_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO causal_links (chain_id, cause_memory_id, effect_memory_id) \
+             VALUES (?1, ?2, ?2)",
+            rusqlite::params![chain_id, mid],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO digests (period, content, memory_count, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["weekly", "pre-v38 digest", 5_i64, 1_i64],
+        )
+        .unwrap();
+        let digest_id = conn.last_insert_rowid();
+
+        // Apply v38.
+        apply_schema_v38_intelligence_drop(&conn).expect("apply v38");
+
+        // current_state row preserved.
+        let (agent, key, value): (String, String, String) = conn
+            .query_row(
+                "SELECT agent, key, value FROM current_state WHERE id = ?1",
+                rusqlite::params![cs_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("current_state row lost after v38");
+        assert_eq!(agent, "gir");
+        assert_eq!(key, "mission");
+        assert_eq!(value, "collect items");
+
+        // causal_chain row preserved; link FK intact.
+        let desc: String = conn
+            .query_row(
+                "SELECT description FROM causal_chains WHERE id = ?1",
+                rusqlite::params![chain_id],
+                |r| r.get(0),
+            )
+            .expect("causal_chain row lost after v38");
+        assert_eq!(desc, "pre-v38 chain");
+
+        let link_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM causal_links WHERE chain_id = ?1",
+                rusqlite::params![chain_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(link_count, 1, "causal_link lost after v38");
+
+        // digest row preserved.
+        let (period, content): (String, String) = conn
+            .query_row(
+                "SELECT period, content FROM digests WHERE id = ?1",
+                rusqlite::params![digest_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("digest row lost after v38");
+        assert_eq!(period, "weekly");
+        assert_eq!(content, "pre-v38 digest");
+
+        // user_id gone from all 7 tables.
+        let tables = [
+            "consolidations",
+            "current_state",
+            "causal_chains",
+            "reconsolidations",
+            "temporal_patterns",
+            "digests",
+            "memory_feedback",
+        ];
+        for table in &tables {
+            let col_count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(col_count, 0, "{} still has user_id after v38", table);
         }
     }
 }

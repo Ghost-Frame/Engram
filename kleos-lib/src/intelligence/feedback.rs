@@ -36,9 +36,9 @@ pub async fn record_feedback(db: &Database, user_id: i64, req: &FeedbackRequest)
 
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO memory_feedback (memory_id, user_id, rating, context) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![memory_id, user_id, rating, context],
+            "INSERT INTO memory_feedback (memory_id, rating, context) \
+             VALUES (?1, ?2, ?3)",
+            params![memory_id, rating, context],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -69,20 +69,19 @@ pub async fn record_feedback(db: &Database, user_id: i64, req: &FeedbackRequest)
 /// Used by retrieval scoring to boost/demote categories the user has
 /// consistently marked helpful or unhelpful.
 #[tracing::instrument(skip(db))]
-pub async fn category_preferences(db: &Database, user_id: i64) -> Result<HashMap<String, f64>> {
+pub async fn category_preferences(db: &Database, _user_id: i64) -> Result<HashMap<String, f64>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT m.category, f.rating, COUNT(*) \
                  FROM memory_feedback f \
                  JOIN memories m ON m.id = f.memory_id \
-                 WHERE f.user_id = ?1 \
                  GROUP BY m.category, f.rating",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let rows = stmt
-            .query_map(params![user_id], |row| {
+            .query_map(params![], |row| {
                 let cat: String = row.get(0)?;
                 let rating: String = row.get(1)?;
                 let count: i64 = row.get(2)?;
@@ -117,17 +116,17 @@ pub async fn category_preferences(db: &Database, user_id: i64) -> Result<HashMap
 
 /// Get aggregated feedback statistics for a user.
 #[tracing::instrument(skip(db))]
-pub async fn feedback_stats(db: &Database, user_id: i64) -> Result<FeedbackStats> {
+pub async fn feedback_stats(db: &Database, _user_id: i64) -> Result<FeedbackStats> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT rating, COUNT(*) FROM memory_feedback \
-                 WHERE user_id = ?1 GROUP BY rating",
+                 GROUP BY rating",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let rows = stmt
-            .query_map(params![user_id], |row| {
+            .query_map(params![], |row| {
                 let rating: String = row.get(0)?;
                 let count: i64 = row.get(1)?;
                 Ok((rating, count))
@@ -247,10 +246,14 @@ mod tests {
 
     #[tokio::test]
     async fn category_preferences_isolated_per_user() {
+        // After user_id drop, memory_feedback is global (single-tenant shard).
+        // Feedback on any memory is visible regardless of the caller's user_id.
         let db = Database::connect_memory().await.expect("in-mem db");
         let mine = seed_memory(&db, "eta private note item", "code", 1).await;
         add_feedback(&db, mine, 1, "helpful").await;
+        // user_id=2 sees the same global feedback -- not empty.
         let prefs = category_preferences(&db, 2).await.expect("prefs");
-        assert!(prefs.is_empty());
+        assert!(!prefs.is_empty(), "single-tenant: all feedback is visible globally");
+        assert!((prefs["code"] - 1.0).abs() < 1e-9);
     }
 }

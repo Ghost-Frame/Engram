@@ -374,6 +374,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 41,
+        description: "drop_user_id_intelligence",
+        up: run_migration_drop_user_id_intelligence,
+        // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -420,6 +428,7 @@ const MIGRATION_DROP_USER_ID_LOOM: i64 = 37;
 const MIGRATION_DROP_USER_ID_GRAPH: i64 = 38;
 const MIGRATION_DROP_USER_ID_THYMUS: i64 = 39;
 const MIGRATION_DROP_USER_ID_PORTABILITY: i64 = 40;
+const MIGRATION_DROP_USER_ID_INTELLIGENCE: i64 = 41;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -727,6 +736,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_DROP_USER_ID_PORTABILITY,
             "drop_user_id_portability",
+        )?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_INTELLIGENCE {
+        info!("Running migration 41: drop_user_id_intelligence");
+        run_migration_drop_user_id_intelligence(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_INTELLIGENCE,
+            "drop_user_id_intelligence",
         )?;
     }
 
@@ -2520,6 +2539,102 @@ fn run_migration_drop_user_id_portability(conn: &rusqlite::Connection) -> Result
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 40 complete: user_id dropped from user_preferences (rebuild) and conversations");
+    Ok(())
+}
+
+fn run_migration_drop_user_id_intelligence(conn: &rusqlite::Connection) -> Result<()> {
+    // Idempotent guard: check current_state (Shape B) and consolidations (Shape A).
+    // If both already lack user_id, the migration already ran.
+    let cs_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('current_state') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let consolidations_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('consolidations') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    if cs_has_user_id == 0 && consolidations_has_user_id == 0 {
+        info!("intelligence tables user_id already absent, migration 41 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         -- current_state: Shape B rebuild (in-table UNIQUE(agent, key, user_id) prevents
+         -- simple DROP COLUMN; full 12-step table rebuild required).
+         ALTER TABLE current_state RENAME TO _current_state_old_v40;
+
+         DROP INDEX IF EXISTS idx_current_state_user;
+         DROP INDEX IF EXISTS idx_cs_key_user;
+         DROP INDEX IF EXISTS idx_current_state_agent;
+         DROP INDEX IF EXISTS idx_cs_key;
+
+         CREATE TABLE current_state (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             agent TEXT NOT NULL,
+             key TEXT NOT NULL,
+             value TEXT NOT NULL,
+             memory_id INTEGER REFERENCES memories(id) ON DELETE SET NULL,
+             previous_value TEXT,
+             previous_memory_id INTEGER,
+             updated_count INTEGER NOT NULL DEFAULT 1,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(agent, key)
+         );
+
+         INSERT OR IGNORE INTO current_state
+             (id, agent, key, value, memory_id, previous_value, previous_memory_id,
+              updated_count, updated_at, created_at)
+         SELECT id, agent, key, value, memory_id, previous_value, previous_memory_id,
+                updated_count, updated_at, created_at
+         FROM _current_state_old_v40
+         ORDER BY id DESC;
+
+         DROP TABLE _current_state_old_v40;
+
+         CREATE INDEX IF NOT EXISTS idx_current_state_agent ON current_state(agent);
+         CREATE INDEX IF NOT EXISTS idx_cs_key ON current_state(key COLLATE NOCASE);
+
+         -- consolidations: Shape A
+         DROP INDEX IF EXISTS idx_consolidations_user;
+         ALTER TABLE consolidations DROP COLUMN user_id;
+
+         -- causal_chains: Shape A
+         DROP INDEX IF EXISTS idx_causal_chains_user;
+         ALTER TABLE causal_chains DROP COLUMN user_id;
+
+         -- reconsolidations: Shape A (no user-scoped index)
+         ALTER TABLE reconsolidations DROP COLUMN user_id;
+
+         -- temporal_patterns: Shape A
+         DROP INDEX IF EXISTS idx_temporal_patterns_user;
+         ALTER TABLE temporal_patterns DROP COLUMN user_id;
+
+         -- digests: Shape A (preserve idx_digests_period and idx_digests_next)
+         DROP INDEX IF EXISTS idx_digests_user;
+         ALTER TABLE digests DROP COLUMN user_id;
+
+         -- memory_feedback: Shape A (preserve idx_feedback_memory)
+         DROP INDEX IF EXISTS idx_feedback_user;
+         ALTER TABLE memory_feedback DROP COLUMN user_id;
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 41 complete: user_id dropped from 7 intelligence tables (current_state rebuild + 6 DROP COLUMN)");
     Ok(())
 }
 

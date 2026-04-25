@@ -33,9 +33,9 @@ pub async fn track_temporal_access(
 
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO temporal_patterns (pattern_type, description, memory_ids, confidence, user_id, created_at) \
-             VALUES ('access', ?1, ?2, 1.0, ?3, datetime('now'))",
-            params![description, project_str, user_id],
+            "INSERT INTO temporal_patterns (pattern_type, description, memory_ids, confidence, created_at) \
+             VALUES ('access', ?1, ?2, 1.0, datetime('now'))",
+            params![description, project_str],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())

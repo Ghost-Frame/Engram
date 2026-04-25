@@ -166,9 +166,9 @@ pub async fn create_rule(db: &Database, rule: GuardRule) -> Result<GuardRule> {
         .map_err(rusqlite_to_eng_error)?;
 
         conn.execute(
-            "INSERT INTO current_state (agent, key, value, user_id, created_at, updated_at) \
-             VALUES ('guard', ?1, ?2, 1, datetime('now'), datetime('now')) \
-             ON CONFLICT(agent, key, user_id) DO UPDATE SET \
+            "INSERT INTO current_state (agent, key, value, created_at, updated_at) \
+             VALUES ('guard', ?1, ?2, datetime('now'), datetime('now')) \
+             ON CONFLICT(agent, key) DO UPDATE SET \
                value = excluded.value, \
                updated_at = datetime('now')",
             rusqlite::params![state_key, state_value],

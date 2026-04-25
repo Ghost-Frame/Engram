@@ -73,9 +73,9 @@ pub async fn generate_digest(db: &Database, user_id: i64, period: &str) -> Resul
     let id = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO digests (period, content, memory_count, user_id, started_at, ended_at) \
-                 VALUES (?1, ?2, ?3, ?4, datetime('now', ?5), datetime('now'))",
-                params![period_owned2, digest_content_clone, count, user_id, interval_owned2],
+                "INSERT INTO digests (period, content, memory_count, started_at, ended_at) \
+                 VALUES (?1, ?2, ?3, datetime('now', ?4), datetime('now'))",
+                params![period_owned2, digest_content_clone, count, interval_owned2],
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             Ok(conn.last_insert_rowid())
@@ -96,25 +96,25 @@ pub async fn generate_digest(db: &Database, user_id: i64, period: &str) -> Resul
 
 /// List existing digests.
 #[tracing::instrument(skip(db), fields(user_id, limit))]
-pub async fn list_digests(db: &Database, user_id: i64, limit: usize) -> Result<Vec<Digest>> {
+pub async fn list_digests(db: &Database, _user_id: i64, limit: usize) -> Result<Vec<Digest>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, period, content, memory_count, user_id, started_at, ended_at, created_at \
-                 FROM digests WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
+                "SELECT id, period, content, memory_count, started_at, ended_at, created_at \
+                 FROM digests ORDER BY id DESC LIMIT ?1",
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let rows = stmt
-            .query_map(params![user_id, limit as i64], |row| {
+            .query_map(params![limit as i64], |row| {
                 Ok(Digest {
                     id: row.get(0)?,
                     period: row.get(1)?,
                     content: row.get(2)?,
                     memory_count: row.get(3)?,
-                    user_id: row.get(4)?,
-                    started_at: row.get(5)?,
-                    ended_at: row.get(6)?,
-                    created_at: row.get(7)?,
+                    user_id: 1,
+                    started_at: row.get(4)?,
+                    ended_at: row.get(5)?,
+                    created_at: row.get(6)?,
                 })
             })
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;

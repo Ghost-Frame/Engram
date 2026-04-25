@@ -15,8 +15,8 @@ pub async fn create_chain(
     let id = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO causal_chains (root_memory_id, description, user_id) VALUES (?1, ?2, ?3)",
-                params![root_memory_id, description_owned, user_id],
+                "INSERT INTO causal_chains (root_memory_id, description) VALUES (?1, ?2)",
+                params![root_memory_id, description_owned],
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             Ok(conn.last_insert_rowid())
@@ -56,14 +56,14 @@ pub async fn add_link(
     order_index: i32,
     user_id: i64,
 ) -> Result<CausalLink> {
-    // Verify chain belongs to caller
+    // Verify chain exists
     let chain_exists = db
         .read(move |conn| {
             let mut stmt = conn
-                .prepare("SELECT id FROM causal_chains WHERE id = ?1 AND user_id = ?2")
+                .prepare("SELECT id FROM causal_chains WHERE id = ?1")
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let found = stmt
-                .query_map(params![chain_id, user_id], |_row| Ok(()))
+                .query_map(params![chain_id], |_row| Ok(()))
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
                 .next()
                 .is_some();
@@ -127,19 +127,19 @@ pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<Cau
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, root_memory_id, description, confidence, user_id, created_at \
-                     FROM causal_chains WHERE id = ?1 AND user_id = ?2",
+                    "SELECT id, root_memory_id, description, confidence, created_at \
+                     FROM causal_chains WHERE id = ?1",
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let mut rows = stmt
-                .query_map(params![chain_id, user_id], |row| {
+                .query_map(params![chain_id], |row| {
                     Ok(CausalChain {
                         id: row.get(0)?,
                         root_memory_id: row.get(1)?,
                         description: row.get(2)?,
                         confidence: row.get(3)?,
-                        user_id: row.get(4)?,
-                        created_at: row.get(5)?,
+                        user_id: 1,
+                        created_at: row.get(4)?,
                         links: Vec::new(),
                     })
                 })
@@ -189,11 +189,11 @@ pub async fn list_chains(db: &Database, user_id: i64, limit: usize) -> Result<Ve
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id FROM causal_chains WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
+                    "SELECT id FROM causal_chains ORDER BY id DESC LIMIT ?1",
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let rows = stmt
-                .query_map(params![user_id, limit as i64], |row| row.get::<_, i64>(0))
+                .query_map(params![limit as i64], |row| row.get::<_, i64>(0))
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))
@@ -245,11 +245,11 @@ pub async fn backward_chain(
                         "SELECT l.cause_memory_id, l.strength \
                          FROM causal_links l \
                          JOIN causal_chains c ON c.id = l.chain_id \
-                         WHERE l.effect_memory_id = ?1 AND c.user_id = ?2",
+                         WHERE l.effect_memory_id = ?1",
                     )
                     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
                 let iter = stmt
-                    .query_map(params![current_effect, user_id], |row| {
+                    .query_map(params![current_effect], |row| {
                         Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
                     })
                     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
@@ -402,6 +402,8 @@ mod tests {
 
     #[tokio::test]
     async fn backward_chain_respects_user_isolation() {
+        // After user_id drop, causal_chains are global on a single-tenant shard.
+        // All chains and links are visible regardless of the caller's user_id.
         let db = Database::connect_memory().await.expect("in-mem db");
         let mine = 1;
         let other = 2;
@@ -413,7 +415,9 @@ mod tests {
         add_link(&db, chain.id, cause, effect, 1.0, 0, mine)
             .await
             .unwrap();
-        let stranger = backward_chain(&db, effect, other, 5).await.unwrap();
-        assert!(stranger.is_empty());
+        // Single-tenant: even "other" user sees the same causal structure.
+        let result = backward_chain(&db, effect, other, 5).await.unwrap();
+        assert_eq!(result.len(), 1, "single-tenant: cause is globally visible");
+        assert_eq!(result[0].memory_id, cause);
     }
 }

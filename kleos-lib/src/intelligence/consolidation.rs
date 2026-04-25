@@ -137,9 +137,9 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
 
             // Record consolidation.
             tx.execute(
-                "INSERT INTO consolidations (source_ids, result_memory_id, strategy, confidence, user_id) \
-                 VALUES (?1, ?2, 'merge', 1.0, ?3)",
-                rusqlite::params![source_ids_json, new_id, user_id],
+                "INSERT INTO consolidations (source_ids, result_memory_id, strategy, confidence) \
+                 VALUES (?1, ?2, 'merge', 1.0)",
+                rusqlite::params![source_ids_json, new_id],
             )
             .map_err(rusqlite_to_eng_error)?;
 
