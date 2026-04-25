@@ -200,6 +200,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "graph_cluster_user_id_drop",
         up: apply_schema_v35_graph_drop,
     },
+    TenantMigration {
+        version: 36,
+        description: "thymus_user_id_drop",
+        up: apply_schema_v36_thymus_drop,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -377,6 +382,11 @@ fn apply_schema_v34_loom_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v35_graph_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v35_graph_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v35 failed: {e}")))
+}
+
+fn apply_schema_v36_thymus_drop(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v36_thymus_drop.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v36 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -3020,8 +3030,27 @@ mod tests {
 
     #[test]
     fn thymus_family_usable_after_v15() {
+        // v15 introduced thymus tables with user_id shim; v36 drops user_id.
+        // Cap the chain at v35 so this test still locks the v15 shape.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 36 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
 
         let tables: i64 = conn
             .query_row(
@@ -4899,5 +4928,303 @@ mod tests {
             )
             .unwrap();
         assert_eq!(runs_col, 0, "loom_runs still has user_id after v34");
+    }
+
+    /// v36: user_id must be absent from all 5 thymus tables after the full
+    /// migration chain completes. Corresponding user indexes must be gone.
+    #[test]
+    fn user_id_absent_from_thymus_after_v36() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).expect("migrations");
+
+        for table in &[
+            "rubrics",
+            "evaluations",
+            "quality_metrics",
+            "session_quality",
+            "behavioral_drift_events",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                count, 0,
+                "user_id still present in {} after v36",
+                table
+            );
+        }
+
+        for idx in &[
+            "idx_rubrics_user_name",
+            "idx_rubrics_user",
+            "idx_evaluations_user",
+            "idx_quality_metrics_user",
+            "idx_session_quality_user",
+            "idx_behavioral_drift_user",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        idx
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "index {} still present after v36", idx);
+        }
+
+        // New unique index on rubrics.name must exist.
+        let rubrics_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_rubrics_name'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rubrics_idx, 1, "idx_rubrics_name missing after v36");
+    }
+
+    /// v36: all 5 thymus tables accept inserts using the new schema (no user_id).
+    /// The new UNIQUE INDEX idx_rubrics_name on rubrics.name is enforced.
+    #[test]
+    fn thymus_usable_after_v36() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn).expect("migrations");
+
+        // rubrics: insert without user_id
+        conn.execute(
+            "INSERT INTO rubrics (name, description, criteria) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["test-rubric", "desc", "[]"],
+        )
+        .expect("insert rubric");
+        let rubric_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        // rubrics: duplicate name must be rejected (new UNIQUE INDEX)
+        let dup = conn.execute(
+            "INSERT INTO rubrics (name, criteria) VALUES (?1, ?2)",
+            rusqlite::params!["test-rubric", "[]"],
+        );
+        assert!(dup.is_err(), "duplicate rubric name should be rejected");
+
+        // evaluations: insert without user_id
+        conn.execute(
+            "INSERT INTO evaluations (rubric_id, agent, subject, input, output, scores, overall_score, evaluator) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![rubric_id, "gir", "subj", "{}", "{}", "{}", 0.9_f64, "tester"],
+        )
+        .expect("insert evaluation");
+
+        // quality_metrics: insert without user_id
+        conn.execute(
+            "INSERT INTO quality_metrics (agent, metric, value, tags) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["gir", "accuracy", 0.95_f64, "{}"],
+        )
+        .expect("insert quality_metric");
+
+        // session_quality: insert without user_id
+        conn.execute(
+            "INSERT INTO session_quality (session_id, agent, turn_count, rules_followed, rules_drifted) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["sess-1", "gir", 5_i32, "[]", "[]"],
+        )
+        .expect("insert session_quality");
+
+        // behavioral_drift_events: insert without user_id
+        conn.execute(
+            "INSERT INTO behavioral_drift_events (agent, drift_type, severity, signal) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["gir", "priority", "low", "test signal"],
+        )
+        .expect("insert behavioral_drift_event");
+
+        // Verify all rows exist.
+        let rubric_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM rubrics", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rubric_count, 1);
+
+        let eval_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM evaluations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(eval_count, 1);
+
+        let metric_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM quality_metrics", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(metric_count, 1);
+
+        let sq_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_quality", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sq_count, 1);
+
+        let drift_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM behavioral_drift_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(drift_count, 1);
+    }
+
+    /// v36: rows inserted under the v15 shim shape (with user_id) survive the
+    /// migration with every non-user_id field intact across all 5 thymus tables.
+    #[test]
+    fn thymus_rows_preserved_through_v36() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+
+        // Apply migrations v1..v35 (stop before v36).
+        for m in TENANT_MIGRATIONS.iter() {
+            if m.version >= 36 {
+                break;
+            }
+            (m.up)(&conn).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )
+            .unwrap();
+        }
+
+        // Insert rows in the old shape (with user_id).
+        conn.execute(
+            "INSERT INTO rubrics (name, description, criteria, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["old-rubric", "old-desc", "[]", 1_i64],
+        )
+        .expect("insert old rubric");
+        let rubric_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO evaluations (rubric_id, agent, subject, input, output, scores, overall_score, evaluator, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![rubric_id, "old-agent", "old-subj", "{}", "{}", "{}", 0.8_f64, "old-eval", 1_i64],
+        )
+        .expect("insert old evaluation");
+        let eval_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO quality_metrics (agent, metric, value, tags, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["old-agent", "old-metric", 0.7_f64, "{}", 1_i64],
+        )
+        .expect("insert old quality_metric");
+        let metric_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO session_quality (session_id, agent, turn_count, rules_followed, rules_drifted, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["old-sess", "old-agent", 3_i32, "[]", "[]", 1_i64],
+        )
+        .expect("insert old session_quality");
+        let sq_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO behavioral_drift_events (agent, drift_type, severity, signal, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["old-agent", "priority", "low", "old-signal", 1_i64],
+        )
+        .expect("insert old drift event");
+        let drift_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        // Apply v36.
+        apply_schema_v36_thymus_drop(&conn).expect("apply v36");
+
+        // rubrics row survived with name and description intact.
+        let (rname, rdesc): (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, description FROM rubrics WHERE id = ?1",
+                rusqlite::params![rubric_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("select rubric after v36");
+        assert_eq!(rname, "old-rubric");
+        assert_eq!(rdesc.as_deref(), Some("old-desc"));
+
+        // evaluations row survived with agent and overall_score intact.
+        let (eagent, escore): (String, f64) = conn
+            .query_row(
+                "SELECT agent, overall_score FROM evaluations WHERE id = ?1",
+                rusqlite::params![eval_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("select evaluation after v36");
+        assert_eq!(eagent, "old-agent");
+        assert!((escore - 0.8).abs() < 1e-9);
+
+        // quality_metrics row survived with metric and value intact.
+        let (mmetric, mval): (String, f64) = conn
+            .query_row(
+                "SELECT metric, value FROM quality_metrics WHERE id = ?1",
+                rusqlite::params![metric_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("select metric after v36");
+        assert_eq!(mmetric, "old-metric");
+        assert!((mval - 0.7).abs() < 1e-9);
+
+        // session_quality row survived with session_id intact.
+        let session_id: String = conn
+            .query_row(
+                "SELECT session_id FROM session_quality WHERE id = ?1",
+                rusqlite::params![sq_id],
+                |r| r.get(0),
+            )
+            .expect("select session_quality after v36");
+        assert_eq!(session_id, "old-sess");
+
+        // behavioral_drift_events row survived with signal intact.
+        let signal: String = conn
+            .query_row(
+                "SELECT signal FROM behavioral_drift_events WHERE id = ?1",
+                rusqlite::params![drift_id],
+                |r| r.get(0),
+            )
+            .expect("select drift event after v36");
+        assert_eq!(signal, "old-signal");
+
+        // user_id gone from all 5 tables.
+        for table in &[
+            "rubrics",
+            "evaluations",
+            "quality_metrics",
+            "session_quality",
+            "behavioral_drift_events",
+        ] {
+            let col_count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(col_count, 0, "{} still has user_id after v36", table);
+        }
     }
 }

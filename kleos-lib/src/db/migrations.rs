@@ -358,6 +358,14 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 39,
+        description: "drop_user_id_thymus",
+        up: run_migration_drop_user_id_thymus,
+        // DROP COLUMN + index swap is destructive; no safe inverse without a backup.
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -402,6 +410,7 @@ const MIGRATION_DROP_USER_ID_GROWTH: i64 = 35;
 const MIGRATION_DROP_USER_ID_INGESTION_HASHES: i64 = 36;
 const MIGRATION_DROP_USER_ID_LOOM: i64 = 37;
 const MIGRATION_DROP_USER_ID_GRAPH: i64 = 38;
+const MIGRATION_DROP_USER_ID_THYMUS: i64 = 39;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -694,6 +703,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 38: drop_user_id_graph");
         run_migration_drop_user_id_graph(conn)?;
         record_migration(conn, MIGRATION_DROP_USER_ID_GRAPH, "drop_user_id_graph")?;
+    }
+
+    if current_version < MIGRATION_DROP_USER_ID_THYMUS {
+        info!("Running migration 39: drop_user_id_thymus");
+        run_migration_drop_user_id_thymus(conn)?;
+        record_migration(conn, MIGRATION_DROP_USER_ID_THYMUS, "drop_user_id_thymus")?;
     }
 
     Ok(())
@@ -2328,6 +2343,95 @@ fn run_migration_drop_user_id_graph(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
+fn run_migration_drop_user_id_thymus(conn: &rusqlite::Connection) -> Result<()> {
+    // Idempotent guard: check rubrics (Shape A with index swap) as sentinel.
+    // If rubrics.user_id is already gone, all 5 thymus tables have been
+    // processed by a prior run.
+    let rubrics_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('rubrics') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let evals_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('evaluations') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let qm_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('quality_metrics') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let sq_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('session_quality') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    let bde_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('behavioral_drift_events') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    if rubrics_has_user_id == 0
+        && evals_has_user_id == 0
+        && qm_has_user_id == 0
+        && sq_has_user_id == 0
+        && bde_has_user_id == 0
+    {
+        info!("thymus user_id already absent, migration 39 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         -- rubrics: Shape A with index swap
+         DROP INDEX IF EXISTS idx_rubrics_user_name;
+         DROP INDEX IF EXISTS idx_rubrics_user;
+         ALTER TABLE rubrics DROP COLUMN user_id;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_rubrics_name ON rubrics(name);
+
+         -- evaluations: Shape A
+         DROP INDEX IF EXISTS idx_evaluations_user;
+         ALTER TABLE evaluations DROP COLUMN user_id;
+
+         -- quality_metrics: Shape A
+         DROP INDEX IF EXISTS idx_quality_metrics_user;
+         ALTER TABLE quality_metrics DROP COLUMN user_id;
+
+         -- session_quality: Shape A
+         DROP INDEX IF EXISTS idx_session_quality_user;
+         ALTER TABLE session_quality DROP COLUMN user_id;
+
+         -- behavioral_drift_events: Shape A
+         DROP INDEX IF EXISTS idx_behavioral_drift_user;
+         ALTER TABLE behavioral_drift_events DROP COLUMN user_id;
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 39 complete: user_id dropped from thymus cluster (5 tables)");
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Post-import validation (unchanged)
 // ---------------------------------------------------------------------------
@@ -2370,15 +2474,12 @@ pub fn validate_post_import(conn: &rusqlite::Connection) -> Result<PostImportVal
 
     let audit_log_null_user = count(conn, "SELECT COUNT(*) FROM audit_log WHERE user_id IS NULL");
 
-    let session_quality_zero_user = count(
-        conn,
-        "SELECT COUNT(*) FROM session_quality WHERE user_id = 0",
-    );
-
-    let behavioral_drift_zero_user = count(
-        conn,
-        "SELECT COUNT(*) FROM behavioral_drift_events WHERE user_id = 0",
-    );
+    // session_quality.user_id and behavioral_drift_events.user_id were dropped
+    // in migration 39. The queries below would fail with "no such column: user_id"
+    // on any DB at schema version 39+. Hardcode 0 so the struct fields and the
+    // is_clean check remain intact for kleos-migrate API compat.
+    let session_quality_zero_user = 0_i64;
+    let behavioral_drift_zero_user = 0_i64;
 
     Ok(PostImportValidation {
         memories_orphan_user,

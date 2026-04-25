@@ -201,9 +201,9 @@ fn row_to_rubric(row: &rusqlite::Row<'_>) -> Result<Rubric> {
         name: row.get(1).map_err(rusqlite_to_eng_error)?,
         description: row.get(2).map_err(rusqlite_to_eng_error)?,
         criteria,
-        user_id: row.get(4).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
-        updated_at: row.get(6).map_err(rusqlite_to_eng_error)?,
+        user_id: 1,
+        created_at: row.get(4).map_err(rusqlite_to_eng_error)?,
+        updated_at: row.get(5).map_err(rusqlite_to_eng_error)?,
     })
 }
 
@@ -230,8 +230,8 @@ fn row_to_evaluation(row: &rusqlite::Row<'_>) -> Result<Evaluation> {
         overall_score: row.get(7).map_err(rusqlite_to_eng_error)?,
         notes: row.get(8).map_err(rusqlite_to_eng_error)?,
         evaluator: row.get(9).map_err(rusqlite_to_eng_error)?,
-        user_id: row.get(10).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(11).map_err(rusqlite_to_eng_error)?,
+        user_id: 1,
+        created_at: row.get(10).map_err(rusqlite_to_eng_error)?,
     })
 }
 
@@ -245,8 +245,8 @@ fn row_to_metric(row: &rusqlite::Row<'_>) -> Result<QualityMetric> {
         metric: row.get(2).map_err(rusqlite_to_eng_error)?,
         value: row.get(3).map_err(rusqlite_to_eng_error)?,
         tags,
-        user_id: row.get(5).map_err(rusqlite_to_eng_error)?,
-        recorded_at: row.get(6).map_err(rusqlite_to_eng_error)?,
+        user_id: 1,
+        recorded_at: row.get(5).map_err(rusqlite_to_eng_error)?,
     })
 }
 
@@ -268,8 +268,8 @@ fn row_to_session_quality(row: &rusqlite::Row<'_>) -> Result<SessionQuality> {
         rules_drifted,
         personality_score: row.get(6).map_err(rusqlite_to_eng_error)?,
         rule_compliance_rate: row.get(7).map_err(rusqlite_to_eng_error)?,
-        user_id: row.get(8).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(9).map_err(rusqlite_to_eng_error)?,
+        user_id: 1,
+        created_at: row.get(8).map_err(rusqlite_to_eng_error)?,
     })
 }
 
@@ -281,8 +281,8 @@ fn row_to_drift_event(row: &rusqlite::Row<'_>) -> Result<DriftEvent> {
         drift_type: row.get(3).map_err(rusqlite_to_eng_error)?,
         severity: row.get(4).map_err(rusqlite_to_eng_error)?,
         signal: row.get(5).map_err(rusqlite_to_eng_error)?,
-        user_id: row.get(6).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
+        user_id: 1,
+        created_at: row.get(6).map_err(rusqlite_to_eng_error)?,
     })
 }
 
@@ -292,37 +292,35 @@ fn row_to_drift_event(row: &rusqlite::Row<'_>) -> Result<DriftEvent> {
 
 #[tracing::instrument(skip(db, req))]
 pub async fn create_rubric(db: &Database, req: CreateRubricRequest) -> Result<Rubric> {
-    let user_id = req
-        .user_id
-        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
+    let _user_id = req.user_id;
     let criteria_json = serde_json::to_string(&req.criteria)?;
 
     let id = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO rubrics (name, description, criteria, user_id)
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![req.name, req.description, criteria_json, user_id],
+                "INSERT INTO rubrics (name, description, criteria)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![req.name, req.description, criteria_json],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
 
-    get_rubric(db, id, user_id).await
+    get_rubric(db, id, 1).await
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_rubric(db: &Database, id: i64, user_id: i64) -> Result<Rubric> {
+pub async fn get_rubric(db: &Database, id: i64, _user_id: i64) -> Result<Rubric> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, description, criteria, user_id, created_at, updated_at
-                 FROM rubrics WHERE id = ?1 AND user_id = ?2",
+                "SELECT id, name, description, criteria, created_at, updated_at
+                 FROM rubrics WHERE id = ?1",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
+            .query(rusqlite::params![id])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
             .next()
@@ -334,16 +332,16 @@ pub async fn get_rubric(db: &Database, id: i64, user_id: i64) -> Result<Rubric> 
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn list_rubrics(db: &Database, user_id: i64) -> Result<Vec<Rubric>> {
+pub async fn list_rubrics(db: &Database, _user_id: i64) -> Result<Vec<Rubric>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, description, criteria, user_id, created_at, updated_at
-                 FROM rubrics WHERE user_id = ?1 ORDER BY created_at DESC",
+                "SELECT id, name, description, criteria, created_at, updated_at
+                 FROM rubrics ORDER BY created_at DESC",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id])
+            .query([])
             .map_err(rusqlite_to_eng_error)?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -359,10 +357,10 @@ pub async fn update_rubric(
     db: &Database,
     id: i64,
     req: UpdateRubricRequest,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Rubric> {
-    // Verify ownership
-    get_rubric(db, id, user_id).await?;
+    // Verify existence
+    get_rubric(db, id, 1).await?;
 
     let mut sets: Vec<String> = Vec::new();
     let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
@@ -388,17 +386,15 @@ pub async fn update_rubric(
     sets.push("updated_at = datetime('now')".to_string());
 
     if sets.is_empty() {
-        return get_rubric(db, id, user_id).await;
+        return get_rubric(db, id, 1).await;
     }
 
     let sql = format!(
-        "UPDATE rubrics SET {} WHERE id = ?{} AND user_id = ?{}",
+        "UPDATE rubrics SET {} WHERE id = ?{}",
         sets.join(", "),
-        idx,
-        idx + 1
+        idx
     );
     params_vec.push(rusqlite::types::Value::Integer(id));
-    params_vec.push(rusqlite::types::Value::Integer(user_id));
 
     db.write(move |conn| {
         conn.execute(&sql, rusqlite::params_from_iter(params_vec))
@@ -407,15 +403,15 @@ pub async fn update_rubric(
     })
     .await?;
 
-    get_rubric(db, id, user_id).await
+    get_rubric(db, id, 1).await
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn delete_rubric(db: &Database, id: i64, user_id: i64) -> Result<bool> {
+pub async fn delete_rubric(db: &Database, id: i64, _user_id: i64) -> Result<bool> {
     db.write(move |conn| {
         conn.execute(
-            "DELETE FROM rubrics WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![id, user_id],
+            "DELETE FROM rubrics WHERE id = ?1",
+            rusqlite::params![id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(true)
@@ -495,12 +491,10 @@ fn compute_weighted_score(criteria: &serde_json::Value, scores: &serde_json::Val
 
 #[tracing::instrument(skip(db, req), fields(rubric_id = req.rubric_id))]
 pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation> {
-    let user_id = req
-        .user_id
-        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
+    let _user_id = req.user_id;
 
     // Fetch rubric to get criteria
-    let rubric = get_rubric(db, req.rubric_id, user_id).await?;
+    let rubric = get_rubric(db, req.rubric_id, 1).await?;
 
     // Compute weighted overall score
     let overall_score = compute_weighted_score(&rubric.criteria, &req.scores)?;
@@ -518,8 +512,8 @@ pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation>
     let id = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO evaluations (rubric_id, agent, subject, input, output, scores, overall_score, notes, evaluator, user_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO evaluations (rubric_id, agent, subject, input, output, scores, overall_score, notes, evaluator)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 rusqlite::params![
                     req.rubric_id,
                     req.agent,
@@ -530,7 +524,6 @@ pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation>
                     overall_score,
                     req.notes,
                     req.evaluator,
-                    user_id,
                 ],
             )
             .map_err(rusqlite_to_eng_error)?;
@@ -538,21 +531,21 @@ pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation>
         })
         .await?;
 
-    get_evaluation(db, id, user_id).await
+    get_evaluation(db, id, 1).await
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_evaluation(db: &Database, id: i64, user_id: i64) -> Result<Evaluation> {
+pub async fn get_evaluation(db: &Database, id: i64, _user_id: i64) -> Result<Evaluation> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT id, rubric_id, agent, subject, input, output, scores, overall_score,
-                        notes, evaluator, user_id, created_at
-                 FROM evaluations WHERE id = ?1 AND user_id = ?2",
+                        notes, evaluator, created_at
+                 FROM evaluations WHERE id = ?1",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
+            .query(rusqlite::params![id])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
             .next()
@@ -566,19 +559,18 @@ pub async fn get_evaluation(db: &Database, id: i64, user_id: i64) -> Result<Eval
 #[tracing::instrument(skip(db))]
 pub async fn list_evaluations(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     agent: Option<&str>,
     rubric_id: Option<i64>,
     limit: usize,
 ) -> Result<Vec<Evaluation>> {
     let mut sql = String::from(
         "SELECT id, rubric_id, agent, subject, input, output, scores, overall_score,
-                notes, evaluator, user_id, created_at
-         FROM evaluations WHERE user_id = ?1",
+                notes, evaluator, created_at
+         FROM evaluations WHERE 1=1",
     );
-    let mut params_vec: Vec<rusqlite::types::Value> =
-        vec![rusqlite::types::Value::Integer(user_id)];
-    let mut idx = 2usize;
+    let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
+    let mut idx = 1usize;
 
     if let Some(a) = agent {
         sql.push_str(&format!(" AND agent = ?{}", idx));
@@ -611,20 +603,19 @@ pub async fn list_evaluations(
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_agent_scores(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     agent: &str,
     rubric_id: Option<i64>,
     since: Option<&str>,
 ) -> Result<AgentScores> {
     let mut sql = String::from(
         "SELECT overall_score, scores FROM evaluations
-         WHERE user_id = ?1 AND agent = ?2",
+         WHERE agent = ?1",
     );
     let mut params_vec: Vec<rusqlite::types::Value> = vec![
-        rusqlite::types::Value::Integer(user_id),
         rusqlite::types::Value::Text(agent.to_string()),
     ];
-    let mut idx = 3usize;
+    let mut idx = 2usize;
 
     if let Some(rid) = rubric_id {
         sql.push_str(&format!(" AND rubric_id = ?{}", idx));
@@ -714,9 +705,7 @@ pub async fn get_agent_scores(
 
 #[tracing::instrument(skip(db, req))]
 pub async fn record_metric(db: &Database, req: RecordMetricRequest) -> Result<QualityMetric> {
-    let user_id = req
-        .user_id
-        .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
+    let _user_id = req.user_id;
     let tags = req
         .tags
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
@@ -725,9 +714,9 @@ pub async fn record_metric(db: &Database, req: RecordMetricRequest) -> Result<Qu
     let id = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO quality_metrics (agent, metric, value, tags, user_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![req.agent, req.metric, req.value, tags_json, user_id],
+                "INSERT INTO quality_metrics (agent, metric, value, tags)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![req.agent, req.metric, req.value, tags_json],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(conn.last_insert_rowid())
@@ -737,7 +726,7 @@ pub async fn record_metric(db: &Database, req: RecordMetricRequest) -> Result<Qu
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, agent, metric, value, tags, user_id, recorded_at
+                "SELECT id, agent, metric, value, tags, recorded_at
                  FROM quality_metrics WHERE id = ?1",
             )
             .map_err(rusqlite_to_eng_error)?;
@@ -756,19 +745,18 @@ pub async fn record_metric(db: &Database, req: RecordMetricRequest) -> Result<Qu
 #[tracing::instrument(skip(db))]
 pub async fn get_metrics(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     agent: Option<&str>,
     metric: Option<&str>,
     since: Option<&str>,
     limit: usize,
 ) -> Result<Vec<QualityMetric>> {
     let mut sql = String::from(
-        "SELECT id, agent, metric, value, tags, user_id, recorded_at
-         FROM quality_metrics WHERE user_id = ?1",
+        "SELECT id, agent, metric, value, tags, recorded_at
+         FROM quality_metrics WHERE 1=1",
     );
-    let mut params_vec: Vec<rusqlite::types::Value> =
-        vec![rusqlite::types::Value::Integer(user_id)];
-    let mut idx = 2usize;
+    let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
+    let mut idx = 1usize;
 
     if let Some(a) = agent {
         sql.push_str(&format!(" AND agent = ?{}", idx));
@@ -806,23 +794,22 @@ pub async fn get_metrics(
 #[tracing::instrument(skip(db), fields(agent = %agent, metric = %metric))]
 pub async fn get_metric_summary(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     agent: &str,
     metric: &str,
     since: Option<&str>,
 ) -> Result<serde_json::Value> {
     let mut sql = String::from(
         "SELECT AVG(value), MIN(value), MAX(value), COUNT(*)
-         FROM quality_metrics WHERE user_id = ?1 AND agent = ?2 AND metric = ?3",
+         FROM quality_metrics WHERE agent = ?1 AND metric = ?2",
     );
     let mut params_vec: Vec<rusqlite::types::Value> = vec![
-        rusqlite::types::Value::Integer(user_id),
         rusqlite::types::Value::Text(agent.to_string()),
         rusqlite::types::Value::Text(metric.to_string()),
     ];
 
     if let Some(s) = since {
-        sql.push_str(" AND recorded_at >= ?4");
+        sql.push_str(" AND recorded_at >= ?3");
         params_vec.push(rusqlite::types::Value::Text(s.to_string()));
     }
 
@@ -865,9 +852,7 @@ pub async fn record_session_quality(
     db: &Database,
     req: RecordSessionQualityRequest,
 ) -> Result<SessionQuality> {
-    let user_id = req
-        .user_id
-        .ok_or_else(|| EngError::InvalidInput("user_id required".into()))?;
+    let _user_id = req.user_id;
     let turn_count = req.turn_count.unwrap_or(0);
     let rules_followed = req.rules_followed.unwrap_or_default();
     let rules_drifted = req.rules_drifted.unwrap_or_default();
@@ -877,10 +862,10 @@ pub async fn record_session_quality(
     db.write(move |conn| {
         let mut stmt = conn
             .prepare(
-                "INSERT INTO session_quality (session_id, agent, turn_count, rules_followed, rules_drifted, personality_score, rule_compliance_rate, user_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO session_quality (session_id, agent, turn_count, rules_followed, rules_drifted, personality_score, rule_compliance_rate)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  RETURNING id, session_id, agent, turn_count, rules_followed, rules_drifted,
-                           personality_score, rule_compliance_rate, user_id, created_at",
+                           personality_score, rule_compliance_rate, created_at",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
@@ -892,7 +877,6 @@ pub async fn record_session_quality(
                 rules_drifted_json,
                 req.personality_score,
                 req.rule_compliance_rate,
-                user_id,
             ])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
@@ -907,7 +891,7 @@ pub async fn record_session_quality(
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_session_quality(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     agent: &str,
     since: Option<&str>,
     limit: usize,
@@ -917,14 +901,13 @@ pub async fn get_session_quality(
 
     let mut sql = String::from(
         "SELECT id, session_id, agent, turn_count, rules_followed, rules_drifted,
-                personality_score, rule_compliance_rate, user_id, created_at
-         FROM session_quality WHERE user_id = ?1 AND agent = ?2",
+                personality_score, rule_compliance_rate, created_at
+         FROM session_quality WHERE agent = ?1",
     );
     let mut params_vec: Vec<rusqlite::types::Value> = vec![
-        rusqlite::types::Value::Integer(user_id),
         rusqlite::types::Value::Text(agent.to_string()),
     ];
-    let mut idx = 3usize;
+    let mut idx = 2usize;
 
     if let Some(s) = since {
         sql.push_str(&format!(" AND created_at >= ?{}", idx));
@@ -966,9 +949,7 @@ const VALID_SEVERITIES: &[&str] = &["low", "medium", "high", "critical"];
 
 #[tracing::instrument(skip(db, req))]
 pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> Result<DriftEvent> {
-    let user_id = req
-        .user_id
-        .ok_or_else(|| EngError::InvalidInput("user_id required".into()))?;
+    let _user_id = req.user_id;
 
     // Validate drift_type
     if !VALID_DRIFT_TYPES.contains(&req.drift_type.as_str()) {
@@ -993,9 +974,9 @@ pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> 
     db.write(move |conn| {
         let mut stmt = conn
             .prepare(
-                "INSERT INTO behavioral_drift_events (agent, session_id, drift_type, severity, signal, user_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 RETURNING id, agent, session_id, drift_type, severity, signal, user_id, created_at",
+                "INSERT INTO behavioral_drift_events (agent, session_id, drift_type, severity, signal)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 RETURNING id, agent, session_id, drift_type, severity, signal, created_at",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
@@ -1005,7 +986,6 @@ pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> 
                 req.drift_type,
                 severity,
                 req.signal,
-                user_id,
             ])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
@@ -1020,7 +1000,7 @@ pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> 
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_drift_events(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     agent: &str,
     limit: usize,
 ) -> Result<Vec<DriftEvent>> {
@@ -1030,13 +1010,13 @@ pub async fn get_drift_events(
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, agent, session_id, drift_type, severity, signal, user_id, created_at
-                 FROM behavioral_drift_events WHERE user_id = ?1 AND agent = ?2
-                 ORDER BY created_at DESC LIMIT ?3",
+                "SELECT id, agent, session_id, drift_type, severity, signal, created_at
+                 FROM behavioral_drift_events WHERE agent = ?1
+                 ORDER BY created_at DESC LIMIT ?2",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id, agent_owned, capped as i64])
+            .query(rusqlite::params![agent_owned, capped as i64])
             .map_err(rusqlite_to_eng_error)?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -1050,7 +1030,7 @@ pub async fn get_drift_events(
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_drift_summary(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     agent: &str,
 ) -> Result<Vec<DriftSummaryEntry>> {
     let agent_owned = agent.to_string();
@@ -1059,13 +1039,13 @@ pub async fn get_drift_summary(
         let mut stmt = conn
             .prepare(
                 "SELECT drift_type, severity, COUNT(*) as count
-                 FROM behavioral_drift_events WHERE user_id = ?1 AND agent = ?2
+                 FROM behavioral_drift_events WHERE agent = ?1
                  GROUP BY drift_type, severity
                  ORDER BY count DESC",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id, agent_owned])
+            .query(rusqlite::params![agent_owned])
             .map_err(rusqlite_to_eng_error)?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -1085,36 +1065,36 @@ pub async fn get_drift_summary(
 // ---------------------------------------------------------------------------
 
 #[tracing::instrument(skip(db))]
-pub async fn get_stats(db: &Database, user_id: i64) -> Result<ThymusStats> {
+pub async fn get_stats(db: &Database, _user_id: i64) -> Result<ThymusStats> {
     db.read(move |conn| {
         let rubrics: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM rubrics WHERE user_id = ?1",
-                rusqlite::params![user_id],
+                "SELECT COUNT(*) FROM rubrics",
+                [],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let evaluations: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM evaluations WHERE user_id = ?1",
-                rusqlite::params![user_id],
+                "SELECT COUNT(*) FROM evaluations",
+                [],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let metrics: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM quality_metrics WHERE user_id = ?1",
-                rusqlite::params![user_id],
+                "SELECT COUNT(*) FROM quality_metrics",
+                [],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let agent_count: i64 = conn
             .query_row(
-                "SELECT COUNT(DISTINCT agent) FROM evaluations WHERE user_id = ?1",
-                rusqlite::params![user_id],
+                "SELECT COUNT(DISTINCT agent) FROM evaluations",
+                [],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)?;
