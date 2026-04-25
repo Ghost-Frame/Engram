@@ -320,11 +320,13 @@ pub async fn fast_extract_facts(
             // Stamp episode provenance on newly extracted facts
             if !facts.is_empty() {
                 if let Some(ep_id) = episode_id {
-                    let _ = conn.execute(
+                    if let Err(e) = conn.execute(
                         "UPDATE structured_facts SET episode_id = ?1
                          WHERE memory_id = ?2 AND user_id = ?3 AND episode_id IS NULL",
                         rusqlite::params![ep_id, memory_id, user_id],
-                    );
+                    ) {
+                        warn!(memory_id, user_id, error = %e, "extraction: failed to stamp episode_id on structured_facts");
+                    }
                 }
             }
 

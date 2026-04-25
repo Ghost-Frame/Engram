@@ -6,7 +6,7 @@ use crate::db::Database;
 use crate::memory::types::Memory;
 use crate::{EngError, Result};
 use rusqlite::params;
-use tracing::info;
+use tracing::{info, warn};
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
@@ -121,7 +121,7 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
             let mem_b_id: i64 = c.memory_b.parse().unwrap_or(0);
             if mem_b_id > 0 {
                 let conf_f64 = c.confidence as f64;
-                let _ = db
+                if let Err(e) = db
                     .write(move |conn| {
                         conn.execute(
                             "INSERT OR IGNORE INTO memory_links \
@@ -132,7 +132,10 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                         .map_err(rusqlite_to_eng_error)?;
                         Ok(())
                     })
-                    .await;
+                    .await
+                {
+                    warn!(memory_id, mem_b_id, error = %e, "contradiction: failed to insert memory_links row");
+                }
             }
         }
     }

@@ -326,9 +326,15 @@ async fn run_cycle(
     }
 
     // Deserialize dream cycle result for growth context enrichment.
-    let dream_cycle: Option<DreamCycleResult> = brain_result
-        .as_ref()
-        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let dream_cycle: Option<DreamCycleResult> = brain_result.as_ref().and_then(|v| {
+        match serde_json::from_value::<DreamCycleResult>(v.clone()) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                warn!(error = %e, "dreamer: failed to deserialize dream cycle for growth context");
+                None
+            }
+        }
+    });
 
     // Post-dream hook 2: probabilistic growth reflection per user.
     let mut growth_calls = 0u64;
@@ -660,8 +666,18 @@ async fn run_cycle_tenants(
 
         if config.skill_evolution_enabled {
             if let Some(llm_ref) = llm {
-                let _report =
+                let report =
                     run_skill_evolution(&tenant_db, llm_ref.as_ref(), config, &users).await;
+                info!(
+                    tenant = %tenant_row.tenant_id,
+                    fixes_attempted = report.fixes_attempted,
+                    fixes_succeeded = report.fixes_succeeded,
+                    captures_attempted = report.captures_attempted,
+                    captures_succeeded = report.captures_succeeded,
+                    derives_attempted = report.derives_attempted,
+                    derives_succeeded = report.derives_succeeded,
+                    "dreamer: skill evolution complete"
+                );
             }
         }
 
