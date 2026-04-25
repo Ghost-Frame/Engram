@@ -120,6 +120,6 @@ async fn get_stats(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_broca_stats(&state.db, Some(auth.user_id)).await?;
+    let stats = get_broca_stats(&state.db).await?;
     Ok(Json(json!(stats)))
 }

@@ -125,7 +125,7 @@ pub async fn get_session_entries(
 }
 
 #[tracing::instrument(skip(db, session))]
-pub async fn delete_session(db: &Database, _user_id: i64, session: &str) -> Result<()> {
+pub async fn delete_session(db: &Database, session: &str) -> Result<()> {
     let session = session.to_string();
     db.write(move |conn| {
         conn.execute(

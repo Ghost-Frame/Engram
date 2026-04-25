@@ -130,7 +130,7 @@ async fn update_agent_handler(
     }
 
     if let Some(status) = body.status.as_deref() {
-        set_status(&db, id, auth.user_id, status).await?;
+        set_status(&db, id, status).await?;
     }
 
     let agent = get_agent(&db, id, auth.user_id).await?;
@@ -142,7 +142,7 @@ async fn delete_agent_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_agent(&db, id, auth.user_id).await?;
+    delete_agent(&db, id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -151,12 +151,12 @@ async fn heartbeat_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    heartbeat(&db, id, auth.user_id).await?;
+    heartbeat(&db, id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
 async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
-    let stats = get_soma_stats(&db, Some(auth.user_id)).await?;
+    let stats = get_soma_stats(&db).await?;
     Ok(Json(json!(stats)))
 }
 

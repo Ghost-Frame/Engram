@@ -108,12 +108,12 @@ async fn list_channels_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let channels = list_channels(&db, auth.user_id).await?;
+    let channels = list_channels(&db).await?;
     Ok(Json(json!({ "channels": channels })))
 }
 
 async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
-    let stats = get_axon_stats(&db, Some(auth.user_id)).await?;
+    let stats = get_axon_stats(&db).await?;
     Ok(Json(json!(stats)))
 }
 

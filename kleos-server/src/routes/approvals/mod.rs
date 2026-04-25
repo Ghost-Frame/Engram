@@ -10,7 +10,7 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::approvals::{
-    create_approval, decide, expire_stale_for_user, get_approval, list_pending,
+    create_approval, decide, expire_stale, get_approval, list_pending,
     CreateApprovalRequest, DecideRequest,
 };
 
@@ -58,7 +58,7 @@ async fn list_pending_handler(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     // First expire any stale approvals for this user
-    let expired_count = expire_stale_for_user(&db, auth.user_id).await?;
+    let expired_count = expire_stale(&db).await?;
 
     let approvals = list_pending(&db, auth.user_id).await?;
     let responses: Vec<ApprovalResponse> = approvals.into_iter().map(Into::into).collect();

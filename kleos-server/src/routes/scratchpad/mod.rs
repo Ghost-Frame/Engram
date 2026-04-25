@@ -73,7 +73,7 @@ async fn delete_session(
     ResolvedDb(db): ResolvedDb,
     Path(session): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::scratchpad::delete_session(&db, auth.user_id, &session).await?;
+    kleos_lib::scratchpad::delete_session(&db, &session).await?;
     Ok(Json(json!({ "deleted": true, "session": session })))
 }
 

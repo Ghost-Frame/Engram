@@ -263,7 +263,7 @@ async fn decompose_handler(
     ResolvedDb(db): ResolvedDb,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let child_ids = decompose(&db, memory_id, auth.user_id).await?;
+    let child_ids = decompose(&db, memory_id).await?;
     Ok(Json(json!({ "child_ids": child_ids })))
 }
 
@@ -275,7 +275,7 @@ async fn detect_temporal_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let patterns = detect_patterns(&db, auth.user_id).await?;
+    let patterns = detect_patterns(&db).await?;
     for pattern in &patterns {
         if let Err(e) = store_pattern(&db, pattern).await {
             tracing::warn!("failed to store temporal pattern: {}", e);
@@ -557,7 +557,7 @@ async fn valence_profile_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let profile = get_emotional_profile(&db, auth.user_id).await?;
+    let profile = get_emotional_profile(&db).await?;
     Ok(Json(json!(profile)))
 }
 
@@ -733,7 +733,7 @@ async fn memory_health_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let report = memory_health(&db, auth.user_id).await?;
+    let report = memory_health(&db).await?;
     Ok(Json(json!(report)))
 }
 

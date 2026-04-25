@@ -231,7 +231,7 @@ pub async fn soma_heartbeat(app: &App, args: Value) -> Result<Value> {
         .get("id")
         .and_then(Value::as_i64)
         .ok_or_else(|| invalid_input("id required"))?;
-    soma::heartbeat(&app.db, id, auth.user_id).await?;
+    soma::heartbeat(&app.db, id).await?;
     Ok(json!({"ok": true, "id": id}))
 }
 

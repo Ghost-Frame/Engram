@@ -278,8 +278,8 @@ pub async fn update_task(
     get_task(db, id, user_id).await
 }
 
-#[tracing::instrument(skip(db), fields(task_id = id, user_id))]
-pub async fn delete_task(db: &Database, id: i64, _user_id: i64) -> Result<()> {
+#[tracing::instrument(skip(db), fields(task_id = id))]
+pub async fn delete_task(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
             "DELETE FROM chiasm_tasks WHERE id = ?1",
@@ -326,8 +326,8 @@ pub async fn list_task_history(
     .await
 }
 
-#[tracing::instrument(skip(db), fields(user_id = ?_user_id))]
-pub async fn get_stats(db: &Database, _user_id: Option<i64>) -> Result<ChiasmStats> {
+#[tracing::instrument(skip(db))]
+pub async fn get_stats(db: &Database) -> Result<ChiasmStats> {
     db.read(move |conn| {
         let mut by_status = BTreeMap::new();
         let mut total: i64 = 0;

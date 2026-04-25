@@ -198,7 +198,7 @@ pub async fn query_events(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn list_channels(db: &Database, _user_id: i64) -> Result<Vec<Channel>> {
+pub async fn list_channels(db: &Database) -> Result<Vec<Channel>> {
     let sql = "SELECT id, name, description, retain_hours, created_at
                FROM axon_channels ORDER BY name ASC";
 
@@ -444,8 +444,8 @@ pub async fn consume(
     Ok(events)
 }
 
-#[tracing::instrument(skip(db), fields(user_id = ?_user_id))]
-pub async fn get_stats(db: &Database, _user_id: Option<i64>) -> Result<AxonStats> {
+#[tracing::instrument(skip(db))]
+pub async fn get_stats(db: &Database) -> Result<AxonStats> {
     db.read(move |conn| {
         conn.query_row(
             "SELECT COUNT(*), COUNT(DISTINCT channel), COUNT(DISTINCT source)
@@ -581,7 +581,7 @@ mod tests {
     #[tokio::test]
     async fn list_channels_returns_seeded() {
         let db = setup().await;
-        let channels = list_channels(&db, 1).await.unwrap();
+        let channels = list_channels(&db).await.unwrap();
         assert!(channels.iter().any(|c| c.name == "system"));
     }
 }

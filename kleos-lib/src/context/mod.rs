@@ -1209,7 +1209,7 @@ async fn assemble_context_inner(
 
     // Defer access tracking (scoped to user_id)
     let block_ids: Vec<i64> = blocks.iter().filter(|b| b.id > 0).map(|b| b.id).collect();
-    track_access(db, &block_ids, user_id).await;
+    track_access(db, &block_ids).await;
 
     // Build breakdown
     let breakdown = ContextBreakdown {
