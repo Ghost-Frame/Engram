@@ -106,18 +106,15 @@ impl RerankerInner {
 
         let token_ids = encoding.get_ids();
         let attention = encoding.get_attention_mask();
-        let type_ids = encoding.get_type_ids();
 
         let seq_len = self.max_seq;
         let mut input_ids = vec![0i64; seq_len];
         let mut attention_mask = vec![0i64; seq_len];
-        let mut token_type_ids = vec![0i64; seq_len];
 
         let copy_len = token_ids.len().min(seq_len);
         for i in 0..copy_len {
             input_ids[i] = token_ids[i] as i64;
             attention_mask[i] = attention[i] as i64;
-            token_type_ids[i] = type_ids[i] as i64;
         }
 
         let ids_tensor = Tensor::<i64>::from_array(([1usize, seq_len], input_ids))
@@ -125,10 +122,6 @@ impl RerankerInner {
         let mask_tensor =
             Tensor::<i64>::from_array(([1usize, seq_len], attention_mask)).map_err(|e| {
                 EngError::Internal(format!("failed to create attention_mask tensor: {}", e))
-            })?;
-        let type_ids_tensor = Tensor::<i64>::from_array(([1usize, seq_len], token_type_ids))
-            .map_err(|e| {
-                EngError::Internal(format!("failed to create token_type_ids tensor: {}", e))
             })?;
 
         let mut session = self
@@ -140,7 +133,6 @@ impl RerankerInner {
             .run(ort::inputs![
                 "input_ids" => ids_tensor,
                 "attention_mask" => mask_tensor,
-                "token_type_ids" => type_ids_tensor,
             ])
             .map_err(|e| EngError::Internal(format!("ort reranker inference error: {}", e)))?;
 
