@@ -2192,3 +2192,109 @@ async fn upload_complete_dispatches_binary_format_to_ingest_binary() {
         "expected binary parser outcome (zero ingested or errors list): {fb}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// GATE -- ResolvedDb extractor (Stage 14)
+// ---------------------------------------------------------------------------
+
+/// Verifies that check_handler queries the agents table via ResolvedDb.
+/// Registers an agent, links an API key to it, then makes two /gate/check
+/// calls:
+///   1. Correct agent name -> allowed (no block from allowlist).
+///   2. Wrong agent name -> rejected 403 (allowlist enforced).
+#[tokio::test]
+async fn gate_check_resolves_agent_via_tenant_shard() {
+    let app = TestApp::new().await;
+
+    // Register an agent via /agents.
+    let (reg_status, reg_body) = app
+        .post(
+            "/agents",
+            json!({
+                "name": "stage14-agent",
+                "category": "test",
+                "description": "Stage 14 ResolvedDb test agent",
+            }),
+        )
+        .await;
+    assert!(
+        reg_status == StatusCode::OK || reg_status == StatusCode::CREATED,
+        "agent registration should succeed, got {reg_status}: {reg_body}"
+    );
+    let agent_id = reg_body["agent_id"]
+        .as_i64()
+        .expect("agent registration must return agent_id");
+
+    // Create a new API key (admin key is needed to call /keys).
+    let (key_status, key_body) = app
+        .post(
+            "/keys",
+            json!({ "name": "stage14-bound-key", "scopes": "read,write" }),
+        )
+        .await;
+    assert!(
+        key_status == StatusCode::OK || key_status == StatusCode::CREATED,
+        "key creation should succeed, got {key_status}: {key_body}"
+    );
+    let raw_key = key_body["key"]
+        .as_str()
+        .expect("key creation must return key field")
+        .to_string();
+    let key_id = key_body["id"]
+        .as_i64()
+        .expect("key creation must return id");
+
+    // Link the key to the agent.
+    let (link_status, link_body) = app
+        .post(
+            &format!("/agents/{}/link-key", agent_id),
+            json!({ "key_id": key_id }),
+        )
+        .await;
+    assert!(
+        link_status == StatusCode::OK || link_status == StatusCode::CREATED,
+        "link-key should succeed, got {link_status}: {link_body}"
+    );
+
+    // Call /gate/check with the bound key declaring the correct agent name.
+    // The allowlist check in check_handler queries agents via ResolvedDb.
+    // A safe, allow-listed command is used so we only test the allowlist path.
+    let (check_status, check_body) = app
+        .post_as(
+            "/gate/check",
+            json!({
+                "command": "echo hello",
+                "agent": "stage14-agent",
+            }),
+            &raw_key,
+        )
+        .await;
+    assert!(
+        check_status == StatusCode::OK || check_status == StatusCode::CREATED,
+        "gate/check with correct agent name should succeed, got {check_status}: {check_body}"
+    );
+    // The gate may allow or block based on rules, but must not return 403.
+    assert_ne!(
+        check_status,
+        StatusCode::FORBIDDEN,
+        "correct agent name must not be rejected by allowlist: {check_body}"
+    );
+
+    // Call /gate/check with the bound key but the wrong agent name.
+    // The handler must reject this with 403 Forbidden.
+    let (wrong_status, wrong_body) = app
+        .post_as(
+            "/gate/check",
+            json!({
+                "command": "echo hello",
+                "agent": "some-other-agent",
+            }),
+            &raw_key,
+        )
+        .await;
+    assert_eq!(
+        wrong_status,
+        StatusCode::FORBIDDEN,
+        "wrong agent name with bound key must be rejected 403, got {wrong_status}: {wrong_body}"
+    );
+}
