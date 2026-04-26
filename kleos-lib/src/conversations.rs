@@ -227,7 +227,7 @@ pub async fn create_conversation(
 pub async fn get_conversation_for_user(
     db: &Database,
     id: i64,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Conversation> {
     let sql = format!(
         "SELECT {} FROM conversations WHERE id = ?1",
@@ -247,7 +247,7 @@ pub async fn get_conversation_by_session(
     db: &Database,
     agent: &str,
     session_id: &str,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Option<Conversation>> {
     let agent = agent.to_string();
     let session_id = session_id.to_string();
@@ -268,7 +268,7 @@ pub async fn get_conversation_by_session(
 #[tracing::instrument(skip(db), fields(user_id, limit))]
 pub async fn list_conversations(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     limit: usize,
 ) -> Result<Vec<ConversationListItem>> {
     let sql = format!(
@@ -294,7 +294,7 @@ pub async fn list_conversations(
 #[tracing::instrument(skip(db), fields(user_id, agent = %agent, limit))]
 pub async fn list_conversations_by_agent(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     agent: &str,
     limit: usize,
 ) -> Result<Vec<ConversationListItem>> {
@@ -342,7 +342,7 @@ pub async fn update_conversation(
 }
 
 #[tracing::instrument(skip(db), fields(conversation_id = id, user_id))]
-pub async fn delete_conversation(db: &Database, id: i64, user_id: i64) -> Result<()> {
+pub async fn delete_conversation(db: &Database, id: i64, _user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
             conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])
@@ -356,7 +356,7 @@ pub async fn delete_conversation(db: &Database, id: i64, user_id: i64) -> Result
 }
 
 #[tracing::instrument(skip(db), fields(conversation_id = id, user_id))]
-pub async fn touch_conversation(db: &Database, id: i64, user_id: i64) -> Result<()> {
+pub async fn touch_conversation(db: &Database, id: i64, _user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
             "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
@@ -423,7 +423,7 @@ pub async fn add_message(
 pub async fn list_messages(
     db: &Database,
     conversation_id: i64,
-    user_id: i64,
+    _user_id: i64,
     limit: usize,
     offset: usize,
 ) -> Result<Vec<Message>> {
@@ -461,7 +461,7 @@ pub async fn list_messages(
 pub async fn search_messages(
     db: &Database,
     req: SearchMessagesRequest,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Vec<MessageSearchResult>> {
     let limit = req.limit.unwrap_or(20).min(100);
     let sanitized = sanitize_fts_query(&req.query);

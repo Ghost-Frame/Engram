@@ -131,7 +131,7 @@ pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> 
 }
 
 #[tracing::instrument(skip(db), fields(task_id = id, user_id))]
-pub async fn get_task(db: &Database, id: i64, user_id: i64) -> Result<Task> {
+pub async fn get_task(db: &Database, id: i64, _user_id: i64) -> Result<Task> {
     let sql = format!("SELECT {TASK_COLUMNS} FROM chiasm_tasks WHERE id = ?1");
 
     db.read(move |conn| {
@@ -151,7 +151,7 @@ pub async fn get_task(db: &Database, id: i64, user_id: i64) -> Result<Task> {
 #[tracing::instrument(skip(db), fields(user_id, status = ?status, agent = ?agent, project = ?project, limit, offset))]
 pub async fn list_tasks(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     status: Option<&str>,
     agent: Option<&str>,
     project: Option<&str>,

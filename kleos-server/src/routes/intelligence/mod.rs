@@ -259,7 +259,7 @@ async fn scan_contradictions_handler(
 // ---------------------------------------------------------------------------
 
 async fn decompose_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
@@ -272,7 +272,7 @@ async fn decompose_handler(
 // ---------------------------------------------------------------------------
 
 async fn detect_temporal_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     let patterns = detect_patterns(&db).await?;
@@ -285,7 +285,7 @@ async fn detect_temporal_handler(
 }
 
 async fn list_temporal_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
@@ -310,7 +310,7 @@ async fn generate_digest_handler(
 }
 
 async fn list_digests_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
@@ -555,7 +555,7 @@ async fn valence_get_handler(
 }
 
 async fn valence_profile_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     let profile = get_emotional_profile(&db).await?;
@@ -575,7 +575,7 @@ async fn predictive_recall_handler(
 }
 
 async fn predictive_patterns_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
@@ -587,7 +587,7 @@ async fn predictive_patterns_handler(
 }
 
 async fn predictive_sequences_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<SequencesBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -732,7 +732,7 @@ async fn correct_handler(
 // ---------------------------------------------------------------------------
 
 async fn memory_health_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     let report = memory_health(&db).await?;
@@ -753,7 +753,7 @@ async fn feedback_handler(
 }
 
 async fn feedback_stats_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     let stats = feedback::feedback_stats(&db).await?;

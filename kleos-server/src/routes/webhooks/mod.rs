@@ -68,7 +68,7 @@ async fn list_webhooks_handler(
 
 async fn delete_webhook_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     kleos_lib::webhooks::delete_webhook(&db, id).await?;
@@ -99,7 +99,7 @@ async fn test_webhook_handler(
 
 async fn list_dead_letters_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Path(id): Path<i64>,
     Query(query): Query<DeadLetterQuery>,
 ) -> Result<Json<Value>, AppError> {

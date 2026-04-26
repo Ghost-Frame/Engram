@@ -250,7 +250,7 @@ impl IntelligenceTask for TemporalDetectTask {
     fn dependencies(&self) -> &'static [&'static str] {
         &["consolidate_sweep"]
     }
-    async fn run(&self, db: &Database, user_id: i64) -> Result<Value> {
+    async fn run(&self, db: &Database, _user_id: i64) -> Result<Value> {
         let patterns = temporal::detect_patterns(db).await?;
         Ok(json!({ "count": patterns.len() }))
     }

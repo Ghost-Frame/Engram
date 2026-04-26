@@ -106,13 +106,13 @@ async fn get_event_handler(
 
 async fn list_channels_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     let channels = list_channels(&db).await?;
     Ok(Json(json!({ "channels": channels })))
 }
 
-async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
+async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = get_axon_stats(&db).await?;
     Ok(Json(json!(stats)))
 }
@@ -153,7 +153,7 @@ async fn subscribe_handler(
 
 async fn unsubscribe_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Json(body): Json<UnsubscribeBody>,
 ) -> Result<Json<Value>, AppError> {
     let deleted = delete_subscription(&db, &body.agent, &body.channel).await?;

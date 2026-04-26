@@ -203,7 +203,7 @@ async fn record_session_quality_handler(
 }
 
 async fn get_session_quality_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<SessionQualityParams>,
 ) -> Result<Json<Value>, AppError> {

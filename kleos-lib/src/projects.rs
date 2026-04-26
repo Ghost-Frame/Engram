@@ -74,7 +74,7 @@ pub async fn create_project(
 }
 
 #[tracing::instrument(skip(db), fields(project_id = id, user_id))]
-pub async fn get_project(db: &Database, id: i64, user_id: i64) -> Result<Option<ProjectRow>> {
+pub async fn get_project(db: &Database, id: i64, _user_id: i64) -> Result<Option<ProjectRow>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -98,7 +98,7 @@ pub async fn get_project(db: &Database, id: i64, user_id: i64) -> Result<Option<
 #[tracing::instrument(skip(db), fields(user_id, status = ?status))]
 pub async fn list_projects(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     status: Option<&str>,
 ) -> Result<Vec<ProjectRow>> {
     let status = status.map(|s| s.to_string());

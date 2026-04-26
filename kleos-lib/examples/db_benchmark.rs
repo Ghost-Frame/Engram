@@ -411,7 +411,7 @@ async fn bench_pagerank(db: &Database, args: &Args) -> kleos_lib::Result<Vec<Dur
 
         let start = Instant::now();
         let scores = compute_pagerank_for_user(db, args.user_id).await?;
-        persist_pagerank(db, args.user_id, &scores).await?;
+        persist_pagerank(db, &scores).await?;
         black_box(scores.len());
         samples.push(start.elapsed());
     }

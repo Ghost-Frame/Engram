@@ -553,7 +553,7 @@ async fn run_skill_evolution(
 
 async fn recent_memory_contents(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     limit: usize,
 ) -> Result<Vec<String>, EngError> {
     let limit_i64 = limit as i64;

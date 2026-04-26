@@ -68,7 +68,7 @@ pub async fn decompose(app: &App, args: Value) -> Result<Value> {
 
 #[tracing::instrument(skip(app, args), fields(tool = "intelligence.temporal_summary"))]
 pub async fn temporal_summary(app: &App, args: Value) -> Result<Value> {
-    let auth = resolve_auth(app, &args).await?;
+    let _auth = resolve_auth(app, &args).await?;
     if args.get("detect").and_then(Value::as_bool).unwrap_or(true) {
         let patterns = temporal::detect_patterns(&app.db).await?;
         return Ok(json!({"patterns": patterns, "count": patterns.len()}));

@@ -176,18 +176,15 @@ async fn build_dataset(db: &Database, args: &Args) -> kleos_lib::Result<(usize, 
     Ok((ids.len(), edges))
 }
 
-async fn clear_pagerank_cache(db: &Database, user_id: i64) -> kleos_lib::Result<()> {
+async fn clear_pagerank_cache(db: &Database, _user_id: i64) -> kleos_lib::Result<()> {
     db.write(move |conn| {
         conn.execute(
-            "DELETE FROM memory_pagerank WHERE user_id = ?1",
-            rusqlite::params![user_id],
+            "DELETE FROM memory_pagerank",
+            rusqlite::params![],
         )
         .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
-        conn.execute(
-            "DELETE FROM pagerank_dirty WHERE user_id = ?1",
-            rusqlite::params![user_id],
-        )
-        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("DELETE FROM pagerank_dirty", rusqlite::params![])
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
         Ok(())
     })
     .await
@@ -196,7 +193,7 @@ async fn clear_pagerank_cache(db: &Database, user_id: i64) -> kleos_lib::Result<
 async fn warm_pagerank_cache(db: &Database, user_id: i64) -> kleos_lib::Result<usize> {
     let scores = compute_pagerank_for_user(db, user_id).await?;
     let count = scores.len();
-    persist_pagerank(db, user_id, &scores).await?;
+    persist_pagerank(db, &scores).await?;
     Ok(count)
 }
 

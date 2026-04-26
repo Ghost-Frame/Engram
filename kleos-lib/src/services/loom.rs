@@ -836,7 +836,7 @@ pub async fn list_runs(
 }
 
 #[tracing::instrument(skip(db), fields(run_id = id, user_id))]
-pub async fn cancel_run(db: &Database, id: i64, user_id: i64) -> Result<bool> {
+pub async fn cancel_run(db: &Database, id: i64, _user_id: i64) -> Result<bool> {
     let run = get_run(db, id).await?;
 
     // Check not already terminal
@@ -876,7 +876,7 @@ pub async fn cancel_run(db: &Database, id: i64, user_id: i64) -> Result<bool> {
 // ---------------------------------------------------------------------------
 
 #[tracing::instrument(skip(db), fields(run_id, user_id))]
-pub async fn get_steps(db: &Database, run_id: i64, user_id: i64) -> Result<Vec<Step>> {
+pub async fn get_steps(db: &Database, run_id: i64, _user_id: i64) -> Result<Vec<Step>> {
     // Verify run ownership
     get_run(db, run_id).await?;
     db.read(move |conn| {
@@ -933,7 +933,7 @@ pub async fn complete_step(
     db: &Database,
     step_id: i64,
     output: serde_json::Value,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<()> {
     let step = get_step(db, step_id).await?;
     // Verify run ownership
@@ -977,7 +977,7 @@ pub async fn complete_step(
 }
 
 #[tracing::instrument(skip(db, error), fields(step_id, user_id))]
-pub async fn fail_step(db: &Database, step_id: i64, error: &str, user_id: i64) -> Result<()> {
+pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) -> Result<()> {
     let step = get_step(db, step_id).await?;
     // Verify run ownership
     get_run(db, step.run_id).await?;

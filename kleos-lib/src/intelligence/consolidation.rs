@@ -193,7 +193,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
 pub async fn find_consolidation_candidates(
     db: &Database,
     threshold: f32,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Vec<Vec<String>>> {
     // Collect all similar pairs from the database.
     let pairs: Vec<(i64, i64)> = db

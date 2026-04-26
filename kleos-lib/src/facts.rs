@@ -144,6 +144,10 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
 #[tracing::instrument(skip(db), fields(memory_id_filter = ?memory_id_filter, limit))]
 pub async fn list_facts(
     db: &Database,
+<<<<<<< HEAD
+=======
+    _user_id: i64,
+>>>>>>> b897358 (fix(clippy): Phase 5 Stage 20 -- close hygiene tail)
     memory_id_filter: Option<i64>,
     limit: usize,
 ) -> Result<Vec<StructuredFact>> {
@@ -180,8 +184,13 @@ pub async fn list_facts(
 }
 
 /// Hard-delete a structured fact by id (tenant-scoped).
+<<<<<<< HEAD
 #[tracing::instrument(skip(db), fields(fact_id = id))]
 pub async fn delete_fact(db: &Database, id: i64) -> Result<()> {
+=======
+#[tracing::instrument(skip(db), fields(fact_id = id, user_id))]
+pub async fn delete_fact(db: &Database, id: i64, _user_id: i64) -> Result<()> {
+>>>>>>> b897358 (fix(clippy): Phase 5 Stage 20 -- close hygiene tail)
     let affected = db
         .write(move |conn| {
             conn.execute("DELETE FROM structured_facts WHERE id = ?1", params![id])
@@ -207,7 +216,7 @@ pub async fn set_state(
     agent: &str,
     key: &str,
     value: &str,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<CurrentState> {
     let agent_owned = agent.to_string();
     let key_owned = key.to_string();

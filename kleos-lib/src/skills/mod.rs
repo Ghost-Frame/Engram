@@ -681,7 +681,7 @@ pub fn check_tool_safety(required_tools: &[String], available_tools: &[String]) 
 #[tracing::instrument(skip(db), fields(user_id, since_hours, limit))]
 pub async fn list_recent_evolutions(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     since_hours: u32,
     limit: usize,
 ) -> Result<Vec<EvolutionFeedRow>> {

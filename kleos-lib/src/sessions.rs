@@ -368,7 +368,7 @@ pub async fn get_session(db: &Database, session_id: &str, user_id: i64) -> Resul
         conn.query_row(
             "SELECT id, agent, status, created_at, updated_at FROM sessions WHERE id = ?1",
             params![session_id],
-            |row| row_to_session(row),
+            row_to_session,
         )
         .optional()
         .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
@@ -395,7 +395,7 @@ pub async fn list_sessions(
             )
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         let rows = stmt
-            .query_map(params![limit, offset], |row| row_to_session(row))
+            .query_map(params![limit, offset], row_to_session)
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         let mut sessions = Vec::new();
         for row in rows {

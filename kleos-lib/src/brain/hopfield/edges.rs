@@ -20,7 +20,7 @@ pub async fn store_edge(
     target_id: i64,
     weight: f32,
     edge_type: EdgeType,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<()> {
     let edge_type_str = edge_type.to_string();
     db.write(move |conn| {

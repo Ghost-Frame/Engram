@@ -54,7 +54,7 @@ pub async fn add_link(
     effect_memory_id: i64,
     strength: f64,
     order_index: i32,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<CausalLink> {
     // Verify chain exists
     let chain_exists = db
@@ -122,7 +122,7 @@ pub async fn add_link(
 
 /// Get a causal chain with all its links.
 #[tracing::instrument(skip(db), fields(chain_id, user_id))]
-pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<CausalChain> {
+pub async fn get_chain(db: &Database, chain_id: i64, _user_id: i64) -> Result<CausalChain> {
     let mut chain = db
         .read(move |conn| {
             let mut stmt = conn
@@ -221,7 +221,7 @@ pub async fn list_chains(db: &Database, user_id: i64, limit: usize) -> Result<Ve
 pub async fn backward_chain(
     db: &Database,
     effect_memory_id: i64,
-    user_id: i64,
+    _user_id: i64,
     max_depth: usize,
 ) -> Result<Vec<CausalAncestor>> {
     use std::collections::{HashMap, VecDeque};

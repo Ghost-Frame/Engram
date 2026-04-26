@@ -166,7 +166,7 @@ pub async fn set_status(db: &Database, agent_id: i64, status: &str) -> Result<()
 #[tracing::instrument(skip(db), fields(user_id, type_filter = ?type_filter, status_filter = ?status_filter, limit))]
 pub async fn list_agents(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     type_filter: Option<&str>,
     status_filter: Option<&str>,
     limit: usize,
@@ -206,7 +206,7 @@ pub async fn list_agents(
 }
 
 #[tracing::instrument(skip(db), fields(agent_id = id, user_id))]
-pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
+pub async fn get_agent(db: &Database, id: i64, _user_id: i64) -> Result<Agent> {
     let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE id = ?1");
 
     db.read(move |conn| {
@@ -224,7 +224,7 @@ pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
 }
 
 #[tracing::instrument(skip(db), fields(user_id, name = %name))]
-pub async fn get_agent_by_name(db: &Database, user_id: i64, name: &str) -> Result<Agent> {
+pub async fn get_agent_by_name(db: &Database, _user_id: i64, name: &str) -> Result<Agent> {
     let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE name = ?1");
     let name_owned = name.to_string();
 

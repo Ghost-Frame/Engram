@@ -38,7 +38,7 @@ pub fn days_since(datetime_str: &str) -> f64 {
 
 /// Get dashboard overview stats.
 #[tracing::instrument(skip(db), fields(user_id))]
-pub async fn get_overview(db: &Database, user_id: i64) -> Result<SkillOverview> {
+pub async fn get_overview(db: &Database, _user_id: i64) -> Result<SkillOverview> {
     db.read(move |conn| {
         conn.query_row(
             "SELECT COUNT(*), SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), SUM(CASE WHEN is_deprecated = 1 THEN 1 ELSE 0 END), SUM(execution_count), AVG(trust_score) FROM skill_records",
@@ -69,7 +69,7 @@ pub async fn get_overview(db: &Database, user_id: i64) -> Result<SkillOverview> 
 #[tracing::instrument(skip(db), fields(user_id, sort_by = ?sort_by, limit))]
 pub async fn get_skill_stats(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     sort_by: Option<&str>,
     limit: usize,
 ) -> Result<Vec<SkillStats>> {

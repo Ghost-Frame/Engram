@@ -139,7 +139,7 @@ async fn update_agent_handler(
 
 async fn delete_agent_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     delete_agent(&db, id).await?;
@@ -148,14 +148,14 @@ async fn delete_agent_handler(
 
 async fn heartbeat_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     heartbeat(&db, id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
+async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = get_soma_stats(&db).await?;
     Ok(Json(json!(stats)))
 }
@@ -213,7 +213,7 @@ async fn log_event_handler(
 
 async fn list_logs_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Path(agent_id): Path<i64>,
     Query(params): Query<ListLogsParams>,
 ) -> Result<Json<Value>, AppError> {

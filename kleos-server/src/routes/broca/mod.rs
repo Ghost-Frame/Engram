@@ -118,7 +118,7 @@ async fn get_feed_handler(
 
 async fn get_stats(
     State(state): State<AppState>,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     let stats = get_broca_stats(&state.db).await?;
     Ok(Json(json!(stats)))

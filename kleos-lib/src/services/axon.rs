@@ -124,7 +124,7 @@ pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Ev
 }
 
 #[tracing::instrument(skip(db), fields(event_id = id, user_id))]
-pub async fn get_event(db: &Database, id: i64, user_id: i64) -> Result<Event> {
+pub async fn get_event(db: &Database, id: i64, _user_id: i64) -> Result<Event> {
     let sql = format!("SELECT {EVENT_COLUMNS} FROM axon_events WHERE id = ?1");
 
     db.read(move |conn| {
@@ -149,7 +149,7 @@ pub async fn query_events(
     source: Option<&str>,
     limit: usize,
     offset: usize,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Vec<Event>> {
     let mut sql = format!("SELECT {EVENT_COLUMNS} FROM axon_events");
     let mut clauses: Vec<String> = Vec::new();

@@ -75,7 +75,7 @@ async fn query_handler(
 
 async fn absorb_handler(
     State(state): State<AppState>,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Json(body): Json<AbsorbRequest>,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
@@ -108,7 +108,7 @@ async fn dream_handler(
 
 async fn feedback_handler(
     State(state): State<AppState>,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Json(body): Json<FeedbackRequest>,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
@@ -147,7 +147,7 @@ async fn decay_handler(
 
 async fn evolution_feedback_handler(
     State(state): State<AppState>,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Json(body): Json<FeedbackRequest>,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;

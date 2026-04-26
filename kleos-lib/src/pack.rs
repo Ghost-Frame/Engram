@@ -45,7 +45,7 @@ pub async fn pack_memories(
     _context: &str,
     token_budget: usize,
     format: PackFormat,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<PackResult> {
     // Layer 1: Static facts
     let static_candidates: Vec<PackCandidate> = db

@@ -120,7 +120,7 @@ pub async fn persist_evolved_skill(
     agent: &str,
     parent_ids: &[i64],
     tags: &[String],
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<i64> {
     let name_owned = name.to_string();
     let description_owned = description.to_string();

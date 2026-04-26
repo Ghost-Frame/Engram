@@ -21,7 +21,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 #[tracing::instrument(skip(db), fields(user_id, category = %category, project_id = ?project_id))]
 pub async fn track_temporal_access(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     category: &str,
     project_id: Option<i64>,
 ) -> Result<()> {

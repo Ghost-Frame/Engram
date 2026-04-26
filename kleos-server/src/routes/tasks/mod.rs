@@ -83,7 +83,7 @@ async fn create_task_handler(
     Ok((StatusCode::CREATED, Json(json!(task))))
 }
 
-async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
+async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = get_task_stats(&db).await?;
     Ok(Json(json!(stats)))
 }
@@ -127,7 +127,7 @@ async fn get_task_history_handler(
 
 async fn delete_task_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     delete_task(&db, id).await?;
@@ -136,7 +136,7 @@ async fn delete_task_handler(
 
 async fn get_feed(
     ResolvedDb(db): ResolvedDb,
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     Query(params): Query<ListTasksParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);

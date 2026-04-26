@@ -241,7 +241,7 @@ pub async fn store_artifact(
 pub async fn get_artifacts_by_memory(
     db: &Database,
     memory_id: i64,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Vec<ArtifactRow>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -268,7 +268,7 @@ pub async fn get_artifacts_by_memory(
 pub async fn get_artifact_by_id(
     db: &Database,
     artifact_id: i64,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Option<ArtifactRow>> {
     db.read(move |conn| {
         conn.query_row(
@@ -293,7 +293,7 @@ pub async fn get_artifact_by_id(
 /// backdoor reachable from an otherwise tenant-scoped handler. Split into
 /// two explicit entry points so the scope is obvious at the call site.
 #[tracing::instrument(skip(db), fields(user_id))]
-pub async fn get_artifact_stats(db: &Database, user_id: i64) -> Result<ArtifactStats> {
+pub async fn get_artifact_stats(db: &Database, _user_id: i64) -> Result<ArtifactStats> {
     db.read(move |conn| {
         conn.query_row(
             "SELECT COUNT(*), \
@@ -363,7 +363,7 @@ pub async fn enrich_with_artifacts(
 pub async fn get_artifact_data(
     db: &Database,
     artifact_id: i64,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Option<Vec<u8>>> {
     db.read(move |conn| {
         conn.query_row(

@@ -33,7 +33,7 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
 /// Correct a potentially misspelled skill ID against known skill names.
 /// Returns the best match name if edit distance <= 3, or prefix match.
 #[tracing::instrument(skip(db), fields(name = %name, user_id))]
-pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result<Option<String>> {
+pub async fn correct_skill_id(db: &Database, name: &str, _user_id: i64) -> Result<Option<String>> {
     let name = name.to_string();
     db.read(move |conn| {
         let mut stmt = conn
@@ -141,7 +141,7 @@ pub async fn persist_analysis(
 
 /// Get usage stats for skills (underused or failing).
 #[tracing::instrument(skip(db), fields(user_id))]
-pub async fn get_usage_stats(db: &Database, user_id: i64) -> Result<serde_json::Value> {
+pub async fn get_usage_stats(db: &Database, _user_id: i64) -> Result<serde_json::Value> {
     db.read(move |conn| {
         // Underused: active skills with < 5 executions
         let mut stmt = conn.prepare(
@@ -201,7 +201,7 @@ pub async fn get_usage_stats(db: &Database, user_id: i64) -> Result<serde_json::
 )]
 pub async fn get_failing_skill_candidates(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     min_executions: u32,
     max_success_rate: f32,
     cooldown_secs: u64,
@@ -252,7 +252,7 @@ pub async fn get_failing_skill_candidates(
 #[tracing::instrument(skip(db, capture_tag), fields(user_id, since_secs, limit))]
 pub async fn get_capture_candidates(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     capture_tag: &str,
     since_secs: u64,
     limit: usize,
@@ -300,7 +300,7 @@ pub async fn get_capture_candidates(
 #[tracing::instrument(skip(db), fields(user_id, similarity, limit))]
 pub async fn get_derive_candidates(
     db: &Database,
-    user_id: i64,
+    _user_id: i64,
     similarity: f32,
     limit: usize,
 ) -> Result<Vec<(Vec<i64>, String)>> {
@@ -437,7 +437,7 @@ mod tests {
 
     async fn seed_skill(
         db: &Database,
-        user_id: i64,
+        _user_id: i64,
         name: &str,
         executions: i64,
         successes: i64,

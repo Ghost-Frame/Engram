@@ -276,6 +276,12 @@ mod tests {
 
     static ENV_GUARD: Mutex<()> = Mutex::new(());
 
+<<<<<<< HEAD
+=======
+    // The ENV_GUARD lock is held across .await on purpose: these tests must
+    // serialize because they mutate process-global env vars. Using a sync
+    // Mutex is correct here; clippy's await_holding_lock lint does not apply.
+>>>>>>> b897358 (fix(clippy): Phase 5 Stage 20 -- close hygiene tail)
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn env_override_kleos_api_key() {
@@ -288,6 +294,20 @@ mod tests {
     }
 
     #[allow(clippy::await_holding_lock)]
+<<<<<<< HEAD
+=======
+    #[tokio::test]
+    async fn env_override_kleos_api_key() {
+        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        env::remove_var("KLEOS_API_KEY");
+        env::set_var("KLEOS_API_KEY", "legacy-key-99");
+        let result = resolve_api_key("test-slot-2").await;
+        env::remove_var("KLEOS_API_KEY");
+        assert_eq!(result.unwrap(), "legacy-key-99");
+    }
+
+    #[allow(clippy::await_holding_lock)]
+>>>>>>> b897358 (fix(clippy): Phase 5 Stage 20 -- close hygiene tail)
     #[tokio::test]
     async fn no_env_no_credd_returns_error() {
         let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
@@ -300,6 +320,51 @@ mod tests {
         assert!(matches!(result, Err(CredError::NoAgentKey)));
     }
 
+<<<<<<< HEAD
+=======
+    #[cfg(unix)]
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn unix_socket_resolves_key() {
+        use axum::{routing::get, Router};
+        use tokio::net::UnixListener;
+
+        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+
+        // Spin up a tiny axum server on a temp Unix socket.
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("test-credd.sock");
+        let sock_str = sock_path.to_str().unwrap().to_string();
+
+        let app = Router::new().route(
+            "/bootstrap/kleos-bearer",
+            get(|| async { axum::Json(serde_json::json!({"key": "test123"})) }),
+        );
+
+        let listener = UnixListener::bind(&sock_path).unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // Small delay to ensure server is listening.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        env::remove_var("KLEOS_API_KEY");
+        env::remove_var("KLEOS_API_KEY");
+        env::set_var("CREDD_AGENT_KEY", "test-agent-token");
+        env::set_var("CREDD_SOCKET", &sock_str);
+
+        let result = resolve_api_key("foo").await;
+
+        env::remove_var("CREDD_AGENT_KEY");
+        env::remove_var("CREDD_SOCKET");
+
+        server.abort();
+
+        assert_eq!(result.unwrap(), "test123");
+    }
+
+>>>>>>> b897358 (fix(clippy): Phase 5 Stage 20 -- close hygiene tail)
     #[test]
     fn current_agent_slot_uses_env() {
         let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());

@@ -102,7 +102,7 @@ pub async fn query_actions(
     action: Option<&str>,
     limit: usize,
     offset: usize,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Vec<ActionEntry>> {
     let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions");
     let mut clauses: Vec<String> = Vec::new();
@@ -150,7 +150,7 @@ pub async fn query_actions(
 }
 
 #[tracing::instrument(skip(db), fields(action_id = id, user_id))]
-pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEntry> {
+pub async fn get_action(db: &Database, id: i64, _user_id: i64) -> Result<ActionEntry> {
     let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1");
 
     db.read(move |conn| {

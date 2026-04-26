@@ -661,7 +661,7 @@ async fn memory_entities_handler(
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     // SECURITY/DoS: cap entity fan-out per memory to avoid unbounded result sets.
-    let user_id = auth.user_id;
+    let _user_id = auth.user_id;
 
     let entities = db
         .read(move |conn| {
