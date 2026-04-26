@@ -1,4 +1,5 @@
 pub mod decay;
+pub mod recall;
 pub mod types;
 pub use types::*;
 

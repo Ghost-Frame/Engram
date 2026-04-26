@@ -14,6 +14,12 @@ pub const TOOLS_REQUIRING_APPROVAL: &[&str] = &["Bash", "Write", "Edit", "WebFet
 /// Seconds to wait for a human approval before timing out and blocking.
 pub const APPROVAL_TIMEOUT_SECS: u64 = 120;
 
+/// Patterns checked locally by kleos-sh when the server is unreachable.
+/// These are the last line of defense -- if Kleos is down, these still block.
+pub const OFFLINE_BLOCK_PATTERNS: &[&str] = &[
+    r"rm\s+-rf\s+(/opt/engram|/home/zan/eidolon/data|/home/zan/zanverse)",
+];
+
 /// In-memory record of a pending tool approval, held in AppState until
 /// the user responds or the timeout fires.
 #[derive(Debug, Clone)]

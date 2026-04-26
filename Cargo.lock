@@ -4625,8 +4625,10 @@ name = "kleos-cli"
 version = "0.3.2"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "clap",
  "kleos-lib",
+ "percent-encoding",
  "reqwest",
  "rpassword",
  "serde",
@@ -4824,6 +4826,18 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "kleos-sh"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

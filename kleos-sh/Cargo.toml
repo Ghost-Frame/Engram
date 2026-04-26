@@ -1,0 +1,18 @@
+[package]
+name = "kleos-sh"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+description = "Universal shell gate for AI agents -- replaces pre-bash-guardrail.sh"
+
+[[bin]]
+name = "kleos-sh"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = "1"
+tokio = { workspace = true }

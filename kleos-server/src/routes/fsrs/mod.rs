@@ -4,19 +4,22 @@ use axum::{
     Json, Router,
 };
 use kleos_lib::fsrs;
+use kleos_lib::memory::search::hybrid_search;
+use kleos_lib::memory::types::SearchRequest;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
 mod types;
-use types::{ReviewBody, StateQuery};
+use types::{RecallDueQuery, ReviewBody, StateQuery};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/fsrs/review", post(review))
         .route("/fsrs/state", get(get_state))
         .route("/fsrs/init", post(init_backfill))
+        .route("/fsrs/recall-due", get(recall_due))
 }
 
 async fn review(
@@ -284,6 +287,69 @@ async fn init_backfill(
         .await?;
 
     Ok(Json(json!({ "initialized": count })))
+}
+
+async fn recall_due(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<RecallDueQuery>,
+) -> Result<Json<Value>, AppError> {
+    let embedding = if let Some(embedder) = state.current_embedder().await {
+        match embedder.embed(&params.topic).await {
+            Ok(emb) => Some(emb),
+            Err(e) => {
+                tracing::warn!("embedding failed for recall-due: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let search_limit = params.limit.min(100).max(1);
+    let fetch_limit = (search_limit * 3).min(100);
+
+    let req = SearchRequest {
+        query: params.topic.clone(),
+        embedding,
+        limit: Some(fetch_limit),
+        category: None,
+        source: params.session.clone(),
+        tags: None,
+        threshold: None,
+        user_id: Some(auth.user_id),
+        space_id: None,
+        include_forgotten: Some(false),
+        mode: None,
+        question_type: None,
+        expand_relationships: false,
+        include_links: false,
+        latest_only: true,
+        source_filter: None,
+    };
+
+    let arc_results = hybrid_search(&state.db, req).await?;
+    let entries = fsrs::recall::rerank_by_retrievability(&arc_results, None);
+
+    let items: Vec<Value> = entries
+        .into_iter()
+        .take(search_limit)
+        .map(|e| {
+            json!({
+                "memory_id": e.memory_id,
+                "content": e.content,
+                "retrievability": e.retrievability,
+                "original_score": e.original_score,
+                "recall_due_score": e.recall_due_score,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "topic": params.topic,
+        "count": items.len(),
+        "results": items,
+    })))
 }
 
 fn calculate_elapsed_days(date_str: &str) -> f32 {
