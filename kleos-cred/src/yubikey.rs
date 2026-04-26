@@ -406,13 +406,20 @@ fn try_ykman_calculate(challenge_hex: &str) -> Result<String> {
 
 #[cfg(not(windows))]
 fn try_python_ykman_calculate(challenge_hex: &str) -> Result<String> {
-    let script = format!(
-        "import sys\nfrom ykman._cli.__main__ import main\nsys.argv = ['ykman', 'otp', 'calculate', '{}', '{}']\nmain()\n",
-        SLOT, challenge_hex
-    );
+    // H-011: pass args via env vars -- never interpolate into the script body.
+    const SCRIPT: &str = r#"
+import os, sys
+from ykman._cli.__main__ import main
+arg1 = os.environ.get("YKMAN_ARG_1", "")
+arg2 = os.environ.get("YKMAN_ARG_2", "")
+sys.argv = ['ykman', 'otp', 'calculate', arg1, arg2]
+main()
+"#;
 
     let out = Command::new("sudo")
-        .args(["python3", "-c", &script])
+        .args(["python3", "-c", SCRIPT])
+        .env("YKMAN_ARG_1", SLOT.to_string())
+        .env("YKMAN_ARG_2", challenge_hex)
         .output()
         .map_err(|e| CredError::YubiKey(format!("sudo python3 ykman failed: {}", e)))?;
 
@@ -447,13 +454,20 @@ fn try_ykman_program(secret_hex: &str) -> Result<String> {
 
 #[cfg(not(windows))]
 fn try_python_ykman_program(secret_hex: &str) -> Result<String> {
-    let script = format!(
-        "import sys\nfrom ykman._cli.__main__ import main\nsys.argv = ['ykman', 'otp', 'chalresp', '{}', '--force', '{}']\nmain()\n",
-        SLOT, secret_hex
-    );
+    // H-011: pass args via env vars -- never interpolate into the script body.
+    const SCRIPT: &str = r#"
+import os, sys
+from ykman._cli.__main__ import main
+arg1 = os.environ.get("YKMAN_ARG_1", "")
+arg2 = os.environ.get("YKMAN_ARG_2", "")
+sys.argv = ['ykman', 'otp', 'chalresp', arg1, '--force', arg2]
+main()
+"#;
 
     let out = Command::new("sudo")
-        .args(["python3", "-c", &script])
+        .args(["python3", "-c", SCRIPT])
+        .env("YKMAN_ARG_1", SLOT.to_string())
+        .env("YKMAN_ARG_2", secret_hex)
         .output()
         .map_err(|e| CredError::YubiKey(format!("sudo python3 ykman failed: {}", e)))?;
 
@@ -488,13 +502,18 @@ fn try_ykman_delete() -> Result<String> {
 
 #[cfg(not(windows))]
 fn try_python_ykman_delete() -> Result<String> {
-    let script = format!(
-        "import sys\nfrom ykman._cli.__main__ import main\nsys.argv = ['ykman', 'otp', 'delete', '{}', '--force']\nmain()\n",
-        SLOT
-    );
+    // H-011: use static script; SLOT is a constant but keep pattern consistent.
+    const SCRIPT: &str = r#"
+import os, sys
+from ykman._cli.__main__ import main
+arg1 = os.environ.get("YKMAN_ARG_1", "")
+sys.argv = ['ykman', 'otp', 'delete', arg1, '--force']
+main()
+"#;
 
     let out = Command::new("sudo")
-        .args(["python3", "-c", &script])
+        .args(["python3", "-c", SCRIPT])
+        .env("YKMAN_ARG_1", SLOT.to_string())
         .output()
         .map_err(|e| CredError::YubiKey(format!("sudo python3 ykman failed: {}", e)))?;
 
@@ -609,5 +628,16 @@ mod tests {
         assert_eq!(CHALLENGE_SIZE, 32);
         assert_eq!(RESPONSE_SIZE, 20);
         assert_eq!(SLOT, 2);
+    }
+
+    /// H-011: verify that a malicious argument cannot cause shell/Python injection.
+    /// The try_python_ykman_calculate call will fail (ykman not found or bad hex),
+    /// but the important assertion is that /tmp/PWNED was NOT created.
+    #[test]
+    fn malicious_arg_does_not_inject() {
+        let result = try_python_ykman_calculate("'); import os; os.system('touch /tmp/PWNED'); ('");
+        // ykman will reject the bad hex -- we just care it errored, not which error
+        assert!(result.is_err());
+        assert!(!std::path::Path::new("/tmp/PWNED").exists());
     }
 }
