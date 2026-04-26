@@ -1,6 +1,7 @@
 //! HTTP request handlers for credd.
 
 pub mod agents;
+pub mod bootstrap_bearer;
 pub mod resolve;
 pub mod secrets;
 pub mod types;

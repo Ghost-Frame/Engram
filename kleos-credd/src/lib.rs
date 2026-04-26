@@ -18,7 +18,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use auth::{auth_middleware, preauth_rate_limit};
-use handlers::{agents, resolve, secrets};
+use handlers::{agents, bootstrap_bearer, resolve, secrets};
 use state::AppState;
 
 /// Request body limit: 1 MiB. Prevents memory exhaustion from oversized
@@ -53,6 +53,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/agents", post(agents::create_handler))
         .route("/agents/{name}", delete(agents::delete_handler))
         .route("/agents/{name}/revoke", post(agents::revoke_handler))
+        // Bootstrap bearer (broker per-agent Kleos bearers without on-disk plaintext)
+        .route(
+            "/bootstrap/kleos-bearer",
+            get(bootstrap_bearer::get_bootstrap_kleos_bearer),
+        )
         // Health check (no auth)
         .route("/health", get(health_handler))
         // Apply middleware (outermost layer executes first)
