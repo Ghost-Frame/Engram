@@ -5,6 +5,7 @@ use axum::response::Response;
 use kleos_lib::auth::{validate_key, ApiKey, AuthContext, Scope};
 use tracing::Instrument;
 
+use crate::middleware::client_ip::client_ip;
 use crate::state::AppState;
 
 const OPEN_PATHS: &[&str] = &[
@@ -84,6 +85,11 @@ pub async fn auth_middleware(
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_string();
+    // Capture before any consuming use of `request` so auth-fail logs can
+    // identify the offending host. Uses the same trusted-proxy-aware
+    // resolver as the rate limit and audit middlewares.
+    let req_client_ip = client_ip(&request, &state.config.trusted_proxies)
+        .unwrap_or_else(|| "unknown".to_string());
 
     // Skip auth for public paths
     if OPEN_PATHS
@@ -158,6 +164,9 @@ pub async fn auth_middleware(
                 // reason is still written to logs for operators.
                 tracing::warn!(
                     error = %e,
+                    client_ip = %req_client_ip,
+                    path = %path,
+                    method = %method,
                     "authentication failed"
                 );
                 let body = serde_json::json!({ "error": "invalid credentials" });
