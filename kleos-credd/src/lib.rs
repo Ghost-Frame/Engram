@@ -1,6 +1,7 @@
 //! engram-credd library exports for testing.
 
 pub mod auth;
+pub mod bootstrap;
 pub mod handlers;
 pub mod listener;
 pub mod server;
