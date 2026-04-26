@@ -2,7 +2,7 @@
 
 use tracing::{info, warn};
 
-use kleos_cred::crypto::derive_key;
+use kleos_cred::crypto::KEY_SIZE;
 use kleos_lib::db::migrations::run_migrations;
 use kleos_lib::db::Database;
 
@@ -10,11 +10,16 @@ use crate::build_router;
 use crate::state::AppState;
 
 /// Run the credd HTTP server.
-#[tracing::instrument(skip(master_password, encryption_key), fields(listen = %listen, db_path = %db_path))]
+///
+/// `master_key` is the 32-byte AES-256-GCM key credd uses to encrypt and
+/// authenticate cred entries. The caller (main.rs) derives it from a YubiKey
+/// challenge-response (default) or a password (opt-in), so this function does
+/// not care how it was produced.
+#[tracing::instrument(skip(master_key, encryption_key), fields(listen = %listen, db_path = %db_path))]
 pub async fn run(
     listen: &str,
     db_path: &str,
-    master_password: &str,
+    master_key: [u8; KEY_SIZE],
     encryption_key: Option<[u8; 32]>,
 ) -> anyhow::Result<()> {
     // Connect to database (with optional at-rest encryption)
@@ -22,9 +27,6 @@ pub async fn run(
 
     // Run migrations
     db.write(|conn| run_migrations(conn)).await?;
-
-    // Derive master key from password (user_id 1 = admin)
-    let master_key = derive_key(1, master_password.as_bytes(), None);
 
     let state = AppState::new(db, master_key);
 
