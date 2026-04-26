@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::db::Database;
@@ -56,6 +57,12 @@ pub trait BrainBackend: Send + Sync {
         Err(crate::EngError::Internal(
             "reapply_instincts not supported by this backend".to_string(),
         ))
+    }
+    /// M-014: graceful shutdown -- kill subprocess + abort reader tasks.
+    /// Default implementation delegates to stop(); backends that track
+    /// JoinHandles (BrainManager) override this.
+    async fn shutdown(&self) {
+        self.stop().await;
     }
 }
 // ---------------------------------------------------------------------------
@@ -268,6 +275,9 @@ struct PendingRequest {
     tx: tokio::sync::oneshot::Sender<BrainResponse>,
 }
 
+/// M-014: max entries in the pending map (in-flight brain requests).
+const PENDING_CAP: usize = 1024;
+
 pub struct BrainManager {
     child: Arc<Mutex<Option<Child>>>,
     stdin: Arc<Mutex<Option<tokio::process::ChildStdin>>>,
@@ -278,6 +288,8 @@ pub struct BrainManager {
     binary_path: String,
     data_dir: String,
     pub query_state: BrainQueryState,
+    /// M-014: track reader task handles so shutdown() can abort them.
+    reader_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 impl BrainManager {
     pub fn new(data_dir: String) -> Self {
@@ -301,6 +313,7 @@ impl BrainManager {
             binary_path,
             data_dir,
             query_state: BrainQueryState::new(),
+            reader_handles: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -335,6 +348,10 @@ impl BrainManager {
 
         {
             let mut pending = self.pending.lock().await;
+            // M-015: cap the in-flight request map to prevent unbounded growth.
+            if pending.len() >= PENDING_CAP {
+                return Err(EngError::Resource("brain pending queue full".into()));
+            }
             pending.insert(this_seq, PendingRequest { tx });
         }
 
@@ -418,21 +435,26 @@ impl BrainManager {
         *self.stdin.lock().await = stdin;
         *self.child.lock().await = Some(child);
 
+        // M-014: track reader JoinHandles so shutdown() can abort them.
+        let mut handles = self.reader_handles.lock().await;
+        handles.clear();
+
         // Spawn stderr reader
         if let Some(stderr) = stderr {
-            tokio::spawn(async move {
+            let h = tokio::spawn(async move {
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     info!(brain_stderr = %line);
                 }
             });
+            handles.push(h);
         }
 
         // Spawn stdout reader to resolve pending requests
         if let Some(stdout) = stdout {
             let pending = self.pending.clone();
-            tokio::spawn(async move {
+            let h = tokio::spawn(async move {
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -459,6 +481,7 @@ impl BrainManager {
                     }
                 }
             });
+            handles.push(h);
         }
     }
     async fn init_brain(&self) -> bool {
@@ -539,6 +562,54 @@ impl BrainManager {
 
         info!(msg = "brain_stopped");
     }
+
+    /// M-014: graceful shutdown with reader-task abort.
+    ///
+    /// 1. Mark not-ready and clear pending (drops Senders, waking waiters with RecvError).
+    /// 2. Drop stdin to signal EOF to the subprocess.
+    /// 3. Kill the child process.
+    /// 4. Abort the two reader JoinHandles with a 5-second timeout.
+    pub async fn shutdown(&self) {
+        self.ready.store(false, Ordering::Relaxed);
+
+        // Clear pending first so any waiter unblocks immediately.
+        {
+            let mut pending = self.pending.lock().await;
+            pending.clear();
+        }
+
+        // Drop stdin so the subprocess sees EOF and can exit cleanly.
+        {
+            let mut stdin_lock = self.stdin.lock().await;
+            *stdin_lock = None;
+        }
+
+        // Kill the child process.
+        {
+            let mut child_lock = self.child.lock().await;
+            if let Some(ref mut child) = *child_lock {
+                let _ = child.kill().await;
+            }
+            *child_lock = None;
+        }
+
+        // Abort reader tasks and wait up to 5s for them to exit.
+        let handles: Vec<JoinHandle<()>> = {
+            let mut guard = self.reader_handles.lock().await;
+            std::mem::take(&mut *guard)
+        };
+        for h in &handles {
+            h.abort();
+        }
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            futures::future::join_all(handles),
+        )
+        .await;
+
+        info!(msg = "brain_shutdown_complete");
+    }
+
     pub async fn query(
         &self,
         embedder: &dyn EmbeddingProvider,
@@ -705,6 +776,11 @@ impl BrainBackend for BrainManager {
 
     async fn evolution_stats(&self) -> Result<BrainResponse> {
         self.evolution_stats().await
+    }
+
+    /// M-014: override to use the full shutdown() with JoinHandle abort.
+    async fn shutdown(&self) {
+        self.shutdown().await;
     }
 }
 

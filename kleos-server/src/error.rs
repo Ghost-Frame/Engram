@@ -96,6 +96,11 @@ impl IntoResponse for AppError {
                     "Encryption error".to_string(),
                 )
             }
+            // M-015: resource limit hit -- expose as 503 so callers can backoff.
+            EngError::Resource(msg) => {
+                tracing::warn!("Resource limit: {}", msg);
+                (StatusCode::SERVICE_UNAVAILABLE, msg.clone())
+            }
         };
         (status, Json(json!({ "error": message }))).into_response()
     }

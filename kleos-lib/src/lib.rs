@@ -90,6 +90,10 @@ pub enum EngError {
 
     #[error("encryption error: {0}")]
     Encryption(String),
+
+    /// M-015: resource limit hit (e.g. brain pending queue full, spawn cap).
+    #[error("resource limit: {0}")]
+    Resource(String),
 }
 
 pub type Result<T> = std::result::Result<T, EngError>;
