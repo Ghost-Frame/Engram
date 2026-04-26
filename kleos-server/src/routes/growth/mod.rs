@@ -33,6 +33,7 @@ async fn reflect_handler(
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
+// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 async fn observations_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,

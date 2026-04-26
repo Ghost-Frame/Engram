@@ -309,6 +309,7 @@ async fn get_lineage_handler(
 // Tool quality handlers
 // ---------------------------------------------------------------------------
 
+// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 async fn record_tool_quality_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -329,6 +330,7 @@ async fn record_tool_quality_handler(
     ))
 }
 
+// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 async fn get_tool_quality_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -342,6 +344,7 @@ async fn get_tool_quality_handler(
 // Dashboard handlers
 // ---------------------------------------------------------------------------
 
+// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 async fn health_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
