@@ -9,7 +9,12 @@ use kleos_lib::memory::types::SearchRequest;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
-use crate::{error::AppError, extractors::Auth, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
+use kleos_lib::auth::Scope;
 
 mod types;
 use types::{RecallDueQuery, ReviewBody, StateQuery};
@@ -23,8 +28,8 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn review(
-    State(state): State<AppState>,
     Auth(_auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<ReviewBody>,
 ) -> Result<Json<Value>, AppError> {
     let id = body.id.or(body.memory_id).ok_or_else(|| {
@@ -48,9 +53,11 @@ async fn review(
         _ => fsrs::Rating::Good,
     };
 
-    // Fetch FSRS state for the memory (user_id dropped from memories in Phase 5.1)
-    let row_data = state
-        .db
+    // Fetch FSRS state for the memory. Tenant isolation comes from ResolvedDb
+    // (Phase 5+: each shard contains only one tenant's memories). On the
+    // legacy monolith path the same ResolvedDb fallback applies; user_id was
+    // dropped from memories in Phase 5.1.
+    let row_data = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
@@ -137,8 +144,7 @@ async fn review(
     let lapses_new = new_state.lapses as i64;
     let last_review_at_new = new_state.last_review_at.clone();
 
-    state
-        .db
+    db
         .write(move |conn| {
             conn.execute(
                 "UPDATE memories SET fsrs_stability = ?1, fsrs_difficulty = ?2, fsrs_storage_strength = ?3, fsrs_retrieval_strength = ?4, fsrs_learning_state = ?5, fsrs_reps = ?6, fsrs_lapses = ?7, fsrs_last_review_at = ?8, access_count = access_count + 1, last_accessed_at = datetime('now') WHERE id = ?9",
@@ -163,16 +169,15 @@ async fn review(
 }
 
 async fn get_state(
-    State(state): State<AppState>,
     Auth(_auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<StateQuery>,
 ) -> Result<Json<Value>, AppError> {
     let id = params
         .id
         .ok_or_else(|| AppError(kleos_lib::EngError::InvalidInput("id required".into())))?;
 
-    let row_data = state
-        .db
+    let row_data = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
@@ -231,12 +236,22 @@ async fn get_state(
 }
 
 async fn init_backfill(
-    State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    // Find memories without FSRS state
-    let ids: Vec<i64> = state
-        .db
+    // SECURITY: init_backfill mass-mutates every memory's FSRS columns. Gate
+    // behind Admin scope so a regular write-scoped key cannot wipe everyone's
+    // spaced-repetition schedule with one POST.
+    if !auth.has_scope(&Scope::Admin) {
+        return Err(AppError(kleos_lib::EngError::Auth(
+            "admin scope required for /fsrs/init".into(),
+        )));
+    }
+
+    // Find memories without FSRS state. ResolvedDb scopes us to the caller's
+    // tenant shard (Phase 5+), so the SELECT/UPDATE only touches that user's
+    // rows.
+    let ids: Vec<i64> = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare("SELECT id FROM memories WHERE fsrs_stability IS NULL")
@@ -260,8 +275,7 @@ async fn init_backfill(
 
     let count = ids.len() as i64;
 
-    state
-        .db
+    db
         .write(move |conn| {
             for id in &ids {
                 let init = fsrs::process_review(None, fsrs::Rating::Good, 0.0);
@@ -306,7 +320,7 @@ async fn recall_due(
         None
     };
 
-    let search_limit = params.limit.min(100).max(1);
+    let search_limit = params.limit.clamp(1, 100);
     let fetch_limit = (search_limit * 3).min(100);
 
     let req = SearchRequest {
