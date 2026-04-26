@@ -13,13 +13,6 @@ ignore = [
     # Track upstream replacement work; no code path in kleos consumes paste
     # directly.
     { id = "RUSTSEC-2024-0436", reason = "unmaintained; transitive via datafusion/ratatui; no direct use" },
-    # lru 0.12.5: IterMut violates Stacked Borrows by invalidating internal
-    # pointer. Pulled in transitively via tantivy 0.24.2 -> lance-index 4.0
-    # -> lancedb -> kleos-lib AND via ratatui 0.29 -> kleos-cred. Workspace
-    # already pins lru = "0.16" directly so the safe 0.16.x copy ships
-    # alongside. Cannot fix without an upstream lance/tantivy bump; revisit
-    # at every lance / tantivy version bump.
-    { id = "RUSTSEC-2026-0002", reason = "transitive via lance-index/tantivy and ratatui; remove when lance bumps lru" },
 ]
 
 [licenses]

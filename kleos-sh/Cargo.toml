@@ -3,6 +3,7 @@ name = "kleos-sh"
 version = "0.1.0"
 edition = "2021"
 rust-version.workspace = true
+license = "Elastic-2.0"
 description = "Universal shell gate for AI agents -- replaces pre-bash-guardrail.sh"
 
 [[bin]]
