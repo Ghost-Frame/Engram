@@ -612,7 +612,7 @@ async fn main() {
             limit,
             session,
         } => {
-            let encoded_topic = utf8_percent_encode(&topic, NON_ALPHANUMERIC).to_string();
+            let encoded_topic = utf8_percent_encode(topic, NON_ALPHANUMERIC).to_string();
             let mut url = format!("/fsrs/recall-due?topic={}&limit={}", encoded_topic, limit);
             if let Some(s) = &session {
                 let encoded_s = utf8_percent_encode(s, NON_ALPHANUMERIC).to_string();

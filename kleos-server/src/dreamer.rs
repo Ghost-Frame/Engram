@@ -342,7 +342,9 @@ async fn run_cycle(
             Ok(ctx) if !ctx.is_empty() => {
                 let mut merged_ctx = Vec::new();
                 if let Some(ref dc) = dream_cycle {
-                    // TODO: pass real pattern/edge counts once brain stats are accessible here
+                    // Pattern/edge counts are passed as 0 until BrainBackend exposes a
+                    // stats() API. When that lands, replace the literals with
+                    // state.brain_stats().await or equivalent.
                     merged_ctx = growth::build_dream_context(dc, 0, 0);
                 }
                 merged_ctx.extend(ctx);

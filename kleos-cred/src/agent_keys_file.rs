@@ -177,7 +177,7 @@ impl FileAgentKeyStore {
             if entry.revoked {
                 continue;
             }
-            if token.as_bytes().len() == entry.key.as_bytes().len()
+            if token.len() == entry.key.len()
                 && token
                     .as_bytes()
                     .ct_eq(entry.key.as_bytes())
@@ -240,7 +240,7 @@ impl FileAgentKeyStore {
 
     pub fn list(&self) -> Vec<&FileAgentKey> {
         let mut keys: Vec<&FileAgentKey> = self.keys.values().collect();
-        keys.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        keys.sort_by_key(|a| a.created_at);
         keys
     }
 }

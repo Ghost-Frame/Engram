@@ -595,7 +595,12 @@ async fn assemble_context_inner(
     let semantic_results = hybrid_search(db, search_req).await.unwrap_or_default();
     timing.search_ms = Some(t_search.elapsed().as_millis() as u64);
 
-    // TODO: Optional cross-encoder rerank when reranker module is available
+    // Cross-encoder reranking is available via kleos_lib::reranker::Reranker.
+    // To wire it here, add a reranker: Option<Arc<dyn Reranker>> parameter
+    // to assemble_context_inner and call reranker.rerank_results(&opts.query,
+    // &mut semantic_results).await before the scoring loop below.
+    // The server AppState already holds the reranker; threading it through
+    // assemble_context's public signature is the remaining work.
 
     let now_ms = chrono::Utc::now().timestamp_millis();
 
