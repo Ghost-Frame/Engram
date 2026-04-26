@@ -33,11 +33,11 @@ fn get_db(state: &AppState) -> Result<&Arc<HandoffsDb>, AppError> {
 
 async fn store_handoff(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(params): Json<StoreParams>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let db = get_db(&state)?;
-    let result = db.store(params).await?;
+    let result = db.store(params, auth.user_id).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({ "ok": true, "id": result.id, "skipped": result.skipped })),
@@ -46,22 +46,22 @@ async fn store_handoff(
 
 async fn list_handoffs(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(filters): Query<HandoffFilters>,
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state)?;
-    let handoffs = db.list(filters).await?;
+    let handoffs = db.list(filters, auth.user_id).await?;
     let count = handoffs.len();
     Ok(Json(json!({ "handoffs": handoffs, "count": count })))
 }
 
 async fn get_latest(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(filters): Query<HandoffFilters>,
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state)?;
-    match db.get_latest(filters).await? {
+    match db.get_latest(filters, auth.user_id).await? {
         Some(handoff) => Ok(Json(json!(handoff))),
         None => Err(AppError(EngError::NotFound("no handoff found".to_string()))),
     }
@@ -81,12 +81,17 @@ fn default_limit() -> usize {
 
 async fn search_handoffs(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(params): Query<SearchQuery>,
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state)?;
     let results = db
-        .search(&params.q, params.project.as_deref(), params.limit as i64)
+        .search(
+            &params.q,
+            params.project.as_deref(),
+            params.limit as i64,
+            auth.user_id,
+        )
         .await?;
     let count = results.len();
     Ok(Json(json!({ "results": results, "count": count })))
@@ -94,10 +99,10 @@ async fn search_handoffs(
 
 async fn get_stats(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state)?;
-    let stats = db.stats().await?;
+    let stats = db.stats(auth.user_id).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -110,7 +115,7 @@ struct GcParams {
 
 async fn run_gc(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     body: Option<Json<GcParams>>,
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state)?;
@@ -118,16 +123,16 @@ async fn run_gc(
         Some(Json(p)) => (p.tiered, p.keep),
         None => (true, None),
     };
-    let result = db.gc(tiered, keep).await?;
+    let result = db.gc(tiered, keep, auth.user_id).await?;
     Ok(Json(json!({ "deleted": result.deleted, "remaining": result.remaining })))
 }
 
 async fn delete_handoff(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state)?;
-    let deleted = db.delete(id).await?;
+    let deleted = db.delete(id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true, "deleted": deleted })))
 }
