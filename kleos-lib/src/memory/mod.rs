@@ -1268,14 +1268,6 @@ pub async fn get_version_chain(
     .await
 }
 
-async fn count_user_rows(db: &Database, sql: &str, user_id: i64) -> Result<i64> {
-    let sql = sql.to_string();
-    db.read(move |conn| {
-        conn.query_row(&sql, rusqlite::params![user_id], |row| row.get(0))
-            .map_err(rusqlite_to_eng_error)
-    })
-    .await
-}
 
 #[tracing::instrument(skip(db))]
 pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile> {
@@ -1403,12 +1395,16 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
             .map_err(rusqlite_to_eng_error)
         })
         .await?;
-    let entities = count_user_rows(
-        db,
-        "SELECT COUNT(*) FROM entities WHERE user_id = ?1",
-        user_id,
-    )
-    .await?;
+    let entities: i64 = db
+        .read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM entities",
+                rusqlite::params![],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
     let skills: i64 = db
         .read(|conn| {
             conn.query_row(

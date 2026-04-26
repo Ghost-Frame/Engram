@@ -102,12 +102,10 @@ pub fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 
 async fn create_entity_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
-    Json(mut req): Json<CreateEntityRequest>,
+    Json(req): Json<CreateEntityRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    req.user_id = Some(auth.user_id);
-
     let entity_type = req.entity_type.as_deref().unwrap_or("unknown").to_string();
     let description = req.description.clone();
     let aliases_json = req
@@ -115,7 +113,6 @@ async fn create_entity_handler(
         .as_ref()
         .and_then(|a| serde_json::to_string(a).ok());
     let space_id = req.space_id;
-    let user_id = auth.user_id;
     let name = req.name.clone();
 
     // INSERT ... RETURNING avoids the cross-connection last_insert_rowid() race
@@ -123,11 +120,11 @@ async fn create_entity_handler(
     let entity = db
         .write(move |conn| {
             conn.query_row(
-                "INSERT INTO entities (name, entity_type, description, aliases, user_id, space_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-                 RETURNING id, name, entity_type, description, aliases, user_id, space_id, \
+                "INSERT INTO entities (name, entity_type, description, aliases, space_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                 RETURNING id, name, entity_type, description, aliases, space_id, \
                  confidence, occurrence_count, first_seen_at, last_seen_at, created_at",
-                params![name, entity_type, description, aliases_json, user_id, space_id],
+                params![name, entity_type, description, aliases_json, space_id],
                 row_to_entity_json,
             )
             .map_err(kleos_lib::EngError::Database)
@@ -148,22 +145,22 @@ async fn list_entities_handler(
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(50).min(1000);
     let offset = params.offset.unwrap_or(0);
-    let user_id = auth.user_id;
+    let _user_id = auth.user_id;
 
     let results = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, name, entity_type, description, aliases, user_id, space_id, \
+                    "SELECT id, name, entity_type, description, aliases, space_id, \
                      confidence, occurrence_count, first_seen_at, last_seen_at, created_at \
-                     FROM entities WHERE user_id = ?1 \
+                     FROM entities \
                      ORDER BY occurrence_count DESC \
-                     LIMIT ?2 OFFSET ?3",
+                     LIMIT ?1 OFFSET ?2",
                 )
                 .map_err(kleos_lib::EngError::Database)?;
 
             let rows = stmt
-                .query_map(params![user_id, limit, offset], row_to_entity_json)
+                .query_map(params![limit, offset], row_to_entity_json)
                 .map_err(kleos_lib::EngError::Database)?;
 
             rows.collect::<Result<Vec<_>, _>>()
@@ -183,15 +180,15 @@ async fn get_entity_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let user_id = auth.user_id;
+    let _user_id = auth.user_id;
 
     let entity = db
         .read(move |conn| {
             conn.query_row(
-                "SELECT id, name, entity_type, description, aliases, user_id, space_id, \
+                "SELECT id, name, entity_type, description, aliases, space_id, \
                  confidence, occurrence_count, first_seen_at, last_seen_at, created_at \
-                 FROM entities WHERE id = ?1 AND user_id = ?2",
-                params![id, user_id],
+                 FROM entities WHERE id = ?1",
+                params![id],
                 row_to_entity_json,
             )
             .optional()
@@ -246,12 +243,12 @@ async fn delete_entity_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let user_id = auth.user_id;
+    let _user_id = auth.user_id;
 
     db.write(move |conn| {
         conn.execute(
-            "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
-            params![id, user_id],
+            "DELETE FROM entities WHERE id = ?1",
+            params![id],
         )
         .map_err(kleos_lib::EngError::Database)?;
         Ok(())
@@ -273,7 +270,7 @@ async fn entity_relationships_handler(
 ) -> Result<Json<Value>, AppError> {
     // SECURITY/DoS: cap the fan-out so a hot entity cannot return an unbounded
     // result set and starve server memory.
-    let user_id = auth.user_id;
+    let _user_id = auth.user_id;
 
     let relationships = db
         .read(move |conn| {
@@ -284,16 +281,15 @@ async fn entity_relationships_handler(
                          er.strength, er.evidence_count, er.created_at \
                          FROM entity_relationships er \
                          WHERE (er.source_entity_id = ?1 OR er.target_entity_id = ?1) \
-                           AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2) \
-                           AND er.relationship_type = ?3 \
+                           AND er.relationship_type = ?2 \
                          ORDER BY er.strength DESC, er.id DESC \
-                         LIMIT ?4",
+                         LIMIT ?3",
                     )
                     .map_err(kleos_lib::EngError::Database)?;
 
                 let rows = stmt
                     .query_map(
-                        params![id, user_id, relationship_type, MAX_ENTITY_RELATIONSHIPS as i64],
+                        params![id, relationship_type, MAX_ENTITY_RELATIONSHIPS as i64],
                         row_to_relationship_json,
                     )
                     .map_err(kleos_lib::EngError::Database)?;
@@ -307,15 +303,14 @@ async fn entity_relationships_handler(
                          er.strength, er.evidence_count, er.created_at \
                          FROM entity_relationships er \
                          WHERE (er.source_entity_id = ?1 OR er.target_entity_id = ?1) \
-                         AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2) \
                          ORDER BY er.strength DESC, er.id DESC \
-                         LIMIT ?3",
+                         LIMIT ?2",
                     )
                     .map_err(kleos_lib::EngError::Database)?;
 
                 let rows = stmt
                     .query_map(
-                        params![id, user_id, MAX_ENTITY_RELATIONSHIPS as i64],
+                        params![id, MAX_ENTITY_RELATIONSHIPS as i64],
                         row_to_relationship_json,
                     )
                     .map_err(kleos_lib::EngError::Database)?;
@@ -366,20 +361,19 @@ async fn entity_memories_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let user_id = auth.user_id;
+    let _user_id = auth.user_id;
 
     let memory_ids = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT me.memory_id FROM memory_entities me \
-                     JOIN entities e ON e.id = me.entity_id \
-                     WHERE me.entity_id = ?1 AND e.user_id = ?2",
+                     WHERE me.entity_id = ?1",
                 )
                 .map_err(kleos_lib::EngError::Database)?;
 
             let rows = stmt
-                .query_map(params![id, user_id], |row| row.get::<_, i64>(0))
+                .query_map(params![id], |row| row.get::<_, i64>(0))
                 .map_err(kleos_lib::EngError::Database)?;
 
             rows.collect::<Result<Vec<_>, _>>()
@@ -460,16 +454,16 @@ async fn create_relationship_handler(
     ResolvedDb(db): ResolvedDb,
     Json(req): Json<CreateRelationshipRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let user_id = auth.user_id;
+    let _user_id = auth.user_id;
     let source_id = req.source_entity_id;
     let target_id = req.target_entity_id;
 
-    // Verify both entities belong to the authenticated user
+    // Verify both entities exist
     let count: i64 = db
         .read(move |conn| {
             conn.query_row(
-                "SELECT COUNT(*) FROM entities WHERE id IN (?1, ?2) AND user_id = ?3",
-                params![source_id, target_id, user_id],
+                "SELECT COUNT(*) FROM entities WHERE id IN (?1, ?2)",
+                params![source_id, target_id],
                 |row| row.get(0),
             )
             .map_err(kleos_lib::EngError::Database)
@@ -708,7 +702,7 @@ async fn communities_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let user_id = auth.user_id;
+    let _user_id = auth.user_id;
 
     // Fetch community -> memory_id mapping for the GUI graph visualization.
     // The GUI needs {id, top_memories: [memId, ...]} to map graph nodes to communities.
@@ -717,14 +711,14 @@ async fn communities_handler(
             let mut stmt = conn
                 .prepare(
                     "SELECT community_id, id FROM memories \
-                     WHERE user_id = ?1 AND community_id IS NOT NULL \
+                     WHERE community_id IS NOT NULL \
                        AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                      ORDER BY community_id, importance DESC",
                 )
                 .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
 
             let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| {
+                .query_map(rusqlite::params![], |row| {
                     let cid: i64 = row.get(0)?;
                     let mid: i64 = row.get(1)?;
                     Ok((cid, mid))
@@ -895,13 +889,12 @@ fn row_to_entity_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let entity_type: String = row.get(2)?;
     let description: Option<String> = row.get(3)?;
     let aliases_raw: Option<String> = row.get(4)?;
-    let user_id: i64 = row.get(5)?;
-    let space_id: Option<i64> = row.get(6)?;
-    let confidence: f64 = row.get(7)?;
-    let occurrence_count: i32 = row.get(8)?;
-    let first_seen_at: String = row.get(9)?;
-    let last_seen_at: String = row.get(10)?;
-    let created_at: String = row.get(11)?;
+    let space_id: Option<i64> = row.get(5)?;
+    let confidence: f64 = row.get(6)?;
+    let occurrence_count: i32 = row.get(7)?;
+    let first_seen_at: String = row.get(8)?;
+    let last_seen_at: String = row.get(9)?;
+    let created_at: String = row.get(10)?;
 
     let aliases: Value = aliases_raw
         .as_ref()
@@ -914,7 +907,7 @@ fn row_to_entity_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "entity_type": entity_type,
         "description": description,
         "aliases": aliases,
-        "user_id": user_id,
+        "user_id": 1,
         "space_id": space_id,
         "confidence": confidence,
         "occurrence_count": occurrence_count,

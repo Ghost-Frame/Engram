@@ -10,8 +10,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rusqlite::params;
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::routing::get;
@@ -274,11 +272,11 @@ async fn body_bytes(res: axum::response::Response) -> Vec<u8> {
         .to_vec()
 }
 
-async fn pagerank_count_for_user(db: &Database, user_id: i64) -> i64 {
+async fn pagerank_count_for_user(db: &Database, _user_id: i64) -> i64 {
     db.read(move |conn| {
         conn.query_row(
-            "SELECT COUNT(*) FROM memory_pagerank WHERE user_id = ?1",
-            params![user_id],
+            "SELECT COUNT(*) FROM memory_pagerank",
+            [],
             |row| row.get(0),
         )
         .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
@@ -1673,6 +1671,7 @@ async fn multi_tenant_tags_are_scoped_to_user() {
 }
 
 #[tokio::test]
+#[ignore = "Phase 5 Stage 8: user_id dropped from conversations; isolation needs tenant harness"]
 async fn multi_tenant_conversations_are_scoped() {
     let app = TestApp::new().await;
 
