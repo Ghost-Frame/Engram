@@ -1,5 +1,4 @@
 use super::Violation;
-use super::Severity;
 
 pub fn check_promise_action(
     assistant_text: Option<&str>,
