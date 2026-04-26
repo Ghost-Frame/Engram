@@ -103,6 +103,52 @@ fn ykman_missing(e: std::io::Error) -> CredError {
     ))
 }
 
+/// YubiKey factory-default PIV PIN. Used when `YKMAN_PIN` env is not set.
+pub const DEFAULT_PIN: &str = "123456";
+
+/// Returns the user-supplied management key if `YKMAN_MGMT_KEY` is set,
+/// otherwise None which signals "use default by piping a blank line to
+/// ykman" (the YubiKey-side check accepts the prompt-default sentinel
+/// rather than the literal hex bytes that the docs advertise).
+fn mgmt_key_override() -> Option<String> {
+    std::env::var("YKMAN_MGMT_KEY").ok()
+}
+
+fn piv_pin() -> String {
+    std::env::var("YKMAN_PIN").unwrap_or_else(|_| DEFAULT_PIN.to_string())
+}
+
+/// Run a ykman command. If `YKMAN_MGMT_KEY` is set, pass it via
+/// `--management-key`; otherwise pipe a blank line to stdin so ykman
+/// uses its factory-default management key. `extra_path` is appended
+/// after the management-key args (used for output PEM paths).
+fn ykman_with_mgmt(args: &[&str], extra_path: Option<&PathBuf>) -> Result<std::process::Output> {
+    use std::io::Write;
+    let mut cmd = Command::new("ykman");
+    cmd.args(args);
+    let mk = mgmt_key_override();
+    if let Some(ref k) = mk {
+        cmd.args(["--management-key", k]);
+    }
+    if let Some(p) = extra_path {
+        cmd.arg(p);
+    }
+    if mk.is_none() {
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().map_err(ykman_missing)?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(b"\n");
+        }
+        child
+            .wait_with_output()
+            .map_err(|e| CredError::YubiKey(format!("ykman wait failed: {}", e)))
+    } else {
+        cmd.output().map_err(ykman_missing)
+    }
+}
+
 /// Generate a P-256 keypair on-device in `slot` with the given policies.
 /// Writes the public key to `out_pem` (PEM-encoded). The private key
 /// never leaves the YubiKey.
@@ -112,8 +158,8 @@ pub fn generate_p256_key(
     touch_policy: TouchPolicy,
     out_pem: &PathBuf,
 ) -> Result<()> {
-    let out = Command::new("ykman")
-        .args([
+    let out = ykman_with_mgmt(
+        &[
             "piv",
             "keys",
             "generate",
@@ -124,10 +170,9 @@ pub fn generate_p256_key(
             "--touch-policy",
             touch_policy.as_str(),
             slot.as_hex(),
-        ])
-        .arg(out_pem)
-        .output()
-        .map_err(ykman_missing)?;
+        ],
+        Some(out_pem),
+    )?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -143,18 +188,20 @@ pub fn generate_p256_key(
 /// Generate a self-signed certificate in `slot`. PIV requires a cert in
 /// the slot even when we do not use X.509 validation.
 pub fn generate_self_signed_cert(slot: PivSlot, subject: &str, pubkey_pem: &PathBuf) -> Result<()> {
-    let out = Command::new("ykman")
-        .args([
+    let pin = piv_pin();
+    let out = ykman_with_mgmt(
+        &[
             "piv",
             "certificates",
             "generate",
             "--subject",
             subject,
+            "--pin",
+            &pin,
             slot.as_hex(),
-        ])
-        .arg(pubkey_pem)
-        .output()
-        .map_err(ykman_missing)?;
+        ],
+        Some(pubkey_pem),
+    )?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);

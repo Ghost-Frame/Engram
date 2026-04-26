@@ -1774,24 +1774,26 @@ async fn cmd_piv(cmd: PivCmd) -> Result<()> {
                 (PivSlot::KeyManagement, "CN=credd-ecdh-9d,O=Kleos"),
                 (PivSlot::Authentication, "CN=credd-auth-9a,O=Kleos"),
             ] {
+                let out = pubkey_path(slot);
                 if slot_has_key(slot) {
                     eprintln!(
-                        "slot {} already has a key -- skipping generate (delete via `ykman piv keys delete {}` to regenerate)",
-                        slot.as_hex(),
+                        "slot {} already has a key -- re-exporting pubkey + (re)generating cert",
                         slot.as_hex()
                     );
+                    let pem = export_pubkey_pem(slot)?;
+                    std::fs::write(&out, &pem)
+                        .with_context(|| format!("write pubkey to {}", out.display()))?;
                 } else {
                     eprintln!(
                         "generating P-256 keypair on YubiKey slot {} (touch-policy={})...",
                         slot.as_hex(),
                         touch.as_str()
                     );
-                    let out = pubkey_path(slot);
                     generate_p256_key(slot, PinPolicy::Never, touch, &out)?;
-                    eprintln!("  generating self-signed cert for slot {}...", slot.as_hex());
-                    generate_self_signed_cert(slot, subject, &out)?;
-                    eprintln!("  pubkey -> {}", out.display());
                 }
+                eprintln!("  generating self-signed cert for slot {}...", slot.as_hex());
+                generate_self_signed_cert(slot, subject, &out)?;
+                eprintln!("  pubkey -> {}", out.display());
             }
             eprintln!("PIV setup complete.");
             Ok(())
