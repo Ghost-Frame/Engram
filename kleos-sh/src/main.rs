@@ -33,17 +33,61 @@ fn resolve_api_key() -> Option<String> {
             return Some(key);
         }
     }
-    let output = std::process::Command::new("cred")
-        .args(["get", "kleos", "claude-code", "--raw"])
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !key.is_empty() {
-            return Some(key);
+    // cred can be transiently unavailable (credd restart, YubiKey re-tap
+    // window). Retry once with a 500ms backoff before giving up so a brief
+    // outage does not push us straight into the fail-closed path.
+    for attempt in 0..2 {
+        let output = std::process::Command::new("cred")
+            .args(["get", "kleos", "claude-code", "--raw"])
+            .output()
+            .ok()?;
+        if output.status.success() {
+            let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+        if attempt == 0 {
+            std::thread::sleep(Duration::from_millis(500));
         }
     }
     None
+}
+
+/// Fail-open opt-in. By default kleos-sh fails CLOSED when the gate is
+/// unreachable or no API key is available; setting KLEOS_SH_FAIL_OPEN=1
+/// reverts to the prior best-effort behaviour for local development.
+fn fail_open_allowed() -> bool {
+    matches!(
+        std::env::var("KLEOS_SH_FAIL_OPEN").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+/// Best-effort alert to Eidolon when the gate degrades. Fire-and-forget; we
+/// never block the shell on the alert and we never propagate its errors.
+fn alert_gate_degraded(
+    client: &reqwest::Client,
+    server_url: &str,
+    api_key: Option<&str>,
+    severity: &str,
+    summary: &str,
+) {
+    let url = format!("{}/activity", server_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "agent": "kleos-sh",
+        "action": if severity == "P0" { "error.raised" } else { "task.blocked" },
+        "summary": summary,
+        "project": "Kleos",
+        "severity": severity,
+    });
+    let mut req = client.post(&url).json(&body);
+    if let Some(key) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", key));
+    }
+    tokio::spawn(async move {
+        let _ = req.send().await;
+    });
 }
 
 fn server_url() -> String {
@@ -103,24 +147,97 @@ async fn main() {
         tool_name: cli.tool_name.clone().or_else(|| Some("Bash".to_string())),
     };
 
+    // Retry the gate up to four times with exponential backoff before deciding
+    // the gate is genuinely unreachable. Most outages here are 1-2 second
+    // restarts, not sustained. After the retries exhaust we fall closed
+    // unless KLEOS_SH_FAIL_OPEN is explicitly set.
     let outcome = match &api_key {
-        Some(key) => match gate::check_remote(&client, &server, key, &req).await {
-            Ok(outcome) => outcome,
-            Err(err) => {
-                eprintln!("kleos-sh: gate unreachable ({}), failing open", err);
+        Some(key) => {
+            let mut last_err: Option<String> = None;
+            let mut delay_ms = 250u64;
+            let mut got: Option<gate::GateOutcome> = None;
+            for attempt in 0..4 {
+                match gate::check_remote(&client, &server, key, &req).await {
+                    Ok(outcome) => {
+                        got = Some(outcome);
+                        break;
+                    }
+                    Err(err) => {
+                        last_err = Some(err);
+                        if attempt < 3 {
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                            delay_ms *= 2;
+                        }
+                    }
+                }
+            }
+            match got {
+                Some(o) => o,
+                None => {
+                    let err_msg = last_err.unwrap_or_else(|| "unknown error".to_string());
+                    if fail_open_allowed() {
+                        eprintln!(
+                            "kleos-sh: gate unreachable after retries ({}), failing OPEN per KLEOS_SH_FAIL_OPEN",
+                            err_msg
+                        );
+                        alert_gate_degraded(
+                            &client,
+                            &server,
+                            Some(key),
+                            "P1",
+                            &format!("kleos-sh gate unreachable, fail-open opt-in: {}", err_msg),
+                        );
+                        gate::GateOutcome::Allow {
+                            command: command.clone(),
+                            enrichment: None,
+                            gate_id: 0,
+                        }
+                    } else {
+                        eprintln!(
+                            "kleos-sh: gate unreachable after retries ({}); failing CLOSED. Set KLEOS_SH_FAIL_OPEN=1 to override.",
+                            err_msg
+                        );
+                        alert_gate_degraded(
+                            &client,
+                            &server,
+                            Some(key),
+                            "P0",
+                            &format!("kleos-sh gate unreachable, fail-closed: {}", err_msg),
+                        );
+                        process::exit(2);
+                    }
+                }
+            }
+        }
+        None => {
+            if fail_open_allowed() {
+                eprintln!(
+                    "kleos-sh: no API key available, failing OPEN per KLEOS_SH_FAIL_OPEN"
+                );
+                alert_gate_degraded(
+                    &client,
+                    &server,
+                    None,
+                    "P1",
+                    "kleos-sh missing API key, fail-open opt-in",
+                );
                 gate::GateOutcome::Allow {
                     command: command.clone(),
                     enrichment: None,
                     gate_id: 0,
                 }
-            }
-        },
-        None => {
-            eprintln!("kleos-sh: no API key available, failing open");
-            gate::GateOutcome::Allow {
-                command: command.clone(),
-                enrichment: None,
-                gate_id: 0,
+            } else {
+                eprintln!(
+                    "kleos-sh: no API key available; failing CLOSED. Set KLEOS_SH_FAIL_OPEN=1 to override (development only)."
+                );
+                alert_gate_degraded(
+                    &client,
+                    &server,
+                    None,
+                    "P0",
+                    "kleos-sh missing API key, fail-closed",
+                );
+                process::exit(2);
             }
         }
     };

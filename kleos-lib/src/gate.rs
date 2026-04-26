@@ -17,7 +17,7 @@ pub const APPROVAL_TIMEOUT_SECS: u64 = 120;
 /// Patterns checked locally by kleos-sh when the server is unreachable.
 /// These are the last line of defense -- if Kleos is down, these still block.
 pub const OFFLINE_BLOCK_PATTERNS: &[&str] = &[
-    r"rm\s+-rf\s+(./kleos|~/eidolon/data|~/zanverse)",
+    r"rm\s+-rf\s+(./kleos|~/eidolon/data|~/kleos)",
 ];
 
 /// In-memory record of a pending tool approval, held in AppState until
