@@ -5,7 +5,7 @@ use kleos_lib::db::migrations::run_migrations;
 use kleos_lib::db::Database;
 use zeroize::Zeroizing;
 
-use crate::agent_keys_file::FileAgentKeyStore;
+use kleos_cred::agent_keys_file::FileAgentKeyStore;
 use crate::build_router;
 use crate::listener;
 use crate::state::AppState;

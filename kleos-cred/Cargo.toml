@@ -72,6 +72,7 @@ thiserror.workspace = true
 tracing.workspace = true
 hex = "0.4"
 base64 = "0.22"
+subtle = { workspace = true }
 
 [features]
 default = []
@@ -79,6 +80,7 @@ gui = ["eframe", "reqwest"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = { workspace = true }
 
 # Windows needs bundled SQLCipher since there's no system sqlite3.lib
 [target.'cfg(windows)'.dependencies]

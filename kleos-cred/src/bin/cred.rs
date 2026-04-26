@@ -132,17 +132,31 @@ enum BootstrapCmd {
 
 #[derive(Subcommand)]
 enum AgentKeyAction {
-    /// Generate a new agent key
+    /// Generate a new agent key.
+    ///
+    /// Without `--scope`, keys land in the DB-backed `cred_agent_keys`
+    /// table (used by the three-tier resolve handlers).
+    ///
+    /// With one or more `--scope bootstrap/<slot>` flags, the key lands in
+    /// the file-backed store at ~/.config/cred/agent-keys.json (used by the
+    /// /bootstrap/kleos-bearer endpoint). The two stores serve different
+    /// auth surfaces; mixing scope types in a single token is rejected.
     Generate {
         /// Agent name/identifier
         name: String,
         /// Description of what this key is for
         #[arg(short, long, default_value = "")]
         description: String,
+        /// Scope strings: `bootstrap/<slot>`, `bootstrap/*`, or `*`.
+        /// Repeat for multiple. Presence of any scope routes to the
+        /// file-backed bootstrap store.
+        #[arg(long)]
+        scope: Vec<String>,
     },
-    /// List all agent keys
+    /// List all agent keys (DB-backed only; use `cred bootstrap unwrap`
+    /// or read ~/.config/cred/agent-keys.json for file-backed tokens).
     List,
-    /// Revoke an agent key
+    /// Revoke a DB-backed agent key.
     Revoke {
         /// Agent name to revoke
         name: String,
@@ -871,24 +885,73 @@ async fn init_schema(db: &Database) -> Result<()> {
 }
 
 async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
-    use kleos_cred::agent_keys;
+    use kleos_cred::{agent_keys, agent_keys_file::FileAgentKeyStore};
 
     match action {
-        AgentKeyAction::Generate { name, description } => {
-            let perms = kleos_cred::AgentKeyPermissions::default();
-            let (key_str, agent_key) = agent_keys::create_agent_key(db, 0, &name, &perms)
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-            eprintln!("generated agent key for '{}'", name);
-            if !description.is_empty() {
-                eprintln!("description: {}", description);
+        AgentKeyAction::Generate {
+            name,
+            description,
+            scope,
+        } => {
+            // Any `bootstrap/*` scope routes the token to the file-backed
+            // store so a fresh shell can read it before the cred DB is
+            // unlocked. Mixing bootstrap and non-bootstrap scopes on a
+            // single token is rejected; the two stores serve different
+            // auth surfaces (bootstrap-bearer endpoint vs three-tier
+            // resolve handlers).
+            let bootstrap_scopes: Vec<&String> = scope
+                .iter()
+                .filter(|s| s.starts_with("bootstrap/") || s.as_str() == "*")
+                .collect();
+            let other_scopes: Vec<&String> = scope
+                .iter()
+                .filter(|s| !s.starts_with("bootstrap/") && s.as_str() != "*")
+                .collect();
+
+            if !bootstrap_scopes.is_empty() && !other_scopes.is_empty() {
+                anyhow::bail!(
+                    "cannot mix bootstrap/* scopes with other scopes in a single token; \
+                     mint two separate tokens"
+                );
             }
-            eprintln!();
-            eprintln!("key (save this now -- it cannot be retrieved later):");
-            println!("{}", key_str);
-            eprintln!();
-            eprintln!("key id: {}", agent_key.id);
-            Ok(())
+
+            if !bootstrap_scopes.is_empty() {
+                // File-backed bootstrap-agent token.
+                let mut store = FileAgentKeyStore::load()
+                    .map_err(|e| anyhow::anyhow!("load agent-keys.json: {}", e))?;
+                let key_hex = store
+                    .generate(&name, &description, scope.clone())
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                eprintln!("minted bootstrap-agent token for '{}'", name);
+                if !description.is_empty() {
+                    eprintln!("description: {}", description);
+                }
+                eprintln!("scopes: {}", scope.join(", "));
+                eprintln!();
+                eprintln!("token (save this now -- it cannot be retrieved later):");
+                println!("{}", key_hex);
+                eprintln!();
+                eprintln!("To make this shell's hook bootstrap pick it up:");
+                eprintln!("  echo '{}' > ~/.config/cred/credd-agent-key.token", key_hex);
+                eprintln!("  chmod 600 ~/.config/cred/credd-agent-key.token");
+                Ok(())
+            } else {
+                // DB-backed three-tier resolve agent key.
+                let perms = kleos_cred::AgentKeyPermissions::default();
+                let (key_str, agent_key) = agent_keys::create_agent_key(db, 0, &name, &perms)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                eprintln!("generated agent key for '{}'", name);
+                if !description.is_empty() {
+                    eprintln!("description: {}", description);
+                }
+                eprintln!();
+                eprintln!("key (save this now -- it cannot be retrieved later):");
+                println!("{}", key_str);
+                eprintln!();
+                eprintln!("key id: {}", agent_key.id);
+                Ok(())
+            }
         }
         AgentKeyAction::List => {
             let keys = agent_keys::list_agent_keys(db, 0)
