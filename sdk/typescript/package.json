@@ -19,7 +19,7 @@
     "context",
     "embeddings"
   ],
-  "author": "Zan",
+  "author": "Syntheos",
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
