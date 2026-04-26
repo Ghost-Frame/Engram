@@ -2,7 +2,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 const OFFLINE_BLOCK_PATTERNS: &[&str] = &[
-    r"rm\s+-rf\s+(./kleos|~/eidolon/data|~/zanverse)",
+    r"rm\s+-rf\s+(./kleos|~/eidolon/data|~/kleos)",
 ];
 
 #[derive(Debug, Clone, Serialize)]

@@ -535,7 +535,7 @@ fn login_html() -> &'static str {
         <h1>Kleos</h1>
         <div class="error" id="error">Invalid API key</div>
         <form id="login-form">
-            <input type="password" name="api_key" placeholder="API Key (kleos_...)" autofocus required>
+            <input type="password" name="api_key" placeholder="API Key" autofocus required>
             <button type="submit">Login</button>
         </form>
         <p class="hint">Use your API key to authenticate</p>
