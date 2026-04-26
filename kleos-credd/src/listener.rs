@@ -12,13 +12,15 @@
 use std::net::SocketAddr;
 
 use anyhow::Context;
+use axum::Router;
+#[cfg(unix)]
 use axum::{
     extract::{ConnectInfo, Request},
     middleware::Next,
-    Router,
 };
 use tracing::{info, warn};
 
+#[cfg(unix)]
 use crate::auth::IsUnixSocket;
 
 /// Bind both Unix and TCP listeners as configured. Blocks until one returns.
