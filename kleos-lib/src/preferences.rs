@@ -105,11 +105,8 @@ pub async fn list_preferences(db: &Database, user_id: i64) -> Result<Vec<UserPre
 pub async fn delete_all_preferences(db: &Database, user_id: i64) -> Result<u64> {
     let affected = db
         .write(move |conn| {
-            conn.execute(
-                "DELETE FROM user_preferences",
-                [],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            conn.execute("DELETE FROM user_preferences", [])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
         })
         .await?;
     Ok(affected as u64)
@@ -121,11 +118,8 @@ pub async fn delete_preference(db: &Database, user_id: i64, key: &str) -> Result
     let key = key.to_string();
     let affected = db
         .write(move |conn| {
-            conn.execute(
-                "DELETE FROM user_preferences WHERE key = ?1",
-                params![key],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            conn.execute("DELETE FROM user_preferences WHERE key = ?1", params![key])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
         })
         .await?;
 

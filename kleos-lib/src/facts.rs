@@ -90,11 +90,9 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
         let exists = db
             .read(move |conn| {
                 let result = conn
-                    .query_row(
-                        "SELECT 1 FROM memories WHERE id = ?1",
-                        params![mid],
-                        |_| Ok(()),
-                    )
+                    .query_row("SELECT 1 FROM memories WHERE id = ?1", params![mid], |_| {
+                        Ok(())
+                    })
                     .optional()
                     .map_err(rusqlite_to_eng_error)?;
                 Ok(result.is_some())
@@ -186,11 +184,8 @@ pub async fn list_facts(
 pub async fn delete_fact(db: &Database, id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute(
-                "DELETE FROM structured_facts WHERE id = ?1",
-                params![id],
-            )
-            .map_err(rusqlite_to_eng_error)
+            conn.execute("DELETE FROM structured_facts WHERE id = ?1", params![id])
+                .map_err(rusqlite_to_eng_error)
         })
         .await?;
 
@@ -238,11 +233,7 @@ pub async fn set_state(
 
 /// Fetch a single state entry for the given agent/key/user.
 #[tracing::instrument(skip(db), fields(agent = %agent, key = %key))]
-pub async fn get_state(
-    db: &Database,
-    agent: &str,
-    key: &str,
-) -> Result<CurrentState> {
+pub async fn get_state(db: &Database, agent: &str, key: &str) -> Result<CurrentState> {
     let agent = agent.to_string();
     let key = key.to_string();
     let sql = format!(

@@ -587,10 +587,7 @@ async fn admin_cred_resolve(
         .ok_or_else(|| AppError(kleos_lib::EngError::InvalidInput("key is required".into())))?;
 
     let value = if body.raw {
-        state
-            .credd
-            .get_raw(&state.db, agent, service, key)
-            .await?
+        state.credd.get_raw(&state.db, agent, service, key).await?
     } else {
         state
             .credd

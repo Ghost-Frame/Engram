@@ -510,9 +510,7 @@ pub async fn list_workflows(db: &Database) -> Result<Vec<Workflow>> {
                  ORDER BY name ASC",
             )
             .map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query(())
-            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
 
         let mut workflows = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -569,9 +567,7 @@ pub async fn update_workflow(
 
     let id_param = value_idx;
     let set_clause = set_parts.join(", ");
-    let sql = format!(
-        "UPDATE loom_workflows SET {set_clause} WHERE id = ?{id_param}"
-    );
+    let sql = format!("UPDATE loom_workflows SET {set_clause} WHERE id = ?{id_param}");
 
     // Serialize steps if present
     let steps_json = req.steps.as_ref().map(serde_json::to_string).transpose()?;
@@ -1365,9 +1361,7 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
                         (SELECT COUNT(*) FROM loom_steps)",
                 )
                 .map_err(rusqlite_to_eng_error)?;
-            let mut rows = stmt
-                .query(())
-                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
 
             if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 let w: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;

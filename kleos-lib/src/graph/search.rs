@@ -50,38 +50,34 @@ pub async fn graph_search(
                 .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
-                .query_map(
-                    rusqlite::params![pattern_clone, limit as i64],
-                    |row| {
-                        let id: i64 = row.get(0)?;
-                        let content: String = row.get(1)?;
-                        let category: String =
-                            row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
-                        let importance: i64 = row.get(3)?;
-                        let pagerank: f64 = row.get::<_, Option<f64>>(4)?.unwrap_or(0.0);
-                        let source: String =
-                            row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
-                        let created_at: String = row.get::<_, String>(6).unwrap_or_default();
-                        let is_static: bool = row.get::<_, bool>(7).unwrap_or(false);
-                        let source_count: i64 = row.get::<_, i64>(8).unwrap_or(1);
-                        let decay_score: Option<f64> = row.get::<_, f64>(9).ok();
-                        let community_id: Option<u32> =
-                            row.get::<_, i64>(10).ok().map(|v| v as u32);
-                        Ok((
-                            id,
-                            content,
-                            category,
-                            importance,
-                            pagerank,
-                            source,
-                            created_at,
-                            is_static,
-                            source_count,
-                            decay_score,
-                            community_id,
-                        ))
-                    },
-                )
+                .query_map(rusqlite::params![pattern_clone, limit as i64], |row| {
+                    let id: i64 = row.get(0)?;
+                    let content: String = row.get(1)?;
+                    let category: String =
+                        row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
+                    let importance: i64 = row.get(3)?;
+                    let pagerank: f64 = row.get::<_, Option<f64>>(4)?.unwrap_or(0.0);
+                    let source: String =
+                        row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
+                    let created_at: String = row.get::<_, String>(6).unwrap_or_default();
+                    let is_static: bool = row.get::<_, bool>(7).unwrap_or(false);
+                    let source_count: i64 = row.get::<_, i64>(8).unwrap_or(1);
+                    let decay_score: Option<f64> = row.get::<_, f64>(9).ok();
+                    let community_id: Option<u32> = row.get::<_, i64>(10).ok().map(|v| v as u32);
+                    Ok((
+                        id,
+                        content,
+                        category,
+                        importance,
+                        pagerank,
+                        source,
+                        created_at,
+                        is_static,
+                        source_count,
+                        decay_score,
+                        community_id,
+                    ))
+                })
                 .map_err(rusqlite_to_eng_error)?;
 
             let mut nodes = Vec::new();
@@ -153,14 +149,11 @@ pub async fn graph_search(
                 .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
-                .query_map(
-                    rusqlite::params![pattern, limit as i64],
-                    |row| {
-                        let id: i64 = row.get(0)?;
-                        let name: String = row.get(1)?;
-                        Ok((id, name))
-                    },
-                )
+                .query_map(rusqlite::params![pattern, limit as i64], |row| {
+                    let id: i64 = row.get(0)?;
+                    let name: String = row.get(1)?;
+                    Ok((id, name))
+                })
                 .map_err(rusqlite_to_eng_error)?;
 
             let mut nodes = Vec::new();
@@ -295,16 +288,13 @@ pub async fn neighborhood_filtered(
                     type_clause = type_clause,
                 );
 
-                let mut stmt = conn
-                    .prepare(&sql)
-                    .map_err(rusqlite_to_eng_error)?;
+                let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
 
                 // R8 P-005: borrow params directly instead of Box::new +
                 // clone. frontier_clone and type_filter_clone outlive
                 // this block so &i64 / &String refs are stable.
                 let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(
-                    frontier_clone.len()
-                        + type_filter_clone.as_ref().map_or(0, |t| t.len()),
+                    frontier_clone.len() + type_filter_clone.as_ref().map_or(0, |t| t.len()),
                 );
                 for id in &frontier_clone {
                     params.push(id);
@@ -383,10 +373,7 @@ pub async fn neighborhood_filtered(
 }
 
 /// Batch fetch memory node details for a list of IDs in a single query.
-async fn batch_fetch_memory_nodes(
-    db: &Database,
-    ids: &[i64],
-) -> Result<Vec<GraphNode>> {
+async fn batch_fetch_memory_nodes(db: &Database, ids: &[i64]) -> Result<Vec<GraphNode>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }

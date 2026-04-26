@@ -264,7 +264,15 @@ pub async fn reapply_instincts(
     let mut edges_rewritten = 0usize;
     for edge in &corpus.edges {
         let etype = EdgeType::from_str_loose(&edge.edge_type);
-        edges::store_edge(db, edge.source_id, edge.target_id, edge.weight, etype, user_id).await?;
+        edges::store_edge(
+            db,
+            edge.source_id,
+            edge.target_id,
+            edge.weight,
+            etype,
+            user_id,
+        )
+        .await?;
         edges_rewritten += 1;
     }
 

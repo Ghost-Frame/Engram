@@ -367,11 +367,8 @@ async fn list_webhooks_with_secrets(db: &Database, user_id: i64) -> Result<Vec<W
 #[tracing::instrument(skip(db))]
 pub async fn delete_webhook(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
-        conn.execute(
-            "DELETE FROM webhooks WHERE id = ?1",
-            rusqlite::params![id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        conn.execute("DELETE FROM webhooks WHERE id = ?1", rusqlite::params![id])
+            .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })
     .await

@@ -49,8 +49,7 @@ async fn list_episodes(
     if params.after.is_some() || params.before.is_some() {
         let after = params.after.as_deref().unwrap_or("2000-01-01");
         let before = params.before.as_deref().unwrap_or("2099-12-31");
-        let eps =
-            episodes::list_episodes_by_time_range(&db, after, before, limit).await?;
+        let eps = episodes::list_episodes_by_time_range(&db, after, before, limit).await?;
         return Ok(Json(json!({ "episodes": eps })));
     }
 
@@ -106,8 +105,7 @@ async fn assign_memories(
 ) -> Result<Json<Value>, AppError> {
     // Verify episode exists
     episodes::get_episode_for_user(&db, id).await?;
-    let assigned =
-        episodes::assign_memories_to_episode(&db, id, &body.memory_ids).await?;
+    let assigned = episodes::assign_memories_to_episode(&db, id, &body.memory_ids).await?;
     Ok(Json(json!({ "assigned": assigned, "episode_id": id })))
 }
 

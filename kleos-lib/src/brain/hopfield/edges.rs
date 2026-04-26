@@ -39,7 +39,11 @@ pub async fn store_edge(
 
 /// Get all edges originating from a given pattern.
 #[tracing::instrument(skip(db), fields(source_id))]
-pub async fn get_edges_from(db: &Database, source_id: i64, _user_id: i64) -> Result<Vec<BrainEdge>> {
+pub async fn get_edges_from(
+    db: &Database,
+    source_id: i64,
+    _user_id: i64,
+) -> Result<Vec<BrainEdge>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -49,9 +53,7 @@ pub async fn get_edges_from(db: &Database, source_id: i64, _user_id: i64) -> Res
             .map_err(rusqlite_to_eng_error)?;
 
         let edges = stmt
-            .query_map(rusqlite::params![source_id], |row| {
-                Ok(row_to_edge_raw(row))
-            })
+            .query_map(rusqlite::params![source_id], |row| Ok(row_to_edge_raw(row)))
             .map_err(rusqlite_to_eng_error)?
             .map(|r| r.map_err(rusqlite_to_eng_error).and_then(|inner| inner))
             .collect::<Result<Vec<BrainEdge>>>()?;
@@ -63,7 +65,11 @@ pub async fn get_edges_from(db: &Database, source_id: i64, _user_id: i64) -> Res
 
 /// Get all edges connected to a pattern (either direction).
 #[tracing::instrument(skip(db), fields(pattern_id))]
-pub async fn get_edges_for(db: &Database, pattern_id: i64, _user_id: i64) -> Result<Vec<BrainEdge>> {
+pub async fn get_edges_for(
+    db: &Database,
+    pattern_id: i64,
+    _user_id: i64,
+) -> Result<Vec<BrainEdge>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -157,11 +163,7 @@ pub async fn prune_edges(db: &Database, _user_id: i64, threshold: f32) -> Result
 pub async fn count_edges(db: &Database, _user_id: i64) -> Result<i64> {
     db.read(move |conn| {
         let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM brain_edges",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM brain_edges", [], |row| row.get(0))
             .map_err(rusqlite_to_eng_error)?;
         Ok(count)
     })

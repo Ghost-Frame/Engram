@@ -704,7 +704,11 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
     if current_version < MIGRATION_DROP_USER_ID_WEBHOOKS {
         info!("Running migration 33: drop_user_id_webhooks");
         run_migration_drop_user_id_webhooks(conn)?;
-        record_migration(conn, MIGRATION_DROP_USER_ID_WEBHOOKS, "drop_user_id_webhooks")?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_USER_ID_WEBHOOKS,
+            "drop_user_id_webhooks",
+        )?;
     }
 
     if current_version < MIGRATION_DROP_USER_ID_AXON {
@@ -770,11 +774,7 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
     if current_version < MIGRATION_DROP_USER_ID_SKILLS {
         info!("Running migration 42: drop_user_id_skills");
         run_migration_drop_user_id_skills(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_SKILLS,
-            "drop_user_id_skills",
-        )?;
+        record_migration(conn, MIGRATION_DROP_USER_ID_SKILLS, "drop_user_id_skills")?;
     }
 
     if current_version < MIGRATION_DROP_USER_ID_EPISODES {
@@ -2092,11 +2092,8 @@ fn run_migration_drop_user_id_axon(conn: &rusqlite::Connection) -> Result<()> {
         )
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     if subs_has_user_id > 0 {
-        conn.execute(
-            "ALTER TABLE axon_subscriptions DROP COLUMN user_id",
-            [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE axon_subscriptions DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         info!("Migration 34: user_id dropped from axon_subscriptions");
     } else {
         info!("axon_subscriptions.user_id already absent, skipping");
@@ -2576,7 +2573,9 @@ fn run_migration_drop_user_id_portability(conn: &rusqlite::Connection) -> Result
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    info!("Migration 40 complete: user_id dropped from user_preferences (rebuild) and conversations");
+    info!(
+        "Migration 40 complete: user_id dropped from user_preferences (rebuild) and conversations"
+    );
     Ok(())
 }
 
@@ -2815,7 +2814,9 @@ fn run_migration_drop_user_id_skills(conn: &rusqlite::Connection) -> Result<()> 
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    info!("Migration 42 complete: user_id dropped from skill_records (Shape B + FTS shadow rebuild)");
+    info!(
+        "Migration 42 complete: user_id dropped from skill_records (Shape B + FTS shadow rebuild)"
+    );
     Ok(())
 }
 
@@ -2907,7 +2908,9 @@ fn run_migration_drop_user_id_episodes(conn: &rusqlite::Connection) -> Result<()
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    info!("Migration 43 complete: user_id dropped from episodes (Shape A, FTS triggers unaffected)");
+    info!(
+        "Migration 43 complete: user_id dropped from episodes (Shape A, FTS triggers unaffected)"
+    );
     Ok(())
 }
 

@@ -178,10 +178,7 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
 
 #[tracing::instrument(skip(db))]
 pub async fn get_skill(db: &Database, id: i64, _user_id: i64) -> Result<Skill> {
-    let sql = format!(
-        "SELECT {} FROM skill_records WHERE id = ?1",
-        SKILL_COLUMNS
-    );
+    let sql = format!("SELECT {} FROM skill_records WHERE id = ?1", SKILL_COLUMNS);
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(&sql)
@@ -343,11 +340,8 @@ pub async fn recompute_skill(db: &Database, id: i64, user_id: i64) -> Result<Ski
 pub async fn delete_skill(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute(
-                "DELETE FROM skill_records WHERE id = ?1",
-                params![id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            conn.execute("DELETE FROM skill_records WHERE id = ?1", params![id])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
         })
         .await?;
     if affected == 0 {

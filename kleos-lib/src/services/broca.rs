@@ -84,14 +84,7 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
                 "INSERT INTO broca_actions
                     (agent, service, action, payload, narrative, axon_event_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![
-                    agent,
-                    svc,
-                    action,
-                    payload_str,
-                    narrative,
-                    axon_event_id,
-                ],
+                rusqlite::params![agent, svc, action, payload_str, narrative, axon_event_id,],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(conn.last_insert_rowid())

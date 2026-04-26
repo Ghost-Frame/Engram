@@ -11,7 +11,11 @@ use sha2::Sha256;
 use std::{fs, path::PathBuf, sync::OnceLock};
 use subtle::ConstantTimeEq;
 
-use crate::{error::AppError, extractors::{Auth, ResolvedDb}, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
 
 mod types;
 use types::{ExecutionsQuery, LinkKeyBody, RegisterBody, RevokeBody, VerifyBody};

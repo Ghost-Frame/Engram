@@ -340,9 +340,7 @@ pub async fn list_rubrics(db: &Database) -> Result<Vec<Rubric>> {
                  FROM rubrics ORDER BY created_at DESC",
             )
             .map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query([])
-            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             results.push(row_to_rubric(row)?);
@@ -353,11 +351,7 @@ pub async fn list_rubrics(db: &Database) -> Result<Vec<Rubric>> {
 }
 
 #[tracing::instrument(skip(db, req))]
-pub async fn update_rubric(
-    db: &Database,
-    id: i64,
-    req: UpdateRubricRequest,
-) -> Result<Rubric> {
+pub async fn update_rubric(db: &Database, id: i64, req: UpdateRubricRequest) -> Result<Rubric> {
     // Verify existence
     get_rubric(db, id).await?;
 
@@ -388,11 +382,7 @@ pub async fn update_rubric(
         return get_rubric(db, id).await;
     }
 
-    let sql = format!(
-        "UPDATE rubrics SET {} WHERE id = ?{}",
-        sets.join(", "),
-        idx
-    );
+    let sql = format!("UPDATE rubrics SET {} WHERE id = ?{}", sets.join(", "), idx);
     params_vec.push(rusqlite::types::Value::Integer(id));
 
     db.write(move |conn| {
@@ -408,11 +398,8 @@ pub async fn update_rubric(
 #[tracing::instrument(skip(db))]
 pub async fn delete_rubric(db: &Database, id: i64) -> Result<bool> {
     db.write(move |conn| {
-        conn.execute(
-            "DELETE FROM rubrics WHERE id = ?1",
-            rusqlite::params![id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        conn.execute("DELETE FROM rubrics WHERE id = ?1", rusqlite::params![id])
+            .map_err(rusqlite_to_eng_error)?;
         Ok(true)
     })
     .await
@@ -609,9 +596,8 @@ pub async fn get_agent_scores(
         "SELECT overall_score, scores FROM evaluations
          WHERE agent = ?1",
     );
-    let mut params_vec: Vec<rusqlite::types::Value> = vec![
-        rusqlite::types::Value::Text(agent.to_string()),
-    ];
+    let mut params_vec: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Text(agent.to_string())];
     let mut idx = 2usize;
 
     if let Some(rid) = rubric_id {
@@ -898,9 +884,8 @@ pub async fn get_session_quality(
                 personality_score, rule_compliance_rate, created_at
          FROM session_quality WHERE agent = ?1",
     );
-    let mut params_vec: Vec<rusqlite::types::Value> = vec![
-        rusqlite::types::Value::Text(agent.to_string()),
-    ];
+    let mut params_vec: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Text(agent.to_string())];
     let mut idx = 2usize;
 
     if let Some(s) = since {
@@ -992,11 +977,7 @@ pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> 
 }
 
 #[tracing::instrument(skip(db), fields(agent = %agent))]
-pub async fn get_drift_events(
-    db: &Database,
-    agent: &str,
-    limit: usize,
-) -> Result<Vec<DriftEvent>> {
+pub async fn get_drift_events(db: &Database, agent: &str, limit: usize) -> Result<Vec<DriftEvent>> {
     let capped = limit.min(1_000);
     let agent_owned = agent.to_string();
 
@@ -1021,10 +1002,7 @@ pub async fn get_drift_events(
 }
 
 #[tracing::instrument(skip(db), fields(agent = %agent))]
-pub async fn get_drift_summary(
-    db: &Database,
-    agent: &str,
-) -> Result<Vec<DriftSummaryEntry>> {
+pub async fn get_drift_summary(db: &Database, agent: &str) -> Result<Vec<DriftSummaryEntry>> {
     let agent_owned = agent.to_string();
 
     db.read(move |conn| {
@@ -1060,35 +1038,21 @@ pub async fn get_drift_summary(
 pub async fn get_stats(db: &Database) -> Result<ThymusStats> {
     db.read(move |conn| {
         let rubrics: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM rubrics",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM rubrics", [], |row| row.get(0))
             .map_err(rusqlite_to_eng_error)?;
 
         let evaluations: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM evaluations",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM evaluations", [], |row| row.get(0))
             .map_err(rusqlite_to_eng_error)?;
 
         let metrics: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM quality_metrics",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM quality_metrics", [], |row| row.get(0))
             .map_err(rusqlite_to_eng_error)?;
 
         let agent_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(DISTINCT agent) FROM evaluations",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(DISTINCT agent) FROM evaluations", [], |row| {
+                row.get(0)
+            })
             .map_err(rusqlite_to_eng_error)?;
 
         Ok(ThymusStats {

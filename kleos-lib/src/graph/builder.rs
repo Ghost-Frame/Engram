@@ -158,9 +158,14 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                  WHERE ml.source_id IN ({placeholders}) OR ml.target_id IN ({placeholders})"
             );
 
+<<<<<<< HEAD
             // Parameter list: ids twice (source IN, target IN)
             let mut params: Vec<rusqlite::types::Value> =
                 Vec::with_capacity(memory_ids.len() * 2);
+=======
+            // Build parameter list: ids twice (source IN, target IN)
+            let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(memory_ids.len() * 2);
+>>>>>>> 35c6356 (style: apply cargo fmt across workspace (Phase 5 closeout))
             for &id in memory_ids.iter().chain(memory_ids.iter()) {
                 params.push(rusqlite::types::Value::Integer(id));
             }

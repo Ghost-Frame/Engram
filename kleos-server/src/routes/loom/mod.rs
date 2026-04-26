@@ -117,13 +117,7 @@ async fn list_runs_handler(
     Query(params): Query<ListRunsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
-    let runs = list_runs(
-        &db,
-        params.workflow_id,
-        params.status.as_deref(),
-        limit,
-    )
-    .await?;
+    let runs = list_runs(&db, params.workflow_id, params.status.as_deref(), limit).await?;
     Ok(Json(json!({ "runs": runs })))
 }
 

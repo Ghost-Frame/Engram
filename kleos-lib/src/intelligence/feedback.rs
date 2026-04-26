@@ -253,7 +253,10 @@ mod tests {
         add_feedback(&db, mine, 1, "helpful").await;
         // user_id=2 sees the same global feedback -- not empty.
         let prefs = category_preferences(&db).await.expect("prefs");
-        assert!(!prefs.is_empty(), "single-tenant: all feedback is visible globally");
+        assert!(
+            !prefs.is_empty(),
+            "single-tenant: all feedback is visible globally"
+        );
         assert!((prefs["code"] - 1.0).abs() < 1e-9);
     }
 }

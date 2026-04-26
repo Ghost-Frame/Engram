@@ -200,12 +200,10 @@ async fn check_handler(
                     // respond_handler already decided; read and honour that.
                     match mark_gate_timed_out(&db, gate_id, auth.user_id).await {
                         Ok(true) => false,
-                        Ok(false) => {
-                            match read_gate_decision(&db, gate_id, auth.user_id).await {
-                                Ok(Some(d)) => d.status == "approved",
-                                _ => false,
-                            }
-                        }
+                        Ok(false) => match read_gate_decision(&db, gate_id, auth.user_id).await {
+                            Ok(Some(d)) => d.status == "approved",
+                            _ => false,
+                        },
                         Err(e) => {
                             tracing::error!(
                                 "gate: failed to mark gate_id={} timed out: {}",

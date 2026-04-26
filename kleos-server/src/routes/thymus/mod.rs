@@ -128,13 +128,8 @@ async fn list_evaluations_handler(
     Query(params): Query<ListEvaluationsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
-    let evaluations = list_evaluations(
-        &db,
-        params.agent.as_deref(),
-        params.rubric_id,
-        limit,
-    )
-    .await?;
+    let evaluations =
+        list_evaluations(&db, params.agent.as_deref(), params.rubric_id, limit).await?;
     Ok(Json(json!({ "evaluations": evaluations })))
 }
 
@@ -214,8 +209,7 @@ async fn get_session_quality_handler(
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
-    let records =
-        get_session_quality(&db, agent, params.since.as_deref(), limit).await?;
+    let records = get_session_quality(&db, agent, params.since.as_deref(), limit).await?;
     Ok(Json(json!({ "session_quality": records })))
 }
 

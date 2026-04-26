@@ -47,9 +47,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                 placeholders
             );
             let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-            let mut rows = stmt
-                .query([])
-                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
             let mut result = Vec::new();
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 result.push((

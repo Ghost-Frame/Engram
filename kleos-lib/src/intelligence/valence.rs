@@ -176,11 +176,7 @@ pub fn analyze_valence(content: &str) -> ValenceResult {
 }
 
 #[tracing::instrument(skip(db, content), fields(memory_id, content_len = content.len()))]
-pub async fn store_valence(
-    db: &Database,
-    memory_id: i64,
-    content: &str,
-) -> Result<ValenceResult> {
+pub async fn store_valence(db: &Database, memory_id: i64, content: &str) -> Result<ValenceResult> {
     let result = analyze_valence(content);
     if result.dominant_emotion != "neutral" {
         let valence = result.valence;

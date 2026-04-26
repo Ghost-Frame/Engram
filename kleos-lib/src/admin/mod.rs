@@ -417,11 +417,8 @@ pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
         conn.execute("DELETE FROM spaces WHERE user_id = ?1", params![user_id])
             .map_err(rusqlite_to_eng_error)?;
         // Soft-delete memories (mark forgotten)
-        conn.execute(
-            "UPDATE memories SET is_forgotten = 1",
-            [],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        conn.execute("UPDATE memories SET is_forgotten = 1", [])
+            .map_err(rusqlite_to_eng_error)?;
         // Delete user
         let affected = conn
             .execute("DELETE FROM users WHERE id = ?1", params![user_id])

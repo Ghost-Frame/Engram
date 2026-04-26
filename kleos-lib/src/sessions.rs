@@ -407,11 +407,7 @@ pub async fn list_sessions(
 }
 
 #[tracing::instrument(skip(db, line), fields(session_id = %session_id, line_len = line.len()))]
-pub async fn append_output(
-    db: &Database,
-    session_id: &str,
-    line: &str,
-) -> Result<()> {
+pub async fn append_output(db: &Database, session_id: &str, line: &str) -> Result<()> {
     let session_id_owned = session_id.to_string();
     let line_owned = line.to_string();
 
@@ -466,10 +462,7 @@ pub async fn append_output(
 }
 
 #[tracing::instrument(skip(db), fields(session_id = %session_id))]
-pub async fn get_session_output(
-    db: &Database,
-    session_id: &str,
-) -> Result<Vec<String>> {
+pub async fn get_session_output(db: &Database, session_id: &str) -> Result<Vec<String>> {
     let session_id_owned = session_id.to_string();
 
     // Verify the session exists (tenant isolation is at the shard level).

@@ -18,7 +18,10 @@
 use std::collections::HashMap;
 use std::env;
 use std::sync::Mutex;
+<<<<<<< HEAD
 use std::time::{Duration, SystemTime};
+=======
+>>>>>>> 35c6356 (style: apply cargo fmt across workspace (Phase 5 closeout))
 
 use thiserror::Error;
 

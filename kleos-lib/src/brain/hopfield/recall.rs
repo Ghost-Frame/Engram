@@ -264,8 +264,7 @@ async fn load_memory_content(
 
     db.read(move |conn| {
         // Build parameterised query with one ?N per ID.
-        let placeholders: Vec<String> =
-            (1..=ids_cap.len()).map(|i| format!("?{}", i)).collect();
+        let placeholders: Vec<String> = (1..=ids_cap.len()).map(|i| format!("?{}", i)).collect();
         let sql = format!(
             "SELECT id, content FROM memories WHERE id IN ({})",
             placeholders.join(", ")

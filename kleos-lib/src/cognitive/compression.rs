@@ -60,9 +60,7 @@ pub async fn compress_weekly(db: &Database, user_id: i64) -> Result<Vec<Compress
                 let mut results = Vec::new();
                 for id in &ids_to_fetch {
                     let mut stmt = conn
-                        .prepare(
-                            "SELECT content, importance FROM memories WHERE id = ?1",
-                        )
+                        .prepare("SELECT content, importance FROM memories WHERE id = ?1")
                         .map_err(rusqlite_to_eng_error)?;
                     let row = stmt
                         .query_row(params![id], |row| {

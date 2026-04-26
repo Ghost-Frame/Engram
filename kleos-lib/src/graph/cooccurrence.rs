@@ -47,7 +47,10 @@ pub async fn build_cooccurrence_edges(
                 if !memory_entities.contains_key(&memory_id) {
                     memory_order.push(memory_id);
                 }
-                memory_entities.entry(memory_id).or_default().push(entity_id);
+                memory_entities
+                    .entry(memory_id)
+                    .or_default()
+                    .push(entity_id);
             }
 
             Ok((memory_order, memory_entities))
@@ -127,11 +130,7 @@ pub async fn build_cooccurrence_edges(
 /// The pair is stored in canonical order (smaller id first) so that
 /// (A, B) and (B, A) map to the same row.
 #[tracing::instrument(skip(db))]
-pub async fn record_cooccurrence(
-    db: &Database,
-    entity_a: i64,
-    entity_b: i64,
-) -> Result<()> {
+pub async fn record_cooccurrence(db: &Database, entity_a: i64, entity_b: i64) -> Result<()> {
     let (lo, hi) = if entity_a <= entity_b {
         (entity_a, entity_b)
     } else {
@@ -159,11 +158,8 @@ pub async fn record_cooccurrence(
 pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
     // Clear all co-occurrences
     db.write(move |conn| {
-        conn.execute(
-            "DELETE FROM entity_cooccurrences",
-            [],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        conn.execute("DELETE FROM entity_cooccurrences", [])
+            .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })
     .await?;

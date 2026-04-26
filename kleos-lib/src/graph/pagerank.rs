@@ -572,12 +572,8 @@ pub async fn incremental_remove_memory(db: &Database, memory_id: i64) -> Result<
     // Get remaining memory count
     let remaining: i64 = db
         .read(move |conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM memory_pagerank",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))
+                .map_err(rusqlite_to_eng_error)
         })
         .await?;
 
@@ -855,10 +851,7 @@ pub async fn compute_pagerank_by_communities(
         all_scores.push((mid, orphan_score));
     }
 
-    info!(
-        total_scores = all_scores.len(),
-        "community_pagerank_merged"
-    );
+    info!(total_scores = all_scores.len(), "community_pagerank_merged");
 
     Ok(all_scores)
 }
@@ -870,11 +863,9 @@ pub async fn compute_pagerank_by_communities(
 pub async fn ensure_pagerank_for_user(db: &Database, user_id: i64) -> Result<()> {
     let count: i64 = db
         .read(move |conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM memory_pagerank LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
+            conn.query_row("SELECT COUNT(*) FROM memory_pagerank LIMIT 1", [], |row| {
+                row.get(0)
+            })
             .map_err(rusqlite_to_eng_error)
         })
         .await?;
@@ -963,12 +954,8 @@ mod tests {
 
     async fn pagerank_count(db: &Database, _user_id: i64) -> i64 {
         db.read(move |conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM memory_pagerank",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))
+                .map_err(rusqlite_to_eng_error)
         })
         .await
         .expect("query memory_pagerank count")
@@ -1061,9 +1048,7 @@ mod tests {
         assert!(last_refresh_one > 0);
         assert_eq!(computed_one, last_refresh_one);
 
-        mark_pagerank_dirty(&db, 3)
-            .await
-            .expect("mark dirty again");
+        mark_pagerank_dirty(&db, 3).await.expect("mark dirty again");
         assert_eq!(dirty_state(&db, user_id).await.0, 3);
 
         tokio::time::sleep(Duration::from_secs(1)).await;

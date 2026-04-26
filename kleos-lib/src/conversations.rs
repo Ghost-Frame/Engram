@@ -10,8 +10,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-const CONVERSATION_COLUMNS: &str =
-    "id, agent, session_id, title, metadata, started_at, updated_at";
+const CONVERSATION_COLUMNS: &str = "id, agent, session_id, title, metadata, started_at, updated_at";
 
 const CONVERSATION_LIST_COLUMNS: &str =
     "c.id, c.agent, c.session_id, c.title, c.metadata, c.started_at, c.updated_at, \
@@ -346,11 +345,8 @@ pub async fn update_conversation(
 pub async fn delete_conversation(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute(
-                "DELETE FROM conversations WHERE id = ?1",
-                params![id],
-            )
-            .map_err(rusqlite_to_eng_error)
+            conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])
+                .map_err(rusqlite_to_eng_error)
         })
         .await?;
     if affected == 0 {

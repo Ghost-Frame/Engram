@@ -70,8 +70,7 @@ pub struct FeedItem {
     pub created_at: String,
 }
 
-const TASK_COLUMNS: &str =
-    "id, agent, project, title, status, summary, created_at, updated_at";
+const TASK_COLUMNS: &str = "id, agent, project, title, status, summary, created_at, updated_at";
 
 const VALID_STATUSES: &[&str] = &["active", "paused", "blocked", "completed"];
 
@@ -256,10 +255,7 @@ pub async fn update_task(
         }
         sets.push("updated_at = datetime('now')");
 
-        let sql = format!(
-            "UPDATE chiasm_tasks SET {} WHERE id = ?",
-            sets.join(", ")
-        );
+        let sql = format!("UPDATE chiasm_tasks SET {} WHERE id = ?", sets.join(", "));
         params_dyn.push(Box::new(id));
         let refs: Vec<&dyn rusqlite::ToSql> = params_dyn.iter().map(|b| b.as_ref()).collect();
         tx.execute(&sql, refs.as_slice())
@@ -347,11 +343,7 @@ pub async fn get_stats(db: &Database) -> Result<ChiasmStats> {
 }
 
 #[tracing::instrument(skip(db), fields(limit, offset))]
-pub async fn get_feed(
-    db: &Database,
-    limit: usize,
-    offset: usize,
-) -> Result<Vec<FeedItem>> {
+pub async fn get_feed(db: &Database, limit: usize, offset: usize) -> Result<Vec<FeedItem>> {
     let sql = "SELECT id, agent, project, title, status, summary, updated_at, created_at
                FROM chiasm_tasks
                ORDER BY updated_at DESC, id DESC

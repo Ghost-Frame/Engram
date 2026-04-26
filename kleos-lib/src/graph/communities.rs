@@ -275,6 +275,7 @@ pub async fn get_community_members(
             )
             .map_err(rusqlite_to_eng_error)?;
         let members = stmt
+<<<<<<< HEAD
             .query_map(
                 rusqlite::params![community_id, user_id, limit as i64],
                 |row| {
@@ -287,6 +288,17 @@ pub async fn get_community_members(
                     })
                 },
             )
+=======
+            .query_map(rusqlite::params![community_id, limit as i64], |row| {
+                Ok(CommunityMember {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get(2)?,
+                    importance: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })
+>>>>>>> 35c6356 (style: apply cargo fmt across workspace (Phase 5 closeout))
             .map_err(rusqlite_to_eng_error)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(rusqlite_to_eng_error)?;

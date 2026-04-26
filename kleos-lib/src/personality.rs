@@ -1027,9 +1027,9 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     // Gather facts
     let facts = db
         .read(move |conn| {
-            let mut stmt = conn.prepare(
-            "SELECT subject, verb, object FROM structured_facts LIMIT 50",
-        ).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn
+                .prepare("SELECT subject, verb, object FROM structured_facts LIMIT 50")
+                .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
                 .query_map([], |row| {

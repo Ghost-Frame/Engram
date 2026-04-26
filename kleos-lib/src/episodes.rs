@@ -44,10 +44,7 @@ pub struct AssignMemoriesRequest {
 }
 
 #[tracing::instrument(skip(db, req), fields(has_title = req.title.is_some()))]
-pub async fn create_episode(
-    db: &Database,
-    req: CreateEpisodeRequest,
-) -> Result<EpisodeRow> {
+pub async fn create_episode(db: &Database, req: CreateEpisodeRequest) -> Result<EpisodeRow> {
     let id = db
         .write(move |conn| {
             conn.execute(

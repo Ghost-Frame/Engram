@@ -412,11 +412,7 @@ pub async fn log_event(
 }
 
 #[tracing::instrument(skip(db), fields(agent_id, limit))]
-pub async fn list_agent_logs(
-    db: &Database,
-    agent_id: i64,
-    limit: i64,
-) -> Result<Vec<AgentLog>> {
+pub async fn list_agent_logs(db: &Database, agent_id: i64, limit: i64) -> Result<Vec<AgentLog>> {
     let sql = "SELECT l.id, l.agent_id, l.level, l.message, l.data, l.created_at
                FROM soma_agent_logs l
                WHERE l.agent_id = ?1

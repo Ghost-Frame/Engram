@@ -49,16 +49,7 @@ async fn put_scratch(
     let mut stored = 0;
     for e in &entries {
         let value = e.value.as_deref().unwrap_or("");
-        kleos_lib::scratchpad::upsert_entry(
-            &db,
-            session,
-            agent,
-            model,
-            &e.key,
-            value,
-            ttl,
-        )
-        .await?;
+        kleos_lib::scratchpad::upsert_entry(&db, session, agent, model, &e.key, value, ttl).await?;
         stored += 1;
     }
     Ok(Json(

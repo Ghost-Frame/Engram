@@ -299,11 +299,7 @@ pub async fn get_subscription(
 }
 
 #[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel))]
-pub async fn delete_subscription(
-    db: &Database,
-    agent: &str,
-    channel: &str,
-) -> Result<bool> {
+pub async fn delete_subscription(db: &Database, agent: &str, channel: &str) -> Result<bool> {
     let sql = "DELETE FROM axon_subscriptions WHERE agent = ?1 AND channel = ?2";
     let a = agent.to_string();
     let c = channel.to_string();

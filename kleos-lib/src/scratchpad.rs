@@ -98,10 +98,7 @@ pub async fn list_entries(
 }
 
 #[tracing::instrument(skip(db, session))]
-pub async fn get_session_entries(
-    db: &Database,
-    session: &str,
-) -> Result<Vec<ScratchEntry>> {
+pub async fn get_session_entries(db: &Database, session: &str) -> Result<Vec<ScratchEntry>> {
     let session = session.to_string();
     db.read(move |conn| {
         let mut stmt = conn
@@ -136,11 +133,7 @@ pub async fn delete_session(db: &Database, session: &str) -> Result<()> {
 }
 
 #[tracing::instrument(skip(db, session, key))]
-pub async fn delete_session_key(
-    db: &Database,
-    session: &str,
-    key: &str,
-) -> Result<()> {
+pub async fn delete_session_key(db: &Database, session: &str, key: &str) -> Result<()> {
     let session = session.to_string();
     let key = key.to_string();
     db.write(move |conn| {

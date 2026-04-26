@@ -115,11 +115,7 @@ pub async fn resolve(
         };
         let (new_src, new_tgt, src_won) = resolve_interference(&src_state, &tgt_state);
 
-        let (winner, loser) = if src_won {
-            (*src, *tgt)
-        } else {
-            (*tgt, *src)
-        };
+        let (winner, loser) = if src_won { (*src, *tgt) } else { (*tgt, *src) };
 
         network.update_strength(*src, new_src);
         if let Err(e) = pattern::update_strength(db, *src, user_id, new_src).await {

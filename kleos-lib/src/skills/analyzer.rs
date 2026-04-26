@@ -339,9 +339,7 @@ pub async fn get_derive_candidates(
         // Pull every (skill_id, parent_id) pair so we can reject pairs whose
         // derived child already exists.
         let mut parents_stmt = conn
-            .prepare(
-                "SELECT slp.skill_id, slp.parent_id FROM skill_lineage_parents slp",
-            )
+            .prepare("SELECT slp.skill_id, slp.parent_id FROM skill_lineage_parents slp")
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let parent_rows = parents_stmt
             .query_map(params![], |row| {

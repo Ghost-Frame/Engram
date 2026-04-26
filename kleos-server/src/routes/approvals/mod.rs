@@ -10,8 +10,8 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::approvals::{
-    create_approval, decide, expire_stale, get_approval, list_pending,
-    CreateApprovalRequest, DecideRequest,
+    create_approval, decide, expire_stale, get_approval, list_pending, CreateApprovalRequest,
+    DecideRequest,
 };
 
 mod types;

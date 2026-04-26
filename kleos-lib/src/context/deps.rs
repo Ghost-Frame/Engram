@@ -287,9 +287,7 @@ pub async fn get_structured_facts(
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query([])
-            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
         let mut facts = Vec::with_capacity(mem_ids_len);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             facts.push(StructuredFact {

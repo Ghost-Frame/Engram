@@ -1264,10 +1264,7 @@ pub struct AbsorbMemoryData {
 
 /// Look up a memory row by id for the absorb route.
 #[tracing::instrument(skip(db), fields(memory_id = id))]
-pub async fn get_memory_for_absorb(
-    db: &Database,
-    id: i64,
-) -> Result<AbsorbMemoryData> {
+pub async fn get_memory_for_absorb(db: &Database, id: i64) -> Result<AbsorbMemoryData> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -1309,10 +1306,7 @@ pub async fn get_memory_for_absorb(
 }
 /// Verify that all memory IDs exist in the database. Returns true if all found.
 #[tracing::instrument(skip(db, memory_ids), fields(memory_count = memory_ids.len()))]
-pub async fn verify_memory_ownership(
-    db: &Database,
-    memory_ids: &[i64],
-) -> Result<bool> {
+pub async fn verify_memory_ownership(db: &Database, memory_ids: &[i64]) -> Result<bool> {
     if memory_ids.is_empty() {
         return Ok(true);
     }

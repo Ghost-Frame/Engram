@@ -306,8 +306,7 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
 
     // Compute and persist emotional valence for future affect-weighted retrieval.
     // Best-effort: a failure here must not block the store.
-    if let Err(e) = crate::intelligence::valence::store_valence(db, new_id, &content).await
-    {
+    if let Err(e) = crate::intelligence::valence::store_valence(db, new_id, &content).await {
         warn!("valence analysis failed for memory {}: {}", new_id, e);
     }
 
@@ -1412,8 +1411,12 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
     .await?;
     let skills: i64 = db
         .read(|conn| {
-            conn.query_row("SELECT COUNT(*) FROM skill_records", rusqlite::params![], |row| row.get(0))
-                .map_err(rusqlite_to_eng_error)
+            conn.query_row(
+                "SELECT COUNT(*) FROM skill_records",
+                rusqlite::params![],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
         })
         .await?;
 

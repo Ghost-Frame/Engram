@@ -561,14 +561,12 @@ async fn recent_memory_contents(
         let mut stmt = conn
             .prepare(
                 "SELECT content FROM memories \
-                 WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-                 ORDER BY created_at DESC LIMIT ?2",
+                 WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                 ORDER BY created_at DESC LIMIT ?1",
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let rows = stmt
-            .query_map(rusqlite::params![user_id, limit_i64], |row| {
-                row.get::<_, String>(0)
-            })
+            .query_map(rusqlite::params![limit_i64], |row| row.get::<_, String>(0))
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))

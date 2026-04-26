@@ -91,12 +91,9 @@ async fn run_once(
             };
             match compute_pagerank_for_user(db_arc.as_ref(), user_id).await {
                 Ok(scores) => {
-                    if let Err(e) = persist_pagerank_with_snapshot(
-                        db_arc.as_ref(),
-                        &scores,
-                        dirty_snapshot,
-                    )
-                    .await
+                    if let Err(e) =
+                        persist_pagerank_with_snapshot(db_arc.as_ref(), &scores, dirty_snapshot)
+                            .await
                     {
                         warn!(user_id, error = %e, "pagerank persist failed");
                         return false;
@@ -216,12 +213,8 @@ mod tests {
 
     async fn pagerank_count(db: &Database, _user_id: i64) -> i64 {
         db.read(move |conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM memory_pagerank",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
         })
         .await
         .expect("query pagerank count")

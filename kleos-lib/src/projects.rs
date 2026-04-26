@@ -175,22 +175,15 @@ pub async fn update_project(
 #[tracing::instrument(skip(db), fields(project_id = id))]
 pub async fn delete_project(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
-        conn.execute(
-            "DELETE FROM projects WHERE id = ?1",
-            rusqlite::params![id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])
+            .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })
     .await
 }
 
 #[tracing::instrument(skip(db), fields(memory_id, project_id))]
-pub async fn link_memory(
-    db: &Database,
-    memory_id: i64,
-    project_id: i64,
-) -> Result<()> {
+pub async fn link_memory(db: &Database, memory_id: i64, project_id: i64) -> Result<()> {
     db.write(move |conn| {
         // Verify project exists in this tenant shard
         let project_exists: bool = conn
@@ -237,11 +230,7 @@ pub async fn link_memory(
 }
 
 #[tracing::instrument(skip(db), fields(memory_id, project_id))]
-pub async fn unlink_memory(
-    db: &Database,
-    memory_id: i64,
-    project_id: i64,
-) -> Result<()> {
+pub async fn unlink_memory(db: &Database, memory_id: i64, project_id: i64) -> Result<()> {
     db.write(move |conn| {
         // Verify project exists before unlinking
         let project_exists: bool = conn
@@ -271,10 +260,7 @@ pub async fn unlink_memory(
 }
 
 #[tracing::instrument(skip(db), fields(project_id))]
-pub async fn get_project_memory_ids(
-    db: &Database,
-    project_id: i64,
-) -> Result<Vec<i64>> {
+pub async fn get_project_memory_ids(db: &Database, project_id: i64) -> Result<Vec<i64>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(

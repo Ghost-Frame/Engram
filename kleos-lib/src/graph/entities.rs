@@ -128,11 +128,7 @@ pub async fn get_entity(db: &Database, id: i64) -> Result<Entity> {
 
 /// List entities, ordered by occurrence_count descending.
 #[tracing::instrument(skip(db))]
-pub async fn list_entities(
-    db: &Database,
-    limit: usize,
-    offset: usize,
-) -> Result<Vec<Entity>> {
+pub async fn list_entities(db: &Database, limit: usize, offset: usize) -> Result<Vec<Entity>> {
     let query = format!(
         "SELECT {} FROM entities \
          ORDER BY occurrence_count DESC \
@@ -156,10 +152,7 @@ pub async fn list_entities(
 
 /// Find an entity by name (case-sensitive).
 #[tracing::instrument(skip(db, name))]
-pub async fn find_entity_by_name(
-    db: &Database,
-    name: &str,
-) -> Result<Option<Entity>> {
+pub async fn find_entity_by_name(db: &Database, name: &str) -> Result<Option<Entity>> {
     let name = name.to_string();
     let query = format!(
         "SELECT {} FROM entities WHERE name = ?1 LIMIT 1",
@@ -183,10 +176,7 @@ pub async fn find_entity_by_name(
 pub async fn delete_entity(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
         let affected = conn
-            .execute(
-                "DELETE FROM entities WHERE id = ?1",
-                rusqlite::params![id],
-            )
+            .execute("DELETE FROM entities WHERE id = ?1", rusqlite::params![id])
             .map_err(rusqlite_to_eng_error)?;
         if affected == 0 {
             return Err(EngError::NotFound(format!("entity {}", id)));
@@ -577,8 +567,7 @@ pub async fn delete_relationship(
     user_id: i64,
     relationship_type: Option<&str>,
 ) -> Result<()> {
-    let mut params: Vec<rusqlite::types::Value> =
-        vec![entity_id.into(), target_entity_id.into()];
+    let mut params: Vec<rusqlite::types::Value> = vec![entity_id.into(), target_entity_id.into()];
     let sql = if let Some(value) = relationship_type {
         params.push(value.to_string().into());
         "DELETE FROM entity_relationships \

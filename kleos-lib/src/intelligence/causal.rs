@@ -188,9 +188,7 @@ pub async fn list_chains(db: &Database, user_id: i64, limit: usize) -> Result<Ve
     let ids = db
         .read(move |conn| {
             let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM causal_chains ORDER BY id DESC LIMIT ?1",
-                )
+                .prepare("SELECT id FROM causal_chains ORDER BY id DESC LIMIT ?1")
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let rows = stmt
                 .query_map(params![limit as i64], |row| row.get::<_, i64>(0))

@@ -1158,11 +1158,7 @@ mod tests {
         )
         .unwrap();
         let leftover: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM chiasm_task_updates",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM chiasm_task_updates", [], |r| r.get(0))
             .unwrap();
         assert_eq!(leftover, 0, "FK cascade broken after v25");
     }
@@ -1197,7 +1193,14 @@ mod tests {
         conn.execute(
             "INSERT INTO chiasm_tasks (agent, project, title, status, summary, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params!["gir", "kleos", "phase 5.4", "active", Some("shipping"), 1_i64],
+            rusqlite::params![
+                "gir",
+                "kleos",
+                "phase 5.4",
+                "active",
+                Some("shipping"),
+                1_i64
+            ],
         )
         .unwrap();
         let task_id = conn.last_insert_rowid();
@@ -1390,7 +1393,10 @@ mod tests {
         for idx in &["idx_approvals_user", "idx_approvals_user_status"] {
             let count: i64 = conn
                 .query_row(
-                    &format!("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'", idx),
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        idx
+                    ),
                     [],
                     |r| r.get(0),
                 )
@@ -3055,7 +3061,10 @@ mod tests {
             )
             .unwrap();
         // v14 added user_id; v35 removed it. Full migration chain lands at 0.
-        assert_eq!(post_user_id, 0, "entities.user_id absent after v35 graph drop");
+        assert_eq!(
+            post_user_id, 0,
+            "entities.user_id absent after v35 graph drop"
+        );
 
         let post_tables: i64 = conn
             .query_row(
@@ -4765,7 +4774,11 @@ mod tests {
         assert_eq!(wf_count, 1);
 
         let wf_id: i64 = conn
-            .query_row("SELECT id FROM loom_workflows WHERE name = ?1", rusqlite::params!["test-wf"], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM loom_workflows WHERE name = ?1",
+                rusqlite::params!["test-wf"],
+                |r| r.get(0),
+            )
             .expect("get workflow id");
 
         // Insert a run referencing the workflow without user_id.
@@ -4785,7 +4798,10 @@ mod tests {
             "INSERT INTO loom_workflows (name, description, steps) VALUES (?1, ?2, ?3)",
             rusqlite::params!["test-wf", "other", "[]"],
         );
-        assert!(dup.is_err(), "duplicate workflow name should be rejected by UNIQUE(name)");
+        assert!(
+            dup.is_err(),
+            "duplicate workflow name should be rejected by UNIQUE(name)"
+        );
     }
 
     /// v35: user_id must be absent from all 6 graph-cluster tables after the
@@ -4813,11 +4829,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(
-                count, 0,
-                "user_id still present in {} after v35",
-                table
-            );
+            assert_eq!(count, 0, "user_id still present in {} after v35", table);
         }
 
         for idx in &[
@@ -4854,7 +4866,11 @@ mod tests {
         )
         .expect("insert entity");
         let entity_id: i64 = conn
-            .query_row("SELECT id FROM entities WHERE name = ?1", rusqlite::params!["TestEntity"], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM entities WHERE name = ?1",
+                rusqlite::params!["TestEntity"],
+                |r| r.get(0),
+            )
             .expect("get entity id");
 
         // structured_facts: insert without user_id
@@ -4871,7 +4887,8 @@ mod tests {
                 rusqlite::params!["OtherEntity", "concept"],
             )
             .expect("insert entity2");
-            conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0)).unwrap()
+            conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+                .unwrap()
         };
         conn.execute(
             "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count) VALUES (?1, ?2, 1)",
@@ -4881,7 +4898,11 @@ mod tests {
 
         // pagerank_dirty: seed row must exist at id=1
         let pd_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM pagerank_dirty WHERE id = 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM pagerank_dirty WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
             .expect("count pagerank_dirty");
         assert_eq!(pd_count, 1, "pagerank_dirty seed row missing at id=1");
 
@@ -4890,7 +4911,10 @@ mod tests {
             "INSERT INTO entities (name, entity_type) VALUES (?1, ?2)",
             rusqlite::params!["TestEntity", "concept"],
         );
-        assert!(dup.is_err(), "duplicate (name, entity_type) should be rejected");
+        assert!(
+            dup.is_err(),
+            "duplicate (name, entity_type) should be rejected"
+        );
     }
 
     /// v35: rows inserted in the old shape (with user_id) survive the
@@ -5091,11 +5115,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(
-                count, 0,
-                "user_id still present in {} after v36",
-                table
-            );
+            assert_eq!(count, 0, "user_id still present in {} after v36", table);
         }
 
         for idx in &[
@@ -5207,7 +5227,9 @@ mod tests {
         assert_eq!(sq_count, 1);
 
         let drift_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM behavioral_drift_events", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM behavioral_drift_events", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(drift_count, 1);
     }
@@ -5384,11 +5406,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(
-                count, 0,
-                "user_id still present in {} after v37",
-                table
-            );
+            assert_eq!(count, 0, "user_id still present in {} after v37", table);
         }
 
         // Old user-scoped indexes must be gone.
@@ -5451,7 +5469,10 @@ mod tests {
             "INSERT INTO user_preferences (key, value) VALUES (?1, ?2)",
             rusqlite::params!["persona", "other"],
         );
-        assert!(dup.is_err(), "duplicate key should be rejected by UNIQUE(key)");
+        assert!(
+            dup.is_err(),
+            "duplicate key should be rejected by UNIQUE(key)"
+        );
 
         // conversations: insert without user_id
         conn.execute(
@@ -5521,7 +5542,14 @@ mod tests {
         conn.execute(
             "INSERT INTO user_preferences (user_id, key, value, domain, preference, strength) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![1_i64, "old-key", "old-value", "old-domain", "old-pref", 2.5_f64],
+            rusqlite::params![
+                1_i64,
+                "old-key",
+                "old-value",
+                "old-domain",
+                "old-pref",
+                2.5_f64
+            ],
         )
         .expect("insert old preference");
         let pref_id: i64 = conn
@@ -5722,7 +5750,10 @@ mod tests {
         let cs_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM current_state", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(cs_count, 2, "upsert must collapse claude/location to one row; gir/location is separate");
+        assert_eq!(
+            cs_count, 2,
+            "upsert must collapse claude/location to one row; gir/location is separate"
+        );
 
         let val: String = conn
             .query_row(
@@ -5947,7 +5978,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(col_count, 0, "skill_records still has user_id column after v39");
+        assert_eq!(
+            col_count, 0,
+            "skill_records still has user_id column after v39"
+        );
 
         // Dropped index must be gone.
         let idx_count: i64 = conn
@@ -5958,7 +5992,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(idx_count, 0, "idx_skill_records_user still present after v39");
+        assert_eq!(
+            idx_count, 0,
+            "idx_skill_records_user still present after v39"
+        );
 
         // Preserved indexes must still exist.
         let preserved = [
@@ -6003,7 +6040,10 @@ mod tests {
             "INSERT INTO skill_records (name, agent, code) VALUES (?1, ?2, ?3)",
             rusqlite::params!["items-skill", "gir", "# duplicate"],
         );
-        assert!(dup_result.is_err(), "UNIQUE(name, agent, version) must reject duplicate");
+        assert!(
+            dup_result.is_err(),
+            "UNIQUE(name, agent, version) must reject duplicate"
+        );
 
         // Child FK: execution_analyses ON DELETE CASCADE.
         conn.execute(
@@ -6026,7 +6066,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(child_count, 0, "execution_analyses CASCADE DELETE failed after v39");
+        assert_eq!(
+            child_count, 0,
+            "execution_analyses CASCADE DELETE failed after v39"
+        );
     }
 
     /// v39: insert a skill record, then search via skills_fts MATCH to confirm
@@ -6039,7 +6082,12 @@ mod tests {
         conn.execute(
             "INSERT INTO skill_records (name, agent, code, description) \
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["brew-waffles", "gir", "# waffle logic", "makes waffles fast"],
+            rusqlite::params![
+                "brew-waffles",
+                "gir",
+                "# waffle logic",
+                "makes waffles fast"
+            ],
         )
         .unwrap();
 
@@ -6051,7 +6099,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(hits, 1, "skills_fts insert trigger did not fire after v39 rebuild");
+        assert_eq!(
+            hits, 1,
+            "skills_fts insert trigger did not fire after v39 rebuild"
+        );
 
         // Description is also indexed.
         let desc_hits: i64 = conn
@@ -6157,7 +6208,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(hits, 1, "episodes_fts insert trigger did not fire after v40");
+        assert_eq!(
+            hits, 1,
+            "episodes_fts insert trigger did not fire after v40"
+        );
 
         // Summary is also indexed.
         let summary_hits: i64 = conn
@@ -6167,6 +6221,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(summary_hits, 1, "episodes_fts summary not indexed after v40");
+        assert_eq!(
+            summary_hits, 1,
+            "episodes_fts summary not indexed after v40"
+        );
     }
 }
