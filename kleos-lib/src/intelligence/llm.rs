@@ -13,7 +13,7 @@ static LLM_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::n
         .timeout(std::time::Duration::from_secs(120))
         .pool_max_idle_per_host(4)
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .expect("safe_client_builder failed at LLM client startup")
 });
 
 /// Check whether a local LLM endpoint is configured and reachable.
