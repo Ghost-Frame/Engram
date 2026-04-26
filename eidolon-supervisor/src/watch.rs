@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+
+use lru::LruCache;
 
 use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
@@ -51,7 +54,15 @@ pub async fn run(state: Arc<SupervisorState>, watch_dir: PathBuf) {
 
     tracing::info!(path = %watch_dir.display(), "watching for session changes");
 
-    let mut positions: HashMap<PathBuf, u64> = HashMap::new();
+    // M-018: bound the positions map to prevent unbounded growth when many
+    // files are watched. Default cap is 1024; operator can override.
+    let max_tracked: usize = std::env::var("EIDOLON_SUPERVISOR_MAX_TRACKED_FILES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n: &usize| n > 0)
+        .unwrap_or(1024);
+    let cap = NonZeroUsize::new(max_tracked).unwrap();
+    let mut positions: LruCache<PathBuf, u64> = LruCache::new(cap);
     let mut retry_tracker = RetryTracker::new();
 
     while let Some(event) = rx.recv().await {
@@ -96,10 +107,12 @@ pub async fn run(state: Arc<SupervisorState>, watch_dir: PathBuf) {
 
 fn read_new_entries(
     path: &Path,
-    positions: &mut HashMap<PathBuf, u64>,
+    positions: &mut LruCache<PathBuf, u64>,
 ) -> Result<Vec<serde_json::Value>, std::io::Error> {
     let path_buf = path.to_path_buf();
-    let last_pos = positions.get(&path_buf).copied().unwrap_or(0);
+    // M-018: use peek() to avoid promoting the entry to MRU when only reading
+    // position; the actual put() at the end promotes it.
+    let last_pos = positions.peek(&path_buf).copied().unwrap_or(0);
 
     let file = File::open(path)?;
     let file_len = file.metadata()?.len();
@@ -134,7 +147,7 @@ fn read_new_entries(
         }
     }
 
-    positions.insert(path_buf, new_pos);
+    positions.put(path_buf, new_pos);
     Ok(entries)
 }
 

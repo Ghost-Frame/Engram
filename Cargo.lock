@@ -3099,6 +3099,7 @@ name = "eidolon-supervisor"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "lru 0.16.4",
  "notify",
  "notify-debouncer-mini",
  "regex",
@@ -4723,6 +4724,7 @@ dependencies = [
 name = "kleos-fs"
 version = "0.1.0"
 dependencies = [
+ "reqwest",
  "serde_json",
  "tempfile",
 ]
