@@ -107,7 +107,7 @@ async fn find_entity_by_name_type(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_entity(db: &Database, id: i64, _user_id: i64) -> Result<Entity> {
+pub async fn get_entity(db: &Database, id: i64) -> Result<Entity> {
     let query = format!(
         "SELECT {} FROM entities WHERE id = ?1 LIMIT 1",
         ENTITY_COLUMNS
@@ -130,7 +130,6 @@ pub async fn get_entity(db: &Database, id: i64, _user_id: i64) -> Result<Entity>
 #[tracing::instrument(skip(db))]
 pub async fn list_entities(
     db: &Database,
-    _user_id: i64,
     limit: usize,
     offset: usize,
 ) -> Result<Vec<Entity>> {
@@ -160,7 +159,6 @@ pub async fn list_entities(
 pub async fn find_entity_by_name(
     db: &Database,
     name: &str,
-    _user_id: i64,
 ) -> Result<Option<Entity>> {
     let name = name.to_string();
     let query = format!(
@@ -182,7 +180,7 @@ pub async fn find_entity_by_name(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn delete_entity(db: &Database, id: i64, _user_id: i64) -> Result<()> {
+pub async fn delete_entity(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
         let affected = conn
             .execute(
@@ -234,7 +232,7 @@ pub async fn update_entity(
     }
 
     if sets.is_empty() {
-        return get_entity(db, id, user_id).await;
+        return get_entity(db, id).await;
     }
 
     let sql = format!(
@@ -255,7 +253,7 @@ pub async fn update_entity(
     })
     .await?;
 
-    get_entity(db, id, user_id).await
+    get_entity(db, id).await
 }
 
 // -- Entity Relationships --
@@ -501,7 +499,7 @@ pub async fn get_memory_entities(
 
 /// Return the IDs of all memories linked to the given entity.
 #[tracing::instrument(skip(db))]
-pub async fn get_entity_memories(db: &Database, entity_id: i64, _user_id: i64) -> Result<Vec<i64>> {
+pub async fn get_entity_memories(db: &Database, entity_id: i64) -> Result<Vec<i64>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -789,7 +787,7 @@ pub async fn extract_and_link_entities(
     // Record pairwise co-occurrences for all entity pairs found in this memory
     for a in 0..entities.len() {
         for b in (a + 1)..entities.len() {
-            let _ = record_cooccurrence(db, entities[a].id, entities[b].id, user_id).await;
+            let _ = record_cooccurrence(db, entities[a].id, entities[b].id).await;
         }
     }
 

@@ -47,7 +47,6 @@ pub struct AssignMemoriesRequest {
 pub async fn create_episode(
     db: &Database,
     req: CreateEpisodeRequest,
-    _user_id: i64,
 ) -> Result<EpisodeRow> {
     let id = db
         .write(move |conn| {
@@ -80,7 +79,7 @@ pub async fn create_episode(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn list_episodes(db: &Database, _user_id: i64, limit: usize) -> Result<Vec<EpisodeRow>> {
+pub async fn list_episodes(db: &Database, limit: usize) -> Result<Vec<EpisodeRow>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -111,7 +110,6 @@ pub async fn list_episodes(db: &Database, _user_id: i64, limit: usize) -> Result
 #[tracing::instrument(skip(db, after, before))]
 pub async fn list_episodes_by_time_range(
     db: &Database,
-    _user_id: i64,
     after: &str,
     before: &str,
     limit: usize,
@@ -151,7 +149,6 @@ pub async fn list_episodes_by_time_range(
 pub async fn search_episodes_fts(
     db: &Database,
     query: &str,
-    _user_id: i64,
     limit: usize,
 ) -> Result<Vec<EpisodeRow>> {
     let like = format!("%{}%", query);
@@ -185,7 +182,7 @@ pub async fn search_episodes_fts(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_episode_for_user(db: &Database, id: i64, _user_id: i64) -> Result<EpisodeRow> {
+pub async fn get_episode_for_user(db: &Database, id: i64) -> Result<EpisodeRow> {
     db.read(move |conn| {
         conn.query_row(
             "SELECT id, title, session_id, agent, summary, memory_count, duration_seconds, decay_score, started_at, ended_at, created_at
@@ -254,7 +251,6 @@ pub async fn get_episode_memories(
 pub async fn update_episode_for_user(
     db: &Database,
     id: i64,
-    _user_id: i64,
     req: &UpdateEpisodeRequest,
 ) -> Result<()> {
     let title = req.title.clone();
@@ -281,7 +277,6 @@ pub async fn assign_memories_to_episode(
     db: &Database,
     episode_id: i64,
     memory_ids: &[i64],
-    _user_id: i64,
 ) -> Result<i64> {
     let memory_ids = memory_ids.to_vec();
 
@@ -313,7 +308,7 @@ pub async fn assign_memories_to_episode(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn finalize_episode(db: &Database, id: i64, _user_id: i64) -> Result<EpisodeRow> {
+pub async fn finalize_episode(db: &Database, id: i64) -> Result<EpisodeRow> {
     db.write(move |conn| {
         conn.execute(
             "UPDATE episodes
@@ -329,7 +324,7 @@ pub async fn finalize_episode(db: &Database, id: i64, _user_id: i64) -> Result<E
     })
     .await?;
 
-    get_episode_for_user(db, id, 0).await
+    get_episode_for_user(db, id).await
 }
 
 fn collect_episodes<I>(rows: I) -> Result<Vec<EpisodeRow>>

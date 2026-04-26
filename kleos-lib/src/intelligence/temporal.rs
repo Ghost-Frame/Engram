@@ -21,11 +21,7 @@ pub async fn detect_patterns(_db: &Database) -> Result<Vec<TemporalPattern>> {
 }
 
 #[tracing::instrument(skip(_db))]
-pub async fn list_patterns(
-    _db: &Database,
-    _user_id: i64,
-    _limit: usize,
-) -> Result<Vec<TemporalPattern>> {
+pub async fn list_patterns(_db: &Database) -> Result<Vec<TemporalPattern>> {
     Ok(Vec::new())
 }
 

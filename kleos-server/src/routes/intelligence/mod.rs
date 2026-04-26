@@ -290,7 +290,8 @@ async fn list_temporal_handler(
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(500);
-    let patterns = list_patterns(&db, auth.user_id, limit).await?;
+    let _ = limit;
+    let patterns = list_patterns(&db).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
 
@@ -314,7 +315,7 @@ async fn list_digests_handler(
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(500);
-    let items = list_digests(&db, auth.user_id, limit).await?;
+    let items = list_digests(&db, limit).await?;
     Ok(Json(json!({ "digests": items })))
 }
 
@@ -527,7 +528,7 @@ async fn valence_score_handler(
 ) -> Result<Json<Value>, AppError> {
     if let Some(memory_id) = body.memory_id {
         let mem = memory::get(&db, memory_id, auth.user_id).await?;
-        let result = store_valence(&db, memory_id, &mem.content, auth.user_id).await?;
+        let result = store_valence(&db, memory_id, &mem.content).await?;
         Ok(Json(json!(result)))
     } else if let Some(ref content) = body.content {
         let result = analyze_valence(content);
@@ -580,7 +581,8 @@ async fn predictive_patterns_handler(
 ) -> Result<Json<Value>, AppError> {
     // Return temporal patterns that drive predictions
     let limit = params.limit.unwrap_or(20).min(500);
-    let patterns = list_patterns(&db, auth.user_id, limit).await?;
+    let _ = limit;
+    let patterns = list_patterns(&db).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
 
@@ -590,7 +592,7 @@ async fn predictive_sequences_handler(
     Json(body): Json<SequencesBody>,
 ) -> Result<Json<Value>, AppError> {
     let window_mins = body.window_mins.unwrap_or(60).clamp(1, 24 * 60);
-    let patterns = detect_sequence_patterns(&db, auth.user_id, window_mins).await?;
+    let patterns = detect_sequence_patterns(&db, window_mins).await?;
     Ok(Json(
         json!({ "patterns": patterns, "window_mins": window_mins, "count": patterns.len() }),
     ))
@@ -754,7 +756,7 @@ async fn feedback_stats_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = feedback::feedback_stats(&db, auth.user_id).await?;
+    let stats = feedback::feedback_stats(&db).await?;
     Ok(Json(json!(stats)))
 }
 

@@ -131,7 +131,6 @@ pub async fn record_cooccurrence(
     db: &Database,
     entity_a: i64,
     entity_b: i64,
-    _user_id: i64,
 ) -> Result<()> {
     let (lo, hi) = if entity_a <= entity_b {
         (entity_a, entity_b)
@@ -211,7 +210,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
 
         for i in 0..sorted.len() {
             for j in (i + 1)..sorted.len() {
-                record_cooccurrence(db, sorted[i], sorted[j], user_id).await?;
+                record_cooccurrence(db, sorted[i], sorted[j]).await?;
                 total_pairs += 1;
             }
         }

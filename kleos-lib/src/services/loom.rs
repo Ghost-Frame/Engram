@@ -333,7 +333,7 @@ pub async fn get_logs(
     user_id: i64,
 ) -> Result<Vec<LogEntry>> {
     // Verify run ownership
-    get_run(db, run_id, user_id).await?;
+    get_run(db, run_id).await?;
 
     let level = level.map(|s| s.to_string());
     db.read(move |conn| {
@@ -454,7 +454,7 @@ pub async fn create_workflow(db: &Database, req: CreateWorkflowRequest) -> Resul
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_workflow(db: &Database, id: i64, _user_id: i64) -> Result<Workflow> {
+pub async fn get_workflow(db: &Database, id: i64) -> Result<Workflow> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -477,7 +477,7 @@ pub async fn get_workflow(db: &Database, id: i64, _user_id: i64) -> Result<Workf
 }
 
 #[tracing::instrument(skip(db), fields(name = %name))]
-pub async fn get_workflow_by_name(db: &Database, name: &str, _user_id: i64) -> Result<Workflow> {
+pub async fn get_workflow_by_name(db: &Database, name: &str) -> Result<Workflow> {
     let name = name.to_string();
     db.read(move |conn| {
         let mut stmt = conn
@@ -501,7 +501,7 @@ pub async fn get_workflow_by_name(db: &Database, name: &str, _user_id: i64) -> R
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn list_workflows(db: &Database, _user_id: i64) -> Result<Vec<Workflow>> {
+pub async fn list_workflows(db: &Database) -> Result<Vec<Workflow>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -527,11 +527,10 @@ pub async fn list_workflows(db: &Database, _user_id: i64) -> Result<Vec<Workflow
 pub async fn update_workflow(
     db: &Database,
     id: i64,
-    _user_id: i64,
     req: UpdateWorkflowRequest,
 ) -> Result<Workflow> {
     // Verify it exists
-    get_workflow(db, id, _user_id).await?;
+    get_workflow(db, id).await?;
 
     if let Some(ref steps) = req.steps {
         for step in steps {
@@ -563,7 +562,7 @@ pub async fn update_workflow(
     }
 
     if set_parts.is_empty() {
-        return get_workflow(db, id, _user_id).await;
+        return get_workflow(db, id).await;
     }
 
     set_parts.push("updated_at = datetime('now')".into());
@@ -603,11 +602,11 @@ pub async fn update_workflow(
     })
     .await?;
 
-    get_workflow(db, id, _user_id).await
+    get_workflow(db, id).await
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn delete_workflow(db: &Database, id: i64, _user_id: i64) -> Result<bool> {
+pub async fn delete_workflow(db: &Database, id: i64) -> Result<bool> {
     db.write(move |conn| {
         let affected = conn
             .execute(
@@ -737,7 +736,7 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
 }
 
 #[tracing::instrument(skip(db), fields(run_id = id, user_id))]
-pub async fn get_run(db: &Database, id: i64, _user_id: i64) -> Result<Run> {
+pub async fn get_run(db: &Database, id: i64) -> Result<Run> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -760,10 +759,9 @@ pub async fn get_run(db: &Database, id: i64, _user_id: i64) -> Result<Run> {
     .await
 }
 
-#[tracing::instrument(skip(db), fields(user_id, workflow_id = ?workflow_id, status = ?status, limit))]
+#[tracing::instrument(skip(db), fields(workflow_id = ?workflow_id, status = ?status, limit))]
 pub async fn list_runs(
     db: &Database,
-    _user_id: i64,
     workflow_id: Option<i64>,
     status: Option<&str>,
     limit: usize,
@@ -843,7 +841,7 @@ pub async fn list_runs(
 
 #[tracing::instrument(skip(db), fields(run_id = id, user_id))]
 pub async fn cancel_run(db: &Database, id: i64, user_id: i64) -> Result<bool> {
-    let run = get_run(db, id, user_id).await?;
+    let run = get_run(db, id).await?;
 
     // Check not already terminal
     if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
@@ -884,7 +882,7 @@ pub async fn cancel_run(db: &Database, id: i64, user_id: i64) -> Result<bool> {
 #[tracing::instrument(skip(db), fields(run_id, user_id))]
 pub async fn get_steps(db: &Database, run_id: i64, user_id: i64) -> Result<Vec<Step>> {
     // Verify run ownership
-    get_run(db, run_id, user_id).await?;
+    get_run(db, run_id).await?;
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -943,7 +941,7 @@ pub async fn complete_step(
 ) -> Result<()> {
     let step = get_step(db, step_id).await?;
     // Verify run ownership
-    get_run(db, step.run_id, user_id).await?;
+    get_run(db, step.run_id).await?;
 
     if step.status != "running" {
         return Err(EngError::InvalidInput(format!(
@@ -986,7 +984,7 @@ pub async fn complete_step(
 pub async fn fail_step(db: &Database, step_id: i64, error: &str, user_id: i64) -> Result<()> {
     let step = get_step(db, step_id).await?;
     // Verify run ownership
-    get_run(db, step.run_id, user_id).await?;
+    get_run(db, step.run_id).await?;
 
     let error = error.to_string();
 

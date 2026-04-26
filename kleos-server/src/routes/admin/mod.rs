@@ -589,7 +589,7 @@ async fn admin_cred_resolve(
     let value = if body.raw {
         state
             .credd
-            .get_raw(&state.db, auth.user_id, agent, service, key)
+            .get_raw(&state.db, agent, service, key)
             .await?
     } else {
         state
@@ -1124,7 +1124,7 @@ async fn admin_pagerank_rebuild(
             let scores =
                 kleos_lib::graph::pagerank::compute_pagerank_for_user(&state.db, uid).await?;
             let count = scores.len();
-            kleos_lib::graph::pagerank::persist_pagerank(&state.db, uid, &scores).await?;
+            kleos_lib::graph::pagerank::persist_pagerank(&state.db, &scores).await?;
             Ok(Json(json!({
                 "success": true,
                 "users_updated": 1,

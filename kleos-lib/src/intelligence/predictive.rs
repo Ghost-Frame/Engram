@@ -300,7 +300,6 @@ pub const SEQUENCE_MIN_SUPPORT: i64 = 2;
 #[tracing::instrument(skip(db), fields(window_mins))]
 pub async fn detect_sequence_patterns(
     db: &Database,
-    _user_id: i64,
     window_mins: i64,
 ) -> Result<Vec<SequencePattern>> {
     if window_mins <= 0 {
@@ -475,10 +474,10 @@ mod tests {
     #[tokio::test]
     async fn sequences_empty_below_two_memories() {
         let db = Database::connect_memory().await.expect("in-mem db");
-        let out = detect_sequence_patterns(&db, 1, 60).await.expect("det");
+        let out = detect_sequence_patterns(&db, 60).await.expect("det");
         assert!(out.is_empty());
         let _ = seed(&db, "pi alpha", "code", 1).await;
-        let out = detect_sequence_patterns(&db, 1, 60).await.expect("det");
+        let out = detect_sequence_patterns(&db, 60).await.expect("det");
         assert!(out.is_empty());
     }
 
@@ -489,9 +488,9 @@ mod tests {
         let b = seed(&db, "rho beta", "docs", 1).await;
         set_created(&db, a, "2026-04-01 10:00:00").await;
         set_created(&db, b, "2026-04-01 10:05:00").await;
-        let out = detect_sequence_patterns(&db, 1, 0).await.expect("det");
+        let out = detect_sequence_patterns(&db, 0).await.expect("det");
         assert!(out.is_empty());
-        let out = detect_sequence_patterns(&db, 1, -5).await.expect("det");
+        let out = detect_sequence_patterns(&db, -5).await.expect("det");
         assert!(out.is_empty());
     }
 
@@ -502,7 +501,7 @@ mod tests {
         let b = seed(&db, "sigma beta", "docs", 1).await;
         set_created(&db, a, "2026-04-01 08:00:00").await;
         set_created(&db, b, "2026-04-01 10:00:00").await; // 120 min gap
-        let out = detect_sequence_patterns(&db, 1, 30).await.expect("det");
+        let out = detect_sequence_patterns(&db, 30).await.expect("det");
         assert!(out.is_empty());
     }
 
@@ -553,7 +552,7 @@ mod tests {
         for (id, ts) in &ids {
             set_created(&db, *id, ts).await;
         }
-        let out = detect_sequence_patterns(&db, uid, 30).await.expect("det");
+        let out = detect_sequence_patterns(&db, 30).await.expect("det");
         let top = out.first().expect("at least one");
         assert_eq!(top.antecedent, "code");
         assert_eq!(top.consequent, "docs");
@@ -581,7 +580,7 @@ mod tests {
         }
         // Single-tenant: all callers share the same DB, so sequences are
         // visible regardless of the user_id argument.
-        let sequences = detect_sequence_patterns(&db, 99, 30).await.expect("det");
+        let sequences = detect_sequence_patterns(&db, 30).await.expect("det");
         assert!(
             !sequences.is_empty(),
             "single-tenant DB exposes all sequences"

@@ -360,7 +360,7 @@ pub async fn neighborhood_filtered(
     }
 
     // Batch fetch node details for all collected IDs in one query
-    let nodes = batch_fetch_memory_nodes(db, &all_node_ids, user_id).await?;
+    let nodes = batch_fetch_memory_nodes(db, &all_node_ids).await?;
 
     // Deduplicate edges
     let mut seen_edges: HashSet<(String, String, String)> = HashSet::new();
@@ -386,7 +386,6 @@ pub async fn neighborhood_filtered(
 async fn batch_fetch_memory_nodes(
     db: &Database,
     ids: &[i64],
-    _user_id: i64,
 ) -> Result<Vec<GraphNode>> {
     if ids.is_empty() {
         return Ok(Vec::new());

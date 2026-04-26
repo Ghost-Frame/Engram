@@ -233,16 +233,15 @@ pub async fn set_state(
     })
     .await?;
 
-    get_state(db, &agent_for_get, &key_for_get, user_id).await
+    get_state(db, &agent_for_get, &key_for_get).await
 }
 
 /// Fetch a single state entry for the given agent/key/user.
-#[tracing::instrument(skip(db), fields(agent = %agent, key = %key, user_id))]
+#[tracing::instrument(skip(db), fields(agent = %agent, key = %key))]
 pub async fn get_state(
     db: &Database,
     agent: &str,
     key: &str,
-    _user_id: i64,
 ) -> Result<CurrentState> {
     let agent = agent.to_string();
     let key = key.to_string();
@@ -260,8 +259,8 @@ pub async fn get_state(
 }
 
 /// List all state entries for the given agent and user.
-#[tracing::instrument(skip(db), fields(agent = %agent, user_id))]
-pub async fn list_state(db: &Database, agent: &str, _user_id: i64) -> Result<Vec<CurrentState>> {
+#[tracing::instrument(skip(db), fields(agent = %agent))]
+pub async fn list_state(db: &Database, agent: &str) -> Result<Vec<CurrentState>> {
     let agent = agent.to_string();
     let sql = format!(
         "SELECT {} FROM current_state WHERE agent = ?1 ORDER BY key ASC",

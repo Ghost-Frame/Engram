@@ -82,7 +82,7 @@ async fn run_once(
             // that fires while compute is in flight will not be cleared by
             // persist_pagerank_with_snapshot below, so the next refresh
             // cycle picks it up instead of silently dropping it.
-            let dirty_snapshot = match snapshot_pagerank_dirty(db_arc.as_ref(), user_id).await {
+            let dirty_snapshot = match snapshot_pagerank_dirty(db_arc.as_ref()).await {
                 Ok(n) => n,
                 Err(e) => {
                     warn!(user_id, error = %e, "pagerank dirty snapshot failed");
@@ -93,7 +93,6 @@ async fn run_once(
                 Ok(scores) => {
                     if let Err(e) = persist_pagerank_with_snapshot(
                         db_arc.as_ref(),
-                        user_id,
                         &scores,
                         dirty_snapshot,
                     )

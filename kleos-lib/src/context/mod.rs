@@ -1077,7 +1077,7 @@ async fn assemble_context_inner(
             if !flags.include_working_memory {
                 return None;
             }
-            scratchpad::list_entries(db, user_id, None, None, session_filter)
+            scratchpad::list_entries(db, None, None, session_filter)
                 .await
                 .ok()
         },

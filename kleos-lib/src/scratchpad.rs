@@ -42,7 +42,6 @@ pub struct ScratchKV {
 #[tracing::instrument(skip(db, session, agent, model, key, value))]
 pub async fn upsert_entry(
     db: &Database,
-    _user_id: i64,
     session: &str,
     agent: &str,
     model: &str,
@@ -70,7 +69,6 @@ pub async fn upsert_entry(
 #[tracing::instrument(skip(db, agent, model, session))]
 pub async fn list_entries(
     db: &Database,
-    _user_id: i64,
     agent: Option<&str>,
     model: Option<&str>,
     session: Option<&str>,
@@ -102,7 +100,6 @@ pub async fn list_entries(
 #[tracing::instrument(skip(db, session))]
 pub async fn get_session_entries(
     db: &Database,
-    _user_id: i64,
     session: &str,
 ) -> Result<Vec<ScratchEntry>> {
     let session = session.to_string();
@@ -141,7 +138,6 @@ pub async fn delete_session(db: &Database, session: &str) -> Result<()> {
 #[tracing::instrument(skip(db, session, key))]
 pub async fn delete_session_key(
     db: &Database,
-    _user_id: i64,
     session: &str,
     key: &str,
 ) -> Result<()> {
@@ -183,7 +179,7 @@ pub async fn promote_entries(
     combine: bool,
     category: &str,
 ) -> Result<Vec<i64>> {
-    let entries = get_session_entries(db, user_id, session).await?;
+    let entries = get_session_entries(db, session).await?;
     if entries.is_empty() {
         return Err(crate::EngError::NotFound(
             "No entries found for session".into(),

@@ -45,7 +45,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-fn row_to_action_entry(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<ActionEntry> {
+fn row_to_action_entry(row: &rusqlite::Row<'_>) -> Result<ActionEntry> {
     let payload_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let payload: serde_json::Value = serde_json::from_str(&payload_str)?;
     Ok(ActionEntry {
@@ -56,7 +56,7 @@ fn row_to_action_entry(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Ac
         payload,
         narrative: row.get(5).map_err(rusqlite_to_eng_error)?,
         axon_event_id: row.get(6).map_err(rusqlite_to_eng_error)?,
-        user_id: owner_user_id,
+        user_id: 1,
         created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
     })
 }
@@ -149,7 +149,7 @@ pub async fn query_actions(
         let mut rows = stmt.query(params).map_err(rusqlite_to_eng_error)?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            results.push(row_to_action_entry(row, user_id)?);
+            results.push(row_to_action_entry(row)?);
         }
         Ok(results)
     })
@@ -169,7 +169,7 @@ pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEn
             .next()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::NotFound(format!("action {}", id)))?;
-        row_to_action_entry(row, user_id)
+        row_to_action_entry(row)
     })
     .await
 }

@@ -21,13 +21,12 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn list_scratch(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(q): Query<ScratchQuery>,
 ) -> Result<Json<Value>, AppError> {
     let entries = kleos_lib::scratchpad::list_entries(
         &db,
-        auth.user_id,
         q.agent.as_deref(),
         q.model.as_deref(),
         q.session.as_deref(),
@@ -38,7 +37,7 @@ async fn list_scratch(
 }
 
 async fn put_scratch(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<kleos_lib::scratchpad::ScratchPutBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -52,7 +51,6 @@ async fn put_scratch(
         let value = e.value.as_deref().unwrap_or("");
         kleos_lib::scratchpad::upsert_entry(
             &db,
-            auth.user_id,
             session,
             agent,
             model,
@@ -69,7 +67,7 @@ async fn put_scratch(
 }
 
 async fn delete_session(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(session): Path<String>,
 ) -> Result<Json<Value>, AppError> {
@@ -78,11 +76,11 @@ async fn delete_session(
 }
 
 async fn delete_key(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path((session, key)): Path<(String, String)>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::scratchpad::delete_session_key(&db, auth.user_id, &session, &key).await?;
+    kleos_lib::scratchpad::delete_session_key(&db, &session, &key).await?;
     Ok(Json(
         json!({ "deleted": true, "session": session, "key": key }),
     ))

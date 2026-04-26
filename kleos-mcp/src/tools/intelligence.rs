@@ -73,12 +73,7 @@ pub async fn temporal_summary(app: &App, args: Value) -> Result<Value> {
         let patterns = temporal::detect_patterns(&app.db).await?;
         return Ok(json!({"patterns": patterns, "count": patterns.len()}));
     }
-    let patterns = temporal::list_patterns(
-        &app.db,
-        auth.user_id,
-        args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize,
-    )
-    .await?;
+    let patterns = temporal::list_patterns(&app.db).await?;
     Ok(json!({"patterns": patterns, "count": patterns.len()}))
 }
 

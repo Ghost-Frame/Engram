@@ -163,7 +163,7 @@ impl CreddClient {
                             "raw secret placeholders are only allowed on admin-gated flows".into(),
                         ));
                     }
-                    self.get_raw(db, user_id, agent, &pattern.service, &pattern.key)
+                    self.get_raw(db, agent, &pattern.service, &pattern.key)
                         .await
                 }
             }
@@ -253,7 +253,6 @@ impl CreddClient {
     pub async fn get_raw(
         &self,
         _db: &Database,
-        _user_id: i64,
         _agent: &str,
         _service: &str,
         _key: &str,

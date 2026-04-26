@@ -109,7 +109,7 @@ async fn raw_fetch_is_compile_or_runtime_gated() {
     let client = CreddClient::for_testing(base_url, "test-agent-key", false, 60);
 
     let err = client
-        .get_raw(&db, 1, "cred-test", "foo", "bar")
+        .get_raw(&db, "cred-test", "foo", "bar")
         .await
         .expect_err("raw should be gated");
 

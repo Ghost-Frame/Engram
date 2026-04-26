@@ -42,14 +42,13 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-#[tracing::instrument(skip(db, description, metadata), fields(name = %name, status = %status, user_id))]
+#[tracing::instrument(skip(db, description, metadata), fields(name = %name, status = %status))]
 pub async fn create_project(
     db: &Database,
     name: &str,
     description: Option<&str>,
     status: &str,
     metadata: Option<&str>,
-    _user_id: i64,
 ) -> Result<(i64, String)> {
     let name = name.to_string();
     let description = description.map(|s| s.to_string());
@@ -89,7 +88,7 @@ pub async fn get_project(db: &Database, id: i64, user_id: i64) -> Result<Option<
             .query(rusqlite::params![id])
             .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
-            Some(row) => Ok(Some(row_to_project(row, user_id)?)),
+            Some(row) => Ok(Some(row_to_project(row)?)),
             None => Ok(None),
         }
     })
@@ -120,7 +119,7 @@ pub async fn list_projects(
                 .query(rusqlite::params![s])
                 .map_err(rusqlite_to_eng_error)?;
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                result.push(row_to_project(row, user_id)?);
+                result.push(row_to_project(row)?);
             }
         } else {
             let mut stmt = conn
@@ -134,7 +133,7 @@ pub async fn list_projects(
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                result.push(row_to_project(row, user_id)?);
+                result.push(row_to_project(row)?);
             }
         }
         Ok(result)
@@ -142,11 +141,10 @@ pub async fn list_projects(
     .await
 }
 
-#[tracing::instrument(skip(db, name, description, metadata), fields(project_id = id, user_id, status = ?status))]
+#[tracing::instrument(skip(db, name, description, metadata), fields(project_id = id, status = ?status))]
 pub async fn update_project(
     db: &Database,
     id: i64,
-    _user_id: i64,
     name: Option<&str>,
     description: Option<&str>,
     status: Option<&str>,
@@ -187,12 +185,11 @@ pub async fn delete_project(db: &Database, id: i64) -> Result<()> {
     .await
 }
 
-#[tracing::instrument(skip(db), fields(memory_id, project_id, user_id))]
+#[tracing::instrument(skip(db), fields(memory_id, project_id))]
 pub async fn link_memory(
     db: &Database,
     memory_id: i64,
     project_id: i64,
-    _user_id: i64,
 ) -> Result<()> {
     db.write(move |conn| {
         // Verify project exists in this tenant shard
@@ -239,12 +236,11 @@ pub async fn link_memory(
     .await
 }
 
-#[tracing::instrument(skip(db), fields(memory_id, project_id, user_id))]
+#[tracing::instrument(skip(db), fields(memory_id, project_id))]
 pub async fn unlink_memory(
     db: &Database,
     memory_id: i64,
     project_id: i64,
-    _user_id: i64,
 ) -> Result<()> {
     db.write(move |conn| {
         // Verify project exists before unlinking
@@ -274,11 +270,10 @@ pub async fn unlink_memory(
     .await
 }
 
-#[tracing::instrument(skip(db), fields(project_id, user_id))]
+#[tracing::instrument(skip(db), fields(project_id))]
 pub async fn get_project_memory_ids(
     db: &Database,
     project_id: i64,
-    _user_id: i64,
 ) -> Result<Vec<i64>> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -300,7 +295,7 @@ pub async fn get_project_memory_ids(
     .await
 }
 
-fn row_to_project(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<ProjectRow> {
+fn row_to_project(row: &rusqlite::Row<'_>) -> Result<ProjectRow> {
     Ok(ProjectRow {
         id: row
             .get(0)
@@ -313,7 +308,7 @@ fn row_to_project(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Project
             .get(3)
             .map_err(|e| crate::EngError::Internal(e.to_string()))?,
         metadata: row.get(4).unwrap_or(None),
-        user_id: owner_user_id,
+        user_id: 1,
         created_at: row
             .get(5)
             .map_err(|e| crate::EngError::Internal(e.to_string()))?,

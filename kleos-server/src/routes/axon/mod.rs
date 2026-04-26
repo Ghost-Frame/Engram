@@ -156,7 +156,7 @@ async fn unsubscribe_handler(
     Auth(auth): Auth,
     Json(body): Json<UnsubscribeBody>,
 ) -> Result<Json<Value>, AppError> {
-    let deleted = delete_subscription(&db, &body.agent, &body.channel, auth.user_id).await?;
+    let deleted = delete_subscription(&db, &body.agent, &body.channel).await?;
     Ok(Json(json!({ "deleted": deleted })))
 }
 

@@ -307,11 +307,11 @@ pub async fn create_rubric(db: &Database, req: CreateRubricRequest) -> Result<Ru
         })
         .await?;
 
-    get_rubric(db, id, 1).await
+    get_rubric(db, id).await
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_rubric(db: &Database, id: i64, _user_id: i64) -> Result<Rubric> {
+pub async fn get_rubric(db: &Database, id: i64) -> Result<Rubric> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -332,7 +332,7 @@ pub async fn get_rubric(db: &Database, id: i64, _user_id: i64) -> Result<Rubric>
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn list_rubrics(db: &Database, _user_id: i64) -> Result<Vec<Rubric>> {
+pub async fn list_rubrics(db: &Database) -> Result<Vec<Rubric>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -357,10 +357,9 @@ pub async fn update_rubric(
     db: &Database,
     id: i64,
     req: UpdateRubricRequest,
-    _user_id: i64,
 ) -> Result<Rubric> {
     // Verify existence
-    get_rubric(db, id, 1).await?;
+    get_rubric(db, id).await?;
 
     let mut sets: Vec<String> = Vec::new();
     let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
@@ -386,7 +385,7 @@ pub async fn update_rubric(
     sets.push("updated_at = datetime('now')".to_string());
 
     if sets.is_empty() {
-        return get_rubric(db, id, 1).await;
+        return get_rubric(db, id).await;
     }
 
     let sql = format!(
@@ -403,11 +402,11 @@ pub async fn update_rubric(
     })
     .await?;
 
-    get_rubric(db, id, 1).await
+    get_rubric(db, id).await
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn delete_rubric(db: &Database, id: i64, _user_id: i64) -> Result<bool> {
+pub async fn delete_rubric(db: &Database, id: i64) -> Result<bool> {
     db.write(move |conn| {
         conn.execute(
             "DELETE FROM rubrics WHERE id = ?1",
@@ -494,7 +493,7 @@ pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation>
     let _user_id = req.user_id;
 
     // Fetch rubric to get criteria
-    let rubric = get_rubric(db, req.rubric_id, 1).await?;
+    let rubric = get_rubric(db, req.rubric_id).await?;
 
     // Compute weighted overall score
     let overall_score = compute_weighted_score(&rubric.criteria, &req.scores)?;
@@ -531,11 +530,11 @@ pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation>
         })
         .await?;
 
-    get_evaluation(db, id, 1).await
+    get_evaluation(db, id).await
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_evaluation(db: &Database, id: i64, _user_id: i64) -> Result<Evaluation> {
+pub async fn get_evaluation(db: &Database, id: i64) -> Result<Evaluation> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -559,7 +558,6 @@ pub async fn get_evaluation(db: &Database, id: i64, _user_id: i64) -> Result<Eva
 #[tracing::instrument(skip(db))]
 pub async fn list_evaluations(
     db: &Database,
-    _user_id: i64,
     agent: Option<&str>,
     rubric_id: Option<i64>,
     limit: usize,
@@ -603,7 +601,6 @@ pub async fn list_evaluations(
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_agent_scores(
     db: &Database,
-    _user_id: i64,
     agent: &str,
     rubric_id: Option<i64>,
     since: Option<&str>,
@@ -745,7 +742,6 @@ pub async fn record_metric(db: &Database, req: RecordMetricRequest) -> Result<Qu
 #[tracing::instrument(skip(db))]
 pub async fn get_metrics(
     db: &Database,
-    _user_id: i64,
     agent: Option<&str>,
     metric: Option<&str>,
     since: Option<&str>,
@@ -794,7 +790,6 @@ pub async fn get_metrics(
 #[tracing::instrument(skip(db), fields(agent = %agent, metric = %metric))]
 pub async fn get_metric_summary(
     db: &Database,
-    _user_id: i64,
     agent: &str,
     metric: &str,
     since: Option<&str>,
@@ -891,7 +886,6 @@ pub async fn record_session_quality(
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_session_quality(
     db: &Database,
-    _user_id: i64,
     agent: &str,
     since: Option<&str>,
     limit: usize,
@@ -1000,7 +994,6 @@ pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> 
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_drift_events(
     db: &Database,
-    _user_id: i64,
     agent: &str,
     limit: usize,
 ) -> Result<Vec<DriftEvent>> {
@@ -1030,7 +1023,6 @@ pub async fn get_drift_events(
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_drift_summary(
     db: &Database,
-    _user_id: i64,
     agent: &str,
 ) -> Result<Vec<DriftSummaryEntry>> {
     let agent_owned = agent.to_string();
@@ -1065,7 +1057,7 @@ pub async fn get_drift_summary(
 // ---------------------------------------------------------------------------
 
 #[tracing::instrument(skip(db))]
-pub async fn get_stats(db: &Database, _user_id: i64) -> Result<ThymusStats> {
+pub async fn get_stats(db: &Database) -> Result<ThymusStats> {
     db.read(move |conn| {
         let rubrics: i64 = conn
             .query_row(
