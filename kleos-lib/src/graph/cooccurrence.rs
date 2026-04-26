@@ -27,7 +27,7 @@ pub async fn build_cooccurrence_edges(
                     "SELECT m.id, me.entity_id \
                      FROM memories m \
                      JOIN memory_entities me ON me.memory_id = m.id \
-                     WHERE m.user_id = ?1 AND m.is_forgotten = 0 AND m.is_archived = 0 AND m.is_latest = 1 \
+                     WHERE m.is_forgotten = 0 AND m.is_archived = 0 AND m.is_latest = 1 \
                      ORDER BY m.created_at DESC \
                      LIMIT 2000",
                 )
@@ -37,7 +37,7 @@ pub async fn build_cooccurrence_edges(
             let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
 
             let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| {
+                .query_map([], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
                 })
                 .map_err(rusqlite_to_eng_error)?;
@@ -181,7 +181,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
                     "SELECT m.id, me.entity_id \
                      FROM memories m \
                      JOIN memory_entities me ON me.memory_id = m.id \
-                     WHERE m.user_id = ?1 AND m.is_forgotten = 0 AND m.is_archived = 0 \
+                     WHERE m.is_forgotten = 0 AND m.is_archived = 0 \
                      ORDER BY m.created_at DESC",
                 )
                 .map_err(rusqlite_to_eng_error)?;
@@ -189,7 +189,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
             let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
 
             let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| {
+                .query_map([], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
                 })
                 .map_err(rusqlite_to_eng_error)?;

@@ -36,14 +36,14 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                             source, created_at, is_static, source_count, \
                             decay_score, community_id \
                      FROM memories \
-                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                     WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                      ORDER BY COALESCE(decay_score, importance) DESC \
-                     LIMIT ?2",
+                     LIMIT ?1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
-                .query_map(rusqlite::params![user_id, limit], |row| {
+                .query_map(rusqlite::params![limit], |row| {
                     let id: i64 = row.get(0)?;
                     let content: String = row.get(1)?;
                     let category: String =
@@ -140,9 +140,10 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
     }
 
     // -- Phase 2: Batch fetch links as edges --------------------------------------
-    // SECURITY (MT-F2): link fetch JOINs on `memories` at both ends with
-    // `user_id = ?1` so we never surface an edge whose endpoint belongs to
-    // another tenant, even if the id-list coincidentally matched one.
+    // Tenant isolation is provided by ResolvedDb routing (Phase 5+); the JOIN no
+    // longer needs the user_id predicate because tenant shards contain only one
+    // tenant's memories. On the legacy monolith path (user_id = 1), no tenant
+    // boundary exists by design.
     let edges = db
         .read(move |conn| {
             let placeholders: String = std::iter::repeat_n("?", memory_ids.len())
@@ -152,15 +153,14 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
             let query = format!(
                 "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
                  FROM memory_links ml \
-                 JOIN memories ms ON ms.id = ml.source_id AND ms.user_id = ?1 \
-                 JOIN memories mt ON mt.id = ml.target_id AND mt.user_id = ?1 \
+                 JOIN memories ms ON ms.id = ml.source_id \
+                 JOIN memories mt ON mt.id = ml.target_id \
                  WHERE ml.source_id IN ({placeholders}) OR ml.target_id IN ({placeholders})"
             );
 
-            // Build parameter list: user_id first, then ids twice (source IN, target IN)
+            // Parameter list: ids twice (source IN, target IN)
             let mut params: Vec<rusqlite::types::Value> =
-                Vec::with_capacity(1 + memory_ids.len() * 2);
-            params.push(rusqlite::types::Value::Integer(user_id));
+                Vec::with_capacity(memory_ids.len() * 2);
             for &id in memory_ids.iter().chain(memory_ids.iter()) {
                 params.push(rusqlite::types::Value::Integer(id));
             }

@@ -602,10 +602,21 @@ async fn run_cycle_tenants(
 
         let tenant_db = Arc::clone(&handle.db);
 
-        let users = match active_user_ids(&tenant_db).await {
-            Ok(u) => u,
+        // Phase 5+: each tenant shard belongs to exactly one user. The previous
+        // shape called `active_user_ids(&tenant_db)` which queried `users`
+        // from the shard, but that table lives only in the monolith / registry,
+        // so every tick failed with `no such table: users`. The registry stores
+        // user_id as a string (it is the identifier the API also uses when
+        // routing); parse to the numeric form the downstream pipeline expects.
+        let users: Vec<i64> = match tenant_row.user_id.parse::<i64>() {
+            Ok(uid) => vec![uid],
             Err(e) => {
-                warn!(tenant = %tenant_row.tenant_id, error = %e, "dreamer: failed to get tenant users");
+                warn!(
+                    tenant = %tenant_row.tenant_id,
+                    user_id = %tenant_row.user_id,
+                    error = %e,
+                    "dreamer: tenant user_id is not numeric; skipping"
+                );
                 continue;
             }
         };

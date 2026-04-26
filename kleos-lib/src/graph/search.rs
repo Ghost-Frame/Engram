@@ -42,16 +42,16 @@ pub async fn graph_search(
                             source, created_at, is_static, source_count, \
                             decay_score, community_id \
                      FROM memories \
-                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-                       AND content LIKE ?2 \
+                     WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                       AND content LIKE ?1 \
                      ORDER BY importance DESC \
-                     LIMIT ?3",
+                     LIMIT ?2",
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
                 .query_map(
-                    rusqlite::params![user_id, pattern_clone, limit as i64],
+                    rusqlite::params![pattern_clone, limit as i64],
                     |row| {
                         let id: i64 = row.get(0)?;
                         let content: String = row.get(1)?;

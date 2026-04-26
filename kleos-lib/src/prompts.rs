@@ -49,11 +49,11 @@ pub async fn generate_prompt(
                         "SELECT id, content, category, importance \
                          FROM memories \
                          WHERE is_static = 1 AND is_forgotten = 0 \
-                           AND is_consolidated = 0 AND user_id = ?1",
+                           AND is_consolidated = 0",
                     )
                     .map_err(rusqlite_to_eng_error)?;
                 let rows = stmt
-                    .query_map(params![user_id], |row| {
+                    .query_map([], |row| {
                         Ok((
                             row.get::<_, i64>(0)?,
                             row.get::<_, String>(1)?,
@@ -78,12 +78,11 @@ pub async fn generate_prompt(
                          FROM memories \
                          WHERE is_forgotten = 0 AND is_archived = 0 \
                            AND is_latest = 1 AND is_consolidated = 0 \
-                           AND user_id = ?1 \
                          ORDER BY ds DESC LIMIT 1000",
                     )
                     .map_err(rusqlite_to_eng_error)?;
                 let rows = stmt
-                    .query_map(params![user_id], |row| {
+                    .query_map([], |row| {
                         Ok((
                             row.get::<_, i64>(0)?,
                             row.get::<_, String>(1)?,
@@ -161,12 +160,11 @@ pub async fn generate_header(
                      FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 \
                        AND is_latest = 1 AND is_consolidated = 0 \
-                       AND user_id = ?1 \
-                     ORDER BY created_at DESC LIMIT ?2",
+                     ORDER BY created_at DESC LIMIT ?1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(params![user_id, fetch_limit], |row| {
+                .query_map(params![fetch_limit], |row| {
                     Ok((
                         row.get::<_, Option<String>>(4)?,
                         row.get::<_, i64>(0)?,
