@@ -176,6 +176,15 @@ pub async fn auth_middleware(
         return Ok(next.run(request).await);
     }
 
+    // Skip middleware-level auth for POST /bootstrap/kleos-bearer:
+    // the ECDH-v1 handler validates the request via the embedded
+    // 9A signature instead of a Bearer token.
+    if request.method() == axum::http::Method::POST
+        && request.uri().path() == "/bootstrap/kleos-bearer"
+    {
+        return Ok(next.run(request).await);
+    }
+
     let token = extract_bearer_token(&request).ok_or(StatusCode::UNAUTHORIZED)?;
 
     // Check if it's the master key (try hex-decoded first, then raw)
