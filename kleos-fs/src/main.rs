@@ -13,6 +13,50 @@ const CODE_EXTENSIONS: &[&str] = &[
 
 const RAW_READ_THRESHOLD: u64 = 8192;
 
+/// Resolve the operator-configured allowlist of write roots. KLEOS_FS_ALLOWED_ROOTS
+/// is a colon-separated list of absolute directories; if unset the only
+/// allowed root is the current working directory. Roots that fail to
+/// canonicalize (do not exist, permission denied) are dropped silently so a
+/// stale entry cannot lock the binary out.
+fn allowed_roots() -> Vec<PathBuf> {
+    let raw = match env::var("KLEOS_FS_ALLOWED_ROOTS") {
+        Ok(v) if !v.is_empty() => v,
+        _ => match env::current_dir() {
+            Ok(d) => d.to_string_lossy().to_string(),
+            Err(_) => return Vec::new(),
+        },
+    };
+    raw.split(':')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| PathBuf::from(s).canonicalize().ok())
+        .collect()
+}
+
+/// Resolve `path` to a canonical PathBuf and verify it lies under one of the
+/// configured roots. Returns the canonical path on success.
+///
+/// For NEW files the parent directory must already exist and lie within an
+/// allowed root; the leaf is appended after the parent canonicalizes. This
+/// blocks `kw ../etc/passwd`, symlink traversal, and `kw foo/../../etc/sudoers`.
+fn canonicalize_within_roots(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+    if roots.is_empty() {
+        return None;
+    }
+    let resolved = if path.exists() {
+        path.canonicalize().ok()?
+    } else {
+        let parent = path.parent()?;
+        let parent_canon = parent.canonicalize().ok()?;
+        let leaf = path.file_name()?;
+        parent_canon.join(leaf)
+    };
+    if roots.iter().any(|r| resolved.starts_with(r)) {
+        Some(resolved)
+    } else {
+        None
+    }
+}
+
 fn main() -> ExitCode {
     let binary_name = env::args()
         .next()
@@ -85,15 +129,33 @@ fn cmd_kr(args: &[String]) -> ExitCode {
 }
 
 fn cmd_kw(args: &[String]) -> ExitCode {
-    let path = match args.first() {
-        Some(p) => p.clone(),
+    let mut path: Option<String> = None;
+    let mut allow_mkdir = false;
+    for arg in args {
+        if arg == "--mkdir" {
+            allow_mkdir = true;
+        } else if path.is_none() {
+            path = Some(arg.clone());
+        }
+    }
+
+    let raw_path = match path {
+        Some(p) => p,
         None => {
-            eprintln!("Usage: kw <path> < content");
+            eprintln!("Usage: kw [--mkdir] <path> < content");
             return ExitCode::from(2);
         }
     };
 
-    let path = PathBuf::from(&path);
+    let path = PathBuf::from(&raw_path);
+
+    let roots = allowed_roots();
+    if roots.is_empty() {
+        eprintln!(
+            "kw: KLEOS_FS_ALLOWED_ROOTS unset and CWD unresolvable; refusing to write"
+        );
+        return ExitCode::from(2);
+    }
 
     let mut content = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut content) {
@@ -101,8 +163,50 @@ fn cmd_kw(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
 
+    // If the parent directory does not exist, only create it when --mkdir is
+    // given AND the parent itself is inside an allowed root.
     if let Some(parent) = path.parent() {
         if !parent.exists() {
+            if !allow_mkdir {
+                eprintln!(
+                    "kw: parent directory {} does not exist; pass --mkdir to create",
+                    parent.display()
+                );
+                return ExitCode::from(2);
+            }
+            // Walk up to the first existing ancestor and verify IT is inside
+            // a root before we mkdir downward.
+            let mut ancestor = parent.to_path_buf();
+            let existing_ancestor = loop {
+                if ancestor.exists() {
+                    break ancestor;
+                }
+                match ancestor.parent() {
+                    Some(p) => ancestor = p.to_path_buf(),
+                    None => {
+                        eprintln!("kw: no existing ancestor for {}", parent.display());
+                        return ExitCode::from(2);
+                    }
+                }
+            };
+            let canon = match existing_ancestor.canonicalize() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!(
+                        "kw: cannot canonicalize ancestor {}: {}",
+                        existing_ancestor.display(),
+                        e
+                    );
+                    return ExitCode::from(2);
+                }
+            };
+            if !roots.iter().any(|r| canon.starts_with(r)) {
+                eprintln!(
+                    "kw: {} resolves outside KLEOS_FS_ALLOWED_ROOTS",
+                    parent.display()
+                );
+                return ExitCode::from(2);
+            }
             if let Err(e) = std::fs::create_dir_all(parent) {
                 eprintln!("Error creating directory {}: {}", parent.display(), e);
                 return ExitCode::from(1);
@@ -110,24 +214,57 @@ fn cmd_kw(args: &[String]) -> ExitCode {
         }
     }
 
-    match std::fs::write(&path, &content) {
+    let target = match canonicalize_within_roots(&path, &roots) {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "kw: {} is outside KLEOS_FS_ALLOWED_ROOTS (set the env var or run from inside an allowed root)",
+                path.display()
+            );
+            return ExitCode::from(2);
+        }
+    };
+
+    match std::fs::write(&target, &content) {
         Ok(()) => {
-            eprintln!("Wrote {} bytes to {}", content.len(), path.display());
-            observe::fire_and_forget("kw", &path.to_string_lossy(), None);
+            eprintln!("Wrote {} bytes to {}", content.len(), target.display());
+            observe::fire_and_forget("kw", &target.to_string_lossy(), None);
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("Error writing {}: {}", path.display(), e);
+            eprintln!("Error writing {}: {}", target.display(), e);
             ExitCode::from(1)
         }
     }
 }
 
 fn cmd_ke(args: &[String]) -> ExitCode {
-    let path = match args.first() {
+    let raw_path = match args.first() {
         Some(p) => p.clone(),
         None => {
             eprintln!("Usage: ke <path>");
+            return ExitCode::from(2);
+        }
+    };
+
+    // Same allowlist applies to `ke` so a traversal cannot bypass via the
+    // edit path. ke does not write itself; the agent does. But the spec-task
+    // ledger key embeds the path, so we still pin the path under a root.
+    let roots = allowed_roots();
+    if roots.is_empty() {
+        eprintln!(
+            "ke: KLEOS_FS_ALLOWED_ROOTS unset and CWD unresolvable; refusing"
+        );
+        return ExitCode::from(2);
+    }
+    let path_buf = PathBuf::from(&raw_path);
+    let path = match canonicalize_within_roots(&path_buf, &roots) {
+        Some(p) => p.to_string_lossy().into_owned(),
+        None => {
+            eprintln!(
+                "ke: {} is outside KLEOS_FS_ALLOWED_ROOTS",
+                raw_path
+            );
             return ExitCode::from(2);
         }
     };
@@ -190,7 +327,15 @@ fn resolve_path(path: &str) -> Option<PathBuf> {
         PathBuf::from(path)
     };
 
-    if p.exists() { Some(p) } else { None }
+    if !p.exists() {
+        return None;
+    }
+
+    // Canonicalize so `..` segments and symlinks collapse to their real
+    // location. The kr binary still allows reading anywhere the process can
+    // read, but the resolved path is now stable for downstream tools (e.g.
+    // the agent-forge integration that derives input paths from this).
+    p.canonicalize().ok()
 }
 
 fn agent_forge_read(path: &Path, symbol: Option<&str>) -> Option<String> {
@@ -353,4 +498,71 @@ fn urlencoded(s: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cleanup_temp(dir: &Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn canonicalize_within_roots_accepts_target_inside_root() {
+        let dir = std::env::temp_dir().join(format!("kleos-fs-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mk root");
+        let target = dir.join("ok.txt");
+        std::fs::write(&target, "hi").expect("seed");
+        let canon_root = dir.canonicalize().expect("canon root");
+        let result = canonicalize_within_roots(&target, &[canon_root.clone()]);
+        assert!(result.is_some(), "target inside root must resolve");
+        assert!(result.unwrap().starts_with(&canon_root));
+        cleanup_temp(&dir);
+    }
+
+    #[test]
+    fn canonicalize_within_roots_rejects_target_outside_root() {
+        let dir = std::env::temp_dir().join(format!("kleos-fs-test-out-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mk root");
+        let canon_root = dir.canonicalize().expect("canon root");
+        // /etc/hostname exists on every Linux box and is outside our temp root.
+        let outside = PathBuf::from("/etc/hostname");
+        let result = canonicalize_within_roots(&outside, &[canon_root]);
+        assert!(result.is_none(), "target outside root must be rejected");
+        cleanup_temp(&dir);
+    }
+
+    #[test]
+    fn canonicalize_within_roots_rejects_traversal() {
+        let dir = std::env::temp_dir().join(format!("kleos-fs-test-trav-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mk root");
+        let canon_root = dir.canonicalize().expect("canon root");
+        // Construct a path that LOOKS inside but resolves elsewhere via ..
+        let traversal = dir.join("../../../etc/hostname");
+        let result = canonicalize_within_roots(&traversal, &[canon_root]);
+        assert!(
+            result.is_none(),
+            "traversal path resolving outside root must be rejected"
+        );
+        cleanup_temp(&dir);
+    }
+
+    #[test]
+    fn canonicalize_within_roots_handles_new_file_under_root() {
+        let dir = std::env::temp_dir().join(format!("kleos-fs-test-new-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mk root");
+        let canon_root = dir.canonicalize().expect("canon root");
+        let new_file = dir.join("not-yet-created.txt");
+        let result = canonicalize_within_roots(&new_file, &[canon_root.clone()]);
+        assert!(result.is_some(), "new file in existing root must resolve");
+        assert!(result.unwrap().starts_with(&canon_root));
+        cleanup_temp(&dir);
+    }
+
+    #[test]
+    fn canonicalize_within_roots_empty_roots_rejects() {
+        let p = PathBuf::from("/tmp");
+        assert!(canonicalize_within_roots(&p, &[]).is_none());
+    }
 }
