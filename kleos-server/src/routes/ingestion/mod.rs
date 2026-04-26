@@ -53,8 +53,6 @@ pub fn router() -> Router<AppState> {
         .route("/ingest/upload/complete", post(upload_complete))
         .route("/ingest/upload/abort", post(upload_abort))
         .route("/ingest/upload/{upload_id}/status", get(upload_status))
-        .route("/add", post(add_conversation))
-        .route("/derive", post(derive))
         // S7-26: ingestion may chunk + embed large documents; allow 120s.
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -1173,24 +1171,4 @@ async fn ingest_text_stream(
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response())
-}
-
-async fn add_conversation(
-    _state: State<AppState>,
-    Auth(_auth): Auth,
-    Json(_body): Json<Value>,
-) -> Result<Json<Value>, AppError> {
-    Err(AppError(kleos_lib::EngError::NotImplemented(
-        "/add requires LLM-based fact extraction (not yet implemented)".to_string(),
-    )))
-}
-
-async fn derive(
-    _state: State<AppState>,
-    Auth(_auth): Auth,
-    Json(_body): Json<Value>,
-) -> Result<Json<Value>, AppError> {
-    Err(AppError(kleos_lib::EngError::NotImplemented(
-        "/derive requires LLM-based inference (not yet implemented)".to_string(),
-    )))
 }
