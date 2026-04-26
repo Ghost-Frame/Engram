@@ -138,7 +138,7 @@ impl HandoffsDb {
         Ok(db)
     }
 
-    pub async fn store(&self, params: StoreParams) -> Result<StoreResult> {
+    pub async fn store(&self, params: StoreParams, user_id: i64) -> Result<StoreResult> {
         let handoff_type = params.handoff_type.clone().unwrap_or_else(|| "manual".to_string());
         let agent = params.agent.clone().unwrap_or_else(|| "unknown".to_string());
         let content_hash = compute_content_hash(&params.content, &handoff_type);
@@ -160,8 +160,8 @@ impl HandoffsDb {
             let exists: bool = conn
                 .interact(move |conn| {
                     let count: i64 = conn.query_row(
-                        "SELECT COUNT(*) FROM handoffs WHERE content_hash = ?1 AND project = ?2 AND type = 'mechanical'",
-                        rusqlite::params![hash2, project2],
+                        "SELECT COUNT(*) FROM handoffs WHERE content_hash = ?1 AND project = ?2 AND type = 'mechanical' AND user_id = ?3",
+                        rusqlite::params![hash2, project2, user_id],
                         |row| row.get(0),
                     )?;
                     Ok::<bool, rusqlite::Error>(count > 0)
@@ -190,9 +190,10 @@ impl HandoffsDb {
         let new_id: i64 = conn
             .interact(move |conn| {
                 conn.execute(
-                    "INSERT INTO handoffs (project, branch, directory, agent, type, content, metadata, session_id, model, host, content_hash)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    "INSERT INTO handoffs (user_id, project, branch, directory, agent, type, content, metadata, session_id, model, host, content_hash)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     rusqlite::params![
+                        user_id,
                         project2,
                         branch,
                         directory,
@@ -222,8 +223,15 @@ impl HandoffsDb {
                     return;
                 }
             };
+            // Auto-GC scoped to this user only -- never cross-tenant.
             let total: i64 = match conn
-                .interact(|c| c.query_row("SELECT COUNT(*) FROM handoffs", [], |r| r.get(0)))
+                .interact(move |c| {
+                    c.query_row(
+                        "SELECT COUNT(*) FROM handoffs WHERE user_id = ?1",
+                        rusqlite::params![user_id],
+                        |r| r.get(0),
+                    )
+                })
                 .await
             {
                 Ok(Ok(n)) => n,
@@ -239,7 +247,7 @@ impl HandoffsDb {
                     }
                 };
                 if let Err(e) = gc_conn
-                    .interact(move |c| run_tiered_gc(c, &project3))
+                    .interact(move |c| run_tiered_gc(c, &project3, user_id))
                     .await
                 {
                     error!("handoffs auto_gc failed: {}", e);
@@ -250,15 +258,17 @@ impl HandoffsDb {
         Ok(StoreResult { id: Some(new_id), skipped: false })
     }
 
-    pub async fn list(&self, filters: HandoffFilters) -> Result<Vec<Handoff>> {
+    pub async fn list(&self, filters: HandoffFilters, user_id: i64) -> Result<Vec<Handoff>> {
         let limit = filters.limit.unwrap_or(20);
         let conn = self.reader.get().await.map_err(|e| {
             EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
         })?;
 
         conn.interact(move |conn| {
-            let mut conditions: Vec<String> = Vec::new();
-            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            // Tenant scoping always first; subsequent filters are AND-joined.
+            let mut conditions: Vec<String> = vec!["user_id = ?1".to_string()];
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+                vec![Box::new(user_id) as Box<dyn rusqlite::types::ToSql>];
 
             if let Some(ref p) = filters.project {
                 conditions.push(format!("project = ?{}", params.len() + 1));
@@ -289,11 +299,7 @@ impl HandoffsDb {
                 params.push(Box::new(since.clone()));
             }
 
-            let where_clause = if conditions.is_empty() {
-                String::new()
-            } else {
-                format!("WHERE {}", conditions.join(" AND "))
-            };
+            let where_clause = format!("WHERE {}", conditions.join(" AND "));
 
             let sql = format!(
                 "SELECT id, created_at, project, branch, directory, agent, type, content, metadata, session_id, model, host, content_hash
@@ -336,12 +342,12 @@ impl HandoffsDb {
         .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
-    pub async fn get_latest(&self, filters: HandoffFilters) -> Result<Option<Handoff>> {
+    pub async fn get_latest(&self, filters: HandoffFilters, user_id: i64) -> Result<Option<Handoff>> {
         let has_project = filters.project.is_some();
         let mut f = filters;
         f.limit = Some(1);
 
-        let results = self.list(f.clone()).await?;
+        let results = self.list(f.clone(), user_id).await?;
         if !results.is_empty() {
             return Ok(results.into_iter().next());
         }
@@ -349,7 +355,7 @@ impl HandoffsDb {
         if has_project {
             let mut fallback = f;
             fallback.project = None;
-            let results = self.list(fallback).await?;
+            let results = self.list(fallback, user_id).await?;
             return Ok(results.into_iter().next());
         }
 
@@ -361,6 +367,7 @@ impl HandoffsDb {
         query: &str,
         project: Option<&str>,
         limit: i64,
+        user_id: i64,
     ) -> Result<Vec<SearchResult>> {
         let conn = self.reader.get().await.map_err(|e| {
             EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
@@ -377,11 +384,15 @@ impl HandoffsDb {
                                 snippet(handoffs_fts, 0, '>>>', '<<<', '...', 48)
                          FROM handoffs_fts fts
                          JOIN handoffs h ON h.id = fts.rowid
-                         WHERE handoffs_fts MATCH ?1 AND h.project = ?2
+                         WHERE handoffs_fts MATCH ?1 AND h.project = ?2 AND h.user_id = ?3
                          ORDER BY rank
                          LIMIT {}", limit
                     ),
-                    vec![Box::new(query) as Box<dyn rusqlite::types::ToSql>, Box::new(p.clone())],
+                    vec![
+                        Box::new(query) as Box<dyn rusqlite::types::ToSql>,
+                        Box::new(p.clone()),
+                        Box::new(user_id),
+                    ],
                 )
             } else {
                 (
@@ -390,11 +401,14 @@ impl HandoffsDb {
                                 snippet(handoffs_fts, 0, '>>>', '<<<', '...', 48)
                          FROM handoffs_fts fts
                          JOIN handoffs h ON h.id = fts.rowid
-                         WHERE handoffs_fts MATCH ?1
+                         WHERE handoffs_fts MATCH ?1 AND h.user_id = ?2
                          ORDER BY rank
                          LIMIT {}", limit
                     ),
-                    vec![Box::new(query) as Box<dyn rusqlite::types::ToSql>],
+                    vec![
+                        Box::new(query) as Box<dyn rusqlite::types::ToSql>,
+                        Box::new(user_id),
+                    ],
                 )
             };
 
@@ -423,28 +437,28 @@ impl HandoffsDb {
         .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
-    pub async fn stats(&self) -> Result<HandoffStats> {
+    pub async fn stats(&self, user_id: i64) -> Result<HandoffStats> {
         let conn = self.reader.get().await.map_err(|e| {
             EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
         })?;
 
-        conn.interact(|conn| {
+        conn.interact(move |conn| {
             let total: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM handoffs",
-                [],
+                "SELECT COUNT(*) FROM handoffs WHERE user_id = ?1",
+                rusqlite::params![user_id],
                 |r| r.get(0),
             )?;
 
             let total_content_bytes: i64 = conn.query_row(
-                "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM handoffs",
-                [],
+                "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM handoffs WHERE user_id = ?1",
+                rusqlite::params![user_id],
                 |r| r.get(0),
             )?;
 
             let date_range: Option<(String, String)> = {
                 let result: rusqlite::Result<(Option<String>, Option<String>)> = conn.query_row(
-                    "SELECT MIN(created_at), MAX(created_at) FROM handoffs",
-                    [],
+                    "SELECT MIN(created_at), MAX(created_at) FROM handoffs WHERE user_id = ?1",
+                    rusqlite::params![user_id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 );
                 result.ok().and_then(|(min, max)| match (min, max) {
@@ -456,9 +470,9 @@ impl HandoffsDb {
             let by_project = {
                 let mut stmt = conn.prepare(
                     "SELECT project, COUNT(*) as cnt, MAX(created_at) as latest
-                     FROM handoffs GROUP BY project ORDER BY cnt DESC",
+                     FROM handoffs WHERE user_id = ?1 GROUP BY project ORDER BY cnt DESC",
                 )?;
-                let rows = stmt.query_map([], |r| {
+                let rows = stmt.query_map(rusqlite::params![user_id], |r| {
                     Ok(ProjectStats {
                         name: r.get(0)?,
                         count: r.get(1)?,
@@ -471,9 +485,9 @@ impl HandoffsDb {
             let by_agent = {
                 let mut stmt = conn.prepare(
                     "SELECT agent, COUNT(*) as cnt, MAX(created_at) as latest
-                     FROM handoffs GROUP BY agent ORDER BY cnt DESC",
+                     FROM handoffs WHERE user_id = ?1 GROUP BY agent ORDER BY cnt DESC",
                 )?;
-                let rows = stmt.query_map([], |r| {
+                let rows = stmt.query_map(rusqlite::params![user_id], |r| {
                     Ok(AgentStats {
                         name: r.get(0)?,
                         count: r.get(1)?,
@@ -486,9 +500,9 @@ impl HandoffsDb {
             let by_host = {
                 let mut stmt = conn.prepare(
                     "SELECT COALESCE(host, 'unknown'), COUNT(*) as cnt, MAX(created_at) as latest
-                     FROM handoffs GROUP BY host ORDER BY cnt DESC",
+                     FROM handoffs WHERE user_id = ?1 GROUP BY host ORDER BY cnt DESC",
                 )?;
-                let rows = stmt.query_map([], |r| {
+                let rows = stmt.query_map(rusqlite::params![user_id], |r| {
                     Ok(HostStats {
                         name: r.get(0)?,
                         count: r.get(1)?,
@@ -501,9 +515,9 @@ impl HandoffsDb {
             let by_type = {
                 let mut stmt = conn.prepare(
                     "SELECT type, COUNT(*) as cnt, MAX(created_at) as latest, COALESCE(SUM(LENGTH(content)), 0) as total_bytes
-                     FROM handoffs GROUP BY type ORDER BY cnt DESC",
+                     FROM handoffs WHERE user_id = ?1 GROUP BY type ORDER BY cnt DESC",
                 )?;
-                let rows = stmt.query_map([], |r| {
+                let rows = stmt.query_map(rusqlite::params![user_id], |r| {
                     Ok(TypeStats {
                         name: r.get(0)?,
                         count: r.get(1)?,
@@ -529,57 +543,71 @@ impl HandoffsDb {
         .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
-    pub async fn gc(&self, tiered: bool, keep: Option<i64>) -> Result<GcResult> {
+    pub async fn gc(&self, tiered: bool, keep: Option<i64>, user_id: i64) -> Result<GcResult> {
         let conn = self.writer.get().await.map_err(|e| {
             EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
         })?;
 
         conn.interact(move |conn| {
-            let before: i64 = conn.query_row("SELECT COUNT(*) FROM handoffs", [], |r| r.get(0))?;
+            let before: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM handoffs WHERE user_id = ?1",
+                rusqlite::params![user_id],
+                |r| r.get(0),
+            )?;
 
             if let Some(n) = keep {
                 let projects: Vec<String> = {
-                    let mut stmt = conn.prepare("SELECT DISTINCT project FROM handoffs")?;
-                    let rows = stmt.query_map([], |r| r.get(0))?;
+                    let mut stmt = conn.prepare(
+                        "SELECT DISTINCT project FROM handoffs WHERE user_id = ?1",
+                    )?;
+                    let rows = stmt.query_map(rusqlite::params![user_id], |r| r.get(0))?;
                     rows.collect::<rusqlite::Result<Vec<_>>>()?
                 };
                 for project in projects {
                     conn.execute(
-                        "DELETE FROM handoffs WHERE project = ?1 AND id NOT IN (
-                             SELECT id FROM handoffs WHERE project = ?1 ORDER BY created_at DESC LIMIT ?2
+                        "DELETE FROM handoffs WHERE user_id = ?3 AND project = ?1 AND id NOT IN (
+                             SELECT id FROM handoffs WHERE user_id = ?3 AND project = ?1 ORDER BY created_at DESC LIMIT ?2
                          )",
-                        rusqlite::params![project, n],
+                        rusqlite::params![project, n, user_id],
                     )?;
                 }
             } else if tiered {
                 conn.execute(
-                    "DELETE FROM handoffs WHERE type = 'mechanical' AND created_at < datetime('now', '-7 days')",
-                    [],
+                    "DELETE FROM handoffs WHERE user_id = ?1 AND type = 'mechanical' AND created_at < datetime('now', '-7 days')",
+                    rusqlite::params![user_id],
                 )?;
                 conn.execute(
-                    "DELETE FROM handoffs WHERE type IN ('manual', 'auto') AND created_at < datetime('now', '-90 days')",
-                    [],
+                    "DELETE FROM handoffs WHERE user_id = ?1 AND type IN ('manual', 'auto') AND created_at < datetime('now', '-90 days')",
+                    rusqlite::params![user_id],
                 )?;
 
                 let projects: Vec<String> = {
-                    let mut stmt = conn.prepare("SELECT DISTINCT project FROM handoffs")?;
-                    let rows = stmt.query_map([], |r| r.get(0))?;
+                    let mut stmt = conn.prepare(
+                        "SELECT DISTINCT project FROM handoffs WHERE user_id = ?1",
+                    )?;
+                    let rows = stmt.query_map(rusqlite::params![user_id], |r| r.get(0))?;
                     rows.collect::<rusqlite::Result<Vec<_>>>()?
                 };
 
                 for project in projects {
                     conn.execute(
-                        "DELETE FROM handoffs WHERE project = ?1 AND id NOT IN (
-                             SELECT id FROM handoffs WHERE project = ?1 ORDER BY created_at DESC LIMIT 50
+                        "DELETE FROM handoffs WHERE user_id = ?2 AND project = ?1 AND id NOT IN (
+                             SELECT id FROM handoffs WHERE user_id = ?2 AND project = ?1 ORDER BY created_at DESC LIMIT 50
                          )",
-                        rusqlite::params![project],
+                        rusqlite::params![project, user_id],
                     )?;
                 }
             }
 
+            // VACUUM is global; safe because all rows are still scoped per
+            // user; we only ever delete this user's rows above.
             conn.execute("VACUUM", [])?;
 
-            let after: i64 = conn.query_row("SELECT COUNT(*) FROM handoffs", [], |r| r.get(0))?;
+            let after: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM handoffs WHERE user_id = ?1",
+                rusqlite::params![user_id],
+                |r| r.get(0),
+            )?;
 
             Ok::<GcResult, rusqlite::Error>(GcResult {
                 deleted: before - after,
@@ -591,15 +619,15 @@ impl HandoffsDb {
         .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
-    pub async fn delete(&self, id: i64) -> Result<bool> {
+    pub async fn delete(&self, id: i64, user_id: i64) -> Result<bool> {
         let conn = self.writer.get().await.map_err(|e| {
             EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
         })?;
 
         conn.interact(move |conn| {
             let affected = conn.execute(
-                "DELETE FROM handoffs WHERE id = ?1",
-                rusqlite::params![id],
+                "DELETE FROM handoffs WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![id, user_id],
             )?;
             Ok::<bool, rusqlite::Error>(affected > 0)
         })
@@ -613,7 +641,32 @@ impl HandoffsDb {
             EngError::Internal(format!("failed to acquire handoffs writer for schema: {e}"))
         })?;
 
-        conn.interact(|conn| conn.execute_batch(SCHEMA_SQL))
+        conn.interact(|conn| {
+            conn.execute_batch(SCHEMA_SQL)?;
+
+            // Tenant migration: legacy handoffs DBs were created without a
+            // user_id column; ALTER it in if missing. Existing rows fall back
+            // to user_id = 1 (the operator) via the column default. The
+            // user_id index is created AFTER the ALTER so it can never run
+            // against a table that lacks the column.
+            let has_user_id: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('handoffs') WHERE name = 'user_id'",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_user_id == 0 {
+                conn.execute(
+                    "ALTER TABLE handoffs ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+                    [],
+                )?;
+            }
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_handoffs_user_created ON handoffs(user_id, created_at DESC)",
+                [],
+            )?;
+
+            Ok::<(), rusqlite::Error>(())
+        })
             .await
             .map_err(|e| EngError::Internal(format!("handoffs schema interact failed: {e}")))?
             .map_err(|e: rusqlite::Error| EngError::Database(e))
@@ -696,20 +749,20 @@ fn strip_mechanical_timestamps(content: &str) -> String {
     lines.join("\n")
 }
 
-fn run_tiered_gc(conn: &mut rusqlite::Connection, project: &str) -> rusqlite::Result<()> {
+fn run_tiered_gc(conn: &mut rusqlite::Connection, project: &str, user_id: i64) -> rusqlite::Result<()> {
     conn.execute(
-        "DELETE FROM handoffs WHERE type = 'mechanical' AND created_at < datetime('now', '-7 days')",
-        [],
+        "DELETE FROM handoffs WHERE user_id = ?1 AND type = 'mechanical' AND created_at < datetime('now', '-7 days')",
+        rusqlite::params![user_id],
     )?;
     conn.execute(
-        "DELETE FROM handoffs WHERE type IN ('manual', 'auto') AND created_at < datetime('now', '-90 days')",
-        [],
+        "DELETE FROM handoffs WHERE user_id = ?1 AND type IN ('manual', 'auto') AND created_at < datetime('now', '-90 days')",
+        rusqlite::params![user_id],
     )?;
     conn.execute(
-        "DELETE FROM handoffs WHERE project = ?1 AND id NOT IN (
-             SELECT id FROM handoffs WHERE project = ?1 ORDER BY created_at DESC LIMIT 50
+        "DELETE FROM handoffs WHERE user_id = ?2 AND project = ?1 AND id NOT IN (
+             SELECT id FROM handoffs WHERE user_id = ?2 AND project = ?1 ORDER BY created_at DESC LIMIT 50
          )",
-        rusqlite::params![project],
+        rusqlite::params![project, user_id],
     )?;
     Ok(())
 }
@@ -717,6 +770,7 @@ fn run_tiered_gc(conn: &mut rusqlite::Connection, project: &str) -> rusqlite::Re
 const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS handoffs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
     project TEXT NOT NULL,
     branch TEXT,
@@ -755,3 +809,220 @@ CREATE TRIGGER IF NOT EXISTS handoffs_fts_au AFTER UPDATE OF content ON handoffs
     INSERT INTO handoffs_fts(rowid, content) VALUES (new.id, new.content);
 END;
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store_params(project: &str, content: &str) -> StoreParams {
+        StoreParams {
+            project: project.to_string(),
+            branch: None,
+            directory: None,
+            agent: Some("test-agent".to_string()),
+            handoff_type: Some("manual".to_string()),
+            content: content.to_string(),
+            session_id: Some("session-x".to_string()),
+            model: None,
+            host: None,
+            metadata: None,
+        }
+    }
+
+    /// Returns the DB plus the TempDir guard. Hold onto the TempDir for the
+    /// lifetime of the test so the directory is not deleted out from under
+    /// the connection pool.
+    async fn fresh_db() -> (HandoffsDb, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = HandoffsDb::open(dir.path().to_str().expect("utf8 path"))
+            .await
+            .expect("open handoffs db");
+        (db, dir)
+    }
+
+    #[tokio::test]
+    async fn store_scopes_to_user() {
+        let (db, _dir) = fresh_db().await;
+        let a = db
+            .store(store_params("proj-a", "alice secret"), 7)
+            .await
+            .expect("store a")
+            .id
+            .expect("id");
+        let b = db
+            .store(store_params("proj-b", "bob secret"), 99)
+            .await
+            .expect("store b")
+            .id
+            .expect("id");
+
+        let alice = db
+            .list(HandoffFilters::default(), 7)
+            .await
+            .expect("list a");
+        let bob = db
+            .list(HandoffFilters::default(), 99)
+            .await
+            .expect("list b");
+
+        assert_eq!(alice.len(), 1, "alice sees only her handoff");
+        assert_eq!(bob.len(), 1, "bob sees only his handoff");
+        assert_eq!(alice[0].id, a);
+        assert_eq!(bob[0].id, b);
+        assert!(alice.iter().all(|h| h.id != b));
+        assert!(bob.iter().all(|h| h.id != a));
+    }
+
+    #[tokio::test]
+    async fn delete_refuses_cross_user() {
+        let (db, _dir) = fresh_db().await;
+        let a_id = db
+            .store(store_params("proj-a", "alice"), 7)
+            .await
+            .expect("store")
+            .id
+            .expect("id");
+
+        // Bob tries to delete alice's handoff by id; expect no-op.
+        let removed = db.delete(a_id, 99).await.expect("delete");
+        assert!(!removed, "cross-user delete must return false");
+
+        // Alice still sees her handoff.
+        let alice = db
+            .list(HandoffFilters::default(), 7)
+            .await
+            .expect("list");
+        assert_eq!(alice.len(), 1);
+
+        // Alice can delete her own.
+        let removed = db.delete(a_id, 7).await.expect("delete own");
+        assert!(removed);
+    }
+
+    #[tokio::test]
+    async fn search_scopes_to_user() {
+        let (db, _dir) = fresh_db().await;
+        db.store(
+            store_params("proj-a", "alice has a uniquemarker phrase"),
+            7,
+        )
+        .await
+        .expect("store a");
+        db.store(
+            store_params("proj-b", "bob has a uniquemarker phrase"),
+            99,
+        )
+        .await
+        .expect("store b");
+
+        let alice_hits = db
+            .search("uniquemarker", None, 10, 7)
+            .await
+            .expect("search a");
+        let bob_hits = db
+            .search("uniquemarker", None, 10, 99)
+            .await
+            .expect("search b");
+
+        assert_eq!(alice_hits.len(), 1, "alice search returns one row");
+        assert_eq!(bob_hits.len(), 1, "bob search returns one row");
+        assert_ne!(alice_hits[0].id, bob_hits[0].id);
+    }
+
+    #[tokio::test]
+    async fn gc_scopes_to_user() {
+        let (db, _dir) = fresh_db().await;
+        for i in 0..5 {
+            db.store(
+                store_params("proj-a", &format!("alice {i}")),
+                7,
+            )
+            .await
+            .expect("store a");
+        }
+        for i in 0..3 {
+            db.store(
+                store_params("proj-b", &format!("bob {i}")),
+                99,
+            )
+            .await
+            .expect("store b");
+        }
+
+        // Bob runs gc with keep=1; expect his rows pruned, alice untouched.
+        let result = db.gc(false, Some(1), 99).await.expect("gc bob");
+        assert_eq!(result.remaining, 1, "bob now has 1 handoff");
+        assert_eq!(result.deleted, 2);
+
+        let alice = db.list(HandoffFilters::default(), 7).await.expect("list a");
+        assert_eq!(alice.len(), 5, "alice handoffs untouched by bob's gc");
+    }
+
+    #[tokio::test]
+    async fn stats_scopes_to_user() {
+        let (db, _dir) = fresh_db().await;
+        db.store(store_params("proj-a", "alice"), 7).await.expect("a");
+        db.store(store_params("proj-a", "alice 2"), 7).await.expect("a2");
+        db.store(store_params("proj-b", "bob"), 99).await.expect("b");
+
+        let alice = db.stats(7).await.expect("stats a");
+        assert_eq!(alice.total, 2);
+
+        let bob = db.stats(99).await.expect("stats b");
+        assert_eq!(bob.total, 1);
+    }
+
+    #[tokio::test]
+    async fn migration_adds_user_id_to_legacy_db() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("handoffs.db");
+
+        // Build a "legacy" DB without user_id by hand.
+        {
+            let conn = rusqlite::Connection::open(&db_path).expect("open");
+            conn.execute_batch(
+                "CREATE TABLE handoffs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+                    project TEXT NOT NULL,
+                    branch TEXT,
+                    directory TEXT,
+                    agent TEXT DEFAULT 'unknown',
+                    type TEXT DEFAULT 'manual',
+                    content TEXT NOT NULL,
+                    metadata TEXT,
+                    session_id TEXT,
+                    model TEXT,
+                    host TEXT,
+                    content_hash TEXT
+                );",
+            )
+            .expect("create legacy table");
+            conn.execute(
+                "INSERT INTO handoffs (project, content) VALUES ('legacy', 'pre-migration row')",
+                [],
+            )
+            .expect("seed legacy row");
+        }
+
+        // Open via HandoffsDb -- this runs setup_schema which should ALTER.
+        let db = HandoffsDb::open(dir.path().to_str().expect("utf8 path"))
+            .await
+            .expect("open with migration");
+
+        // Operator (user_id = 1) should see the backfilled legacy row.
+        let listed = db
+            .list(HandoffFilters::default(), 1)
+            .await
+            .expect("list as operator");
+        assert_eq!(listed.len(), 1, "legacy row backfilled to operator");
+        assert_eq!(listed[0].project, "legacy");
+
+        // A different user must not see it.
+        let other = db
+            .list(HandoffFilters::default(), 42)
+            .await
+            .expect("list as other");
+        assert!(other.is_empty(), "non-operator does not see legacy row");
+    }
+}
