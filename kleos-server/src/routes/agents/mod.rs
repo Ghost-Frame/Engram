@@ -189,7 +189,7 @@ async fn get_executions(
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Agent not found".into())))?;
 
     let limit = params.limit.unwrap_or(50).min(1000);
-    let executions = agents::get_agent_executions(&state.db, agent.id, limit).await?;
+    let executions = agents::get_agent_executions(&state.db, agent.id, auth.user_id, limit).await?;
     Ok(Json(json!({ "agent_id": id, "executions": executions })))
 }
 

@@ -301,7 +301,7 @@ async fn post_prompt_generate(
 
     // Living prompt: Growth observations
     if include_growth {
-        if let Ok(observations) = list_observations(&db, auth.user_id, growth_limit).await {
+        if let Ok(observations) = list_observations(&db, growth_limit).await {
             if !observations.is_empty() {
                 let mut buf = String::from("## Growth Observations\n");
                 for obs in &observations {
