@@ -34,27 +34,39 @@ pub async fn log_error(db: &Database, req: LogErrorRequest, user_id: Option<&str
     .await
 }
 
-/// List error events with optional level/source filters.
-#[tracing::instrument(skip(db, req), fields(level = ?req.level, source = ?req.source, limit = ?req.limit, offset = ?req.offset))]
-pub async fn list_errors(db: &Database, req: ListErrorsRequest) -> Result<Vec<ErrorEvent>> {
+/// List error events scoped to `user_id`. Optional level/source filters
+/// further narrow the result.
+///
+/// SECURITY: callers must always pass the calling user's id; events for
+/// other users must never be returned. The route handler at
+/// `kleos-server/src/routes/errors/mod.rs` is responsible for binding
+/// `user_id` from `auth.user_id`.
+#[tracing::instrument(skip(db, req), fields(user_id = %user_id, level = ?req.level, source = ?req.source, limit = ?req.limit, offset = ?req.offset))]
+pub async fn list_errors(
+    db: &Database,
+    user_id: &str,
+    req: ListErrorsRequest,
+) -> Result<Vec<ErrorEvent>> {
     let limit = req.limit.unwrap_or(50).clamp(1, 500);
     let offset = req.offset.unwrap_or(0).max(0);
     let level = req.level;
     let source = req.source;
+    let user_id_owned = user_id.to_string();
 
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT id, source, level, message, context, created_at, user_id \
                  FROM error_events \
-                 WHERE (?1 IS NULL OR level = ?1) \
-                   AND (?2 IS NULL OR source = ?2) \
+                 WHERE user_id = ?1 \
+                   AND (?2 IS NULL OR level = ?2) \
+                   AND (?3 IS NULL OR source = ?3) \
                  ORDER BY created_at DESC \
-                 LIMIT ?3 OFFSET ?4",
+                 LIMIT ?4 OFFSET ?5",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![level, source, limit, offset])
+            .query(rusqlite::params![user_id_owned, level, source, limit, offset])
             .map_err(rusqlite_to_eng_error)?;
         let mut events = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -95,7 +107,7 @@ mod tests {
         .expect("log_error");
         assert!(id > 0);
 
-        let events = list_errors(&db, ListErrorsRequest::default())
+        let events = list_errors(&db, "user-1", ListErrorsRequest::default())
             .await
             .expect("list_errors");
         assert_eq!(events.len(), 1);
@@ -116,7 +128,7 @@ mod tests {
                     message: "msg".to_string(),
                     context: None,
                 },
-                None,
+                Some("alice"),
             )
             .await
             .expect("log_error");
@@ -124,6 +136,7 @@ mod tests {
 
         let errors = list_errors(
             &db,
+            "alice",
             ListErrorsRequest {
                 level: Some("error".to_string()),
                 ..Default::default()
@@ -132,5 +145,36 @@ mod tests {
         .await
         .expect("list filtered");
         assert_eq!(errors.len(), 2, "should return only error-level events");
+    }
+
+    #[tokio::test]
+    async fn list_errors_scopes_to_user() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        let req = |source: &str| LogErrorRequest {
+            source: source.to_string(),
+            level: "error".to_string(),
+            message: "x".to_string(),
+            context: None,
+        };
+
+        log_error(&db, req("alice-svc"), Some("alice")).await.expect("a");
+        log_error(&db, req("alice-svc-2"), Some("alice")).await.expect("a2");
+        log_error(&db, req("bob-svc"), Some("bob")).await.expect("b");
+
+        let alice = list_errors(&db, "alice", ListErrorsRequest::default())
+            .await
+            .expect("alice list");
+        assert_eq!(alice.len(), 2, "alice sees only her events");
+
+        let bob = list_errors(&db, "bob", ListErrorsRequest::default())
+            .await
+            .expect("bob list");
+        assert_eq!(bob.len(), 1);
+
+        let stranger = list_errors(&db, "carol", ListErrorsRequest::default())
+            .await
+            .expect("stranger list");
+        assert!(stranger.is_empty(), "unrelated user sees no events");
     }
 }
