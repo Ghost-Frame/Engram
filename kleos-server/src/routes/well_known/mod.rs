@@ -9,6 +9,20 @@ use serde_json::json;
 
 use crate::state::AppState;
 
+/// Public URL where this Kleos instance is reachable. Operators set
+/// `KLEOS_PUBLIC_URL` per deployment; the default is a neutral
+/// example-domain placeholder so a fresh checkout has no operator
+/// branding baked into the binary.
+fn public_url() -> String {
+    std::env::var("KLEOS_PUBLIC_URL").unwrap_or_else(|_| "https://kleos.example.com".into())
+}
+
+/// Display name of the operating organization. Operators set
+/// `KLEOS_ORG_NAME` per deployment; default is the neutral product name.
+fn org_name() -> String {
+    std::env::var("KLEOS_ORG_NAME").unwrap_or_else(|_| "Kleos".into())
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/.well-known/agent-card.json", get(agent_card))
@@ -17,10 +31,11 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn agent_card() -> impl IntoResponse {
+    let url = public_url();
     let card = json!({
         "name": "kleos",
         "description": "Cognitive memory service for AI agents. Hybrid search, knowledge graph, spaced repetition, coordination services, quality tracking.",
-        "url": "https://kleos.zanverse.com",
+        "url": url,
         "version": "1.0.0",
         "protocol": "a2a",
         "capabilities": {
@@ -106,14 +121,16 @@ async fn agent_card() -> impl IntoResponse {
 async fn agent_commerce(State(state): State<AppState>) -> impl IntoResponse {
     // Build service list from pricing table if available, otherwise static.
     let services = build_service_descriptors(&state).await;
+    let url = public_url();
+    let org = org_name();
 
     let descriptor = json!({
         "kleos": "1.0.0",
         "acp": "0.1.0",
         "provider": {
             "name": "Kleos",
-            "organization": "Zanverse",
-            "url": "https://kleos.zanverse.com"
+            "organization": org,
+            "url": url
         },
         "services": services,
         "attestation": {
@@ -220,9 +237,11 @@ async fn build_service_descriptors(state: &AppState) -> serde_json::Value {
 }
 
 async fn llms_txt() -> Response {
-    let text = r#"# Kleos
+    let org = org_name();
+    let text = format!(
+        r#"# Kleos
 
-Cognitive memory service for AI agents by Zanverse.
+Cognitive memory service for AI agents by {org}.
 
 ## What it does
 
@@ -246,7 +265,8 @@ Bearer token (API key) or x402 pay-per-call (USDC on Base L2).
 ## MCP
 
 57 tools via stdio transport. Binary: kleos-mcp
-"#;
+"#
+    );
 
     Response::builder()
         .status(StatusCode::OK)
