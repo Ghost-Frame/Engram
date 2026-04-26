@@ -2,6 +2,7 @@ use std::env;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::sync::LazyLock;
 
 mod observe;
 
@@ -288,9 +289,18 @@ fn cmd_ke(args: &[String]) -> ExitCode {
             ExitCode::from(2)
         }
         LedgerResult::ServerUnavailable => {
-            eprintln!("Warning: scratchpad unreachable, allowing edit (fail-open)");
-            observe::fire_and_forget("ke", &path, None);
-            ExitCode::SUCCESS
+            // M-009: fail-closed by default; operator opt-in via env var.
+            if env::var("KLEOS_FS_ALLOW_OFFLINE_EDIT").as_deref() == Ok("1") {
+                eprintln!("Warning: scratchpad unreachable, allowing edit (KLEOS_FS_ALLOW_OFFLINE_EDIT=1)");
+                observe::fire_and_forget("ke", &path, None);
+                ExitCode::SUCCESS
+            } else {
+                eprintln!(
+                    "BLOCKED: scratchpad ledger unreachable and KLEOS_FS_ALLOW_OFFLINE_EDIT is not set."
+                );
+                eprintln!("Set KLEOS_FS_ALLOW_OFFLINE_EDIT=1 to allow offline edits.");
+                ExitCode::from(2)
+            }
         }
     }
 }
@@ -422,7 +432,18 @@ fn find_agent_forge() -> Option<PathBuf> {
         return Some(local_bin);
     }
 
-    which_in_path("agent-forge")
+    // M-010: PATH fallback only when operator explicitly trusts PATH.
+    // Prevents a malicious binary named agent-forge earlier on PATH from
+    // being executed with full agent privileges.
+    if env::var("KLEOS_FS_TRUST_PATH").as_deref() == Ok("1") {
+        which_in_path("agent-forge")
+    } else {
+        eprintln!(
+            "ke: agent-forge not found at AGENT_FORGE_BIN or ~/.local/bin/agent-forge; \
+             set KLEOS_FS_TRUST_PATH=1 to allow PATH lookup"
+        );
+        None
+    }
 }
 
 fn which_in_path(name: &str) -> Option<PathBuf> {
@@ -440,6 +461,15 @@ enum LedgerResult {
     ServerUnavailable,
 }
 
+// M-012: process-lifetime reqwest blocking client replaces the curl shell-out.
+// LazyLock so initialisation happens once per process on first use.
+static HTTP_CLIENT: LazyLock<reqwest::blocking::Client> = LazyLock::new(|| {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .unwrap_or_default()
+});
+
 fn check_scratchpad_ledger(key: &str) -> LedgerResult {
     let server_url = env::var("KLEOS_SERVER_URL")
         .or_else(|_| env::var("ENGRAM_EIDOLON_URL"))
@@ -453,30 +483,33 @@ fn check_scratchpad_ledger(key: &str) -> LedgerResult {
         urlencoded(key)
     );
 
-    let mut cmd = Command::new("curl");
-    cmd.arg("-sf")
-        .arg("--max-time")
-        .arg("3")
-        .arg(&url);
-
+    let mut req = HTTP_CLIENT.get(&url);
     if let Some(ref k) = api_key {
-        cmd.arg("-H").arg(format!("Authorization: Bearer {}", k));
+        req = req.header("Authorization", format!("Bearer {}", k));
     }
 
-    let output = match cmd.output() {
-        Ok(o) => o,
+    let resp = match req.send() {
+        Ok(r) => r,
+        // Connection errors (refused, timeout, DNS) mean server is unreachable.
+        Err(e) if e.is_connect() || e.is_timeout() => {
+            return LedgerResult::ServerUnavailable;
+        }
         Err(_) => return LedgerResult::ServerUnavailable,
     };
 
-    if !output.status.success() {
-        let code = output.status.code().unwrap_or(0);
-        if code == 22 || code == 7 {
-            return LedgerResult::ServerUnavailable;
+    if !resp.status().is_success() {
+        // 404 means ledger entry missing; other errors treated as unavailable.
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return LedgerResult::NotFound;
         }
-        return LedgerResult::NotFound;
+        return LedgerResult::ServerUnavailable;
     }
 
-    let body = String::from_utf8_lossy(&output.stdout);
+    let body = match resp.text() {
+        Ok(t) => t,
+        Err(_) => return LedgerResult::ServerUnavailable,
+    };
+
     if body.trim().is_empty() || body.contains("\"value\":null") || body.contains("not found") {
         return LedgerResult::NotFound;
     }
