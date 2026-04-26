@@ -105,6 +105,17 @@ enum Commands {
         #[arg(short, long, default_value = "general")]
         category: String,
     },
+    /// Surface memories most in need of reinforcement for a topic
+    RecallDue {
+        /// Topic to search for
+        topic: String,
+        /// Maximum results
+        #[arg(short, long, default_value = "5")]
+        limit: usize,
+        /// Session filter
+        #[arg(short, long)]
+        session: Option<String>,
+    },
     /// Check server health
     Health,
     /// Durable job queue inspection and control
@@ -594,6 +605,48 @@ async fn main() {
 
         Commands::Guard { content: _ } => {
             println!("guard not implemented");
+        }
+
+        Commands::RecallDue {
+            topic,
+            limit,
+            session,
+        } => {
+            let encoded_topic = utf8_percent_encode(&topic, NON_ALPHANUMERIC).to_string();
+            let mut url = format!("/fsrs/recall-due?topic={}&limit={}", encoded_topic, limit);
+            if let Some(s) = &session {
+                let encoded_s = utf8_percent_encode(s, NON_ALPHANUMERIC).to_string();
+                url.push_str(&format!("&session={}", encoded_s));
+            }
+            match client.get(&url).await {
+                Ok(v) => {
+                    let results = v
+                        .get("results")
+                        .and_then(|r| r.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    if results.is_empty() {
+                        println!("No recall-due memories for \"{}\".", topic);
+                    }
+                    for item in &results {
+                        let id = value_as_string(item.get("memory_id"))
+                            .unwrap_or_else(|| "?".to_string());
+                        let r = item
+                            .get("retrievability")
+                            .and_then(|x| x.as_f64())
+                            .map(|v| format!("R={:.2}", v))
+                            .unwrap_or_else(|| "R=?".to_string());
+                        let score = item
+                            .get("recall_due_score")
+                            .and_then(|x| x.as_f64())
+                            .map(|s| format!("{:.3}", s))
+                            .unwrap_or_else(|| "?".to_string());
+                        let content = item.get("content").and_then(|x| x.as_str()).unwrap_or("");
+                        println!("#{} [{}] ({}) {}", id, score, r, truncate(content, 90));
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
         }
 
         Commands::List { limit, offset } => {
@@ -1540,7 +1593,7 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
         HandoffCommands::Latest { project, dir } => {
             let project = project.clone().or_else(|| detect_project(dir.as_deref()));
             let query = if let Some(ref p) = project {
-                format!("?project={}", urlencoding::encode(p))
+                format!("?project={}", utf8_percent_encode(p, NON_ALPHANUMERIC))
             } else {
                 String::new()
             };
