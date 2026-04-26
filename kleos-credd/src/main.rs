@@ -5,7 +5,7 @@
 
 use clap::Parser;
 use kleos_cred::crypto::{derive_key, KEY_SIZE};
-use kleos_credd::server;
+use kleos_credd::{bootstrap, server};
 use kleos_lib::config::{Config, EncryptionMode};
 use tracing::info;
 
@@ -94,8 +94,26 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Decrypt bootstrap.enc (if present) using the just-derived master key.
+    // Absent blob is non-fatal -- credd serves everything except the
+    // /bootstrap/kleos-bearer endpoint, which 404s in that case.
+    let bootstrap_master = bootstrap::load_bootstrap_blob(&master_key).await?;
+    if bootstrap_master.is_some() {
+        info!(
+            "credd: bootstrap.enc loaded from {}",
+            bootstrap::blob_path().display()
+        );
+    }
+
     info!("starting credd on {}", args.listen);
-    server::run(&args.listen, &args.db_path, master_key, encryption_key).await?;
+    server::run(
+        &args.listen,
+        &args.db_path,
+        master_key,
+        bootstrap_master,
+        encryption_key,
+    )
+    .await?;
 
     Ok(())
 }

@@ -48,6 +48,7 @@ rpassword = "7"
 anyhow = "1"
 hex = "0.4"
 subtle = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
@@ -55,3 +56,4 @@ reqwest.workspace = true
 http-body-util = "0.1"
 tower = { workspace = true, features = ["util"] }
 hex = "0.4"
+tempfile = { workspace = true }
