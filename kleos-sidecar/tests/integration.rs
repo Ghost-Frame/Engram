@@ -156,6 +156,9 @@ async fn spawn_sidecar(
     upstream_url: String,
     token: Option<String>,
 ) -> (String, SidecarState, tokio::task::JoinHandle<()>) {
+    // Tests bind mock upstreams on 127.0.0.1; allow private addresses through
+    // validate_outbound_url for this controlled in-process loopback.
+    std::env::set_var("KLEOS_NET_ALLOW_PRIVATE", "1");
     let state = build_test_state(upstream_url, token.clone());
     let app =
         routes::router(state.clone()).layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024));

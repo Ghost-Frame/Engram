@@ -67,12 +67,17 @@ pub fn validate_outbound_url(raw: &str) -> Result<Url, EngError> {
     let host = parsed
         .host()
         .ok_or_else(|| EngError::InvalidInput(format!("url '{}' has no host", raw)))?;
+    // Tests and internal sidecar->server traffic bind on 127.0.0.1; production
+    // SSRF protection is the default but operators can opt out for these
+    // controlled paths.
+    let allow_private = std::env::var("KLEOS_NET_ALLOW_PRIVATE").as_deref() == Ok("1");
     match host {
         url::Host::Domain(name) => {
             let lower = name.to_ascii_lowercase();
-            if lower == "localhost"
-                || lower.ends_with(".localhost")
-                || lower == "localhost.localdomain"
+            if !allow_private
+                && (lower == "localhost"
+                    || lower.ends_with(".localhost")
+                    || lower == "localhost.localdomain")
             {
                 return Err(EngError::InvalidInput(format!(
                     "url '{}' resolves to loopback",
@@ -90,7 +95,7 @@ pub fn validate_outbound_url(raw: &str) -> Result<Url, EngError> {
             }
         }
         url::Host::Ipv4(ip) => {
-            if is_ipv4_denied(&ip) {
+            if !allow_private && is_ipv4_denied(&ip) {
                 return Err(EngError::InvalidInput(format!(
                     "url '{}' targets disallowed IPv4 range",
                     raw
@@ -98,7 +103,7 @@ pub fn validate_outbound_url(raw: &str) -> Result<Url, EngError> {
             }
         }
         url::Host::Ipv6(ip) => {
-            if is_ipv6_denied(&ip) {
+            if !allow_private && is_ipv6_denied(&ip) {
                 return Err(EngError::InvalidInput(format!(
                     "url '{}' targets disallowed IPv6 range",
                     raw

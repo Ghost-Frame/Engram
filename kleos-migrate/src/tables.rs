@@ -95,7 +95,12 @@ fn copy_table(
         return Ok(0);
     }
 
-    let has_user_id = intersection.iter().any(|c| c == "user_id");
+    // Apply the user_id filter on the source whenever the source has the
+    // column, even if the target schema (Phase 5.1.2 tenant shards) no
+    // longer carries it. The column itself is not part of `intersection`
+    // when target lacks it, so the SELECT/INSERT column lists stay correct;
+    // we just need the WHERE clause to scope source rows to the operator.
+    let has_user_id = source_cols.iter().any(|c| c == "user_id");
 
     // Build SELECT from source.
     let select_cols = intersection
