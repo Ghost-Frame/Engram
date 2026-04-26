@@ -1,5 +1,9 @@
 use crate::{EngError, Result};
+use futures::StreamExt;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::time::Duration;
+use tokio::io::AsyncWriteExt;
 use tracing::info;
 
 const BGE_M3_TOKENIZER_URL: &str =
@@ -13,6 +17,30 @@ const GRANITE_TOKENIZER_URL: &str =
     "https://huggingface.co/keisuke-miyako/granite-embedding-reranker-english-r2-onnx-int8/resolve/main/tokenizer.json";
 const GRANITE_MODEL_URL: &str =
     "https://huggingface.co/keisuke-miyako/granite-embedding-reranker-english-r2-onnx-int8/resolve/main/model_quantized.onnx";
+
+/// Default cap on a single model download. Operators can raise this via the
+/// `KLEOS_EMBEDDING_MODEL_MAX_BYTES` env var; sane production values stay
+/// well under 4 GiB because the largest BGE FP32 model is ~2.3 GiB.
+const DEFAULT_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Process-lifetime download client: 30-minute overall timeout, redirect cap
+/// from `safe_client_builder`. Failing fast on build error is correct here:
+/// if TLS init breaks at startup, we should surface that instead of silently
+/// downgrading to an unconfigured client (closes H-009 for this site).
+static DOWNLOAD_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    crate::net::safe_client_builder()
+        .timeout(Duration::from_secs(30 * 60))
+        .build()
+        .expect("safe_client_builder failed at embeddings download startup")
+});
+
+fn max_download_bytes() -> u64 {
+    std::env::var("KLEOS_EMBEDDING_MODEL_MAX_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_BYTES)
+}
 
 /// Ensure a file exists at `path`. If missing, download from `url`.
 /// Uses atomic write: downloads to .tmp, then renames.
@@ -47,7 +75,10 @@ async fn ensure_file(path: &Path, url: &str, offline_only: bool) -> Result<()> {
 
     info!(url = url, dest = %path.display(), "downloading model file");
 
-    let response = reqwest::get(url)
+    let max_bytes = max_download_bytes();
+    let response = DOWNLOAD_CLIENT
+        .get(url)
+        .send()
         .await
         .map_err(|e| EngError::Internal(format!("failed to download {}: {}", url, e)))?;
 
@@ -59,14 +90,45 @@ async fn ensure_file(path: &Path, url: &str, offline_only: bool) -> Result<()> {
         )));
     }
 
-    let bytes = response.bytes().await.map_err(|e| {
-        EngError::Internal(format!("failed to read response body from {}: {}", url, e))
-    })?;
+    // Reject up-front when the upstream advertises a body larger than the cap.
+    if let Some(content_len) = response.content_length() {
+        if content_len > max_bytes {
+            return Err(EngError::Internal(format!(
+                "download from {} reports {} bytes, exceeds cap {}",
+                url, content_len, max_bytes
+            )));
+        }
+    }
 
     let tmp_path = path.with_extension("tmp");
-    tokio::fs::write(&tmp_path, &bytes).await.map_err(|e| {
-        EngError::Internal(format!("failed to write {}: {}", tmp_path.display(), e))
+    let mut file = tokio::fs::File::create(&tmp_path).await.map_err(|e| {
+        EngError::Internal(format!("failed to create {}: {}", tmp_path.display(), e))
     })?;
+
+    let mut total: u64 = 0;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| {
+            EngError::Internal(format!("stream read failed from {}: {}", url, e))
+        })?;
+        total = total.saturating_add(bytes.len() as u64);
+        if total > max_bytes {
+            // Best-effort cleanup of the partial tmp file.
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(EngError::Internal(format!(
+                "download from {} exceeded cap of {} bytes mid-stream",
+                url, max_bytes
+            )));
+        }
+        file.write_all(&bytes).await.map_err(|e| {
+            EngError::Internal(format!("write to {} failed: {}", tmp_path.display(), e))
+        })?;
+    }
+
+    file.flush().await.map_err(|e| {
+        EngError::Internal(format!("flush of {} failed: {}", tmp_path.display(), e))
+    })?;
+    drop(file);
 
     tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
         EngError::Internal(format!(
@@ -77,7 +139,7 @@ async fn ensure_file(path: &Path, url: &str, offline_only: bool) -> Result<()> {
         ))
     })?;
 
-    let size_mb = bytes.len() as f64 / (1024.0 * 1024.0);
+    let size_mb = total as f64 / (1024.0 * 1024.0);
     info!(size_mb = format!("{:.1}", size_mb), dest = %path.display(), "model file downloaded");
 
     Ok(())
