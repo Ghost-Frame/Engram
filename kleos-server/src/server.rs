@@ -227,17 +227,16 @@ pub fn build_router(state: AppState) -> Router {
             HeaderName::from_static("x-permitted-cross-domain-policies"),
             HeaderValue::from_static("none"),
         ))
-        // R7-006: baseline CSP. The login page currently ships inline <style>
-        // and <script>; 'unsafe-inline' is retained for both until those are
-        // externalised or nonce-bound. 'wasm-unsafe-eval' lets the GUI load
-        // WASM modules (ONNX wasm runtime, etc). frame-ancestors 'none' hard
-        // locks clickjacking (X-Frame-Options is a belt-and-braces duplicate).
+        // R7-006 / H-013: baseline CSP. Login page inline style/script were
+        // externalised to /_app/login.css and /_app/login.js, so 'unsafe-inline'
+        // is no longer required. 'wasm-unsafe-eval' is kept for the ONNX WASM
+        // runtime. frame-ancestors 'none' hard-locks clickjacking.
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("content-security-policy"),
             HeaderValue::from_static(
                 "default-src 'self'; \
-                 script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'; \
-                 style-src 'self' 'unsafe-inline'; \
+                 script-src 'self' 'wasm-unsafe-eval'; \
+                 style-src 'self'; \
                  img-src 'self' data: blob:; \
                  font-src 'self' data:; \
                  connect-src 'self'; \

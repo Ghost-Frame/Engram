@@ -511,7 +511,32 @@ async fn serve_static_file(build_dir: &std::path::Path, file_path: &str) -> Opti
     )
 }
 
-/// Serve login page HTML
+// H-013: login CSS and JS are embedded as static string constants and served
+// via dedicated routes so they work without a gui/build directory and allow
+// 'unsafe-inline' to be removed from the CSP. (gui/build/ is .gitignored
+// as a generated artifact, so content is inlined here instead of include_str!.)
+const LOGIN_CSS: &str = "body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }\n\
+.login-box { background: #16213e; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,0.3); max-width: 400px; width: 100%; }\n\
+h1 { margin: 0 0 1.5rem; font-size: 1.5rem; text-align: center; color: #7f5af0; }\n\
+input { width: 100%; padding: 0.75rem; margin-bottom: 1rem; border: 1px solid #2d3a52; border-radius: 4px; background: #0f0f1e; color: #eee; box-sizing: border-box; font-family: monospace; font-size: 0.9rem; }\n\
+button { width: 100%; padding: 0.75rem; background: #7f5af0; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; }\n\
+button:hover { background: #6b4ed1; }\n\
+.error { color: #ff6b6b; margin-bottom: 1rem; text-align: center; display: none; }\n\
+.hint { color: #888; font-size: 0.8rem; text-align: center; margin-top: 1rem; }\n";
+
+const LOGIN_JS: &str = "document.getElementById('login-form').addEventListener('submit', async (e) => {\n\
+    e.preventDefault();\n\
+    const form = e.target;\n\
+    const data = new FormData(form);\n\
+    const res = await fetch('/gui/auth', { method: 'POST', body: new URLSearchParams(data) });\n\
+    if (res.ok) {\n\
+        window.location.href = '/gui';\n\
+    } else {\n\
+        document.getElementById('error').style.display = 'block';\n\
+    }\n\
+});\n";
+
+/// Serve login page HTML (H-013: no inline style or script -- external assets only)
 fn login_html() -> &'static str {
     r#"<!DOCTYPE html>
 <html>
@@ -519,16 +544,7 @@ fn login_html() -> &'static str {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kleos Login</title>
-    <style>
-        body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-        .login-box { background: #16213e; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,0.3); max-width: 400px; width: 100%; }
-        h1 { margin: 0 0 1.5rem; font-size: 1.5rem; text-align: center; color: #7f5af0; }
-        input { width: 100%; padding: 0.75rem; margin-bottom: 1rem; border: 1px solid #2d3a52; border-radius: 4px; background: #0f0f1e; color: #eee; box-sizing: border-box; font-family: monospace; font-size: 0.9rem; }
-        button { width: 100%; padding: 0.75rem; background: #7f5af0; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; }
-        button:hover { background: #6b4ed1; }
-        .error { color: #ff6b6b; margin-bottom: 1rem; text-align: center; display: none; }
-        .hint { color: #888; font-size: 0.8rem; text-align: center; margin-top: 1rem; }
-    </style>
+    <link rel="stylesheet" href="/_app/login.css">
 </head>
 <body>
     <div class="login-box">
@@ -540,21 +556,29 @@ fn login_html() -> &'static str {
         </form>
         <p class="hint">Use your API key to authenticate</p>
     </div>
-    <script>
-        document.getElementById('login-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const form = e.target;
-            const data = new FormData(form);
-            const res = await fetch('/gui/auth', { method: 'POST', body: new URLSearchParams(data) });
-            if (res.ok) {
-                window.location.href = '/gui';
-            } else {
-                document.getElementById('error').style.display = 'block';
-            }
-        });
-    </script>
+    <script src="/_app/login.js"></script>
 </body>
 </html>"#
+}
+
+/// GET /_app/login.css -- H-013: serve embedded login stylesheet (no build dir needed)
+async fn serve_login_css() -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")
+        .body(Body::from(LOGIN_CSS))
+        .unwrap()
+}
+
+/// GET /_app/login.js -- H-013: serve embedded login script (no build dir needed)
+async fn serve_login_js() -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/javascript; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")
+        .body(Body::from(LOGIN_JS))
+        .unwrap()
 }
 
 /// GET /_app/* - serve SvelteKit static assets
@@ -731,6 +755,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/gui/auth", post(gui_auth))
         .route("/gui/logout", get(gui_logout))
+        // H-013: login assets served as embedded constants; no build dir needed.
+        // These specific routes shadow the wildcard below for these paths.
+        .route("/_app/login.css", get(serve_login_css))
+        .route("/_app/login.js", get(serve_login_js))
         .route("/_app/{*path}", get(serve_app_assets))
         // GUI memory CRUD
         .route("/gui/memories", post(gui_create_memory))
