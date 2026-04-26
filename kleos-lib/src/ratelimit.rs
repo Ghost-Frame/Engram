@@ -139,9 +139,13 @@ impl RateLimiter {
         let key = key_id.to_string();
         let mut map = match self.windows.lock() {
             Ok(g) => g,
-            Err(poisoned) => {
+            Err(_) => {
                 tracing::error!("rate limiter lock poisoned; failing closed");
-                poisoned.into_inner()
+                // Match check_key: a poisoned lock is a failure mode where
+                // another thread panicked mid-update; recovering and
+                // continuing would silently bypass the limiter for callers
+                // on this path. Return Err with retry_after = 1.
+                return Err(1);
             }
         };
 
