@@ -65,6 +65,7 @@ async fn reject(
     Ok(Json(json!({ "rejected": true, "id": id })))
 }
 
+// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 async fn edit(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,

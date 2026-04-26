@@ -119,6 +119,7 @@ async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<
 
 // --- New handlers for P0-0 Phase 27c ---
 
+// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 async fn create_channel_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,

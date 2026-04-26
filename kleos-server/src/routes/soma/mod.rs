@@ -200,6 +200,7 @@ async fn remove_member_handler(
     Ok(Json(json!({ "removed": removed })))
 }
 
+// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 async fn log_event_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,

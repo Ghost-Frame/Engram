@@ -27,6 +27,7 @@ pub fn router() -> Router<AppState> {
         .route("/fsrs/recall-due", get(recall_due))
 }
 
+// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 async fn review(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -168,6 +169,7 @@ async fn review(
     Ok(Json(json!({ "id": id, "fsrs": new_state })))
 }
 
+// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 async fn get_state(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
