@@ -56,7 +56,8 @@ pub fn build_router(state: AppState) -> Router {
         // Bootstrap bearer (broker per-agent Kleos bearers without on-disk plaintext)
         .route(
             "/bootstrap/kleos-bearer",
-            get(bootstrap_bearer::get_bootstrap_kleos_bearer),
+            get(bootstrap_bearer::get_bootstrap_kleos_bearer)
+                .post(bootstrap_bearer::post_bootstrap_kleos_bearer_ecdh),
         )
         // Health check (no auth)
         .route("/health", get(health_handler))
