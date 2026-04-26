@@ -16,7 +16,8 @@ use kleos_server::state::AppState;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::task::JoinHandle;
+use tokio::sync::Semaphore;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 #[global_allocator]
@@ -181,13 +182,46 @@ async fn main() {
         None
     };
 
-    let handoffs_db = match kleos_lib::handoffs::HandoffsDb::open(&config.data_dir).await {
+    let handoffs_gc_sem = Arc::new(Semaphore::new(
+        std::env::var("KLEOS_BG_SEM_GC")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8usize),
+    ));
+    let handoffs_db = match kleos_lib::handoffs::HandoffsDb::open(&config.data_dir, Arc::clone(&handoffs_gc_sem)).await {
         Ok(db) => Some(Arc::new(db)),
         Err(e) => {
             tracing::warn!("handoffs subsystem disabled: {e}");
             None
         }
     };
+
+    // H-005: per-pattern semaphores cap concurrent fire-and-forget background tasks.
+    // Each defaults to 64 permits; set KLEOS_BG_SEM_<NAME>=N to override.
+    fn bg_sem(name: &str, default: usize) -> Arc<Semaphore> {
+        let key = format!("KLEOS_BG_SEM_{}", name.to_ascii_uppercase());
+        let n = std::env::var(&key)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default);
+        Arc::new(Semaphore::new(n))
+    }
+    let fact_extract_sem = bg_sem("FACT_EXTRACT", 64);
+    let brain_absorb_sem = bg_sem("BRAIN_ABSORB", 64);
+    let audit_log_sem = bg_sem("AUDIT_LOG", 64);
+    let ingest_sem = bg_sem("INGEST", 64);
+    let background_tasks = Arc::new(tokio::sync::Mutex::new(JoinSet::<()>::new()));
+
+    // Create the shutdown token early so it can be stored in AppState and shared
+    // with background tasks spawned from HTTP handlers (H-005/M-008).
+    let shutdown = CancellationToken::new();
+    {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            kleos_server::server::shutdown_signal().await;
+            shutdown.cancel();
+        });
+    }
 
     let state = AppState {
         db: db_arc,
@@ -206,6 +240,12 @@ async fn main() {
         last_request_time: Arc::new(AtomicU64::new(0)),
         tenant_registry,
         handoffs_db,
+        shutdown_token: shutdown.clone(),
+        background_tasks: Arc::clone(&background_tasks),
+        fact_extract_sem,
+        brain_absorb_sem,
+        audit_log_sem,
+        ingest_sem,
     };
 
     // R8 R-008: every background task is described by a factory so the
@@ -324,18 +364,8 @@ async fn main() {
         tracing::info!("session-reaper background task started");
     }
 
-    // R8 R-008: share one CancellationToken between the HTTP server and the
-    // supervisor so SIGTERM propagates through both. Without this the
-    // background tasks keep writing to SQLite as axum tears down.
-    let shutdown = CancellationToken::new();
-    {
-        let shutdown = shutdown.clone();
-        tokio::spawn(async move {
-            kleos_server::server::shutdown_signal().await;
-            shutdown.cancel();
-        });
-    }
-
+    // R8 R-008: shutdown token already created and wired to the signal above;
+    // the supervisor uses the same token so SIGTERM propagates through both.
     let supervisor_handle = {
         let shutdown = shutdown.clone();
         tokio::spawn(async move { supervise(supervised, shutdown).await })
@@ -345,6 +375,10 @@ async fn main() {
         tracing::error!("server error: {}", e);
         shutdown.cancel();
         let _ = supervisor_handle.await;
+        // Drain any remaining background tasks before exiting.
+        let mut bg = background_tasks.lock().await;
+        bg.abort_all();
+        while bg.join_next().await.is_some() {}
         std::process::exit(1);
     }
 
@@ -353,6 +387,24 @@ async fn main() {
     shutdown.cancel();
     if let Err(e) = supervisor_handle.await {
         tracing::error!(error = %e, "supervisor task exit error");
+    }
+
+    // Drain background tasks spawned from HTTP handlers with a 30-second cap.
+    // These are fire-and-forget tasks (audit writes, fact extraction, brain
+    // absorb, ingestion) that may still be in flight after axum drains HTTP.
+    {
+        let mut bg = background_tasks.lock().await;
+        let drain_timeout = Duration::from_secs(30);
+        tokio::select! {
+            _ = async {
+                while bg.join_next().await.is_some() {}
+            } => {}
+            _ = tokio::time::sleep(drain_timeout) => {
+                tracing::warn!("background tasks drain timed out; aborting remainder");
+                bg.abort_all();
+                while bg.join_next().await.is_some() {}
+            }
+        }
     }
 }
 

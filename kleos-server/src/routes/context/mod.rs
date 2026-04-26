@@ -108,51 +108,74 @@ async fn build_context_stream(
     // Output channel for SSE events (progress + final result).
     let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<Event>(CHANNEL_CAP);
 
-    // Spawn assembly task.
+    // Spawn assembly task. Goes on background_tasks JoinSet for clean shutdown (M-008).
     let sse_tx_clone = sse_tx.clone();
-    tokio::spawn(async move {
-        let result = assemble_context_streaming(&db, body, user_id, embedder, llm, tx).await;
-        match result {
-            Ok(ctx) => {
-                // R8 R-009: log rather than silently drop send errors --
-                // if the client disconnected we want that in traces.
-                if let Err(e) = sse_tx_clone
-                    .send(
-                        Event::default()
-                            .event("result")
-                            .json_data(json!(ctx))
-                            .unwrap_or_else(|_| Event::default().data("{}")),
-                    )
-                    .await
-                {
-                    tracing::debug!(error = %e, "context SSE result send failed (client gone)");
+    let shutdown_asm = state.shutdown_token.clone();
+    {
+        let mut bg = state.background_tasks.lock().await;
+        bg.spawn(async move {
+            tokio::select! {
+                _ = shutdown_asm.cancelled() => {
+                    tracing::debug!("context SSE assembly drained on shutdown");
                 }
+                _ = async {
+                    let result = assemble_context_streaming(&db, body, user_id, embedder, llm, tx).await;
+                    match result {
+                        Ok(ctx) => {
+                            // R8 R-009: log rather than silently drop send errors --
+                            // if the client disconnected we want that in traces.
+                            if let Err(e) = sse_tx_clone
+                                .send(
+                                    Event::default()
+                                        .event("result")
+                                        .json_data(json!(ctx))
+                                        .unwrap_or_else(|_| Event::default().data("{}")),
+                                )
+                                .await
+                            {
+                                tracing::debug!(error = %e, "context SSE result send failed (client gone)");
+                            }
+                        }
+                        Err(e) => {
+                            let _ = sse_tx_clone
+                                .send(
+                                    Event::default()
+                                        .event("error")
+                                        .json_data(json!({"error": e.to_string()}))
+                                        .unwrap_or_else(|_| Event::default().data("{}")),
+                                )
+                                .await;
+                        }
+                    }
+                } => {}
             }
-            Err(e) => {
-                let _ = sse_tx_clone
-                    .send(
-                        Event::default()
-                            .event("error")
-                            .json_data(json!({"error": e.to_string()}))
-                            .unwrap_or_else(|_| Event::default().data("{}")),
-                    )
-                    .await;
-            }
-        }
-    });
+        });
+    }
 
     // Spawn relay: progress channel -> SSE events channel.
-    tokio::spawn(async move {
-        while let Some(evt) = rx.recv().await {
-            let sse_event = Event::default()
-                .event("progress")
-                .json_data(&evt)
-                .unwrap_or_else(|_| Event::default().data("{}"));
-            if sse_tx.send(sse_event).await.is_err() {
-                break;
+    // No semaphore needed; relay terminates when assembly task closes the channel.
+    let shutdown_relay = state.shutdown_token.clone();
+    {
+        let mut bg = state.background_tasks.lock().await;
+        bg.spawn(async move {
+            tokio::select! {
+                _ = shutdown_relay.cancelled() => {
+                    tracing::debug!("context SSE relay drained on shutdown");
+                }
+                _ = async {
+                    while let Some(evt) = rx.recv().await {
+                        let sse_event = Event::default()
+                            .event("progress")
+                            .json_data(&evt)
+                            .unwrap_or_else(|_| Event::default().data("{}"));
+                        if sse_tx.send(sse_event).await.is_err() {
+                            break;
+                        }
+                    }
+                } => {}
             }
-        }
-    });
+        });
+    }
 
     // Adapt mpsc::UnboundedReceiver -> futures::Stream<Item = Result<Event, Infallible>>
     let stream = futures::stream::unfold(sse_rx, |mut rx| async move {

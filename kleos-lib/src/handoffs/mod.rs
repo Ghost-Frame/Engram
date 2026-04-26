@@ -2,7 +2,9 @@ use crate::{EngError, Result};
 use deadpool_sqlite::{Config as PoolManagerConfig, Hook, HookError, Pool, PoolConfig, Runtime};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tracing::{error, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,10 +120,12 @@ pub struct GcResult {
 pub struct HandoffsDb {
     writer: Pool,
     reader: Pool,
+    /// Semaphore throttling concurrent auto-GC spawns (M-005).
+    gc_sem: Arc<Semaphore>,
 }
 
 impl HandoffsDb {
-    pub async fn open(data_dir: &str) -> Result<Self> {
+    pub async fn open(data_dir: &str, gc_sem: Arc<Semaphore>) -> Result<Self> {
         std::fs::create_dir_all(data_dir).map_err(|e| {
             EngError::Internal(format!("failed to create handoffs data dir: {}", e))
         })?;
@@ -131,7 +135,7 @@ impl HandoffsDb {
         let writer = build_pool(&db_path, 1)?;
         let reader = build_pool(&db_path, 2)?;
 
-        let db = Self { writer, reader };
+        let db = Self { writer, reader, gc_sem };
         db.setup_schema().await?;
 
         info!("handoffs db opened: {}", db_path);
@@ -215,7 +219,16 @@ impl HandoffsDb {
 
         let writer_clone = self.writer.clone();
         let project3 = project.clone();
+        let gc_sem = Arc::clone(&self.gc_sem);
         tokio::spawn(async move {
+            // Throttle concurrent auto-GC tasks (M-005).
+            let _permit = match gc_sem.acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => {
+                    error!("handoffs auto_gc semaphore closed; skipping GC");
+                    return;
+                }
+            };
             let conn = match writer_clone.get().await {
                 Ok(c) => c,
                 Err(e) => {
@@ -834,7 +847,8 @@ mod tests {
     /// the connection pool.
     async fn fresh_db() -> (HandoffsDb, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let db = HandoffsDb::open(dir.path().to_str().expect("utf8 path"))
+        let gc_sem = Arc::new(Semaphore::new(8));
+        let db = HandoffsDb::open(dir.path().to_str().expect("utf8 path"), gc_sem)
             .await
             .expect("open handoffs db");
         (db, dir)
@@ -1006,7 +1020,8 @@ mod tests {
         }
 
         // Open via HandoffsDb -- this runs setup_schema which should ALTER.
-        let db = HandoffsDb::open(dir.path().to_str().expect("utf8 path"))
+        let gc_sem = Arc::new(Semaphore::new(8));
+        let db = HandoffsDb::open(dir.path().to_str().expect("utf8 path"), gc_sem)
             .await
             .expect("open with migration");
 
