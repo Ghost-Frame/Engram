@@ -300,13 +300,13 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
         }
     }
 
-    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
         warn!("pagerank dirty mark failed on store: {}", e);
     }
 
     // Compute and persist emotional valence for future affect-weighted retrieval.
     // Best-effort: a failure here must not block the store.
-    if let Err(e) = crate::intelligence::valence::store_valence(db, new_id, &content, user_id).await
+    if let Err(e) = crate::intelligence::valence::store_valence(db, new_id, &content).await
     {
         warn!("valence analysis failed for memory {}: {}", new_id, e);
     }
@@ -566,7 +566,7 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
             record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
         }
     }
-    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
         warn!(
             "mark_pagerank_dirty failed after delete for user {}: {}",
             user_id, e
@@ -743,7 +743,7 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
         }
     }
 
-    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
         warn!("pagerank dirty mark failed on update: {}", e);
     }
     search::invalidate_search_cache(user_id);
@@ -883,7 +883,7 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
             record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
         }
     }
-    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
         warn!(
             "mark_pagerank_dirty failed after mark_forgotten for user {}: {}",
             user_id, e
@@ -907,7 +907,7 @@ pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     if affected == 0 {
         return Err(EngError::NotFound(format!("memory {} not found", id)));
     }
-    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
         warn!(
             "mark_pagerank_dirty failed after mark_archived for user {}: {}",
             user_id, e
@@ -931,7 +931,7 @@ pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()>
     if affected == 0 {
         return Err(EngError::NotFound(format!("memory {} not found", id)));
     }
-    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
         warn!(
             "mark_pagerank_dirty failed after mark_unarchived for user {}: {}",
             user_id, e
@@ -1015,7 +1015,7 @@ pub async fn insert_link(
         Ok(())
     })
     .await?;
-    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, user_id, 1).await {
+    if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
         warn!(
             "mark_pagerank_dirty failed after insert_link for user {}: {}",
             user_id, e

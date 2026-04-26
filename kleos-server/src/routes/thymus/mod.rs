@@ -57,10 +57,10 @@ pub fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 
 async fn list_rubrics_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let rubrics = list_rubrics(&db, auth.user_id).await?;
+    let rubrics = list_rubrics(&db).await?;
     Ok(Json(json!({ "rubrics": rubrics })))
 }
 
@@ -78,30 +78,30 @@ async fn create_rubric_handler(
 }
 
 async fn get_rubric_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let rubric = get_rubric(&db, id, auth.user_id).await?;
+    let rubric = get_rubric(&db, id).await?;
     Ok(Json(json!(rubric)))
 }
 
 async fn update_rubric_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<UpdateRubricRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let rubric = update_rubric(&db, id, body, auth.user_id).await?;
+    let rubric = update_rubric(&db, id, body).await?;
     Ok(Json(json!(rubric)))
 }
 
 async fn delete_rubric_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_rubric(&db, id, auth.user_id).await?;
+    delete_rubric(&db, id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -123,14 +123,13 @@ async fn evaluate_handler(
 }
 
 async fn list_evaluations_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListEvaluationsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
     let evaluations = list_evaluations(
         &db,
-        auth.user_id,
         params.agent.as_deref(),
         params.rubric_id,
         limit,
@@ -140,11 +139,11 @@ async fn list_evaluations_handler(
 }
 
 async fn get_evaluation_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let evaluation = get_evaluation(&db, id, auth.user_id).await?;
+    let evaluation = get_evaluation(&db, id).await?;
     Ok(Json(json!(evaluation)))
 }
 
@@ -166,14 +165,13 @@ async fn record_metric_handler(
 }
 
 async fn get_metrics_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<GetMetricsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
     let metrics = get_metrics(
         &db,
-        auth.user_id,
         params.agent.as_deref(),
         params.metric.as_deref(),
         params.since.as_deref(),
@@ -184,15 +182,14 @@ async fn get_metrics_handler(
 }
 
 async fn get_metric_summary_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<MetricSummaryParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let metric = params.metric.as_deref().unwrap_or("*");
 
-    let summary =
-        get_metric_summary(&db, auth.user_id, agent, metric, params.since.as_deref()).await?;
+    let summary = get_metric_summary(&db, agent, metric, params.since.as_deref()).await?;
     Ok(Json(summary))
 }
 
@@ -218,7 +215,7 @@ async fn get_session_quality_handler(
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
     let records =
-        get_session_quality(&db, auth.user_id, agent, params.since.as_deref(), limit).await?;
+        get_session_quality(&db, agent, params.since.as_deref(), limit).await?;
     Ok(Json(json!({ "session_quality": records })))
 }
 
@@ -237,13 +234,13 @@ async fn record_drift_event_handler(
 }
 
 async fn get_drift_events_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<DriftEventsParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
-    let events = get_drift_events(&db, auth.user_id, agent, limit).await?;
+    let events = get_drift_events(&db, agent, limit).await?;
     Ok(Json(json!({ "drift_events": events })))
 }
 
@@ -252,9 +249,9 @@ async fn get_drift_events_handler(
 // ---------------------------------------------------------------------------
 
 async fn get_stats_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_stats(&db, auth.user_id).await?;
+    let stats = get_stats(&db).await?;
     Ok(Json(json!(stats)))
 }

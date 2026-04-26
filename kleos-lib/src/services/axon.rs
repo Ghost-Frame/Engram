@@ -72,7 +72,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-fn row_to_event(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Event> {
+fn row_to_event(row: &rusqlite::Row<'_>) -> Result<Event> {
     let payload_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let payload: serde_json::Value = serde_json::from_str(&payload_str)?;
     let source: String = row.get(2).map_err(rusqlite_to_eng_error)?;
@@ -84,7 +84,7 @@ fn row_to_event(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Event> {
         action: row.get(3).map_err(rusqlite_to_eng_error)?,
         payload,
         created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
-        user_id: owner_user_id,
+        user_id: 1,
     })
 }
 
@@ -136,7 +136,7 @@ pub async fn get_event(db: &Database, id: i64, user_id: i64) -> Result<Event> {
             .next()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::NotFound(format!("event {}", id)))?;
-        row_to_event(row, user_id)
+        row_to_event(row)
     })
     .await
 }
@@ -190,7 +190,7 @@ pub async fn query_events(
         let mut rows = stmt.query(params).map_err(rusqlite_to_eng_error)?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            results.push(row_to_event(row, user_id)?);
+            results.push(row_to_event(row)?);
         }
         Ok(results)
     })
@@ -298,12 +298,11 @@ pub async fn get_subscription(
     .await
 }
 
-#[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel, user_id))]
+#[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel))]
 pub async fn delete_subscription(
     db: &Database,
     agent: &str,
     channel: &str,
-    _user_id: i64,
 ) -> Result<bool> {
     let sql = "DELETE FROM axon_subscriptions WHERE agent = ?1 AND channel = ?2";
     let a = agent.to_string();
@@ -390,7 +389,6 @@ async fn upsert_cursor(
     agent: &str,
     channel: &str,
     last_event_id: i64,
-    _user_id: i64,
 ) -> Result<()> {
     let sql = "INSERT INTO axon_cursors (agent, channel, last_event_id, updated_at)
                VALUES (?1, ?2, ?3, datetime('now'))
@@ -433,13 +431,13 @@ pub async fn consume(
                 .map_err(rusqlite_to_eng_error)?;
             let mut out = Vec::new();
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                out.push(row_to_event(row, user_id)?);
+                out.push(row_to_event(row)?);
             }
             Ok(out)
         })
         .await?;
     if let Some(max_id) = events.iter().map(|e| e.id).max() {
-        upsert_cursor(db, agent, channel, max_id, user_id).await?;
+        upsert_cursor(db, agent, channel, max_id).await?;
     }
     Ok(events)
 }

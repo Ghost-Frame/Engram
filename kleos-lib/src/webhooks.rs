@@ -464,7 +464,6 @@ async fn insert_dead_letter(
 pub async fn list_dead_letters(
     db: &Database,
     webhook_id: i64,
-    _user_id: i64,
     limit: i64,
 ) -> Result<Vec<WebhookDeadLetter>> {
     db.read(move |conn| {
@@ -981,7 +980,7 @@ mod tests {
         .await
         .unwrap();
         // List them
-        let letters = list_dead_letters(&db, 1, 1, 50).await.unwrap();
+        let letters = list_dead_letters(&db, 1, 50).await.unwrap();
         assert_eq!(letters.len(), 2);
         assert_eq!(letters[0].event, "memory.forgotten"); // most recent first
         assert_eq!(letters[1].event, "memory.stored");

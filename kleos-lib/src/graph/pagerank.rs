@@ -267,7 +267,7 @@ pub async fn compute_pagerank_for_user(db: &Database, user_id: i64) -> Result<Ve
 /// cleared. Any increments that arrived while the compute was running stay
 /// behind, and the next refresh cycle picks them up.
 #[tracing::instrument(skip(db))]
-pub async fn snapshot_pagerank_dirty(db: &Database, _user_id: i64) -> Result<i64> {
+pub async fn snapshot_pagerank_dirty(db: &Database) -> Result<i64> {
     db.read(move |conn| {
         let result = conn
             .query_row(
@@ -289,7 +289,6 @@ pub async fn snapshot_pagerank_dirty(db: &Database, _user_id: i64) -> Result<i64
 #[tracing::instrument(skip(db, scores), fields(score_count = scores.len()))]
 pub async fn persist_pagerank_with_snapshot(
     db: &Database,
-    user_id: i64,
     scores: &[(i64, f64)],
     dirty_snapshot: i64,
 ) -> Result<()> {
@@ -338,14 +337,14 @@ pub async fn persist_pagerank_with_snapshot(
 /// persist in a single await with no concurrent writers (admin rebuilds,
 /// tests). Background refresh workers should use the explicit snapshot API.
 #[tracing::instrument(skip(db, scores), fields(score_count = scores.len()))]
-pub async fn persist_pagerank(db: &Database, user_id: i64, scores: &[(i64, f64)]) -> Result<()> {
-    let snapshot = snapshot_pagerank_dirty(db, user_id).await?;
-    persist_pagerank_with_snapshot(db, user_id, scores, snapshot).await
+pub async fn persist_pagerank(db: &Database, scores: &[(i64, f64)]) -> Result<()> {
+    let snapshot = snapshot_pagerank_dirty(db).await?;
+    persist_pagerank_with_snapshot(db, scores, snapshot).await
 }
 
 /// Increment the dirty counter. Called after memory/edge mutations.
 #[tracing::instrument(skip(db))]
-pub async fn mark_pagerank_dirty(db: &Database, _user_id: i64, delta: i64) -> Result<()> {
+pub async fn mark_pagerank_dirty(db: &Database, delta: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
             "INSERT INTO pagerank_dirty (id, dirty_count, last_refresh) \
@@ -370,7 +369,7 @@ const CONVERGENCE_THRESHOLD: f64 = 1e-6;
 /// Inserts the memory with base rank and does NOT trigger full recompute.
 /// The new node has no incoming links yet, so it gets the teleportation score only.
 #[tracing::instrument(skip(db))]
-pub async fn incremental_add_memory(db: &Database, memory_id: i64, _user_id: i64) -> Result<()> {
+pub async fn incremental_add_memory(db: &Database, memory_id: i64) -> Result<()> {
     // Get current memory count to compute base rank
     let n: i64 = db
         .read(move |conn| {
@@ -436,8 +435,8 @@ pub async fn incremental_add_link(
 
     // If neither node has a score, initialize them
     if scores.is_empty() {
-        incremental_add_memory(db, source_id, user_id).await?;
-        incremental_add_memory(db, target_id, user_id).await?;
+        incremental_add_memory(db, source_id).await?;
+        incremental_add_memory(db, target_id).await?;
         return Ok(2);
     }
 
@@ -539,7 +538,7 @@ pub async fn incremental_add_link(
 /// Incremental PageRank update when a memory is deleted.
 /// Removes the score and redistributes to remaining nodes.
 #[tracing::instrument(skip(db))]
-pub async fn incremental_remove_memory(db: &Database, memory_id: i64, _user_id: i64) -> Result<()> {
+pub async fn incremental_remove_memory(db: &Database, memory_id: i64) -> Result<()> {
     // Get the score being removed
     let removed_score: Option<f64> = db
         .read(move |conn| {
@@ -883,7 +882,7 @@ pub async fn ensure_pagerank_for_user(db: &Database, user_id: i64) -> Result<()>
     if count == 0 {
         let scores = compute_pagerank_for_user(db, user_id).await?;
         if !scores.is_empty() {
-            persist_pagerank(db, user_id, &scores).await?;
+            persist_pagerank(db, &scores).await?;
         }
     }
     Ok(())
@@ -899,7 +898,7 @@ pub async fn rebuild_all_users(db: &Database) -> Result<usize> {
     if scores.is_empty() {
         return Ok(0);
     }
-    persist_pagerank(db, 0, &scores).await?;
+    persist_pagerank(db, &scores).await?;
     Ok(1)
 }
 
@@ -1052,7 +1051,7 @@ mod tests {
             .expect("store memory");
         assert_eq!(dirty_state(&db, user_id).await, (1, 0));
 
-        persist_pagerank(&db, user_id, &[(stored.id, 0.25)])
+        persist_pagerank(&db, &[(stored.id, 0.25)])
             .await
             .expect("persist initial pagerank");
         let (score_one, computed_one) = pagerank_row(&db, stored.id).await;
@@ -1062,13 +1061,13 @@ mod tests {
         assert!(last_refresh_one > 0);
         assert_eq!(computed_one, last_refresh_one);
 
-        mark_pagerank_dirty(&db, user_id, 3)
+        mark_pagerank_dirty(&db, 3)
             .await
             .expect("mark dirty again");
         assert_eq!(dirty_state(&db, user_id).await.0, 3);
 
         tokio::time::sleep(Duration::from_secs(1)).await;
-        persist_pagerank(&db, user_id, &[(stored.id, 0.75)])
+        persist_pagerank(&db, &[(stored.id, 0.75)])
             .await
             .expect("persist updated pagerank");
 

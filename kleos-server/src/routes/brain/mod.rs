@@ -88,7 +88,7 @@ async fn absorb_handler(
             "embedder not ready (still loading)".into(),
         ))
     })?;
-    let memory = get_memory_for_absorb(&state.db, body.id, auth.user_id).await?;
+    let memory = get_memory_for_absorb(&state.db, body.id).await?;
     brain.absorb(embedder.as_ref(), memory).await?;
     Ok(Json(json!({ "ok": true, "id": body.id })))
 }
@@ -114,7 +114,7 @@ async fn feedback_handler(
     require_brain(&state).await?;
 
     // Verify memory ownership
-    let owned = verify_memory_ownership(&state.db, &body.memory_ids, auth.user_id).await?;
+    let owned = verify_memory_ownership(&state.db, &body.memory_ids).await?;
     if !owned {
         return Err(AppError(kleos_lib::EngError::Auth(
             "One or more memory_ids not found or not owned by you".into(),
@@ -152,7 +152,7 @@ async fn evolution_feedback_handler(
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
 
-    let owned = verify_memory_ownership(&state.db, &body.memory_ids, auth.user_id).await?;
+    let owned = verify_memory_ownership(&state.db, &body.memory_ids).await?;
     if !owned {
         return Err(AppError(kleos_lib::EngError::Auth(
             "One or more memory_ids not found or not owned by you".into(),

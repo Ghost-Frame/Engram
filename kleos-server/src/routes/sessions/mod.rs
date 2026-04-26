@@ -81,7 +81,7 @@ async fn get_session_handler(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let session = get_session(&db, &id, auth.user_id).await?;
-    let output = get_session_output(&db, &id, auth.user_id).await?;
+    let output = get_session_output(&db, &id).await?;
     Ok(Json(json!({ "session": session, "output": output })))
 }
 
@@ -102,7 +102,7 @@ async fn append_handler(
         ))));
     }
 
-    append_output(&db, &id, &body.line, auth.user_id).await?;
+    append_output(&db, &id, &body.line).await?;
 
     // Broadcast to any WebSocket subscribers (scoped to this tenant only).
     {
@@ -170,7 +170,7 @@ async fn handle_ws(
             None => {
                 // Session not in memory -- send buffered from DB and close
                 drop(sessions);
-                if let Ok(lines) = get_session_output(&db, &session_id, user_id).await {
+                if let Ok(lines) = get_session_output(&db, &session_id).await {
                     for line in lines {
                         let msg = json!({"type": "output", "data": line});
                         if socket

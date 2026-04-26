@@ -46,10 +46,10 @@ pub fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 
 async fn list_workflows_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let workflows = list_workflows(&db, auth.user_id).await?;
+    let workflows = list_workflows(&db).await?;
     Ok(Json(json!({ "workflows": workflows })))
 }
 
@@ -67,30 +67,30 @@ async fn create_workflow_handler(
 }
 
 async fn get_workflow_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let workflow = get_workflow(&db, id, auth.user_id).await?;
+    let workflow = get_workflow(&db, id).await?;
     Ok(Json(json!(workflow)))
 }
 
 async fn update_workflow_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<UpdateWorkflowRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let workflow = update_workflow(&db, id, auth.user_id, body).await?;
+    let workflow = update_workflow(&db, id, body).await?;
     Ok(Json(json!(workflow)))
 }
 
 async fn delete_workflow_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_workflow(&db, id, auth.user_id).await?;
+    delete_workflow(&db, id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -112,14 +112,13 @@ async fn create_run_handler(
 }
 
 async fn list_runs_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListRunsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
     let runs = list_runs(
         &db,
-        auth.user_id,
         params.workflow_id,
         params.status.as_deref(),
         limit,
@@ -129,11 +128,11 @@ async fn list_runs_handler(
 }
 
 async fn get_run_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let run = get_run(&db, id, auth.user_id).await?;
+    let run = get_run(&db, id).await?;
     Ok(Json(json!(run)))
 }
 

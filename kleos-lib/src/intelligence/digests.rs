@@ -95,8 +95,8 @@ pub async fn generate_digest(db: &Database, user_id: i64, period: &str) -> Resul
 }
 
 /// List existing digests.
-#[tracing::instrument(skip(db), fields(user_id, limit))]
-pub async fn list_digests(db: &Database, _user_id: i64, limit: usize) -> Result<Vec<Digest>> {
+#[tracing::instrument(skip(db), fields(limit))]
+pub async fn list_digests(db: &Database, limit: usize) -> Result<Vec<Digest>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(

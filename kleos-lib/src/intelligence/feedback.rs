@@ -69,7 +69,7 @@ pub async fn record_feedback(db: &Database, user_id: i64, req: &FeedbackRequest)
 /// Used by retrieval scoring to boost/demote categories the user has
 /// consistently marked helpful or unhelpful.
 #[tracing::instrument(skip(db))]
-pub async fn category_preferences(db: &Database, _user_id: i64) -> Result<HashMap<String, f64>> {
+pub async fn category_preferences(db: &Database) -> Result<HashMap<String, f64>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -116,7 +116,7 @@ pub async fn category_preferences(db: &Database, _user_id: i64) -> Result<HashMa
 
 /// Get aggregated feedback statistics for a user.
 #[tracing::instrument(skip(db))]
-pub async fn feedback_stats(db: &Database, _user_id: i64) -> Result<FeedbackStats> {
+pub async fn feedback_stats(db: &Database) -> Result<FeedbackStats> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -203,7 +203,7 @@ mod tests {
     #[tokio::test]
     async fn category_preferences_empty_when_no_feedback() {
         let db = Database::connect_memory().await.expect("in-mem db");
-        let prefs = category_preferences(&db, 1).await.expect("prefs");
+        let prefs = category_preferences(&db).await.expect("prefs");
         assert!(prefs.is_empty());
     }
 
@@ -215,7 +215,7 @@ mod tests {
         let m2 = seed_memory(&db, "beta unique rust fact two", "code", uid).await;
         add_feedback(&db, m1, uid, "helpful").await;
         add_feedback(&db, m2, uid, "irrelevant").await;
-        let prefs = category_preferences(&db, uid).await.expect("prefs");
+        let prefs = category_preferences(&db).await.expect("prefs");
         assert!((prefs["code"] - 0.0).abs() < 1e-9);
     }
 
@@ -227,7 +227,7 @@ mod tests {
         let m2 = seed_memory(&db, "delta handbook chapter three", "docs", uid).await;
         add_feedback(&db, m1, uid, "outdated").await;
         add_feedback(&db, m2, uid, "off-topic").await;
-        let prefs = category_preferences(&db, uid).await.expect("prefs");
+        let prefs = category_preferences(&db).await.expect("prefs");
         assert!((prefs["docs"] - (-1.0)).abs() < 1e-9);
     }
 
@@ -239,7 +239,7 @@ mod tests {
         let disliked = seed_memory(&db, "zeta idle chatter stream", "chatter", uid).await;
         add_feedback(&db, liked, uid, "helpful").await;
         add_feedback(&db, disliked, uid, "irrelevant").await;
-        let prefs = category_preferences(&db, uid).await.expect("prefs");
+        let prefs = category_preferences(&db).await.expect("prefs");
         assert!((prefs["notes"] - 1.0).abs() < 1e-9);
         assert!((prefs["chatter"] - (-1.0)).abs() < 1e-9);
     }
@@ -252,7 +252,7 @@ mod tests {
         let mine = seed_memory(&db, "eta private note item", "code", 1).await;
         add_feedback(&db, mine, 1, "helpful").await;
         // user_id=2 sees the same global feedback -- not empty.
-        let prefs = category_preferences(&db, 2).await.expect("prefs");
+        let prefs = category_preferences(&db).await.expect("prefs");
         assert!(!prefs.is_empty(), "single-tenant: all feedback is visible globally");
         assert!((prefs["code"] - 1.0).abs() < 1e-9);
     }

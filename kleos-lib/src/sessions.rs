@@ -368,7 +368,7 @@ pub async fn get_session(db: &Database, session_id: &str, user_id: i64) -> Resul
         conn.query_row(
             "SELECT id, agent, status, created_at, updated_at FROM sessions WHERE id = ?1",
             params![session_id],
-            |row| row_to_session(row, user_id),
+            |row| row_to_session(row),
         )
         .optional()
         .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
@@ -395,7 +395,7 @@ pub async fn list_sessions(
             )
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         let rows = stmt
-            .query_map(params![limit, offset], |row| row_to_session(row, user_id))
+            .query_map(params![limit, offset], |row| row_to_session(row))
             .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
         let mut sessions = Vec::new();
         for row in rows {
@@ -411,7 +411,6 @@ pub async fn append_output(
     db: &Database,
     session_id: &str,
     line: &str,
-    _user_id: i64,
 ) -> Result<()> {
     let session_id_owned = session_id.to_string();
     let line_owned = line.to_string();
@@ -470,7 +469,6 @@ pub async fn append_output(
 pub async fn get_session_output(
     db: &Database,
     session_id: &str,
-    _user_id: i64,
 ) -> Result<Vec<String>> {
     let session_id_owned = session_id.to_string();
 
@@ -516,14 +514,11 @@ pub async fn get_session_output(
     .await
 }
 
-fn row_to_session(
-    row: &rusqlite::Row<'_>,
-    owner_user_id: i64,
-) -> rusqlite::Result<SessionInfo> {
+fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionInfo> {
     Ok(SessionInfo {
         id: row.get(0)?,
         agent: row.get(1)?,
-        user_id: owner_user_id,
+        user_id: 1,
         status: row.get(2)?,
         created_at: row.get(3)?,
         updated_at: row.get(4)?,
@@ -568,14 +563,14 @@ mod tests {
         };
         let session = create_session(&db, &req, 1).await.expect("create");
 
-        append_output(&db, &session.id, "line 1", 1)
+        append_output(&db, &session.id, "line 1")
             .await
             .expect("append");
-        append_output(&db, &session.id, "line 2", 1)
+        append_output(&db, &session.id, "line 2")
             .await
             .expect("append");
 
-        let output = get_session_output(&db, &session.id, 1)
+        let output = get_session_output(&db, &session.id)
             .await
             .expect("get output");
         assert_eq!(output.len(), 2);
@@ -585,7 +580,7 @@ mod tests {
     #[tokio::test]
     async fn test_append_to_nonexistent_session() {
         let db = crate::db::Database::connect_memory().await.expect("db");
-        let result = append_output(&db, "nonexistent-id", "line", 1).await;
+        let result = append_output(&db, "nonexistent-id", "line").await;
         assert!(result.is_err());
     }
 }

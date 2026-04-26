@@ -149,7 +149,7 @@ async fn main() {
 
     // Initialize brain backend (Hopfield in-process or subprocess eidolon)
     let data_dir = config.data_dir.clone();
-    let brain = create_brain_backend(Arc::clone(&db_arc), &data_dir, 1).await;
+    let brain = create_brain_backend(Arc::clone(&db_arc), &data_dir).await;
     // M-014: keep a handle so we can call shutdown() after the server exits.
     let brain_for_shutdown = brain.clone();
 

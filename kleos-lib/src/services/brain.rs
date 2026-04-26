@@ -891,7 +891,7 @@ impl BrainBackend for HopfieldBrainManager {
         let mut activated = Vec::new();
         for r in &results {
             // Load the full memory content from the memories table
-            let mem = load_brain_memory(&self.db, r.pattern_id, user_id).await;
+            let mem = load_brain_memory(&self.db, r.pattern_id).await;
             if let Ok(mut m) = mem {
                 m.activation = r.activation as f64;
                 activated.push(m);
@@ -1131,7 +1131,7 @@ impl BrainBackend for HopfieldBrainManager {
 /// Falls back to a minimal record if the memory doesn't exist in the
 /// memories table (pattern may have been created directly).
 #[cfg(feature = "brain_hopfield")]
-async fn load_brain_memory(db: &Database, memory_id: i64, _user_id: i64) -> Result<BrainMemory> {
+async fn load_brain_memory(db: &Database, memory_id: i64) -> Result<BrainMemory> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -1178,12 +1178,12 @@ async fn load_brain_memory(db: &Database, memory_id: i64, _user_id: i64) -> Resu
 /// - `"subprocess"`: External eidolon binary via stdin/stdout JSON
 /// - `"none"`: No brain backend
 #[cfg(feature = "brain_hopfield")]
-#[tracing::instrument(skip(db), fields(data_dir = %data_dir, user_id))]
+#[tracing::instrument(skip(db), fields(data_dir = %data_dir))]
 pub async fn create_brain_backend(
     db: Arc<Database>,
     data_dir: &str,
-    user_id: i64,
 ) -> Option<Arc<dyn BrainBackend>> {
+    let user_id: i64 = 1;
     let mode = std::env::var("ENGRAM_BRAIN_MODE").unwrap_or_else(|_| "hopfield".into());
 
     match mode.as_str() {
@@ -1234,11 +1234,10 @@ pub async fn create_brain_backend(
 
 /// Non-feature-gated factory -- returns subprocess or None.
 #[cfg(not(feature = "brain_hopfield"))]
-#[tracing::instrument(skip(_db), fields(data_dir = %data_dir, user_id = _user_id))]
+#[tracing::instrument(skip(_db), fields(data_dir = %data_dir))]
 pub async fn create_brain_backend(
     _db: Arc<Database>,
     data_dir: &str,
-    _user_id: i64,
 ) -> Option<Arc<dyn BrainBackend>> {
     let mode = std::env::var("ENGRAM_BRAIN_MODE").unwrap_or_else(|_| "subprocess".into());
     if mode == "none" {
@@ -1263,12 +1262,11 @@ pub struct AbsorbMemoryData {
     pub tags: Option<Vec<String>>,
 }
 
-/// Look up a memory row by id and user_id, for the absorb route.
-#[tracing::instrument(skip(db), fields(memory_id = id, user_id))]
+/// Look up a memory row by id for the absorb route.
+#[tracing::instrument(skip(db), fields(memory_id = id))]
 pub async fn get_memory_for_absorb(
     db: &Database,
     id: i64,
-    _user_id: i64,
 ) -> Result<AbsorbMemoryData> {
     db.read(move |conn| {
         let mut stmt = conn
@@ -1309,12 +1307,11 @@ pub async fn get_memory_for_absorb(
     })
     .await
 }
-/// Verify that all memory IDs belong to the given user. Returns true if all match.
-#[tracing::instrument(skip(db, memory_ids), fields(memory_count = memory_ids.len(), user_id))]
+/// Verify that all memory IDs exist in the database. Returns true if all found.
+#[tracing::instrument(skip(db, memory_ids), fields(memory_count = memory_ids.len()))]
 pub async fn verify_memory_ownership(
     db: &Database,
     memory_ids: &[i64],
-    _user_id: i64,
 ) -> Result<bool> {
     if memory_ids.is_empty() {
         return Ok(true);

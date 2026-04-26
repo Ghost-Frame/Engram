@@ -56,7 +56,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-fn row_to_agent(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Agent> {
+fn row_to_agent(row: &rusqlite::Row<'_>) -> Result<Agent> {
     let capabilities_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let config_str: String = row.get(6).map_err(rusqlite_to_eng_error)?;
     let drift_flags_opt: Option<String> = row.get(11).map_err(rusqlite_to_eng_error)?;
@@ -76,7 +76,7 @@ fn row_to_agent(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Agent> {
             .as_deref()
             .map(|s| parse_json(s, serde_json::json!([])))
             .unwrap_or_else(|| serde_json::json!([])),
-        user_id: owner_user_id,
+        user_id: 1,
     })
 }
 
@@ -198,7 +198,7 @@ pub async fn list_agents(
         let mut rows = stmt.query(converted).map_err(rusqlite_to_eng_error)?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            out.push(row_to_agent(row, user_id)?);
+            out.push(row_to_agent(row)?);
         }
         Ok(out)
     })
@@ -218,7 +218,7 @@ pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
             .next()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::NotFound(format!("agent {}", id)))?;
-        row_to_agent(row, user_id)
+        row_to_agent(row)
     })
     .await
 }
@@ -237,7 +237,7 @@ pub async fn get_agent_by_name(db: &Database, user_id: i64, name: &str) -> Resul
             .next()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::NotFound(format!("agent '{}'", name_owned)))?;
-        row_to_agent(row, user_id)
+        row_to_agent(row)
     })
     .await
 }
@@ -411,11 +411,10 @@ pub async fn log_event(
     .await
 }
 
-#[tracing::instrument(skip(db), fields(agent_id, user_id, limit))]
+#[tracing::instrument(skip(db), fields(agent_id, limit))]
 pub async fn list_agent_logs(
     db: &Database,
     agent_id: i64,
-    _user_id: i64,
     limit: i64,
 ) -> Result<Vec<AgentLog>> {
     let sql = "SELECT l.id, l.agent_id, l.level, l.message, l.data, l.created_at

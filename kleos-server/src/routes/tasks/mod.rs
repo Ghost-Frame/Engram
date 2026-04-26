@@ -141,7 +141,7 @@ async fn get_feed(
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
-    let items = get_task_feed(&db, auth.user_id, limit, offset).await?;
+    let items = get_task_feed(&db, limit, offset).await?;
     let total = get_task_stats(&db).await?.total;
     Ok(Json(json!({ "items": items, "total": total })))
 }

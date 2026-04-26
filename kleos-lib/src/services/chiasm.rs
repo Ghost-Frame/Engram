@@ -90,7 +90,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-fn row_to_task(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Task> {
+fn row_to_task(row: &rusqlite::Row<'_>) -> Result<Task> {
     Ok(Task {
         id: row.get(0).map_err(rusqlite_to_eng_error)?,
         agent: row.get(1).map_err(rusqlite_to_eng_error)?,
@@ -100,7 +100,7 @@ fn row_to_task(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Task> {
         summary: row.get(5).map_err(rusqlite_to_eng_error)?,
         created_at: row.get(6).map_err(rusqlite_to_eng_error)?,
         updated_at: row.get(7).map_err(rusqlite_to_eng_error)?,
-        user_id: owner_user_id,
+        user_id: 1,
     })
 }
 
@@ -144,7 +144,7 @@ pub async fn get_task(db: &Database, id: i64, user_id: i64) -> Result<Task> {
             .next()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::NotFound(format!("task {}", id)))?;
-        row_to_task(row, user_id)
+        row_to_task(row)
     })
     .await
 }
@@ -197,7 +197,7 @@ pub async fn list_tasks(
         let mut rows = stmt.query(converted).map_err(rusqlite_to_eng_error)?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            out.push(row_to_task(row, user_id)?);
+            out.push(row_to_task(row)?);
         }
         Ok(out)
     })
@@ -346,10 +346,9 @@ pub async fn get_stats(db: &Database) -> Result<ChiasmStats> {
     .await
 }
 
-#[tracing::instrument(skip(db), fields(user_id, limit, offset))]
+#[tracing::instrument(skip(db), fields(limit, offset))]
 pub async fn get_feed(
     db: &Database,
-    _user_id: i64,
     limit: usize,
     offset: usize,
 ) -> Result<Vec<FeedItem>> {

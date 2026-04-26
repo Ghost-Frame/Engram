@@ -218,6 +218,6 @@ async fn list_logs_handler(
     Query(params): Query<ListLogsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
-    let logs = list_agent_logs(&db, agent_id, auth.user_id, limit).await?;
+    let logs = list_agent_logs(&db, agent_id, limit).await?;
     Ok(Json(json!({ "logs": logs, "count": logs.len() })))
 }

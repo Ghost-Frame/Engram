@@ -104,7 +104,7 @@ async fn list_dead_letters_handler(
     Query(query): Query<DeadLetterQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = query.limit.unwrap_or(50).min(200);
-    let items = kleos_lib::webhooks::list_dead_letters(&db, id, auth.user_id, limit).await?;
+    let items = kleos_lib::webhooks::list_dead_letters(&db, id, limit).await?;
     Ok(Json(
         json!({ "dead_letters": items, "count": items.len(), "webhook_id": id }),
     ))
