@@ -1,6 +1,7 @@
 use super::Violation;
 use super::Severity;
 
+#[allow(dead_code)]
 pub fn check_file_scope(entry: &serde_json::Value, allowed_paths: &[String]) -> Vec<Violation> {
     if allowed_paths.is_empty() {
         return Vec::new();
@@ -25,6 +26,7 @@ pub fn check_file_scope(entry: &serde_json::Value, allowed_paths: &[String]) -> 
     Vec::new()
 }
 
+#[allow(dead_code)]
 fn extract_file_path(entry: &serde_json::Value) -> Option<String> {
     let obj = entry.as_object()?;
 

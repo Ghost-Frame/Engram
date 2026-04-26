@@ -561,7 +561,7 @@ mod tests {
         let target = dir.join("ok.txt");
         std::fs::write(&target, "hi").expect("seed");
         let canon_root = dir.canonicalize().expect("canon root");
-        let result = canonicalize_within_roots(&target, &[canon_root.clone()]);
+        let result = canonicalize_within_roots(&target, std::slice::from_ref(&canon_root));
         assert!(result.is_some(), "target inside root must resolve");
         assert!(result.unwrap().starts_with(&canon_root));
         cleanup_temp(&dir);
@@ -600,7 +600,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("mk root");
         let canon_root = dir.canonicalize().expect("canon root");
         let new_file = dir.join("not-yet-created.txt");
-        let result = canonicalize_within_roots(&new_file, &[canon_root.clone()]);
+        let result = canonicalize_within_roots(&new_file, std::slice::from_ref(&canon_root));
         assert!(result.is_some(), "new file in existing root must resolve");
         assert!(result.unwrap().starts_with(&canon_root));
         cleanup_temp(&dir);
