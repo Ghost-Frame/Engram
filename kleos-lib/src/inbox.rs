@@ -38,13 +38,13 @@ pub async fn list_pending(
             .prepare(
                 "SELECT id, content, category, source, session_id, importance, created_at, tags, confidence, decay_score, status, model \
                  FROM memories \
-                 WHERE status = 'pending' AND is_forgotten = 0 AND user_id = ?1 \
-                 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+                 WHERE status = 'pending' AND is_forgotten = 0 \
+                 ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let rows = stmt
-            .query_map(rusqlite::params![user_id, limit, offset], |row| {
+            .query_map(rusqlite::params![limit, offset], |row| {
                 Ok(PendingMemory {
                     id: row.get(0)?,
                     content: row.get(1)?,

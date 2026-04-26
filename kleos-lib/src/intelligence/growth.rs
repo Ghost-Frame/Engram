@@ -30,13 +30,13 @@ pub async fn list_observations(
             .prepare(
                 "SELECT id, content, source, importance, created_at \
                  FROM memories \
-                 WHERE category = 'growth' AND is_forgotten = 0 AND user_id = ?1 \
-                 ORDER BY created_at DESC LIMIT ?2",
+                 WHERE category = 'growth' AND is_forgotten = 0 \
+                 ORDER BY created_at DESC LIMIT ?1",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let observations = stmt
-            .query_map(rusqlite::params![user_id, limit as i64], |row| {
+            .query_map(rusqlite::params![limit as i64], |row| {
                 Ok(GrowthObservation {
                     id: row.get(0)?,
                     content: row.get(1)?,
@@ -72,11 +72,11 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
 
         conn.execute(
             "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-             source_count, is_static, is_forgotten, confidence, status, user_id, \
+             source_count, is_static, is_forgotten, confidence, status, \
              created_at, updated_at) \
-             VALUES (?1, 'insight', ?2, 8, 1, 1, 1, 1, 0, 1.0, 'approved', ?3, \
+             VALUES (?1, 'insight', ?2, 8, 1, 1, 1, 1, 0, 1.0, 'approved', \
              datetime('now'), datetime('now'))",
-            rusqlite::params![content, source, user_id],
+            rusqlite::params![content, source],
         )
         .map_err(rusqlite_to_eng_error)?;
 
@@ -270,11 +270,11 @@ pub async fn reflect(
             let trimmed_refl = trimmed_for_closure.clone();
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-                 source_count, is_static, is_forgotten, confidence, status, user_id, \
+                 source_count, is_static, is_forgotten, confidence, status, \
                  created_at, updated_at) \
-                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1.0, 'approved', ?3, \
+                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1.0, 'approved', \
                  datetime('now'), datetime('now'))",
-                rusqlite::params![trimmed_for_closure, source_c, user_id],
+                rusqlite::params![trimmed_for_closure, source_c],
             )
             .map_err(rusqlite_to_eng_error)?;
 
@@ -318,8 +318,8 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
         .read(move |conn| {
             conn.query_row(
                 "SELECT COUNT(*) FROM memories \
-                 WHERE created_at > datetime('now', '-1 hour') AND user_id = ?1",
-                rusqlite::params![user_id],
+                 WHERE created_at > datetime('now', '-1 hour')",
+                [],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)
@@ -380,13 +380,13 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
             let mut stmt = conn
                 .prepare(
                     "SELECT content FROM memories \
-                     WHERE category = 'growth' AND source = 'engram-growth' AND is_forgotten = 0 AND user_id = ?1 \
+                     WHERE category = 'growth' AND source = 'engram-growth' AND is_forgotten = 0 \
                      ORDER BY created_at DESC LIMIT 10",
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let lines = stmt
-                .query_map(rusqlite::params![user_id], |row| {
+                .query_map([], |row| {
                     let content: String = row.get(0)?;
                     Ok(format!("- {}", content))
                 })
