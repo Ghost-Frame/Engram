@@ -101,3 +101,11 @@ pub(super) struct MigrateDownBody {
     #[serde(default)]
     pub dry_run: bool,
 }
+
+/// Body for POST /admin/reset.
+/// Must contain confirm: "WIPE_ALL_MEMORIES" to prevent accidental data loss.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(super) struct ResetBody {
+    pub confirm: Option<String>,
+}

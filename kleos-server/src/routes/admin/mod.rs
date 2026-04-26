@@ -20,7 +20,7 @@ mod types;
 use types::{
     AdminCredProxyBody, AdminCredResolveBody, AdminPageRankQuery, BootstrapBody, ColdStorageParams,
     DeprovisionBody, GcBody, MaintenanceBody, MigrateDownBody, PitrPrepareBody, ProvisionBody,
-    ReembedBody, VectorRebuildIndexBody, VectorSyncReplayBody,
+    ReembedBody, ResetBody, VectorRebuildIndexBody, VectorSyncReplayBody,
 };
 
 fn require_admin(auth: &AuthContext) -> Result<(), AppError> {
@@ -77,7 +77,7 @@ pub fn router() -> Router<AppState> {
         .route("/tenants/deprovision", post(deprovision_tenant))
         // Data management
         .route("/admin/export", get(export_handler))
-        .route("/reset", post(reset_user))
+        .route("/admin/reset", post(reset_user))
         .route("/backup", get(backup_handler))
         .route("/backup/verify", post(backup_verify_handler))
         .route("/checkpoint", post(checkpoint_handler))
@@ -984,9 +984,16 @@ async fn export_handler(
 async fn reset_user(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    Json(body): Json<ResetBody>,
 ) -> Result<Json<Value>, AppError> {
     // SECURITY (SEC-MED-2): destructive reset must require admin scope.
     require_admin(&auth)?;
+    // Require explicit confirmation phrase to prevent accidental data loss.
+    if body.confirm.as_deref() != Some("WIPE_ALL_MEMORIES") {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(
+            "/admin/reset requires {\"confirm\":\"WIPE_ALL_MEMORIES\"} body".into(),
+        )));
+    }
     let uid = auth.user_id;
     // Tables that are wiped by user_id (single-tenant: uid == the only tenant)
     let uid_tables = &[
