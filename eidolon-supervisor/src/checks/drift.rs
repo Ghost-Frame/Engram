@@ -1,5 +1,6 @@
 use super::Violation;
 
+#[allow(dead_code)]
 pub fn check_promise_action(
     assistant_text: Option<&str>,
     tool_entry: &serde_json::Value,

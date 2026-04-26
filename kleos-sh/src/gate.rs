@@ -70,6 +70,7 @@ pub struct GateCheckResult {
     pub reason: Option<String>,
     pub resolved_command: Option<String>,
     pub gate_id: i64,
+    #[allow(dead_code)]
     pub requires_approval: bool,
     pub enrichment: Option<String>,
 }
@@ -82,6 +83,7 @@ pub enum GateOutcome {
     },
     Deny {
         reason: String,
+        #[allow(dead_code)]
         gate_id: i64,
     },
 }
