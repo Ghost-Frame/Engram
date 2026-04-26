@@ -23,6 +23,13 @@ use crate::state::AppState;
 /// Pre-auth rate limit: 10 failed attempts per 60-second window.
 const PREAUTH_LIMIT: u32 = 10;
 
+/// Marker inserted by the Unix-socket listener middleware so downstream
+/// middleware (rate limiter, auth) can identify connections that came over
+/// the 0600 Unix socket. Such connections are inherently scoped to the
+/// owning UID, so brute-force IP rate limiting is meaningless and skipped.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct IsUnixSocket(pub bool);
+
 /// Hash a socket address IP to an i64 key for the in-memory rate limiter.
 fn ip_to_key(addr: &std::net::IpAddr) -> i64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -34,6 +41,7 @@ fn ip_to_key(addr: &std::net::IpAddr) -> i64 {
 ///
 /// Uses the real TCP peer address (ConnectInfo) to prevent brute-force
 /// token guessing. Runs BEFORE auth_middleware in the layer stack.
+/// Skipped entirely for Unix-socket connections (0600 socket = single UID).
 #[tracing::instrument(skip_all, fields(middleware = "credd.preauth_rate_limit"))]
 pub async fn preauth_rate_limit(
     State(state): State<AppState>,
@@ -42,6 +50,17 @@ pub async fn preauth_rate_limit(
 ) -> Response {
     // Skip rate limiting for health check
     if request.uri().path() == "/health" {
+        return next.run(request).await;
+    }
+
+    // Skip for Unix-socket connections: filesystem ACL on 0600 socket is the
+    // boundary, IP-based rate limiting cannot help.
+    if request
+        .extensions()
+        .get::<IsUnixSocket>()
+        .map(|m| m.0)
+        .unwrap_or(false)
+    {
         return next.run(request).await;
     }
 
