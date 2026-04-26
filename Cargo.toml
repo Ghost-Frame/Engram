@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate", "kleos-sh", "kleos-fs"]
+members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate", "kleos-sh", "kleos-fs", "eidolon-supervisor"]
 exclude = ["kleos-migrate-libsql-legacy"]
 
 [workspace.package]

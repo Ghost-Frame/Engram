@@ -1,0 +1,22 @@
+[package]
+name = "eidolon-supervisor"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+description = "Async drift supervisor for AI agents -- watches session logs, detects violations, alerts Master"
+
+[[bin]]
+name = "eidolon-supervisor"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { workspace = true }
+notify = "8"
+notify-debouncer-mini = "0.6"
+regex = "1"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
