@@ -181,6 +181,14 @@ async fn main() {
         None
     };
 
+    let handoffs_db = match kleos_lib::handoffs::HandoffsDb::open(&config.data_dir).await {
+        Ok(db) => Some(Arc::new(db)),
+        Err(e) => {
+            tracing::warn!("handoffs subsystem disabled: {e}");
+            None
+        }
+    };
+
     let state = AppState {
         db: db_arc,
         credd: Arc::new(CreddClient::from_config(&config)),
@@ -197,6 +205,7 @@ async fn main() {
         dreamer_stats: new_stats_handle(),
         last_request_time: Arc::new(AtomicU64::new(0)),
         tenant_registry,
+        handoffs_db,
     };
 
     // R8 R-008: every background task is described by a factory so the

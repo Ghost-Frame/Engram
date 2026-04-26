@@ -21,6 +21,7 @@ pub mod graph;
 pub mod grounding;
 pub mod growth;
 pub mod gui;
+pub mod handoffs;
 pub mod health;
 pub mod inbox;
 pub mod ingestion;

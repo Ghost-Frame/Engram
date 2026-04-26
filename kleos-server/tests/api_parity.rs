@@ -77,6 +77,7 @@ impl TestApp {
             dreamer_stats: kleos_server::dreamer::new_stats_handle(),
             last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tenant_registry: None,
+            handoffs_db: None,
         };
         let router = build_router(state);
 
@@ -352,6 +353,7 @@ async fn bootstrap_returns_api_key() {
         dreamer_stats: kleos_server::dreamer::new_stats_handle(),
         last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         tenant_registry: None,
+        handoffs_db: None,
     };
     let router = build_router(state);
 

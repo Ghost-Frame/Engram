@@ -115,6 +115,7 @@ pub fn build_router(state: AppState) -> Router {
     // API routes that require bearer token auth
     let api_routes = Router::new()
         .merge(routes::health::router())
+        .merge(routes::handoffs::router())
         .merge(routes::docs::router())
         .merge(routes::memory::router())
         .merge(routes::admin::router())

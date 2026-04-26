@@ -6,6 +6,7 @@ use kleos_lib::gate::PendingApproval;
 use kleos_lib::llm::local::LocalModelClient;
 use kleos_lib::reranker::Reranker;
 use kleos_lib::services::brain::BrainBackend;
+use kleos_lib::handoffs::HandoffsDb;
 use kleos_lib::tenant::TenantRegistry;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -71,6 +72,8 @@ pub struct AppState {
     pub last_request_time: Arc<AtomicU64>,
     /// Tenant registry for multi-tenant dreamer and background jobs.
     pub tenant_registry: Option<Arc<TenantRegistry>>,
+    /// Dedicated handoffs database for session handoff storage.
+    pub handoffs_db: Option<Arc<HandoffsDb>>,
 }
 
 impl AppState {

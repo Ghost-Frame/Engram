@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
 
 #[derive(Parser)]
@@ -115,6 +116,9 @@ enum Commands {
     /// Credential management (talks to credd)
     #[command(subcommand)]
     Cred(CredCommands),
+    /// Session handoff management
+    #[command(subcommand)]
+    Handoff(HandoffCommands),
 }
 
 #[derive(Subcommand)]
@@ -309,6 +313,100 @@ enum SkillCommands {
         /// Maximum results
         #[arg(short, long, default_value = "10")]
         limit: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum HandoffCommands {
+    /// Store a session handoff
+    Dump {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long, name = "type")]
+        handoff_type: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        content: Option<String>,
+        #[arg(long)]
+        dir: Option<String>,
+    },
+    /// Get latest handoff(s) with filters
+    Restore {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long, name = "type")]
+        handoff_type: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, default_value = "1")]
+        limit: i64,
+        #[arg(long)]
+        dir: Option<String>,
+    },
+    /// Get the single latest handoff
+    Latest {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        dir: Option<String>,
+    },
+    /// Gather and store mechanical state from git
+    Mechanical {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        dir: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// List recent handoffs
+    List {
+        #[arg(long, default_value = "20")]
+        limit: i64,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long, name = "type")]
+        handoff_type: Option<String>,
+    },
+    /// Full-text search across handoff content
+    Search {
+        query: String,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, default_value = "10")]
+        limit: i64,
+    },
+    /// Show database statistics
+    Stats,
+    /// Garbage-collect old handoffs
+    Gc {
+        #[arg(long)]
+        tiered: bool,
+        #[arg(long)]
+        keep: Option<i64>,
     },
 }
 
@@ -568,6 +666,10 @@ async fn main() {
         Commands::Cred(cred_cmd) => {
             let cred_client = Client::new(cli.credd_url.clone(), api_key.clone());
             handle_cred_command(&cred_client, cred_cmd).await;
+        }
+
+        Commands::Handoff(handoff_cmd) => {
+            handle_handoff_command(&client, handoff_cmd).await;
         }
     }
 }
@@ -1226,6 +1328,482 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
                 .await
             {
                 Ok(_) => println!("Revoked agent key: {}", name),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+    }
+}
+
+fn detect_project(dir: Option<&str>) -> Option<String> {
+    let dir = dir
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    if let Ok(val) = std::env::var("SESSION_HANDOFF_PROJECT") {
+        if !val.is_empty() {
+            return Some(val);
+        }
+    }
+
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(&dir)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let name = url.rsplit('/').next().unwrap_or(&url);
+        let name = name.strip_suffix(".git").unwrap_or(name);
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+
+    dir.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+}
+
+fn detect_branch(dir: Option<&str>) -> Option<String> {
+    let dir = dir.unwrap_or(".");
+    let output = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            return Some(branch);
+        }
+    }
+    None
+}
+
+fn detect_host() -> String {
+    if let Ok(val) = std::env::var("SESSION_HANDOFF_HOST") {
+        if !val.is_empty() {
+            return val;
+        }
+    }
+    if std::path::Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists() {
+        return "wsl".to_string();
+    }
+    if cfg!(target_os = "windows") {
+        return "windows".to_string();
+    }
+    if std::path::Path::new("/etc/cachyos-release").exists() {
+        return "cachyos".to_string();
+    }
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn detect_agent() -> String {
+    std::env::var("SESSION_HANDOFF_AGENT").unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn detect_model() -> Option<String> {
+    std::env::var("SESSION_HANDOFF_MODEL")
+        .or_else(|_| std::env::var("ANTHROPIC_MODEL"))
+        .or_else(|_| std::env::var("MODEL_ID"))
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
+    match cmd {
+        HandoffCommands::Dump {
+            project,
+            branch,
+            agent,
+            handoff_type,
+            session,
+            model,
+            host,
+            content,
+            dir,
+        } => {
+            let content_str = if let Some(c) = content {
+                c.clone()
+            } else {
+                use std::io::Read;
+                let mut buf = String::new();
+                std::io::stdin().read_to_string(&mut buf).unwrap_or_else(|e| {
+                    eprintln!("Error reading stdin: {}", e);
+                    std::process::exit(1);
+                });
+                if buf.is_empty() {
+                    eprintln!("Error: provide --content or pipe content via stdin");
+                    std::process::exit(1);
+                }
+                buf
+            };
+
+            let dir_str = dir.as_deref();
+            let project = project.clone().or_else(|| detect_project(dir_str));
+            let branch = branch.clone().or_else(|| detect_branch(dir_str));
+
+            let Some(ref project) = project else {
+                eprintln!("Error: could not detect project. Use --project");
+                std::process::exit(1);
+            };
+
+            let body = json!({
+                "project": project,
+                "branch": branch,
+                "directory": dir.clone().or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())),
+                "agent": agent.clone().unwrap_or_else(detect_agent),
+                "type": handoff_type.clone().unwrap_or_else(|| "manual".to_string()),
+                "content": content_str,
+                "session_id": session.clone().or_else(|| std::env::var("SESSION_ID").ok()),
+                "model": model.clone().or_else(detect_model),
+                "host": host.clone().unwrap_or_else(detect_host),
+            });
+
+            match client.post("/handoffs", body).await {
+                Ok(v) => {
+                    if v.get("skipped").and_then(|s| s.as_bool()).unwrap_or(false) {
+                        eprintln!("Skipped duplicate handoff for '{}'", project);
+                    } else if let Some(id) = v.get("id") {
+                        println!("Stored handoff #{} (project={})", id, project);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        HandoffCommands::Restore {
+            project,
+            agent,
+            handoff_type,
+            model,
+            session,
+            since,
+            limit,
+            dir,
+        } => {
+            let project = project.clone().or_else(|| detect_project(dir.as_deref()));
+            let mut params: Vec<(&str, String)> = Vec::new();
+            if let Some(ref p) = project {
+                params.push(("project", p.clone()));
+            }
+            if let Some(ref a) = agent {
+                params.push(("agent", a.clone()));
+            }
+            if let Some(ref t) = handoff_type {
+                params.push(("type", t.clone()));
+            }
+            if let Some(ref m) = model {
+                params.push(("model", m.clone()));
+            }
+            if let Some(ref s) = session {
+                params.push(("session_id", s.clone()));
+            }
+            if let Some(ref s) = since {
+                params.push(("since", s.clone()));
+            }
+            params.push(("limit", limit.to_string()));
+
+            let query = params
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, utf8_percent_encode(v, NON_ALPHANUMERIC)))
+                .collect::<Vec<_>>()
+                .join("&");
+
+            match client.get(&format!("/handoffs?{}", query)).await {
+                Ok(v) => {
+                    if let Some(handoffs) = v.get("handoffs").and_then(|h| h.as_array()) {
+                        for h in handoffs {
+                            if let Some(content) = h.get("content").and_then(|c| c.as_str()) {
+                                println!("{}", content);
+                                if handoffs.len() > 1 {
+                                    println!("\n---\n");
+                                }
+                            }
+                        }
+                        if handoffs.is_empty() {
+                            eprintln!("No handoffs found");
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        HandoffCommands::Latest { project, dir } => {
+            let project = project.clone().or_else(|| detect_project(dir.as_deref()));
+            let query = if let Some(ref p) = project {
+                format!("?project={}", urlencoding::encode(p))
+            } else {
+                String::new()
+            };
+
+            match client.get(&format!("/handoffs/latest{}", query)).await {
+                Ok(v) => {
+                    if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
+                        println!("{}", content);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        HandoffCommands::Mechanical {
+            project,
+            agent,
+            dir,
+            session,
+            model,
+            host,
+        } => {
+            let work_dir = dir.clone().unwrap_or_else(|| {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
+            let project = project.clone().or_else(|| detect_project(Some(&work_dir)));
+
+            let Some(ref project) = project else {
+                eprintln!("Error: could not detect project. Use --project");
+                std::process::exit(1);
+            };
+
+            let branch = detect_branch(Some(&work_dir));
+
+            let git = |args: &[&str]| -> String {
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&work_dir)
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default()
+            };
+
+            let status = git(&["status", "--porcelain"]);
+            let log = git(&["log", "--oneline", "--no-decorate", "-15"]);
+            let diff_stat = git(&["diff", "--stat", "HEAD"]);
+            let stash_list = git(&["stash", "list"]);
+
+            let recent_files = std::process::Command::new("find")
+                .args([
+                    &*work_dir,
+                    "-maxdepth", "4",
+                    "-mmin", "-30",
+                    "-not", "-path", "*/.git/*",
+                    "-not", "-path", "*/node_modules/*",
+                    "-not", "-path", "*/__pycache__/*",
+                    "-not", "-path", "*/target/*",
+                    "-type", "f",
+                    "-print",
+                ])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+
+            let recent_lines: Vec<&str> = recent_files.lines().take(30).collect();
+
+            let mut content = format!("# Mechanical State: {}\n\n", project);
+            content.push_str(&format!("**Directory:** {}\n", work_dir));
+            if let Some(ref b) = branch {
+                content.push_str(&format!("**Branch:** {}\n", b));
+            }
+            content.push_str(&format!(
+                "Generated: {}\n\n",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+            ));
+
+            if !status.is_empty() {
+                content.push_str("## Git Status\n```\n");
+                content.push_str(&status);
+                content.push_str("\n```\n\n");
+            }
+            if !log.is_empty() {
+                content.push_str("## Recent Commits\n```\n");
+                content.push_str(&log);
+                content.push_str("\n```\n\n");
+            }
+            if !diff_stat.is_empty() {
+                content.push_str("## Uncommitted Changes\n```\n");
+                content.push_str(&diff_stat);
+                content.push_str("\n```\n\n");
+            }
+            if !stash_list.is_empty() {
+                content.push_str("## Git Stashes\n```\n");
+                content.push_str(&stash_list);
+                content.push_str("\n```\n\n");
+            }
+            if !recent_lines.is_empty() {
+                content.push_str("## Recently Modified Files\n");
+                for f in &recent_lines {
+                    content.push_str(&format!("- {}\n", f));
+                }
+                content.push('\n');
+            }
+
+            let body = json!({
+                "project": project,
+                "branch": branch,
+                "directory": work_dir,
+                "agent": agent.clone().unwrap_or_else(detect_agent),
+                "type": "mechanical",
+                "content": content,
+                "session_id": session.clone().or_else(|| std::env::var("SESSION_ID").ok()),
+                "model": model.clone().or_else(detect_model),
+                "host": host.clone().unwrap_or_else(detect_host),
+                "metadata": json!({"cwd": work_dir, "auto": true}),
+            });
+
+            match client.post("/handoffs", body).await {
+                Ok(v) => {
+                    if v.get("skipped").and_then(|s| s.as_bool()).unwrap_or(false) {
+                        eprintln!("Skipped duplicate mechanical handoff for '{}'", project);
+                    } else if let Some(id) = v.get("id") {
+                        println!("Stored mechanical handoff #{} (project={})", id, project);
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        HandoffCommands::List {
+            limit,
+            project,
+            agent,
+            handoff_type,
+        } => {
+            let mut params: Vec<(&str, String)> = Vec::new();
+            if let Some(ref p) = project {
+                params.push(("project", p.clone()));
+            }
+            if let Some(ref a) = agent {
+                params.push(("agent", a.clone()));
+            }
+            if let Some(ref t) = handoff_type {
+                params.push(("type", t.clone()));
+            }
+            params.push(("limit", limit.to_string()));
+
+            let query = params
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, utf8_percent_encode(v, NON_ALPHANUMERIC)))
+                .collect::<Vec<_>>()
+                .join("&");
+
+            match client.get(&format!("/handoffs?{}", query)).await {
+                Ok(v) => {
+                    if let Some(handoffs) = v.get("handoffs").and_then(|h| h.as_array()) {
+                        println!(
+                            "{:>6}  {:<20}  {:<20}  {:<12}  {:<10}  {:<8}  {:<10}  {:>6}",
+                            "ID", "Created", "Project", "Agent", "Type", "Host", "Session", "Size"
+                        );
+                        println!("{}", "-".repeat(100));
+                        for h in handoffs {
+                            let session_display = h
+                                .get("session_id")
+                                .and_then(|s| s.as_str())
+                                .map(|s| &s[..s.len().min(8)])
+                                .unwrap_or("");
+                            let content_len = h
+                                .get("content")
+                                .and_then(|c| c.as_str())
+                                .map(|c| c.len())
+                                .unwrap_or(0);
+                            println!(
+                                "{:>6}  {:<20}  {:<20}  {:<12}  {:<10}  {:<8}  {:<10}  {:>6}",
+                                h.get("id").and_then(|i| i.as_i64()).unwrap_or(0),
+                                h.get("created_at").and_then(|s| s.as_str()).unwrap_or(""),
+                                h.get("project").and_then(|s| s.as_str()).unwrap_or(""),
+                                h.get("agent").and_then(|s| s.as_str()).unwrap_or(""),
+                                h.get("type").and_then(|s| s.as_str()).unwrap_or(""),
+                                h.get("host").and_then(|s| s.as_str()).unwrap_or(""),
+                                session_display,
+                                content_len,
+                            );
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        HandoffCommands::Search {
+            query,
+            project,
+            limit,
+        } => {
+            let mut params: Vec<(&str, String)> = vec![("q", query.clone())];
+            if let Some(ref p) = project {
+                params.push(("project", p.clone()));
+            }
+            params.push(("limit", limit.to_string()));
+
+            let query_str = params
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, utf8_percent_encode(v, NON_ALPHANUMERIC)))
+                .collect::<Vec<_>>()
+                .join("&");
+
+            match client.get(&format!("/handoffs/search?{}", query_str)).await {
+                Ok(v) => {
+                    if let Some(results) = v.get("results").and_then(|r| r.as_array()) {
+                        for r in results {
+                            let model_str = r
+                                .get("model")
+                                .and_then(|m| m.as_str())
+                                .map(|m| format!(" [model={}]", m))
+                                .unwrap_or_default();
+                            println!(
+                                "#{:<5}  {}  [{}]  {}  {}{}",
+                                r.get("id").and_then(|i| i.as_i64()).unwrap_or(0),
+                                r.get("created_at").and_then(|s| s.as_str()).unwrap_or(""),
+                                r.get("project").and_then(|s| s.as_str()).unwrap_or(""),
+                                r.get("agent").and_then(|s| s.as_str()).unwrap_or(""),
+                                r.get("type").and_then(|s| s.as_str()).unwrap_or(""),
+                                model_str,
+                            );
+                            if let Some(snippet) = r.get("snippet").and_then(|s| s.as_str()) {
+                                println!("  {}", snippet.replace('\n', " "));
+                            }
+                        }
+                        if results.is_empty() {
+                            eprintln!("No results found");
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        HandoffCommands::Stats => match client.get("/handoffs/stats").await {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+            Err(e) => eprintln!("Error: {}", e),
+        },
+
+        HandoffCommands::Gc { tiered, keep } => {
+            let body = json!({
+                "tiered": tiered,
+                "keep": keep,
+            });
+            match client.post("/handoffs/gc", body).await {
+                Ok(v) => {
+                    let deleted = v.get("deleted").and_then(|d| d.as_i64()).unwrap_or(0);
+                    let remaining = v.get("remaining").and_then(|r| r.as_i64()).unwrap_or(0);
+                    println!("Deleted {} handoffs. Remaining: {}", deleted, remaining);
+                }
                 Err(e) => eprintln!("Error: {}", e),
             }
         }
