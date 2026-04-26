@@ -1,6 +1,5 @@
 //! kleos-credd library exports for testing.
 
-pub mod agent_keys_file;
 pub mod auth;
 pub mod bootstrap;
 pub mod handlers;

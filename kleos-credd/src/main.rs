@@ -5,7 +5,8 @@
 
 use clap::Parser;
 use kleos_cred::crypto::{derive_key, KEY_SIZE};
-use kleos_credd::{agent_keys_file::FileAgentKeyStore, bootstrap, server};
+use kleos_cred::agent_keys_file::FileAgentKeyStore;
+use kleos_credd::{bootstrap, server};
 use kleos_lib::config::{Config, EncryptionMode};
 use tracing::info;
 

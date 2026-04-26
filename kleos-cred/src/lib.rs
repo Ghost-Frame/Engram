@@ -9,6 +9,7 @@
 //! - Recovery key system for lost YubiKey scenarios
 
 pub mod agent_keys;
+pub mod agent_keys_file;
 pub mod audit;
 pub mod crypto;
 pub mod recovery;

@@ -8,7 +8,7 @@ use kleos_lib::db::Database;
 use kleos_lib::ratelimit::RateLimiter;
 use zeroize::Zeroizing;
 
-use crate::agent_keys_file::FileAgentKeyStore;
+use kleos_cred::agent_keys_file::FileAgentKeyStore;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
