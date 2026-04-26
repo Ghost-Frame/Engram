@@ -340,14 +340,18 @@ pub fn software_hmac(secret: &[u8], challenge: &[u8; CHALLENGE_SIZE]) -> [u8; RE
 /// Config directory for kleos: `$XDG_CONFIG_HOME/kleos` or
 /// `~/.config/kleos`.
 fn config_dir() -> PathBuf {
-    std::env::var("XDG_CONFIG_HOME")
+    let base = std::env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             std::env::var("HOME")
                 .map(|h| PathBuf::from(h).join(".config"))
                 .unwrap_or_else(|_| PathBuf::from("."))
-        })
-        .join("kleos")
+        });
+    let cred_dir = base.join("cred");
+    if cred_dir.join(CHALLENGE_FILE).exists() {
+        return cred_dir;
+    }
+    base.join("kleos")
 }
 
 // ---------------------------------------------------------------------------
