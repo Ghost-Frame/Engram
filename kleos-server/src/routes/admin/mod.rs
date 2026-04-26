@@ -617,12 +617,13 @@ async fn admin_cred_proxy(
     Json(body): Json<AdminCredProxyBody>,
 ) -> Result<Json<ProxyResponse>, AppError> {
     require_admin(&auth)?;
+    let agent = format!("key:{}", auth.key.id);
     let response = state
         .credd
         .proxy(
             &state.db,
             auth.user_id,
-            auth.key.name.as_str(),
+            &agent,
             &body.service,
             &body.key,
             &body.request,
