@@ -1,3 +1,4 @@
+pub mod bootstrap;
 pub mod client;
 pub mod pattern;
 pub mod proxy;
