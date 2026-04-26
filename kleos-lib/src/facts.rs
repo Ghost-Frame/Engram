@@ -142,11 +142,10 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
     .await
 }
 
-/// List structured facts for a user, optionally filtered by memory_id.
-#[tracing::instrument(skip(db), fields(user_id, memory_id_filter = ?memory_id_filter, limit))]
+/// List structured facts, optionally filtered by memory_id.
+#[tracing::instrument(skip(db), fields(memory_id_filter = ?memory_id_filter, limit))]
 pub async fn list_facts(
     db: &Database,
-    user_id: i64,
     memory_id_filter: Option<i64>,
     limit: usize,
 ) -> Result<Vec<StructuredFact>> {
@@ -183,8 +182,8 @@ pub async fn list_facts(
 }
 
 /// Hard-delete a structured fact by id (tenant-scoped).
-#[tracing::instrument(skip(db), fields(fact_id = id, user_id))]
-pub async fn delete_fact(db: &Database, id: i64, user_id: i64) -> Result<()> {
+#[tracing::instrument(skip(db), fields(fact_id = id))]
+pub async fn delete_fact(db: &Database, id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
             conn.execute(

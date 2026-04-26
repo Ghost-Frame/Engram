@@ -179,14 +179,17 @@ pub async fn link_key_to_agent(
 pub async fn get_agent_executions(
     db: &Database,
     agent_id: i64,
+    user_id: i64,
     limit: i64,
 ) -> Result<Vec<AgentExecutionRow>> {
     db.read(move |conn| {
+        // Defense-in-depth: even though the caller validates agent ownership,
+        // we also filter by user_id at the DB layer to prevent cross-tenant leaks.
         let mut stmt = conn.prepare(
-            "SELECT id, action, target_type, target_id, details, execution_hash, signature, created_at FROM audit_log WHERE agent_id = ?1 ORDER BY created_at DESC LIMIT ?2"
+            "SELECT id, action, target_type, target_id, details, execution_hash, signature, created_at FROM audit_log WHERE agent_id = ?1 AND user_id = ?2 ORDER BY created_at DESC LIMIT ?3"
         ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-        let rows = stmt.query_map(params![agent_id, limit], |row| {
+        let rows = stmt.query_map(params![agent_id, user_id, limit], |row| {
             Ok(AgentExecutionRow {
                 id: row.get(0)?,
                 action: row.get(1)?,

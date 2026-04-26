@@ -34,12 +34,12 @@ async fn reflect_handler(
 }
 
 async fn observations_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<ObservationsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
-    let observations: Vec<GrowthObservation> = list_observations(&db, auth.user_id, limit).await?;
+    let observations: Vec<GrowthObservation> = list_observations(&db, limit).await?;
     let count = observations.len();
     Ok(Json(
         json!({ "observations": observations, "count": count }),

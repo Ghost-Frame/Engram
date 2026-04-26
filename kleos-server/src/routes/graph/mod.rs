@@ -870,13 +870,12 @@ async fn entity_cooccurrences_handler(
 // ---------------------------------------------------------------------------
 
 async fn facts_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<FactsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let facts = list_facts(
         &db,
-        auth.user_id,
         params.memory_id,
         params.limit.unwrap_or(50).min(1000),
     )

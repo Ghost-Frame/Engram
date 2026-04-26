@@ -29,7 +29,7 @@ async fn list_inbox(
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
-    let pending = kleos_lib::inbox::list_pending(&db, auth.user_id, limit, offset).await?;
+    let pending = kleos_lib::inbox::list_pending(&db, limit, offset).await?;
     let total = kleos_lib::inbox::count_pending(&db, auth.user_id).await?;
     Ok(Json(
         json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),
@@ -51,9 +51,9 @@ async fn reject(
     Path(id): Path<i64>,
     Json(body): Json<RejectBody>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::inbox::reject_memory(&db, id, auth.user_id).await?;
+    kleos_lib::inbox::reject_memory(&db, id).await?;
     if let Some(reason) = &body.reason {
-        if let Err(e) = kleos_lib::inbox::set_forget_reason(&db, id, reason, auth.user_id).await {
+        if let Err(e) = kleos_lib::inbox::set_forget_reason(&db, id, reason).await {
             tracing::warn!(
                 memory_id = id,
                 user_id = auth.user_id,
@@ -66,7 +66,7 @@ async fn reject(
 }
 
 async fn edit(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<EditBody>,
@@ -78,7 +78,6 @@ async fn edit(
         body.category.as_deref(),
         body.importance,
         body.tags.as_deref(),
-        auth.user_id,
     )
     .await?;
     Ok(Json(json!({ "approved": true, "edited": true, "id": id })))
@@ -97,7 +96,7 @@ async fn bulk_action(
                 count += 1;
             }
             "reject" => {
-                kleos_lib::inbox::reject_memory(&db, *id, auth.user_id).await?;
+                kleos_lib::inbox::reject_memory(&db, *id).await?;
                 count += 1;
             }
             _ => {
@@ -119,7 +118,7 @@ async fn list_pending_legacy(
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
-    let pending = kleos_lib::inbox::list_pending(&db, auth.user_id, limit, offset).await?;
+    let pending = kleos_lib::inbox::list_pending(&db, limit, offset).await?;
     let total = kleos_lib::inbox::count_pending(&db, auth.user_id).await?;
     Ok(Json(
         json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),

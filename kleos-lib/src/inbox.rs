@@ -26,10 +26,9 @@ pub struct PendingMemory {
     pub model: Option<String>,
 }
 
-#[tracing::instrument(skip(db), fields(user_id, limit, offset))]
+#[tracing::instrument(skip(db), fields(limit, offset))]
 pub async fn list_pending(
     db: &Database,
-    user_id: i64,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<PendingMemory>> {
@@ -97,8 +96,8 @@ pub async fn approve_memory(db: &Database, id: i64, user_id: i64) -> Result<()> 
     .await
 }
 
-#[tracing::instrument(skip(db), fields(memory_id = id, user_id))]
-pub async fn reject_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
+#[tracing::instrument(skip(db), fields(memory_id = id))]
+pub async fn reject_memory(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
             "UPDATE memories SET status = 'rejected', is_archived = 1, updated_at = datetime('now') WHERE id = ?1",
@@ -110,8 +109,8 @@ pub async fn reject_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
     .await
 }
 
-#[tracing::instrument(skip(db, reason), fields(memory_id = id, user_id))]
-pub async fn set_forget_reason(db: &Database, id: i64, reason: &str, user_id: i64) -> Result<()> {
+#[tracing::instrument(skip(db, reason), fields(memory_id = id))]
+pub async fn set_forget_reason(db: &Database, id: i64, reason: &str) -> Result<()> {
     let reason = reason.to_string();
     db.write(move |conn| {
         conn.execute(
@@ -124,7 +123,7 @@ pub async fn set_forget_reason(db: &Database, id: i64, reason: &str, user_id: i6
     .await
 }
 
-#[tracing::instrument(skip(db, content, tags), fields(memory_id = id, user_id, category = ?category, importance = ?importance))]
+#[tracing::instrument(skip(db, content, tags), fields(memory_id = id, category = ?category, importance = ?importance))]
 pub async fn edit_and_approve(
     db: &Database,
     id: i64,
@@ -132,7 +131,6 @@ pub async fn edit_and_approve(
     category: Option<&str>,
     importance: Option<i64>,
     tags: Option<&str>,
-    user_id: i64,
 ) -> Result<()> {
     let mut sets = vec![
         "status = 'approved'".to_string(),
