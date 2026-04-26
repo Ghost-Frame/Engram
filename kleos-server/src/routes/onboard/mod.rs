@@ -25,7 +25,7 @@ static FETCH_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock:
         .user_agent("Kleos/5.8 (fetch)")
         .pool_max_idle_per_host(4)
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .expect("reqwest::Client::builder failed at onboard fetch client startup")
 });
 
 pub fn router() -> Router<AppState> {

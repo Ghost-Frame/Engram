@@ -2,6 +2,7 @@
 //! environment/configuration values cannot target arbitrary hosts, plus
 //! a hardened reqwest client builder used for every outbound call.
 
+use crate::webhooks::{is_ipv4_denied, is_ipv6_denied};
 use crate::EngError;
 use std::time::Duration;
 use url::Url;
@@ -30,9 +31,17 @@ pub fn response_within_limit(resp: &reqwest::Response, max_bytes: u64) -> bool {
     }
 }
 
-/// Validate a URL intended for an outbound HTTP request. Accepts only
-/// http/https schemes and rejects URLs that embed credentials (userinfo),
-/// which cuts off credential-smuggling variants of SSRF.
+/// Validate a URL intended for an outbound HTTP request. Rejects:
+///   - non-http(s) schemes,
+///   - URLs with embedded credentials (userinfo),
+///   - URLs missing a host,
+///   - literal IP addresses inside any deny-listed range
+///     (loopback / RFC1918 / CGNAT / link-local / IPv6 ULA / 0.0.0.0/8),
+///   - cloud metadata hostnames (AWS link-local, GCP metadata.google.internal).
+///
+/// This is a **synchronous** check on literal hostnames and IPs only. For
+/// delivery-time DNS resolution + per-address allowlist validation, use
+/// `webhooks::resolve_and_validate_url`.
 ///
 /// CodeQL recognises `url::Url::parse` + scheme check as a request-forgery
 /// sanitiser, so routing outbound calls through this helper clears the
@@ -55,8 +64,47 @@ pub fn validate_outbound_url(raw: &str) -> Result<Url, EngError> {
             raw
         )));
     }
-    if parsed.host_str().is_none_or(|h| h.is_empty()) {
-        return Err(EngError::InvalidInput(format!("url '{}' has no host", raw)));
+    let host = parsed
+        .host()
+        .ok_or_else(|| EngError::InvalidInput(format!("url '{}' has no host", raw)))?;
+    match host {
+        url::Host::Domain(name) => {
+            let lower = name.to_ascii_lowercase();
+            if lower == "localhost"
+                || lower.ends_with(".localhost")
+                || lower == "localhost.localdomain"
+            {
+                return Err(EngError::InvalidInput(format!(
+                    "url '{}' resolves to loopback",
+                    raw
+                )));
+            }
+            if lower == "metadata.google.internal"
+                || lower == "metadata"
+                || lower == "metadata.goog"
+            {
+                return Err(EngError::InvalidInput(format!(
+                    "url '{}' targets a cloud metadata endpoint",
+                    raw
+                )));
+            }
+        }
+        url::Host::Ipv4(ip) => {
+            if is_ipv4_denied(&ip) {
+                return Err(EngError::InvalidInput(format!(
+                    "url '{}' targets disallowed IPv4 range",
+                    raw
+                )));
+            }
+        }
+        url::Host::Ipv6(ip) => {
+            if is_ipv6_denied(&ip) {
+                return Err(EngError::InvalidInput(format!(
+                    "url '{}' targets disallowed IPv6 range",
+                    raw
+                )));
+            }
+        }
     }
     Ok(parsed)
 }
@@ -67,7 +115,9 @@ mod tests {
 
     #[test]
     fn accepts_http_and_https() {
-        assert!(validate_outbound_url("http://127.0.0.1:4200/x").is_ok());
+        // Loopback (127.0.0.1) is now correctly rejected by the deny list;
+        // accepts public hosts on either scheme.
+        assert!(validate_outbound_url("http://203.0.113.1:4200/x").is_ok());
         assert!(validate_outbound_url("https://example.com/y").is_ok());
     }
 
@@ -88,5 +138,50 @@ mod tests {
     fn rejects_bogus_input() {
         assert!(validate_outbound_url("not a url").is_err());
         assert!(validate_outbound_url("http://").is_err());
+    }
+
+    #[test]
+    fn rejects_aws_metadata_ip() {
+        assert!(
+            validate_outbound_url("http://169.254.169.254/latest/meta-data/").is_err(),
+            "AWS instance metadata IPv4 must be denied"
+        );
+    }
+
+    #[test]
+    fn rejects_gcp_metadata_host() {
+        assert!(
+            validate_outbound_url("http://metadata.google.internal/computeMetadata/v1/").is_err(),
+            "GCP metadata hostname must be denied"
+        );
+    }
+
+    #[test]
+    fn rejects_rfc1918_private_ipv4() {
+        assert!(validate_outbound_url("http://10.0.0.1/x").is_err());
+        assert!(validate_outbound_url("http://172.16.0.1/x").is_err());
+        assert!(validate_outbound_url("http://192.168.1.1/x").is_err());
+    }
+
+    #[test]
+    fn rejects_loopback_hostname() {
+        assert!(validate_outbound_url("http://localhost/x").is_err());
+        assert!(validate_outbound_url("http://app.localhost/x").is_err());
+    }
+
+    #[test]
+    fn rejects_ipv6_ula() {
+        assert!(validate_outbound_url("http://[fc00::1]/x").is_err());
+    }
+
+    #[test]
+    fn rejects_cgnat_range() {
+        assert!(validate_outbound_url("http://100.64.0.1/x").is_err());
+    }
+
+    #[test]
+    fn accepts_public_ip() {
+        assert!(validate_outbound_url("http://8.8.8.8/x").is_ok());
+        assert!(validate_outbound_url("https://1.1.1.1/").is_ok());
     }
 }

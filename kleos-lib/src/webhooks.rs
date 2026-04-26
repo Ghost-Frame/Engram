@@ -24,7 +24,7 @@ static WEBHOOK_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLoc
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .expect("safe_client_builder failed at webhook client startup")
 });
 
 const WEBHOOK_FAILURE_THRESHOLD: i64 = 10;

@@ -12,7 +12,7 @@ static CLOUD_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock:
         .timeout(std::time::Duration::from_secs(TIMEOUT_SECS + 5))
         .pool_max_idle_per_host(2)
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .expect("safe_client_builder failed at skills cloud client startup")
 });
 
 /// Stub: Search skills in the cloud registry.

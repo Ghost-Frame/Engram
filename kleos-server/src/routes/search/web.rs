@@ -30,7 +30,7 @@ static SEARXNG_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLoc
         .user_agent("Kleos/1.0 (search-proxy)")
         .pool_max_idle_per_host(4)
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .expect("reqwest::Client::builder failed at SearXNG client startup")
 });
 
 #[derive(Debug, Deserialize)]

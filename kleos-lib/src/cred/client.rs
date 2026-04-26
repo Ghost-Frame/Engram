@@ -494,7 +494,7 @@ fn build_http_client() -> reqwest::Client {
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(5))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .expect("reqwest::Client::builder failed at cred client startup")
 }
 
 /// Cache key shape: `{user_id}:{service}/{key}`. The `user_id` prefix is
