@@ -633,6 +633,7 @@ mod tests {
     /// H-011: verify that a malicious argument cannot cause shell/Python injection.
     /// The try_python_ykman_calculate call will fail (ykman not found or bad hex),
     /// but the important assertion is that /tmp/PWNED was NOT created.
+    #[cfg(not(windows))]
     #[test]
     fn malicious_arg_does_not_inject() {
         let result = try_python_ykman_calculate("'); import os; os.system('touch /tmp/PWNED'); ('");
