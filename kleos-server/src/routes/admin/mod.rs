@@ -3,7 +3,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rusqlite::params;
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
@@ -992,29 +991,15 @@ async fn reset_user(
         )));
     }
     let uid = auth.user_id;
-    // Tables that are wiped by user_id (single-tenant: uid == the only tenant)
-    let uid_tables = &[
-        "DELETE FROM conversations WHERE user_id = ?1",
-        "DELETE FROM user_preferences WHERE user_id = ?1",
-    ];
-    // Tables wiped whole-monolith (no user_id column, or single-tenant equivalent)
+    // All wipe-able tables are now single-tenant (user_id column dropped).
     let global_tables = &[
+        "DELETE FROM conversations",
+        "DELETE FROM user_preferences",
         "DELETE FROM episodes",
         "DELETE FROM memories",
         "DELETE FROM structured_facts WHERE memory_id IN (SELECT id FROM memories)",
     ];
     let mut total = 0i64;
-    for sql in uid_tables {
-        let sql_owned = sql.to_string();
-        total += state
-            .db
-            .write(move |conn| {
-                conn.execute(&sql_owned, params![uid])
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
-            })
-            .await
-            .map_err(AppError)? as i64;
-    }
     for sql in global_tables {
         let sql_owned = sql.to_string();
         total += state
