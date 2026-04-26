@@ -3095,6 +3095,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "eidolon-supervisor"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "notify",
+ "notify-debouncer-mini",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4701,6 +4717,14 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zeroize",
+]
+
+[[package]]
+name = "kleos-fs"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

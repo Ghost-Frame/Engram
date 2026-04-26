@@ -340,9 +340,22 @@ fn resolve_path(path: &str) -> Option<PathBuf> {
 
 fn agent_forge_read(path: &Path, symbol: Option<&str>) -> Option<String> {
     let forge_bin = find_agent_forge()?;
-    let tmp_dir = env::temp_dir();
-    let input_path = tmp_dir.join("kleos-fs-input.json");
-    let output_path = tmp_dir.join("kleos-fs-output.json");
+
+    // CWE-377: use unguessable temp file names so concurrent invocations
+    // cannot collide and a local user cannot pre-create the path as a
+    // symlink. NamedTempFile cleans up on drop.
+    let input_tmp = tempfile::Builder::new()
+        .prefix("kleos-fs-input-")
+        .suffix(".json")
+        .tempfile()
+        .ok()?;
+    let output_tmp = tempfile::Builder::new()
+        .prefix("kleos-fs-output-")
+        .suffix(".json")
+        .tempfile()
+        .ok()?;
+    let input_path = input_tmp.path().to_path_buf();
+    let output_path = output_tmp.path().to_path_buf();
 
     let input_json = if let Some(sym) = symbol {
         serde_json::json!({
