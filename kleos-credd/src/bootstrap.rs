@@ -104,21 +104,21 @@ pub async fn load_bootstrap_blob(
 mod tests {
     use super::*;
     use kleos_cred::crypto::{derive_key_legacy, encrypt};
-    use std::sync::Mutex;
+    use tokio::sync::Mutex;
 
     // Tests mutate process-global CREDD_BOOTSTRAP_BLOB; serialize them so
     // parallel runners don't observe each other's env state.
-    static ENV_GUARD: Mutex<()> = Mutex::new(());
+    // Uses tokio::sync::Mutex so the guard is Send -- no await_holding_lock lint.
+    static ENV_GUARD: Mutex<()> = Mutex::const_new(());
 
     fn test_key() -> [u8; KEY_SIZE] {
         // Deterministic test key: legacy KDF over a fixed pseudo-YubiKey response.
         derive_key_legacy(b"01234567890123456789")
     }
 
-    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn missing_blob_returns_none() {
-        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = ENV_GUARD.lock().await;
         // Use a path guaranteed not to exist on any test runner.
         std::env::set_var(
             "CREDD_BOOTSTRAP_BLOB",
@@ -130,10 +130,9 @@ mod tests {
         assert!(result.is_none(), "missing blob must produce Ok(None)");
     }
 
-    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn wrong_magic_errors() {
-        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = ENV_GUARD.lock().await;
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bootstrap.enc");
         std::fs::write(&path, b"BAD1somegarbagedata").unwrap();
@@ -150,10 +149,9 @@ mod tests {
         );
     }
 
-    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn good_blob_roundtrip() {
-        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = ENV_GUARD.lock().await;
         let key = test_key();
 
         // Build a CBv1 blob: header || 0x1E || "kl_test_bearer_abc123"

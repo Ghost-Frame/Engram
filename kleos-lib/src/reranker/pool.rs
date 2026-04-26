@@ -27,10 +27,14 @@ pub struct PooledSession {
     _permit: OwnedSemaphorePermit,
 }
 
-// SAFETY: ort::Session contains raw pointers and is !Send/!Sync, but it is
-// safe to transfer between threads when access is exclusive. SessionPool
-// guards availability via semaphore + Vec checkout (only one owner at a time).
-// PooledSession holds exclusive ownership of its Session.
+// SAFETY: ort::Session contains raw pointers internally and is !Send/!Sync.
+// However, ort::Session does not expose interior mutation across the FFI
+// boundary that would make exclusive ownership insufficient -- all inference
+// calls take &mut Session (exclusive access). SessionPool guards exclusivity
+// via semaphore + Vec checkout so only one thread owns a Session at a time.
+// PooledSession holds exclusive ownership of its Session via Option<Session>.
+// If ort upgrades to expose any thread-local cache or interior-mutable state
+// accessible through a shared reference, this unsafe impl needs re-review.
 unsafe impl Send for SessionPool {}
 unsafe impl Sync for SessionPool {}
 unsafe impl Send for PooledSession {}

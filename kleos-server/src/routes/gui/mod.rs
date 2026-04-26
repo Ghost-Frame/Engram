@@ -391,10 +391,11 @@ async fn gui_auth(
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    // SECURITY (SEC-MED-7): gui_password is used as a feature flag (Some = GUI
-    // enabled, None = disabled). It does NOT gate a password prompt -- the actual
-    // authentication uses the API key submitted in the form.
-    if state.config.gui_password.is_none() {
+    // SECURITY (SEC-MED-7): gui_enabled controls whether the GUI is reachable.
+    // It does NOT gate a password prompt -- actual authentication uses the API
+    // key submitted in the form. Set KLEOS_GUI_PASSWORD to any non-empty value
+    // to enable the GUI.
+    if !state.config.gui_enabled {
         return (StatusCode::FORBIDDEN, "GUI authentication not configured").into_response();
     }
 
@@ -583,8 +584,8 @@ async fn serve_login_js() -> Response {
 
 /// GET /_app/* - serve SvelteKit static assets
 async fn serve_app_assets(State(state): State<AppState>, Path(path): Path<String>) -> Response {
-    // SECURITY: when gui_password is not configured, the GUI is disabled entirely.
-    if state.config.gui_password.is_none() {
+    // SECURITY: when gui_enabled is false, the GUI is disabled entirely.
+    if !state.config.gui_enabled {
         return (StatusCode::NOT_FOUND, "GUI not available").into_response();
     }
     let Some(build_dir) = resolve_gui_build_dir(&state) else {
@@ -640,9 +641,9 @@ pub async fn gui_spa_middleware(
         return next.run(request).await;
     };
 
-    // SECURITY: when gui_password is not configured, the GUI is disabled.
-    // Return 404 for all SPA routes to avoid serving an unauthenticated app shell.
-    if state.config.gui_password.is_none() {
+    // SECURITY: when gui_enabled is false, the GUI is disabled.
+    // Pass through to next handler (which will 404) rather than serving an app shell.
+    if !state.config.gui_enabled {
         return next.run(request).await;
     }
 

@@ -444,8 +444,11 @@ pub struct Config {
     pub lance_index_path: Option<String>,
     pub vector_dimensions: usize,
     pub use_lance_index: bool,
+    /// Whether the GUI is enabled. Set via KLEOS_GUI_PASSWORD (any non-empty
+    /// value enables the GUI). A separate gui_password field can be added later
+    /// when an actual password gate is needed; for now the field is a bool.
     #[serde(skip, default)]
-    pub gui_password: Option<SecretString>,
+    pub gui_enabled: bool,
     pub gui_build_dir: Option<String>,
     pub pagerank_refresh_interval_secs: u64,
     pub pagerank_dirty_threshold: u32,
@@ -574,7 +577,7 @@ impl Default for Config {
             lance_index_path: None,
             vector_dimensions: 1024,
             use_lance_index: true,
-            gui_password: None,
+            gui_enabled: false,
             gui_build_dir: None,
             pagerank_refresh_interval_secs: 300,
             pagerank_dirty_threshold: 100,
@@ -615,8 +618,9 @@ impl Config {
     /// Load a `Config` from a TOML file. Missing fields fall back to
     /// their `Default` values via `#[serde(default)]` on most fields.
     ///
-    /// Secret fields (`api_key`, `gui_password`, `eidolon.api_key`) are
+    /// Secret fields (`api_key`, `eidolon.api_key`) are
     /// `#[serde(skip)]` and must be supplied via environment variables.
+    /// `gui_enabled` is also `#[serde(skip)]` and controlled by KLEOS_GUI_PASSWORD.
     pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, String> {
         let path = path.as_ref();
         let text =
@@ -810,7 +814,7 @@ impl Config {
             config.use_lance_index = v != "0" && !v.eq_ignore_ascii_case("false");
         }
         if let Ok(v) = std::env::var("KLEOS_GUI_PASSWORD") {
-            config.gui_password = Some(SecretString::new(v));
+            config.gui_enabled = !v.is_empty();
         }
         if let Ok(v) = std::env::var("KLEOS_GUI_BUILD_DIR") {
             config.gui_build_dir = Some(v);

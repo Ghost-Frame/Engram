@@ -126,11 +126,16 @@ pub struct HandoffsDb {
 
 impl HandoffsDb {
     pub async fn open(data_dir: &str, gc_sem: Arc<Semaphore>) -> Result<Self> {
-        std::fs::create_dir_all(data_dir).map_err(|e| {
-            EngError::Internal(format!("failed to create handoffs data dir: {}", e))
-        })?;
-
-        let db_path = format!("{}/handoffs.db", data_dir);
+        // Allow KLEOS_HANDOFFS_DB_PATH to override the full path (useful in
+        // containerized or read-only-root deployments).
+        let db_path = if let Ok(override_path) = std::env::var("KLEOS_HANDOFFS_DB_PATH") {
+            override_path
+        } else {
+            std::fs::create_dir_all(data_dir).map_err(|e| {
+                EngError::Internal(format!("failed to create handoffs data dir: {}", e))
+            })?;
+            format!("{}/handoffs.db", data_dir)
+        };
 
         let writer = build_pool(&db_path, 1)?;
         let reader = build_pool(&db_path, 2)?;
