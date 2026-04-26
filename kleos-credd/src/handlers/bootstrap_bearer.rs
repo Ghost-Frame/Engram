@@ -79,9 +79,10 @@ pub async fn get_bootstrap_kleos_bearer(
     let caller_id = match &auth {
         AuthInfo::Master { .. } => "owner".to_string(),
         AuthInfo::Agent { key, .. } => key.name.clone(),
+        AuthInfo::BootstrapAgent { name, .. } => name.clone(),
     };
 
-    // Privileged self-fetch: credd's own per-host bearer.
+    // Privileged self-fetch: credd's own per-host bearer. Owner-only.
     if params.agent == credd_slot {
         if !auth.is_master() {
             warn!(
@@ -97,13 +98,16 @@ pub async fn get_bootstrap_kleos_bearer(
         return Ok(Json(make_response(bootstrap_master.as_str())));
     }
 
-    // Stage 5: owner-only for non-self bearers. Stage 6 will accept scoped
-    // bootstrap-agent tokens via a new AuthInfo variant.
-    if !auth.is_master() {
+    // Authorization for non-self bearers: owner OR bootstrap-agent token
+    // with `bootstrap/<slot>` scope (or `bootstrap/*` or `*`). DB-backed
+    // resolve agents are rejected here -- they have category permissions
+    // for /resolve/{text,proxy,raw}, not for the bootstrap endpoint.
+    let authorized = auth.is_master() || auth.has_bootstrap_scope("bootstrap", &params.agent);
+    if !authorized {
         warn!(
             caller = %caller_id,
             agent = %params.agent,
-            "non-owner attempted /bootstrap/kleos-bearer (scoped agent support arrives in Stage 6)"
+            "denied /bootstrap/kleos-bearer: no scope match"
         );
         return Err(
             CredError::PermissionDenied(format!("no bootstrap scope for agent={}", params.agent))

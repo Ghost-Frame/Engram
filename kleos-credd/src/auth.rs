@@ -88,8 +88,13 @@ pub async fn preauth_rate_limit(
 pub enum AuthInfo {
     /// Master key authentication - full access.
     Master { user_id: i64 },
-    /// Agent key authentication - scoped access.
+    /// DB-backed agent key authentication - scoped access via cred_agent_keys.
+    /// Used by the three-tier resolve handlers.
     Agent { user_id: i64, key: AgentKey },
+    /// File-backed bootstrap-agent token (~/.config/cred/agent-keys.json).
+    /// Used only by the `/bootstrap/kleos-bearer` endpoint. Scopes are
+    /// `bootstrap/<slot>` strings the handler matches against the request.
+    BootstrapAgent { name: String, scopes: Vec<String> },
 }
 
 impl AuthInfo {
@@ -97,6 +102,9 @@ impl AuthInfo {
         match self {
             Self::Master { user_id } => *user_id,
             Self::Agent { user_id, .. } => *user_id,
+            // Bootstrap agents do not map to a Kleos user_id; they auth
+            // credd itself, not Kleos. Use 0 as a sentinel for audit fields.
+            Self::BootstrapAgent { .. } => 0,
         }
     }
 
@@ -108,6 +116,7 @@ impl AuthInfo {
         match self {
             Self::Master { .. } => None,
             Self::Agent { key, .. } => Some(&key.name),
+            Self::BootstrapAgent { name, .. } => Some(name.as_str()),
         }
     }
 
@@ -115,6 +124,9 @@ impl AuthInfo {
         match self {
             Self::Master { .. } => true,
             Self::Agent { key, .. } => key.can_access(category),
+            // Bootstrap agents have no DB-side category permissions; the
+            // bootstrap-bearer handler does its own scope check.
+            Self::BootstrapAgent { .. } => false,
         }
     }
 
@@ -122,7 +134,24 @@ impl AuthInfo {
         match self {
             Self::Master { .. } => true,
             Self::Agent { key, .. } => key.can_access_raw(),
+            Self::BootstrapAgent { .. } => false,
         }
+    }
+
+    /// True if any of the agent's scopes match `service/key` (exact, wildcard,
+    /// or `*`). Only meaningful for `BootstrapAgent`; other variants return
+    /// `false`. Master tier should be allowed by callers via `is_master()`
+    /// before consulting this.
+    pub fn has_bootstrap_scope(&self, service: &str, key: &str) -> bool {
+        let scopes = match self {
+            Self::BootstrapAgent { scopes, .. } => scopes,
+            _ => return false,
+        };
+        let exact = format!("{}/{}", service, key);
+        let wildcard = format!("{}/*", service);
+        scopes
+            .iter()
+            .any(|s| s == &exact || s == &wildcard || s == "*")
     }
 }
 
@@ -165,21 +194,40 @@ pub async fn auth_middleware(
     {
         // Master key - assume user_id 1 (admin)
         AuthInfo::Master { user_id: 1 }
-    } else {
-        // Try as agent key
-        let key_bytes = parse_agent_key(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
-        let agent_key = validate_agent_key(&state.db, &key_bytes)
-            .await
-            .map_err(|_| StatusCode::UNAUTHORIZED)?;
-
-        AuthInfo::Agent {
-            user_id: agent_key.user_id,
-            key: agent_key,
+    } else if let Ok(key_bytes) = parse_agent_key(token) {
+        // Try DB-backed agent key (used by three-tier resolve handlers).
+        match validate_agent_key(&state.db, &key_bytes).await {
+            Ok(agent_key) => AuthInfo::Agent {
+                user_id: agent_key.user_id,
+                key: agent_key,
+            },
+            Err(_) => check_bootstrap_agent(token, &state)?,
         }
+    } else {
+        // Token isn't valid hex for a DB-backed agent key, but the file-backed
+        // bootstrap tokens are also 64-char hex so it could still match. If
+        // not, that branch returns UNAUTHORIZED.
+        check_bootstrap_agent(token, &state)?
     };
 
     request.extensions_mut().insert(auth);
     Ok(next.run(request).await)
+}
+
+/// Look the bearer up in the file-backed bootstrap-agent store. Returns
+/// `BootstrapAgent` on hit, `UNAUTHORIZED` on miss.
+fn check_bootstrap_agent(token: &str, state: &AppState) -> Result<AuthInfo, StatusCode> {
+    let mut store = state
+        .file_agent_keys
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let agent_id = store.validate(token).ok_or(StatusCode::UNAUTHORIZED)?;
+    let scopes = store.scopes_for(&agent_id);
+    store.touch(&agent_id);
+    Ok(AuthInfo::BootstrapAgent {
+        name: agent_id,
+        scopes,
+    })
 }
 
 /// Extractor for authentication info.

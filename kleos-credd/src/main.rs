@@ -5,7 +5,7 @@
 
 use clap::Parser;
 use kleos_cred::crypto::{derive_key, KEY_SIZE};
-use kleos_credd::{bootstrap, server};
+use kleos_credd::{agent_keys_file::FileAgentKeyStore, bootstrap, server};
 use kleos_lib::config::{Config, EncryptionMode};
 use tracing::info;
 
@@ -105,12 +105,18 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Load file-backed bootstrap-agent keys (~/.config/cred/agent-keys.json).
+    // Empty store on missing file; credd starts cleanly. Operator generates
+    // tokens via `cred agent-key generate <id> --scope bootstrap/<slot>`.
+    let file_agent_keys = FileAgentKeyStore::load()?;
+
     info!("starting credd on {}", args.listen);
     server::run(
         &args.listen,
         &args.db_path,
         master_key,
         bootstrap_master,
+        file_agent_keys,
         encryption_key,
     )
     .await?;

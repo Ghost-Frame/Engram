@@ -1,12 +1,14 @@
 //! Application state for credd daemon.
 
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use kleos_cred::crypto::KEY_SIZE;
 use kleos_lib::db::Database;
 use kleos_lib::ratelimit::RateLimiter;
 use zeroize::Zeroizing;
+
+use crate::agent_keys_file::FileAgentKeyStore;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -19,6 +21,11 @@ pub struct AppState {
     /// returns 404 in that case). Wrapped in `Zeroizing` so the bearer is
     /// scrubbed from memory when the AppState is dropped.
     pub bootstrap_master: Option<Arc<Zeroizing<String>>>,
+    /// File-backed scoped agent-key store for `/bootstrap/kleos-bearer`.
+    /// Separate from the DB-backed `cred_agent_keys` table used by the
+    /// three-tier resolve handlers; lives at `~/.config/cred/agent-keys.json`
+    /// so a fresh shell can read it before the cred DB is unlocked.
+    pub file_agent_keys: Arc<Mutex<FileAgentKeyStore>>,
 }
 
 impl AppState {
@@ -28,21 +35,25 @@ impl AppState {
             master_key: Arc::new(master_key),
             rate_limiter: Arc::new(RateLimiter::new()),
             bootstrap_master: None,
+            file_agent_keys: Arc::new(Mutex::new(FileAgentKeyStore::default())),
         }
     }
 
     /// Constructor variant that includes the bootstrap bearer (loaded by
-    /// main.rs after deriving the master key).
+    /// main.rs after deriving the master key) and the file-backed agent
+    /// key store.
     pub fn with_bootstrap(
         db: Database,
         master_key: [u8; KEY_SIZE],
         bootstrap_master: Option<Zeroizing<String>>,
+        file_agent_keys: FileAgentKeyStore,
     ) -> Self {
         Self {
             db: Arc::new(db),
             master_key: Arc::new(master_key),
             rate_limiter: Arc::new(RateLimiter::new()),
             bootstrap_master: bootstrap_master.map(Arc::new),
+            file_agent_keys: Arc::new(Mutex::new(file_agent_keys)),
         }
     }
 }

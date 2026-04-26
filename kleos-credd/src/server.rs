@@ -5,6 +5,7 @@ use kleos_lib::db::migrations::run_migrations;
 use kleos_lib::db::Database;
 use zeroize::Zeroizing;
 
+use crate::agent_keys_file::FileAgentKeyStore;
 use crate::build_router;
 use crate::listener;
 use crate::state::AppState;
@@ -25,7 +26,7 @@ use crate::state::AppState;
 /// the `--listen 127.0.0.1:4400` CLI argument behaviour for callers that
 /// don't use env-based config.
 #[tracing::instrument(
-    skip(master_key, bootstrap_master, encryption_key),
+    skip(master_key, bootstrap_master, file_agent_keys, encryption_key),
     fields(listen = %listen, db_path = %db_path)
 )]
 pub async fn run(
@@ -33,6 +34,7 @@ pub async fn run(
     db_path: &str,
     master_key: [u8; KEY_SIZE],
     bootstrap_master: Option<Zeroizing<String>>,
+    file_agent_keys: FileAgentKeyStore,
     encryption_key: Option<[u8; 32]>,
 ) -> anyhow::Result<()> {
     // Connect to database (with optional at-rest encryption)
@@ -41,7 +43,7 @@ pub async fn run(
     // Run migrations
     db.write(|conn| run_migrations(conn)).await?;
 
-    let state = AppState::with_bootstrap(db, master_key, bootstrap_master);
+    let state = AppState::with_bootstrap(db, master_key, bootstrap_master, file_agent_keys);
 
     // Build the router via the shared builder so integration tests and the
     // binary server exercise the same middleware stack (including the
