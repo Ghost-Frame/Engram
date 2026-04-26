@@ -50,6 +50,7 @@ mimalloc = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 rust_decimal = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 kleos-lib = { path = "../kleos-lib", version = "0.3.2", features = ["test-utils"] }

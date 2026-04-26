@@ -293,7 +293,9 @@ fn signing_secret_path() -> PathBuf {
     if let Ok(path) = std::env::var("KLEOS_SIGNING_SECRET_FILE") {
         return PathBuf::from(path);
     }
-    PathBuf::from("kleos-signing-secret.txt")
+    dirs::data_dir()
+        .map(|d| d.join("kleos").join("signing-secret"))
+        .unwrap_or_else(|| PathBuf::from("kleos-signing-secret.txt"))
 }
 
 fn sign_value(payload: &Value) -> Result<String, AppError> {
