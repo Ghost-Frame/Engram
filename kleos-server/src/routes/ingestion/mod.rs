@@ -1086,55 +1086,85 @@ async fn ingest_text_stream(
         tokio::sync::mpsc::channel::<IngestProgressEvent>(CHANNEL_CAP);
     let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<Event>(CHANNEL_CAP);
 
-    // Spawn ingestion task.
+    // Spawn ingestion task. Bounded by ingest_sem (H-005); shutdown-propagated (M-008).
     let db_clone = db.clone();
     let sse_tx_clone = sse_tx.clone();
-    tokio::spawn(async move {
-        let res =
-            ingestion::ingest_streaming(db_clone, &ctx, &raw_text, options, None, progress_tx)
-                .await;
-        if let Err(e) = res {
-            let _ = sse_tx_clone
-                .send(
-                    Event::default()
-                        .event("error")
-                        .json_data(json!({"error": e.to_string()}))
-                        .unwrap_or_else(|_| Event::default().data("{}")),
-                )
-                .await;
+    let permit = match state.ingest_sem.clone().acquire_owned().await {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::warn!("ingest semaphore closed; skipping background work");
+            return Err(AppError(kleos_lib::EngError::Internal(
+                "ingest semaphore closed".into(),
+            )));
         }
-        // On success the pipeline already emitted IngestProgressEvent::Done,
-        // which the relay forwards as a `progress` event with type=done.
-    });
-
-    // Spawn relay: progress -> SSE. Bounded recv timeout (R8 R-006)
-    // so a stuck upstream cannot leave the relay blocked forever;
-    // on elapse we emit a heartbeat and continue to keep the SSE
-    // connection alive.
-    tokio::spawn(async move {
-        loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(300), progress_rx.recv())
-                .await
-            {
-                Ok(Some(evt)) => {
-                    let sse_event = Event::default()
-                        .event("progress")
-                        .json_data(&evt)
-                        .unwrap_or_else(|_| Event::default().data("{}"));
-                    if sse_tx.send(sse_event).await.is_err() {
-                        break;
-                    }
+    };
+    let shutdown_ingest = state.shutdown_token.clone();
+    {
+        let mut bg = state.background_tasks.lock().await;
+        bg.spawn(async move {
+            let _permit = permit;
+            tokio::select! {
+                _ = shutdown_ingest.cancelled() => {
+                    tracing::debug!("background ingest assembly drained on shutdown");
                 }
-                Ok(None) => break,
-                Err(_) => {
-                    let heartbeat = Event::default().event("heartbeat").data("{}");
-                    if sse_tx.send(heartbeat).await.is_err() {
-                        break;
+                _ = async {
+                    let res =
+                        ingestion::ingest_streaming(db_clone, &ctx, &raw_text, options, None, progress_tx)
+                            .await;
+                    if let Err(e) = res {
+                        let _ = sse_tx_clone
+                            .send(
+                                Event::default()
+                                    .event("error")
+                                    .json_data(json!({"error": e.to_string()}))
+                                    .unwrap_or_else(|_| Event::default().data("{}")),
+                            )
+                            .await;
                     }
-                }
+                    // On success the pipeline already emitted IngestProgressEvent::Done,
+                    // which the relay forwards as a `progress` event with type=done.
+                } => {}
             }
-        }
-    });
+        });
+    }
+
+    // Spawn relay: progress -> SSE. Relay drops with the channel when assembly finishes.
+    // No semaphore needed; bounded recv timeout retained (R8 R-006).
+    let shutdown_relay = state.shutdown_token.clone();
+    {
+        let mut bg = state.background_tasks.lock().await;
+        bg.spawn(async move {
+            tokio::select! {
+                _ = shutdown_relay.cancelled() => {
+                    tracing::debug!("background ingest relay drained on shutdown");
+                }
+                _ = async {
+                    loop {
+                        match tokio::time::timeout(std::time::Duration::from_secs(300), progress_rx.recv())
+                            .await
+                        {
+                            Ok(Some(evt)) => {
+                                let sse_event = Event::default()
+                                    .event("progress")
+                                    .json_data(&evt)
+                                    .unwrap_or_else(|_| Event::default().data("{}"));
+                                if sse_tx.send(sse_event).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(_) => {
+                                let heartbeat = Event::default().event("heartbeat").data("{}");
+                                if sse_tx.send(heartbeat).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } => {}
+            }
+        });
+    }
 
     let stream = futures::stream::unfold(sse_rx, |mut rx| async move {
         rx.recv().await.map(|evt| (Ok::<_, Infallible>(evt), rx))

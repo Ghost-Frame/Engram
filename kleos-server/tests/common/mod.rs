@@ -28,6 +28,8 @@ use kleos_lib::config::Config;
 use kleos_lib::db::Database;
 use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 use kleos_lib::cred::CreddClient;
@@ -68,6 +70,12 @@ pub async fn test_app() -> (Router, AppState) {
         last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         tenant_registry: None,
         handoffs_db: None,
+        shutdown_token: CancellationToken::new(),
+        background_tasks: Arc::new(Mutex::new(JoinSet::new())),
+        fact_extract_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        brain_absorb_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        audit_log_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
     };
     let router = build_router(state.clone());
     (router, state)

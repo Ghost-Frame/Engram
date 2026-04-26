@@ -11,7 +11,9 @@ use kleos_lib::tenant::TenantRegistry;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
-use tokio::sync::{broadcast, watch, Mutex, RwLock};
+use tokio::sync::{broadcast, watch, Mutex, RwLock, Semaphore};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 pub struct SessionBroadcast {
     pub buffer: VecDeque<String>,
@@ -74,6 +76,19 @@ pub struct AppState {
     pub tenant_registry: Option<Arc<TenantRegistry>>,
     /// Dedicated handoffs database for session handoff storage.
     pub handoffs_db: Option<Arc<HandoffsDb>>,
+    /// Shutdown token propagated into all background tasks so SIGTERM drains
+    /// in-flight work rather than abandoning it (H-005/M-008).
+    pub shutdown_token: CancellationToken,
+    /// Process-wide JoinSet for all fire-and-forget background tasks.
+    /// Wired to shutdown_token so tasks receive cancellation on SIGTERM.
+    /// Arc<Mutex<...>> because handlers must lock briefly to push into it.
+    pub background_tasks: Arc<Mutex<JoinSet<()>>>,
+    /// Per-pattern semaphores throttle fire-and-forget spawn sites (H-005).
+    /// Default: 64 permits each; override via KLEOS_BG_SEM_<NAME>=N.
+    pub fact_extract_sem: Arc<Semaphore>,
+    pub brain_absorb_sem: Arc<Semaphore>,
+    pub audit_log_sem: Arc<Semaphore>,
+    pub ingest_sem: Arc<Semaphore>,
 }
 
 impl AppState {

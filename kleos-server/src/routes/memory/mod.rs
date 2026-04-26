@@ -125,27 +125,53 @@ async fn store_memory(
     }
 
     // Background: extract facts, preferences, and state from the new memory.
-    // Fire-and-forget so the store response is not delayed.
+    // Bounded by fact_extract_sem (H-005); shutdown-propagated via shutdown_token (M-008).
     {
         let db = db.clone();
         let memory_id = result.id;
         let user_id = auth.user_id;
         let content_for_extract = content;
-        tokio::spawn(async move {
-            match fast_extract_facts(&db, &content_for_extract, memory_id, user_id, None).await {
-                Ok(stats) => {
-                    let total = stats.facts + stats.preferences + stats.state_updates;
-                    if total > 0 {
-                        tracing::debug!(
-                            memory_id,
-                            facts = stats.facts,
-                            prefs = stats.preferences,
-                            states = stats.state_updates,
-                            "auto-extraction completed"
-                        );
-                    }
+        let permit = match state.fact_extract_sem.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!("fact_extract semaphore closed; skipping background work");
+                let mem = memory::get(&db, result.id, auth.user_id).await?;
+                return Ok((
+                    StatusCode::CREATED,
+                    Json(json!({
+                        "stored": true, "id": result.id, "created_at": mem.created_at,
+                        "importance": mem.importance, "embedded": embedded,
+                        "tags": parse_tags(&mem.tags),
+                        "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
+                    })),
+                ));
+            }
+        };
+        let shutdown = state.shutdown_token.clone();
+        let mut bg = state.background_tasks.lock().await;
+        bg.spawn(async move {
+            let _permit = permit;
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    tracing::debug!("background fact_extract drained on shutdown");
                 }
-                Err(e) => tracing::warn!(memory_id, "auto-extraction failed: {}", e),
+                _ = async {
+                    match fast_extract_facts(&db, &content_for_extract, memory_id, user_id, None).await {
+                        Ok(stats) => {
+                            let total = stats.facts + stats.preferences + stats.state_updates;
+                            if total > 0 {
+                                tracing::debug!(
+                                    memory_id,
+                                    facts = stats.facts,
+                                    prefs = stats.preferences,
+                                    states = stats.state_updates,
+                                    "auto-extraction completed"
+                                );
+                            }
+                        }
+                        Err(e) => tracing::warn!(memory_id, "auto-extraction failed: {}", e),
+                    }
+                } => {}
             }
         });
     }

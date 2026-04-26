@@ -41,8 +41,19 @@ pub async fn audit_middleware(
     let status = response.status().as_u16();
 
     // Spawn fire-and-forget: audit write must not block the response.
+    // Bounded by audit_log_sem (H-005); shutdown-propagated via shutdown_token (M-008).
     let db = state.db.clone();
-    tokio::spawn(async move {
+    let permit = match state.audit_log_sem.clone().acquire_owned().await {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::warn!("audit_log semaphore closed; skipping audit write");
+            return response;
+        }
+    };
+    let shutdown = state.shutdown_token.clone();
+    let mut bg = state.background_tasks.lock().await;
+    bg.spawn(async move {
+        let _permit = permit;
         let (user_id, agent_id) = auth_ctx
             .map(|ctx| (Some(ctx.user_id), ctx.key.agent_id))
             .unwrap_or((None, None));
@@ -50,20 +61,27 @@ pub async fn audit_middleware(
         let action = format!("http.{}", method.to_lowercase());
         let details = format!("path={} status={}", path, status);
 
-        if let Err(e) = kleos_lib::audit::log_request(
-            &db,
-            user_id,
-            agent_id,
-            &action,
-            Some("http"),
-            None,
-            Some(&details),
-            ip.as_deref(),
-            None,
-        )
-        .await
-        {
-            tracing::warn!("audit log failed: {}", e);
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                tracing::debug!("background audit_log drained on shutdown");
+            }
+            _ = async {
+                if let Err(e) = kleos_lib::audit::log_request(
+                    &db,
+                    user_id,
+                    agent_id,
+                    &action,
+                    Some("http"),
+                    None,
+                    Some(&details),
+                    ip.as_deref(),
+                    None,
+                )
+                .await
+                {
+                    tracing::warn!("audit log failed: {}", e);
+                }
+            } => {}
         }
     });
 

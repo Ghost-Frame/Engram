@@ -26,7 +26,7 @@ async fn report_activity(
     let memory_id = process_activity(&db, &body, auth.user_id).await?;
 
     // Brain absorption: fire-and-forget, best-effort, never fails the response.
-    // Requires AppState brain + embedder which are not available in kleos-lib.
+    // Bounded by brain_absorb_sem (H-005); shutdown-propagated via shutdown_token (M-008).
     if let Some(brain) = state.brain.clone() {
         let embedder = state.embedder.clone();
         let content = if let Some(ref project) = body.project {
@@ -49,11 +49,28 @@ async fn report_activity(
         };
         let source = body.agent.clone();
 
-        tokio::spawn(async move {
-            absorb_activity_to_brain(
-                brain, embedder, memory_id, content, category, importance, source,
-            )
-            .await;
+        let permit = match state.brain_absorb_sem.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!("brain_absorb semaphore closed; skipping background work");
+                return Ok((
+                    StatusCode::CREATED,
+                    Json(json!({ "ok": true, "memory_id": memory_id })),
+                ));
+            }
+        };
+        let shutdown = state.shutdown_token.clone();
+        let mut bg = state.background_tasks.lock().await;
+        bg.spawn(async move {
+            let _permit = permit;
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    tracing::debug!("background brain_absorb drained on shutdown");
+                }
+                _ = absorb_activity_to_brain(
+                    brain, embedder, memory_id, content, category, importance, source,
+                ) => {}
+            }
         });
     }
 
