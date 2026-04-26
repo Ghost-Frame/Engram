@@ -20,7 +20,7 @@ pub fn router() -> Router<AppState> {
         .route("/gate/check", post(check_handler))
         .route("/gate/respond", post(respond_handler))
         .route("/gate/complete", post(complete_handler))
-        // Alias for parity with original engram
+        // Alias for parity with original kleos
         .route("/guard", post(guard_handler))
 }
 
@@ -288,8 +288,8 @@ async fn complete_handler(
     Auth(auth): Auth,
     Json(body): Json<CompleteBody>,
 ) -> Result<Json<Value>, AppError> {
-    // engram_stores enforcement: the agent must have stored at least one
-    // memory (i.e. written to engram) between gate-open and gate-complete.
+    // kleos_stores enforcement: the agent must have stored at least one
+    // memory (i.e. written to kleos) between gate-open and gate-complete.
     // This is how we enforce "store outcomes after completing any task".
     let gate_id = body.gate_id;
     let user_id = auth.user_id;
@@ -341,7 +341,7 @@ async fn complete_handler(
         auth.user_id,
     )
     .await?;
-    Ok(Json(json!({ "ok": true, "engram_stores": stored_count })))
+    Ok(Json(json!({ "ok": true, "kleos_stores": stored_count })))
 }
 
 /// Simple guard endpoint that checks if an action conflicts with high-importance static rules.

@@ -300,7 +300,7 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", state.config.host, state.config.port);
     let app = build_router(state);
-    tracing::info!("engram-server listening on {}", addr);
+    tracing::info!("kleos-server listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     // SECURITY: install ConnectInfo<SocketAddr> so rate-limit middleware can
     // read the real TCP peer address instead of falling back to "unknown".

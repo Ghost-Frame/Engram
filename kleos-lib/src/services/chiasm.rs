@@ -396,7 +396,7 @@ mod tests {
             &db,
             CreateTaskRequest {
                 agent: "claude-code".into(),
-                project: "engram-rust".into(),
+                project: "kleos".into(),
                 title: "port syntheos".into(),
                 status: Some("active".into()),
                 summary: Some("phase 27b".into()),
@@ -417,7 +417,7 @@ mod tests {
             &db,
             CreateTaskRequest {
                 agent: "claude-code".into(),
-                project: "engram-rust".into(),
+                project: "kleos".into(),
                 title: "t".into(),
                 status: None,
                 summary: None,

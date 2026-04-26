@@ -12,7 +12,7 @@
 //! - [`conversation_formatter`] projects conversations into the message
 //!   schemas LLM backends expect.
 //!
-//! Routes under `/skills/*` in `engram-server` dispatch into these.
+//! Routes under `/skills/*` in `kleos-server` dispatch into these.
 //! Skills read memories and write derived rows; they must not mutate raw
 //! `memories` outside their own tables.
 

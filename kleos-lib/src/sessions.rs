@@ -88,8 +88,8 @@ pub struct ManagedSession {
     pub output_tx: broadcast::Sender<String>,
     pub exit_code: Option<i32>,
     pub pid: Option<u32>,
-    /// Number of times the agent stored to engram during this session.
-    pub engram_stores: usize,
+    /// Number of times the agent stored to kleos during this session.
+    pub kleos_stores: usize,
     /// Number of user corrections issued during this session.
     pub corrections: usize,
     pub error: Option<String>,
@@ -111,7 +111,7 @@ impl ManagedSession {
             output_tx: tx,
             exit_code: None,
             pid: None,
-            engram_stores: 0,
+            kleos_stores: 0,
             corrections: 0,
             error: None,
         }
@@ -138,7 +138,7 @@ impl ManagedSession {
             "exit_code": self.exit_code,
             "pid": self.pid,
             "corrections": self.corrections,
-            "engram_stores": self.engram_stores,
+            "kleos_stores": self.kleos_stores,
             "error": self.error,
             "output_lines": self.output_buffer.len(),
         })

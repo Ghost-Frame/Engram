@@ -91,7 +91,7 @@ async fn post_prompt_generate(
     let mut sections: Vec<String> = Vec::new();
 
     sections.push(format!(
-        "You are {agent}, an agent working under the Engram memory system. Be concise, accurate, and cite memories when useful."
+        "You are {agent}, an agent working under the Kleos memory system. Be concise, accurate, and cite memories when useful."
     ));
 
     if include_personality {
@@ -276,7 +276,7 @@ async fn post_prompt_generate(
                         }));
                     }
 
-                    let engram_url = state
+                    let kleos_url = state
                         .config
                         .eidolon
                         .url
@@ -289,7 +289,7 @@ async fn post_prompt_generate(
                         &task_contradictions,
                         &infra_memories,
                         &failure_memories,
-                        engram_url,
+                        kleos_url,
                         &state.config.servers,
                         &state.config.safety.rules,
                     );

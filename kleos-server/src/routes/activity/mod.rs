@@ -26,7 +26,7 @@ async fn report_activity(
     let memory_id = process_activity(&db, &body, auth.user_id).await?;
 
     // Brain absorption: fire-and-forget, best-effort, never fails the response.
-    // Requires AppState brain + embedder which are not available in engram-lib.
+    // Requires AppState brain + embedder which are not available in kleos-lib.
     if let Some(brain) = state.brain.clone() {
         let embedder = state.embedder.clone();
         let content = if let Some(ref project) = body.project {

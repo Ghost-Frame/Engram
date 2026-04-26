@@ -1,6 +1,6 @@
 //! File watcher for Claude Code session JSONL files.
 //! Monitors ~/.claude/projects/*/sessions/*.jsonl for changes,
-//! parses new entries, and stores condensed summaries to Engram.
+//! parses new entries, and stores condensed summaries to Kleos.
 
 use std::collections::HashMap;
 use std::fs::File;

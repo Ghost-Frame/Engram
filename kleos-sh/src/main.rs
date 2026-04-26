@@ -34,7 +34,7 @@ fn resolve_api_key() -> Option<String> {
         }
     }
     let output = std::process::Command::new("cred")
-        .args(["get", "engram-rust", "claude-code-wsl", "--raw"])
+        .args(["get", "kleos", "claude-code-wsl", "--raw"])
         .output()
         .ok()?;
     if output.status.success() {

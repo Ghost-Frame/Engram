@@ -323,7 +323,7 @@ mod tests {
     use uuid::Uuid;
 
     fn temp_path() -> String {
-        let dir = std::env::temp_dir().join(format!("engram-lance-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("kleos-lance-{}", Uuid::new_v4()));
         dir.to_string_lossy().to_string()
     }
 

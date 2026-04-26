@@ -630,7 +630,7 @@ pub async fn emit_webhook_event(
         if let Some(secret) = hook.secret.as_deref() {
             if !secret.is_empty() {
                 let signature = sign_body(secret, body_str.as_bytes());
-                headers.push(("X-Engram-Signature".to_string(), signature));
+                headers.push(("X-Kleos-Signature".to_string(), signature));
             }
         }
 
@@ -641,13 +641,13 @@ pub async fn emit_webhook_event(
         // R8 R-003: wrap the fire-and-forget task so panics and final
         // failures surface in metrics/logs instead of silently disappearing
         // into a detached JoinHandle.
-        metrics::counter!("engram_webhooks_deliver_spawned_total").increment(1);
+        metrics::counter!("kleos_webhooks_deliver_spawned_total").increment(1);
         tokio::spawn(async move {
             let fut = deliver_with_retry(db_clone, hook, event_s, body_str, headers);
             match tokio::task::spawn(fut).await {
                 Ok(()) => {}
                 Err(join_err) if join_err.is_panic() => {
-                    metrics::counter!("engram_webhooks_deliver_panicked_total").increment(1);
+                    metrics::counter!("kleos_webhooks_deliver_panicked_total").increment(1);
                     tracing::error!(
                         hook_id,
                         event = %event_label,
@@ -655,7 +655,7 @@ pub async fn emit_webhook_event(
                     );
                 }
                 Err(join_err) => {
-                    metrics::counter!("engram_webhooks_deliver_aborted_total").increment(1);
+                    metrics::counter!("kleos_webhooks_deliver_aborted_total").increment(1);
                     tracing::warn!(
                         hook_id,
                         event = %event_label,

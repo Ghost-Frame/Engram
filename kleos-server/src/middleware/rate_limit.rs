@@ -118,7 +118,7 @@ pub async fn preauth_rate_limit_middleware(
 
 /// Axum middleware implementing per-user sliding-window rate limiting.
 ///
-/// Uses the DB-backed rate limiter from engram-lib. The limit (requests/minute)
+/// Uses the DB-backed rate limiter from kleos-lib. The limit (requests/minute)
 /// is read from the authenticated API key's `rate_limit` field.
 ///
 /// Per-endpoint cost multipliers (3.16) make expensive operations (context,

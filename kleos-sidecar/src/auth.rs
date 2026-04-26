@@ -41,7 +41,7 @@ pub async fn require_token(
     }
 
     // If no token was configured, skip auth entirely.
-    // The sidecar binds to 127.0.0.1 only and proxies to the Engram server
+    // The sidecar binds to 127.0.0.1 only and proxies to the Kleos server
     // (which has its own auth), so localhost-only operation is safe without
     // a shared secret.
     let Some(expected) = state.token.as_deref() else {

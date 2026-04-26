@@ -51,7 +51,7 @@ use types::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        // Consolidation (with root-level alias for parity with original engram)
+        // Consolidation (with root-level alias for parity with original kleos)
         .route("/consolidate", post(consolidate_handler))
         .route("/intelligence/consolidate", post(consolidate_handler))
         .route(

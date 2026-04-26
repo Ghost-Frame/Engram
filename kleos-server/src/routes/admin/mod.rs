@@ -805,7 +805,7 @@ async fn backup_handler(
     // same path, and a predictable path cannot be pre-created by a local
     // unprivileged user to redirect VACUUM INTO.
     let tmp_path = std::env::temp_dir().join(format!(
-        "engram-backup-{}-{}.db",
+        "kleos-backup-{}-{}.db",
         chrono::Utc::now().timestamp_millis(),
         uuid::Uuid::new_v4()
     ));
@@ -837,7 +837,7 @@ async fn backup_handler(
             (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
             (
                 axum::http::header::CONTENT_DISPOSITION,
-                "attachment; filename=\"engram-backup.db\"",
+                "attachment; filename=\"kleos-backup.db\"",
             ),
         ],
         bytes,

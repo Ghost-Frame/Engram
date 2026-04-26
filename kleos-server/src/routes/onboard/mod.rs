@@ -22,7 +22,7 @@ static FETCH_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock:
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent("Engram/5.8 (fetch)")
+        .user_agent("Kleos/5.8 (fetch)")
         .pool_max_idle_per_host(4)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
@@ -41,7 +41,7 @@ async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json
     let store_result = memory::store(
         &state.db,
         StoreRequest {
-            content: "Engram onboarding test memory -- safe to delete".into(),
+            content: "Kleos onboarding test memory -- safe to delete".into(),
             category: "system".into(),
             source: "onboarding".into(),
             importance: 5,

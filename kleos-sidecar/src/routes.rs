@@ -100,10 +100,10 @@ async fn resume_session(
     // Query Kleos for the count of observations stored for this session.
     let url_str = format!("{}/memory/search", state.kleos_url);
     let url = kleos_lib::net::validate_outbound_url(&url_str).map_err(|e| {
-        tracing::error!(error = %e, "resume: engram url rejected");
+        tracing::error!(error = %e, "resume: kleos url rejected");
         (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "engram url invalid" })),
+            Json(json!({ "error": "kleos url invalid" })),
         )
     })?;
 
@@ -400,10 +400,10 @@ async fn post_with_fallback(
 ) -> Result<reqwest::Response, (StatusCode, Json<Value>)> {
     let url_str = format!("{}{}", state.kleos_url, primary);
     let url = kleos_lib::net::validate_outbound_url(&url_str).map_err(|e| {
-        tracing::error!(error = %e, "engram url rejected");
+        tracing::error!(error = %e, "kleos url rejected");
         (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "engram url invalid" })),
+            Json(json!({ "error": "kleos url invalid" })),
         )
     })?;
     let mut req = state.client.post(url).json(body);
@@ -412,10 +412,10 @@ async fn post_with_fallback(
     }
 
     let response = req.send().await.map_err(|e| {
-        tracing::error!(error = %e, "engram server request failed");
+        tracing::error!(error = %e, "kleos server request failed");
         (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "engram server unreachable" })),
+            Json(json!({ "error": "kleos server unreachable" })),
         )
     })?;
 
@@ -423,10 +423,10 @@ async fn post_with_fallback(
         tracing::debug!(primary = %primary, fallback = %fallback, "trying fallback path");
         let url_str = format!("{}{}", state.kleos_url, fallback);
         let url = kleos_lib::net::validate_outbound_url(&url_str).map_err(|e| {
-            tracing::error!(error = %e, "engram fallback url rejected");
+            tracing::error!(error = %e, "kleos fallback url rejected");
             (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": "engram url invalid" })),
+                Json(json!({ "error": "kleos url invalid" })),
             )
         })?;
         let mut req = state.client.post(url).json(body);
@@ -434,10 +434,10 @@ async fn post_with_fallback(
             req = req.header("Authorization", format!("Bearer {}", api_key));
         }
         return req.send().await.map_err(|e| {
-            tracing::error!(error = %e, "engram server fallback request failed");
+            tracing::error!(error = %e, "kleos server fallback request failed");
             (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": "engram server unreachable" })),
+                Json(json!({ "error": "kleos server unreachable" })),
             )
         });
     }
@@ -471,18 +471,18 @@ async fn recall(
 
     if !response.status().is_success() {
         let status = response.status();
-        tracing::error!(user_id = state.user_id, status = %status, "engram server returned error");
+        tracing::error!(user_id = state.user_id, status = %status, "kleos server returned error");
         return Err((
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("engram server error: {}", status) })),
+            Json(json!({ "error": format!("kleos server error: {}", status) })),
         ));
     }
 
     let results: Value = response.json().await.map_err(|e| {
-        tracing::error!(user_id = state.user_id, error = %e, "failed to parse engram response");
+        tracing::error!(user_id = state.user_id, error = %e, "failed to parse kleos response");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "invalid response from engram server" })),
+            Json(json!({ "error": "invalid response from kleos server" })),
         )
     })?;
 
@@ -834,7 +834,7 @@ pub async fn flush_pending(state: &SidecarState, session_id: &str) -> usize {
     let url = match kleos_lib::net::validate_outbound_url(&url_str) {
         Ok(u) => u,
         Err(e) => {
-            tracing::error!(error = %e, "batch flush: engram url rejected");
+            tracing::error!(error = %e, "batch flush: kleos url rejected");
             finalize_flush(state, session_id, Vec::new(), observations).await;
             metrics::inc_flush("fail");
             return 0;
@@ -864,7 +864,7 @@ pub async fn flush_pending(state: &SidecarState, session_id: &str) -> usize {
             }
 
             let response = req.send().await.map_err(|e| {
-                tracing::warn!(session_id = %sid, error = %e, "batch flush: engram unreachable");
+                tracing::warn!(session_id = %sid, error = %e, "batch flush: kleos unreachable");
                 e.to_string()
             })?;
 
@@ -1071,7 +1071,7 @@ async fn flush_pending_fallback(
                     tool = %obs.tool_name,
                     session_id = %session_id,
                     status = %response.status(),
-                    "fallback flush: engram server rejected observation"
+                    "fallback flush: kleos server rejected observation"
                 );
                 failed.push(obs);
             }

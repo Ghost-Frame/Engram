@@ -109,10 +109,10 @@ async fn import_handler(
     }
     if let Some(obj) = body.as_object() {
         if obj.contains_key("memories") {
-            // Engram JSON export or generic format with memories key
+            // Kleos JSON export or generic format with memories key
             let version = obj.get("version").and_then(|v| v.as_str());
             if version.is_some() {
-                return import_engram_export(&db, auth.user_id, obj).await;
+                return import_kleos_export(&db, auth.user_id, obj).await;
             }
             // mem0-style: has "memories" but no version
             if let Some(arr) = obj.get("memories").and_then(|v| v.as_array()) {
@@ -139,7 +139,7 @@ async fn import_handler(
     )))
 }
 
-async fn import_engram_export(
+async fn import_kleos_export(
     db: &Arc<Database>,
     _user_id: i64,
     obj: &serde_json::Map<String, Value>,
@@ -197,12 +197,12 @@ async fn import_engram_export(
                 ).map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
             }).await {
                 Ok(_) => imported += 1,
-                Err(e) => { tracing::warn!("import_engram_memory_failed: {}", e); skipped += 1; }
+                Err(e) => { tracing::warn!("import_kleos_memory_failed: {}", e); skipped += 1; }
             }
         }
     }
     Ok(Json(
-        json!({ "imported": imported, "skipped": skipped, "format": "engram" }),
+        json!({ "imported": imported, "skipped": skipped, "format": "kleos" }),
     ))
 }
 

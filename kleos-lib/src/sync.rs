@@ -1,4 +1,4 @@
-//! Sync receive -- apply changes from another engram instance.
+//! Sync receive -- apply changes from another kleos instance.
 
 use serde::{Deserialize, Serialize};
 

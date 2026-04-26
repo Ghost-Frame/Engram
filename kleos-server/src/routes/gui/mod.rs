@@ -296,7 +296,7 @@ fn verify_cookie(cookie: &str, secret: &SecretString) -> Option<GuiSession> {
     })
 }
 
-/// Extract the engram_auth cookie from headers
+/// Extract the kleos_auth cookie from headers
 fn get_auth_cookie(headers: &HeaderMap) -> Option<String> {
     headers
         .get(header::COOKIE)?
@@ -518,7 +518,7 @@ fn login_html() -> &'static str {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Engram Login</title>
+    <title>Kleos Login</title>
     <style>
         body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
         .login-box { background: #16213e; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,0.3); max-width: 400px; width: 100%; }
@@ -532,10 +532,10 @@ fn login_html() -> &'static str {
 </head>
 <body>
     <div class="login-box">
-        <h1>Engram</h1>
+        <h1>Kleos</h1>
         <div class="error" id="error">Invalid API key</div>
         <form id="login-form">
-            <input type="password" name="api_key" placeholder="API Key (engram_...)" autofocus required>
+            <input type="password" name="api_key" placeholder="API Key" autofocus required>
             <button type="submit">Login</button>
         </form>
         <p class="hint">Use your API key to authenticate</p>

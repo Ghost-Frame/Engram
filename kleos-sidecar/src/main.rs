@@ -31,9 +31,9 @@ struct ConfigFile {
     source: Option<String>,
     user_id: Option<i64>,
     token: Option<String>,
-    #[serde(alias = "engram_url")]
+    #[serde(alias = "kleos_url")]
     kleos_url: Option<String>,
-    #[serde(alias = "engram_api_key")]
+    #[serde(alias = "kleos_api_key")]
     kleos_api_key: Option<String>,
     watch: Option<bool>,
     watch_dir: Option<String>,
@@ -73,33 +73,33 @@ fn load_config_file(path: &str) -> ConfigFile {
 
 #[derive(Parser, Debug, Clone)]
 #[command(
-    name = "engram-sidecar",
-    about = "Engram memory sidecar for agent sessions"
+    name = "kleos-sidecar",
+    about = "Kleos memory sidecar for agent sessions"
 )]
 struct Cli {
     /// Path to a TOML config file. Keys mirror CLI flags.
     /// Config file values are overridden by env vars and CLI flags.
-    #[arg(long, env = "ENGRAM_SIDECAR_CONFIG")]
+    #[arg(long, env = "KLEOS_SIDECAR_CONFIG")]
     config: Option<String>,
 
-    #[arg(short, long, env = "ENGRAM_SIDECAR_PORT")]
+    #[arg(short, long, env = "KLEOS_SIDECAR_PORT")]
     port: Option<u16>,
 
-    #[arg(long, env = "ENGRAM_SIDECAR_HOST")]
+    #[arg(long, env = "KLEOS_SIDECAR_HOST")]
     host: Option<String>,
 
     #[arg(long)]
     session_id: Option<String>,
 
-    #[arg(long, env = "ENGRAM_SIDECAR_SOURCE")]
+    #[arg(long, env = "KLEOS_SIDECAR_SOURCE")]
     source: Option<String>,
 
-    #[arg(long, env = "ENGRAM_SIDECAR_USER_ID")]
+    #[arg(long, env = "KLEOS_SIDECAR_USER_ID")]
     user_id: Option<i64>,
 
     /// Shared-secret token clients must send as `Authorization: Bearer <token>`.
     /// If unset, a fresh token is generated at startup.
-    #[arg(long, env = "ENGRAM_SIDECAR_TOKEN")]
+    #[arg(long, env = "KLEOS_SIDECAR_TOKEN")]
     token: Option<String>,
 
     /// Kleos server URL for memory storage/retrieval.
@@ -111,7 +111,7 @@ struct Cli {
     kleos_api_key: Option<String>,
 
     /// Enable file watcher for Claude Code session JSONL files.
-    #[arg(long, env = "ENGRAM_SIDECAR_WATCH")]
+    #[arg(long, env = "KLEOS_SIDECAR_WATCH")]
     watch: bool,
 
     /// Directory to watch for session files (default: ~/.claude/projects).
@@ -119,40 +119,40 @@ struct Cli {
     watch_dir: Option<String>,
 
     /// Path to the watcher position checkpoint JSON file.
-    #[arg(long, env = "ENGRAM_SIDECAR_WATCHER_STATE_PATH")]
+    #[arg(long, env = "KLEOS_SIDECAR_WATCHER_STATE_PATH")]
     watcher_state_path: Option<PathBuf>,
 
     /// Size-based flush threshold.
-    #[arg(long, env = "ENGRAM_SIDECAR_BATCH_SIZE")]
+    #[arg(long, env = "KLEOS_SIDECAR_BATCH_SIZE")]
     batch_size: Option<usize>,
 
     /// Time-based flush interval (milliseconds).
-    #[arg(long, env = "ENGRAM_SIDECAR_BATCH_INTERVAL_MS")]
+    #[arg(long, env = "KLEOS_SIDECAR_BATCH_INTERVAL_MS")]
     batch_interval_ms: Option<u64>,
 
     /// Maximum observations held in pending before /observe returns 503.
-    #[arg(long, env = "ENGRAM_SIDECAR_MAX_PENDING")]
+    #[arg(long, env = "KLEOS_SIDECAR_MAX_PENDING")]
     max_pending_per_session: Option<usize>,
 
     /// Byte threshold below which /compress passes content through without LLM.
-    #[arg(long, env = "ENGRAM_SIDECAR_COMPRESS_PASSTHROUGH_BYTES")]
+    #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_PASSTHROUGH_BYTES")]
     compress_passthrough_bytes: Option<usize>,
 
     /// Maximum input bytes sent to the LLM for compression. Requests larger than
     /// this are rejected with 413 rather than silently truncated.
-    #[arg(long, env = "ENGRAM_SIDECAR_COMPRESS_MAX_INPUT_BYTES")]
+    #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_MAX_INPUT_BYTES")]
     compress_max_input_bytes: Option<usize>,
 
     /// LLM call timeout for /compress (milliseconds).
-    #[arg(long, env = "ENGRAM_SIDECAR_COMPRESS_TIMEOUT_MS")]
+    #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_TIMEOUT_MS")]
     compress_timeout_ms: Option<u64>,
 
     /// Sessions idle longer than this are removed from memory (seconds). Default 86400.
-    #[arg(long, env = "ENGRAM_SIDECAR_SESSION_IDLE_TTL_SECS")]
+    #[arg(long, env = "KLEOS_SIDECAR_SESSION_IDLE_TTL_SECS")]
     session_idle_ttl_secs: Option<u64>,
 
     /// Log output format: "text" (default, human-readable) or "json" (structured).
-    #[arg(long, env = "ENGRAM_SIDECAR_LOG_FORMAT", default_value = "text")]
+    #[arg(long, env = "KLEOS_SIDECAR_LOG_FORMAT", default_value = "text")]
     log_format: String,
 }
 
@@ -272,7 +272,7 @@ async fn main() {
         init_json_tracing();
     } else {
         let _guard =
-            kleos_lib::observability::init_tracing("engram-sidecar", "kleos_sidecar=debug");
+            kleos_lib::observability::init_tracing("kleos-sidecar", "kleos_sidecar=debug");
         // Note: _guard is intentionally not held for the process lifetime here;
         // the OTel shutdown happens at process exit via the guard's Drop. In
         // json mode we skip OTel to avoid the extra dependency on the recorder.
@@ -311,7 +311,7 @@ async fn main() {
             let generated = auth::generate_token();
             tracing::warn!(
                 host = %rc.host,
-                "ENGRAM_SIDECAR_TOKEN not set; generated one-time sidecar token (printed to stderr)"
+                "KLEOS_SIDECAR_TOKEN not set; generated one-time sidecar token (printed to stderr)"
             );
             // SECURITY (SEC-LOW-5): print token once to stderr so the launching
             // process can capture it. Full value intentionally not in logs.
@@ -328,7 +328,7 @@ async fn main() {
     } else {
         tracing::info!(
             host = %rc.host,
-            "no ENGRAM_SIDECAR_TOKEN set; running without auth (localhost-only)"
+            "no KLEOS_SIDECAR_TOKEN set; running without auth (localhost-only)"
         );
     }
 
@@ -371,7 +371,7 @@ async fn main() {
         }
         // If a custom checkpoint path was provided, wire it via env so watcher picks it up.
         if let Some(ref cp) = rc.watcher_state_path {
-            std::env::set_var("ENGRAM_SIDECAR_WATCHER_STATE_PATH", cp);
+            std::env::set_var("KLEOS_SIDECAR_WATCHER_STATE_PATH", cp);
         }
         let _watcher_handle = watcher::start(state.clone());
     }
@@ -460,7 +460,7 @@ async fn main() {
 
     tracing::info!(addr = %addr, "sidecar listening");
 
-    // Soma registration and 60s heartbeat (opt-in via ENGRAM_SIDECAR_SYNTHEOS=1).
+    // Soma registration and 60s heartbeat (opt-in via KLEOS_SIDECAR_SYNTHEOS=1).
     if state.syntheos.enabled {
         state
             .syntheos

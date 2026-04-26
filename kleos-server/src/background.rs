@@ -295,9 +295,9 @@ pub fn resolve_backup_dir(data_dir: &str, backup_dir: &str) -> PathBuf {
     }
 }
 
-/// Format `engram-backup-YYYYMMDD-HHMMSS.db` timestamp component.
+/// Format `kleos-backup-YYYYMMDD-HHMMSS.db` timestamp component.
 fn backup_filename(now: chrono::DateTime<chrono::Utc>) -> String {
-    format!("engram-backup-{}.db", now.format("%Y%m%d-%H%M%S"))
+    format!("kleos-backup-{}.db", now.format("%Y%m%d-%H%M%S"))
 }
 
 /// List existing backup files in `dir` sorted oldest-first.
@@ -309,7 +309,7 @@ pub fn list_backups(dir: &Path) -> Vec<PathBuf> {
             .filter(|p| {
                 p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("engram-backup-") && n.ends_with(".db"))
+                    .is_some_and(|n| n.starts_with("kleos-backup-") && n.ends_with(".db"))
             })
             .collect(),
         Err(_) => return Vec::new(),
@@ -319,10 +319,10 @@ pub fn list_backups(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Extract the `YYYYMMDD` date component from a backup filename.
-/// Returns None if the filename doesn't match `engram-backup-YYYYMMDD-HHMMSS.db`.
+/// Returns None if the filename doesn't match `kleos-backup-YYYYMMDD-HHMMSS.db`.
 pub fn backup_date_component(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
-    let stem = name.strip_prefix("engram-backup-")?.strip_suffix(".db")?;
+    let stem = name.strip_prefix("kleos-backup-")?.strip_suffix(".db")?;
     // stem is "YYYYMMDD-HHMMSS"
     let (date, _) = stem.split_once('-')?;
     if date.len() == 8 && date.chars().all(|c| c.is_ascii_digit()) {
@@ -375,7 +375,7 @@ pub fn prune_backups(dir: &Path, retention: usize) -> usize {
     deleted
 }
 
-/// Runs `VACUUM INTO <dir>/engram-backup-<ts>.db` on a configured interval,
+/// Runs `VACUUM INTO <dir>/kleos-backup-<ts>.db` on a configured interval,
 /// verifies `PRAGMA integrity_check` AND a read-only restore-test query on
 /// the result, then prunes oldest backups beyond retention. After the hourly
 /// backup is verified the first time for each UTC date, it's promoted by
@@ -592,13 +592,13 @@ mod tests {
     #[test]
     fn list_backups_filters_by_prefix_and_sorts() {
         let dir =
-            std::env::temp_dir().join(format!("engram-backups-list-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("kleos-backups-list-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         // Create files out of order; list_backups should sort them.
         for name in [
-            "engram-backup-20260101-000000.db",
-            "engram-backup-20260103-000000.db",
-            "engram-backup-20260102-000000.db",
+            "kleos-backup-20260101-000000.db",
+            "kleos-backup-20260103-000000.db",
+            "kleos-backup-20260102-000000.db",
             "junk.db",
             "not-a-backup.txt",
         ] {
@@ -606,19 +606,19 @@ mod tests {
         }
         let listed = list_backups(&dir);
         assert_eq!(listed.len(), 3);
-        assert!(listed[0].ends_with("engram-backup-20260101-000000.db"));
-        assert!(listed[2].ends_with("engram-backup-20260103-000000.db"));
+        assert!(listed[0].ends_with("kleos-backup-20260101-000000.db"));
+        assert!(listed[2].ends_with("kleos-backup-20260103-000000.db"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn backup_date_component_parses_valid_names() {
         assert_eq!(
-            backup_date_component(Path::new("engram-backup-20260101-120000.db")),
+            backup_date_component(Path::new("kleos-backup-20260101-120000.db")),
             Some("20260101".into())
         );
         assert_eq!(
-            backup_date_component(Path::new("/x/engram-backup-20261231-235959.db")),
+            backup_date_component(Path::new("/x/kleos-backup-20261231-235959.db")),
             Some("20261231".into())
         );
     }
@@ -626,55 +626,55 @@ mod tests {
     #[test]
     fn backup_date_component_rejects_malformed_names() {
         assert_eq!(
-            backup_date_component(Path::new("engram-backup-notadate-xxxx.db")),
+            backup_date_component(Path::new("kleos-backup-notadate-xxxx.db")),
             None
         );
         assert_eq!(backup_date_component(Path::new("junk.db")), None);
-        assert_eq!(backup_date_component(Path::new("engram-backup-.db")), None);
+        assert_eq!(backup_date_component(Path::new("kleos-backup-.db")), None);
     }
 
     #[test]
     fn promote_to_daily_copies_first_backup_of_date() {
-        let dir = std::env::temp_dir().join(format!("engram-promote-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("kleos-promote-{}", uuid::Uuid::new_v4()));
         let daily = dir.join("daily");
         std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("engram-backup-20260415-120000.db");
+        let src = dir.join("kleos-backup-20260415-120000.db");
         std::fs::write(&src, b"hello").unwrap();
         let result = promote_to_daily(&src, &daily).expect("promote");
         let promoted = result.expect("first promotion copies");
         assert!(promoted.exists());
-        assert!(promoted.ends_with("engram-backup-20260415-120000.db"));
+        assert!(promoted.ends_with("kleos-backup-20260415-120000.db"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn promote_to_daily_skips_when_date_already_promoted() {
-        let dir = std::env::temp_dir().join(format!("engram-promote2-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("kleos-promote2-{}", uuid::Uuid::new_v4()));
         let daily = dir.join("daily");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(&daily).unwrap();
         // An earlier hourly from the same UTC date already sits in daily/
-        std::fs::write(daily.join("engram-backup-20260415-060000.db"), b"earlier").unwrap();
-        let src = dir.join("engram-backup-20260415-180000.db");
+        std::fs::write(daily.join("kleos-backup-20260415-060000.db"), b"earlier").unwrap();
+        let src = dir.join("kleos-backup-20260415-180000.db");
         std::fs::write(&src, b"later").unwrap();
         let result = promote_to_daily(&src, &daily).expect("promote");
         assert!(result.is_none(), "should not re-promote same date");
         // The earlier file is still there; the later one was NOT copied.
-        assert!(daily.join("engram-backup-20260415-060000.db").exists());
-        assert!(!daily.join("engram-backup-20260415-180000.db").exists());
+        assert!(daily.join("kleos-backup-20260415-060000.db").exists());
+        assert!(!daily.join("kleos-backup-20260415-180000.db").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn prune_backups_removes_oldest_beyond_retention() {
         let dir =
-            std::env::temp_dir().join(format!("engram-backups-prune-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("kleos-backups-prune-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         for name in [
-            "engram-backup-20260101-000000.db",
-            "engram-backup-20260102-000000.db",
-            "engram-backup-20260103-000000.db",
-            "engram-backup-20260104-000000.db",
+            "kleos-backup-20260101-000000.db",
+            "kleos-backup-20260102-000000.db",
+            "kleos-backup-20260103-000000.db",
+            "kleos-backup-20260104-000000.db",
         ] {
             std::fs::write(dir.join(name), b"").unwrap();
         }
@@ -682,8 +682,8 @@ mod tests {
         assert_eq!(deleted, 2);
         let remaining = list_backups(&dir);
         assert_eq!(remaining.len(), 2);
-        assert!(remaining[0].ends_with("engram-backup-20260103-000000.db"));
-        assert!(remaining[1].ends_with("engram-backup-20260104-000000.db"));
+        assert!(remaining[0].ends_with("kleos-backup-20260103-000000.db"));
+        assert!(remaining[1].ends_with("kleos-backup-20260104-000000.db"));
         std::fs::remove_dir_all(&dir).ok();
     }
 

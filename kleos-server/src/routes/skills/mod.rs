@@ -490,7 +490,7 @@ async fn cloud_upload_handler(
 }
 
 // ---------------------------------------------------------------------------
-// Sync, Execute, Upload handlers (parity with original engram)
+// Sync, Execute, Upload handlers (parity with original kleos)
 // ---------------------------------------------------------------------------
 
 /// Sync skills from filesystem directories.

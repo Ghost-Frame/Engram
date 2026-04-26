@@ -69,7 +69,7 @@ impl TenantRegistry {
     /// Create a registry with an in-memory database for testing.
     #[cfg(test)]
     pub fn new_memory(config: TenantConfig, vector_dimensions: usize) -> Result<Self> {
-        let data_root = PathBuf::from("/tmp/engram-test");
+        let data_root = PathBuf::from("/tmp/kleos-test");
         let registry_db = Arc::new(RegistryDb::open_memory()?);
         let loader = Arc::new(TenantLoader::new(
             data_root.clone(),

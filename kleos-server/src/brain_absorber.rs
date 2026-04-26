@@ -2,7 +2,7 @@
 ///
 /// Brain absorption requires Arc<dyn BrainBackend> and EmbeddingProvider,
 /// both of which are only available via AppState. This module contains the
-/// server-side logic that ports Eidolon's absorber.rs concepts into Engram.
+/// server-side logic that ports Eidolon's absorber.rs concepts into Kleos.
 use chrono::Utc;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -105,7 +105,7 @@ pub async fn absorb_session_to_brain(
     let task_excerpt: String = task.chars().take(100).collect();
 
     let summary = format!(
-        "Engram session ({}) for task \"{}\": {}. Agent: {}. Corrections: {}.",
+        "Kleos session ({}) for task \"{}\": {}. Agent: {}. Corrections: {}.",
         session_short_id, task_excerpt, outcome, agent, corrections,
     );
 
@@ -121,7 +121,7 @@ pub async fn absorb_session_to_brain(
         &summary,
         &format!("{}task", category_prefix),
         importance,
-        "engram-server",
+        "kleos-server",
     )
     .await;
 
@@ -137,7 +137,7 @@ pub async fn absorb_session_to_brain(
             &block_content,
             &format!("{}issue", category_prefix),
             8.0,
-            "engram-server",
+            "kleos-server",
         )
         .await;
     }
@@ -161,7 +161,7 @@ pub async fn absorb_session_to_brain(
             &discovery_content,
             &format!("{}discovery", category_prefix),
             5.0,
-            "engram-server",
+            "kleos-server",
         )
         .await;
         tracing::info!(

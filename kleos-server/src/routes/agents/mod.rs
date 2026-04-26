@@ -293,7 +293,7 @@ fn signing_secret_path() -> PathBuf {
     if let Ok(path) = std::env::var("ENGRAM_SIGNING_SECRET_FILE") {
         return PathBuf::from(path);
     }
-    PathBuf::from("engram-signing-secret.txt")
+    PathBuf::from("kleos-signing-secret.txt")
 }
 
 fn sign_value(payload: &Value) -> Result<String, AppError> {

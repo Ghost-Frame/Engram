@@ -12,7 +12,7 @@
 // predictable shape and keeps error responses aligned with the existing
 // `AppError` output (`{error: "..."}`).
 //
-// Existing handlers that return flat JSON are listed in `engram-lib::pagination`
+// Existing handlers that return flat JSON are listed in `kleos-lib::pagination`
 // under the migration queue; they will be converted incrementally. Until
 // then, clients can rely on either shape and new code should prefer the
 // envelope.
@@ -22,7 +22,7 @@
 // A single sweep across ~45 handlers would invalidate every existing SDK.
 // The envelope is additive: new routes use it from day one, and legacy
 // handlers migrate when touched for unrelated reasons. Tracked in
-// `engram-lib::pagination` module docs.
+// `kleos-lib::pagination` module docs.
 
 use axum::{
     http::StatusCode,

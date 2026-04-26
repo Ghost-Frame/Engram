@@ -78,7 +78,7 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
 
     Json(json!({
         "status": "ok",
-        "service": "engram",
+        "service": "kleos",
         "version": env!("CARGO_PKG_VERSION"),
         "memories": memories,
         "entities": entities,
@@ -94,7 +94,7 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
 async fn get_live() -> Json<Value> {
     Json(json!({
         "status": "ok",
-        "service": "engram",
+        "service": "kleos",
         "version": env!("CARGO_PKG_VERSION")
     }))
 }
@@ -145,7 +145,7 @@ async fn get_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         status,
         Json(json!({
             "status": if all_ok { "ready" } else { "not_ready" },
-            "service": "engram",
+            "service": "kleos",
             "version": env!("CARGO_PKG_VERSION"),
             "checks": checks,
             "failing": failing,
@@ -189,34 +189,34 @@ async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Respons
         .await
         .unwrap_or(0);
 
-    lines.push("# HELP engram_memories_total Total non-forgotten memories".to_string());
-    lines.push("# TYPE engram_memories_total gauge".to_string());
-    lines.push(format!("engram_memories_total {}", mem_count));
+    lines.push("# HELP kleos_memories_total Total non-forgotten memories".to_string());
+    lines.push("# TYPE kleos_memories_total gauge".to_string());
+    lines.push(format!("kleos_memories_total {}", mem_count));
     lines.push(String::new());
 
-    lines.push("# HELP engram_embedded_total Memories with embeddings".to_string());
-    lines.push("# TYPE engram_embedded_total gauge".to_string());
-    lines.push(format!("engram_embedded_total {}", emb_count));
+    lines.push("# HELP kleos_embedded_total Memories with embeddings".to_string());
+    lines.push("# TYPE kleos_embedded_total gauge".to_string());
+    lines.push(format!("kleos_embedded_total {}", emb_count));
     lines.push(String::new());
 
     // Job stats
     if let Ok(stats) = jobs::get_job_stats(&state.db).await {
-        lines.push("# HELP engram_jobs_total Jobs by status".to_string());
-        lines.push("# TYPE engram_jobs_total gauge".to_string());
+        lines.push("# HELP kleos_jobs_total Jobs by status".to_string());
+        lines.push("# TYPE kleos_jobs_total gauge".to_string());
         lines.push(format!(
-            "engram_jobs_total{{status=\"pending\"}} {}",
+            "kleos_jobs_total{{status=\"pending\"}} {}",
             stats.pending
         ));
         lines.push(format!(
-            "engram_jobs_total{{status=\"running\"}} {}",
+            "kleos_jobs_total{{status=\"running\"}} {}",
             stats.running
         ));
         lines.push(format!(
-            "engram_jobs_total{{status=\"completed\"}} {}",
+            "kleos_jobs_total{{status=\"completed\"}} {}",
             stats.completed
         ));
         lines.push(format!(
-            "engram_jobs_total{{status=\"failed\"}} {}",
+            "kleos_jobs_total{{status=\"failed\"}} {}",
             stats.failed
         ));
         lines.push(String::new());

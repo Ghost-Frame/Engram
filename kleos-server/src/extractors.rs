@@ -25,7 +25,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Auth {
             .map(Auth)
             .ok_or((
                 StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "Authentication required. Provide Bearer engram_* token." })),
+                Json(json!({ "error": "Authentication required. Provide Bearer token." })),
             ));
         std::future::ready(result)
     }

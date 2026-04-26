@@ -43,7 +43,7 @@ async fn swagger_ui() -> Response {
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Engram API -- Swagger UI</title>
+  <title>Kleos API -- Swagger UI</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css" />
   <style>body { margin: 0; }</style>
 </head>
@@ -85,9 +85,9 @@ fn build_openapi_spec() -> Value {
     json!({
         "openapi": "3.1.0",
         "info": {
-            "title": "Engram Memory API",
+            "title": "Kleos Memory API",
             "version": env!("CARGO_PKG_VERSION"),
-            "description": "OpenAPI surface for the Engram Rust server. \
+            "description": "OpenAPI surface for the Kleos Rust server. \
                 Per-field definitions of core domain objects (Memory, SearchResult, \
                 MemoryLink, services) are also served by the live schema \
                 introspection endpoints: `GET /schema`, `GET /schema/memory`, \
@@ -139,7 +139,7 @@ fn build_openapi_spec() -> Value {
                 },
                 "PageMeta": {
                     "type": "object",
-                    "description": "Standard pagination metadata. See engram-lib::pagination.",
+                    "description": "Standard pagination metadata. See kleos-lib::pagination.",
                     "required": ["has_more"],
                     "properties": {
                         "next_cursor": { "type": "string", "description": "Forward cursor for the next page; absent at end." },

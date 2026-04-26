@@ -235,7 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn tenant_pool_creates_and_validates() -> Result<()> {
-        let db_path = temp_db_path("engram-tenant-pool");
+        let db_path = temp_db_path("kleos-tenant-pool");
         let pools = TenantPools::new(&db_path, TenantPoolConfig::default()).await?;
 
         let count: i64 = pools
@@ -253,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn tenant_pool_write_and_read() -> Result<()> {
-        let db_path = temp_db_path("engram-tenant-pool-rw");
+        let db_path = temp_db_path("kleos-tenant-pool-rw");
         let pools = TenantPools::new(&db_path, TenantPoolConfig::default()).await?;
 
         pools
