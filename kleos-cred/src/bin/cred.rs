@@ -14,7 +14,8 @@ use crossterm::terminal::{
 };
 use crossterm::ExecutableCommand;
 use kleos_cred::crypto::{
-    decrypt_recovery, derive_key_legacy, encrypt_recovery, generate_hmac_secret, KEY_SIZE,
+    decrypt as crypto_decrypt, decrypt_recovery, derive_key_legacy, encrypt as crypto_encrypt,
+    encrypt_recovery, generate_hmac_secret, KEY_SIZE,
 };
 use kleos_cred::storage;
 use kleos_cred::types::SecretData;
@@ -22,7 +23,7 @@ use kleos_cred::yubikey;
 use kleos_lib::db::Database;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// YubiKey-encrypted credential manager.
 #[derive(Parser)]
@@ -96,6 +97,37 @@ enum Commands {
     },
     /// Interactive TUI for browsing and managing secrets
     Tui,
+    /// Manage the YubiKey-encrypted bootstrap blob (credd's master Kleos key)
+    Bootstrap {
+        #[command(subcommand)]
+        cmd: BootstrapCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum BootstrapCmd {
+    /// Wrap an existing cred store entry into bootstrap.enc.
+    /// Used once per host to seal credd's privileged Kleos key. Default
+    /// output is `~/.config/cred/bootstrap.enc`.
+    Wrap {
+        /// Service (category) name in the cred DB.
+        service: String,
+        /// Key (name) in the cred DB.
+        key: String,
+        /// Optional output path (default: ~/.config/cred/bootstrap.enc).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Unwrap bootstrap.enc and print the bare key to stdout.
+    /// Manual escape hatch only -- credd is the normal consumer.
+    Unwrap {
+        /// Optional input path (default: ~/.config/cred/bootstrap.enc).
+        #[arg(long)]
+        from: Option<PathBuf>,
+        /// Print bare value with no trailing newline (for piping).
+        #[arg(long)]
+        raw: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -187,6 +219,16 @@ async fn main() -> Result<()> {
                 Commands::Export => cmd_export(&db, &key).await,
                 Commands::AgentKey { action } => cmd_agent_key(&db, action).await,
                 Commands::Tui => cmd_tui(&db, &key).await,
+                Commands::Bootstrap { cmd: bcmd } => match bcmd {
+                    BootstrapCmd::Wrap {
+                        service,
+                        key: secret_key,
+                        out,
+                    } => cmd_bootstrap_wrap(&db, &key, &service, &secret_key, out).await,
+                    BootstrapCmd::Unwrap { from, raw } => {
+                        cmd_bootstrap_unwrap(&key, from, raw).await
+                    }
+                },
                 Commands::Init | Commands::Recover { .. } => unreachable!(),
             }
         }
@@ -1469,4 +1511,187 @@ fn draw_detail_modal(f: &mut Frame, secret: &TuiSecret, show_value: bool) {
             .title(" detail "),
     );
     f.render_widget(detail, modal_area);
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap blob (CBv1) wrap / unwrap
+// ---------------------------------------------------------------------------
+
+/// On-disk magic for the credd bootstrap blob.
+const BOOTSTRAP_MAGIC: &[u8; 4] = b"CBv1";
+/// ASCII record separator used to split the JSON header from the bare key.
+const HEADER_KEY_SEPARATOR: u8 = 0x1E;
+
+fn bootstrap_default_path() -> PathBuf {
+    config_dir().join("bootstrap.enc")
+}
+
+fn read_hostname() -> String {
+    std::fs::read_to_string("/etc/hostname")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into()))
+}
+
+/// Read an ApiKey-typed cred entry, encrypt with the just-derived master
+/// key, and write a CBv1 blob to disk (mode 0600). credd will decrypt this
+/// blob at startup using the same YubiKey-derived key.
+async fn cmd_bootstrap_wrap(
+    db: &Database,
+    master_key: &[u8; KEY_SIZE],
+    service: &str,
+    secret_key: &str,
+    out_path: Option<PathBuf>,
+) -> Result<()> {
+    let out = out_path.unwrap_or_else(bootstrap_default_path);
+
+    let (_row, data) = storage::get_secret(db, 1, service, secret_key, master_key)
+        .await
+        .with_context(|| format!("entry {}/{} not found in cred store", service, secret_key))?;
+
+    let bare_key = match &data {
+        SecretData::ApiKey { key, .. } => key.clone(),
+        other => anyhow::bail!(
+            "bootstrap can only wrap ApiKey-typed entries (got: {}/{} of type {:?})",
+            service,
+            secret_key,
+            std::mem::discriminant(other)
+        ),
+    };
+
+    let hostname = read_hostname();
+    let header = serde_json::json!({
+        "v": 1,
+        "slot": format!("{}/{}", service, secret_key),
+        "host": hostname,
+    });
+    let header_bytes = serde_json::to_vec(&header)?;
+
+    let mut payload: Zeroizing<Vec<u8>> =
+        Zeroizing::new(Vec::with_capacity(header_bytes.len() + 1 + bare_key.len()));
+    payload.extend_from_slice(&header_bytes);
+    payload.push(HEADER_KEY_SEPARATOR);
+    payload.extend_from_slice(bare_key.as_bytes());
+
+    let ciphertext = crypto_encrypt(master_key, &payload).context("encrypt bootstrap blob")?;
+
+    let mut blob = Vec::with_capacity(BOOTSTRAP_MAGIC.len() + ciphertext.len());
+    blob.extend_from_slice(BOOTSTRAP_MAGIC);
+    blob.extend_from_slice(&ciphertext);
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&out)?
+            .write_all(&blob)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&out, &blob)?;
+    }
+
+    eprintln!("wrote {} bytes to {}", blob.len(), out.display());
+    Ok(())
+}
+
+/// Decrypt a CBv1 bootstrap blob and print the bare bearer to stdout.
+/// Used as a manual escape hatch when credd itself cannot serve the bearer.
+async fn cmd_bootstrap_unwrap(
+    master_key: &[u8; KEY_SIZE],
+    from_path: Option<PathBuf>,
+    raw: bool,
+) -> Result<()> {
+    let from = from_path.unwrap_or_else(bootstrap_default_path);
+
+    let data = std::fs::read(&from).with_context(|| format!("failed to read {}", from.display()))?;
+
+    if data.len() < BOOTSTRAP_MAGIC.len() || &data[..BOOTSTRAP_MAGIC.len()] != BOOTSTRAP_MAGIC {
+        anyhow::bail!(
+            "not a CBv1 bootstrap blob: {} (got magic {:?})",
+            from.display(),
+            &data[..BOOTSTRAP_MAGIC.len().min(data.len())]
+        );
+    }
+
+    let plaintext_bytes = crypto_decrypt(master_key, &data[BOOTSTRAP_MAGIC.len()..])
+        .context("decryption failed (wrong YubiKey or corrupted blob)")?;
+    let plaintext: Zeroizing<Vec<u8>> = Zeroizing::new(plaintext_bytes);
+
+    let sep_pos = plaintext
+        .iter()
+        .position(|&b| b == HEADER_KEY_SEPARATOR)
+        .ok_or_else(|| anyhow::anyhow!("malformed CBv1 payload: missing 0x1E separator"))?;
+    let (header_bytes, key_bytes) = plaintext.split_at(sep_pos);
+    let key_bytes = &key_bytes[1..]; // skip the 0x1E byte itself
+
+    if let Ok(hdr) = serde_json::from_slice::<serde_json::Value>(header_bytes) {
+        let slot = hdr.get("slot").and_then(|v| v.as_str()).unwrap_or("?");
+        let host = hdr.get("host").and_then(|v| v.as_str()).unwrap_or("?");
+        eprintln!("bootstrap blob: slot={} host={}", slot, host);
+    }
+
+    let bare_key_str =
+        std::str::from_utf8(key_bytes).context("bootstrap blob key bytes are not valid UTF-8")?;
+
+    if raw {
+        print!("{}", bare_key_str);
+    } else {
+        println!("{}", bare_key_str);
+    }
+    io::stdout().flush()?;
+
+    drop(plaintext);
+    Ok(())
+}
+
+#[cfg(test)]
+mod bootstrap_tests {
+    use super::*;
+
+    #[test]
+    fn cbv1_format_roundtrip() {
+        let key = derive_key_legacy(b"01234567890123456789");
+        let bare = "kl_test_bearer_xyz789";
+
+        let header = serde_json::json!({"v":1,"slot":"engram-rust/credd-test","host":"test"});
+        let header_bytes = serde_json::to_vec(&header).unwrap();
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&header_bytes);
+        payload.push(HEADER_KEY_SEPARATOR);
+        payload.extend_from_slice(bare.as_bytes());
+
+        let ciphertext = crypto_encrypt(&key, &payload).unwrap();
+        let mut blob = BOOTSTRAP_MAGIC.to_vec();
+        blob.extend_from_slice(&ciphertext);
+
+        assert_eq!(&blob[..4], BOOTSTRAP_MAGIC);
+
+        let decrypted = crypto_decrypt(&key, &blob[4..]).unwrap();
+        let sep = decrypted
+            .iter()
+            .position(|&b| b == HEADER_KEY_SEPARATOR)
+            .unwrap();
+        let (hdr_bytes, rest) = decrypted.split_at(sep);
+        let key_bytes = &rest[1..];
+
+        let hdr: serde_json::Value = serde_json::from_slice(hdr_bytes).unwrap();
+        assert_eq!(hdr["v"], 1);
+        assert_eq!(hdr["slot"], "engram-rust/credd-test");
+        assert_eq!(key_bytes, bare.as_bytes());
+    }
+
+    #[test]
+    fn wrong_magic_detected() {
+        let bad = b"BAD1somegarbage";
+        assert_ne!(&bad[..4], BOOTSTRAP_MAGIC);
+    }
 }
