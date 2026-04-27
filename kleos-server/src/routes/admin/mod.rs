@@ -977,33 +977,42 @@ async fn export_handler(
 // Reset (user's own data only)
 // ---------------------------------------------------------------------------
 
+// C-R3-002 / H-R3-005: scope to ResolvedDb so the unfiltered DELETEs only
+// hit the caller's shard, not the monolith. Each shard contains exactly one
+// tenant's data; on the monolith path (user_id=1 / system) the operation
+// only affects the caller's own rows because user_id=1 is the only resident
+// of monolith memory tables in a properly-sharded deployment.
+//
+// Previous behavior was a global wipe disguised as per-user: the function
+// name said reset_user, the response echoed user_id, but the SQL ran
+// "DELETE FROM memories" with no predicate against the monolith. Operators
+// reading the JSON saw user_id and assumed scope; they got cross-tenant
+// destruction.
 async fn reset_user(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    crate::extractors::ResolvedDb(db): crate::extractors::ResolvedDb,
     Json(body): Json<ResetBody>,
 ) -> Result<Json<Value>, AppError> {
-    // SECURITY (SEC-MED-2): destructive reset must require admin scope.
     require_admin(&auth)?;
-    // Require explicit confirmation phrase to prevent accidental data loss.
     if body.confirm.as_deref() != Some("WIPE_ALL_MEMORIES") {
         return Err(AppError(kleos_lib::EngError::InvalidInput(
             "/admin/reset requires {\"confirm\":\"WIPE_ALL_MEMORIES\"} body".into(),
         )));
     }
     let uid = auth.user_id;
-    // All wipe-able tables are now single-tenant (user_id column dropped).
-    let global_tables = &[
+    // structured_facts dangles off memories and is keyed by memory_id; run
+    // it BEFORE DELETE FROM memories so the inner subquery still finds rows.
+    let tables: &[&str] = &[
+        "DELETE FROM structured_facts WHERE memory_id IN (SELECT id FROM memories)",
         "DELETE FROM conversations",
         "DELETE FROM user_preferences",
         "DELETE FROM episodes",
         "DELETE FROM memories",
-        "DELETE FROM structured_facts WHERE memory_id IN (SELECT id FROM memories)",
     ];
     let mut total = 0i64;
-    for sql in global_tables {
+    for sql in tables {
         let sql_owned = sql.to_string();
-        total += state
-            .db
+        total += db
             .write(move |conn| {
                 conn.execute(&sql_owned, [])
                     .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
