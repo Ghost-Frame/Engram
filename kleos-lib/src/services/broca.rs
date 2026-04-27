@@ -39,7 +39,7 @@ pub struct BrocaStats {
 }
 
 const ACTION_COLUMNS: &str =
-    "id, agent, service, action, payload, narrative, axon_event_id, created_at";
+    "id, agent, service, action, payload, narrative, axon_event_id, user_id, created_at";
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
@@ -56,8 +56,8 @@ fn row_to_action_entry(row: &rusqlite::Row<'_>) -> Result<ActionEntry> {
         payload,
         narrative: row.get(5).map_err(rusqlite_to_eng_error)?,
         axon_event_id: row.get(6).map_err(rusqlite_to_eng_error)?,
-        user_id: 1,
-        created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
+        user_id: row.get(7).map_err(rusqlite_to_eng_error)?,
+        created_at: row.get(8).map_err(rusqlite_to_eng_error)?,
     })
 }
 
@@ -82,9 +82,17 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
         .write(move |conn| {
             conn.execute(
                 "INSERT INTO broca_actions
-                    (agent, service, action, payload, narrative, axon_event_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![agent, svc, action, payload_str, narrative, axon_event_id,],
+                    (agent, service, action, payload, narrative, axon_event_id, user_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    agent,
+                    svc,
+                    action,
+                    payload_str,
+                    narrative,
+                    axon_event_id,
+                    user_id,
+                ],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(conn.last_insert_rowid())
@@ -102,31 +110,31 @@ pub async fn query_actions(
     action: Option<&str>,
     limit: usize,
     offset: usize,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Vec<ActionEntry>> {
-    let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions");
-    let mut clauses: Vec<String> = Vec::new();
-    let mut param_idx = 1usize;
-    let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
+    // H-R3-006: previously this took _user_id and ignored it; broca_actions
+    // had no user_id column, so any caller could read any tenant's rows.
+    // After tenant migration v42 + monolith migration v45 the column exists
+    // and we filter on it.
+    let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE user_id = ?1");
+    let mut params_vec: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Integer(user_id)];
+    let mut param_idx = 2usize;
 
     if let Some(a) = agent {
-        clauses.push(format!("agent = ?{}", param_idx));
+        sql.push_str(&format!(" AND agent = ?{}", param_idx));
         params_vec.push(rusqlite::types::Value::Text(a.to_string()));
         param_idx += 1;
     }
     if let Some(s) = service {
-        clauses.push(format!("service = ?{}", param_idx));
+        sql.push_str(&format!(" AND service = ?{}", param_idx));
         params_vec.push(rusqlite::types::Value::Text(s.to_string()));
         param_idx += 1;
     }
     if let Some(act) = action {
-        clauses.push(format!("action = ?{}", param_idx));
+        sql.push_str(&format!(" AND action = ?{}", param_idx));
         params_vec.push(rusqlite::types::Value::Text(act.to_string()));
         param_idx += 1;
-    }
-    if !clauses.is_empty() {
-        sql.push_str(" WHERE ");
-        sql.push_str(&clauses.join(" AND "));
     }
     sql.push_str(&format!(
         " ORDER BY id DESC LIMIT ?{} OFFSET ?{}",
@@ -150,13 +158,14 @@ pub async fn query_actions(
 }
 
 #[tracing::instrument(skip(db), fields(action_id = id, user_id))]
-pub async fn get_action(db: &Database, id: i64, _user_id: i64) -> Result<ActionEntry> {
-    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1");
+pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEntry> {
+    let sql =
+        format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id])
+            .query(rusqlite::params![id, user_id])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
             .next()
@@ -167,13 +176,13 @@ pub async fn get_action(db: &Database, id: i64, _user_id: i64) -> Result<ActionE
     .await
 }
 
-#[tracing::instrument(skip(db))]
-pub async fn get_stats(db: &Database) -> Result<BrocaStats> {
+#[tracing::instrument(skip(db), fields(user_id))]
+pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
     db.read(move |conn| {
         conn.query_row(
             "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
-             FROM broca_actions",
-            [],
+             FROM broca_actions WHERE user_id = ?1",
+            rusqlite::params![user_id],
             |row| {
                 Ok(BrocaStats {
                     total_actions: row.get(0)?,
@@ -193,7 +202,12 @@ mod tests {
     use crate::db::Database;
 
     async fn setup() -> Database {
-        Database::connect_memory().await.expect("db")
+        let db = Database::connect_memory().await.expect("db");
+        // Apply monolith migrations so broca_actions exists with user_id (v45).
+        db.write(|conn| crate::db::migrations::run_migrations(conn))
+            .await
+            .expect("migrations");
+        db
     }
 
     #[tokio::test]
@@ -215,17 +229,15 @@ mod tests {
         .expect("log");
         assert_eq!(entry.service, "kleos");
         assert_eq!(entry.action, "task.started");
+        assert_eq!(entry.user_id, 1);
         let fetched = get_action(&db, entry.id, 1).await.unwrap();
         assert_eq!(fetched.id, entry.id);
     }
 
-    /// Phase 5.6 dropped user_id from broca_actions: tenant isolation is
-    /// at the database level now, so a shared in-memory DB no longer
-    /// separates user 1 and user 2. The tenant-aware form of this
-    /// invariant lands in kleos-server/tests once Phase 4.2 wires the
-    /// tenant-aware test harness.
+    /// H-R3-006 regression test (un-ignored from Phase 5.6). After v45
+    /// re-added user_id, query_actions filters by user_id again so a row
+    /// owned by user 1 must not surface to a query scoped to user 2.
     #[tokio::test]
-    #[ignore]
     async fn query_is_scoped_by_user() {
         let db = setup().await;
         log_action(
@@ -245,6 +257,48 @@ mod tests {
         let other = query_actions(&db, None, None, None, 10, 0, 2)
             .await
             .unwrap();
-        assert!(other.is_empty());
+        assert!(other.is_empty(), "user 2 must not see user 1's actions");
+        let mine = query_actions(&db, None, None, None, 10, 0, 1)
+            .await
+            .unwrap();
+        assert_eq!(mine.len(), 1, "user 1 should see their own row");
+        assert_eq!(mine[0].user_id, 1);
+    }
+
+    #[tokio::test]
+    async fn get_stats_is_scoped_by_user() {
+        let db = setup().await;
+        log_action(
+            &db,
+            LogActionRequest {
+                agent: "alice".into(),
+                service: Some("s".into()),
+                action: "x".into(),
+                narrative: None,
+                payload: None,
+                axon_event_id: None,
+                user_id: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        log_action(
+            &db,
+            LogActionRequest {
+                agent: "bob".into(),
+                service: Some("s".into()),
+                action: "x".into(),
+                narrative: None,
+                payload: None,
+                axon_event_id: None,
+                user_id: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+        let s1 = get_stats(&db, 1).await.unwrap();
+        let s2 = get_stats(&db, 2).await.unwrap();
+        assert_eq!(s1.total_actions, 1);
+        assert_eq!(s2.total_actions, 1);
     }
 }

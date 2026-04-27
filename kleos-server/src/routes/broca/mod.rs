@@ -1,11 +1,11 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::broca::{
     get_action, get_stats as get_broca_stats, log_action, query_actions, LogActionRequest,
@@ -26,8 +26,8 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn log_action_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<LogActionBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let action = body.action.clone().unwrap_or_else(|| "unknown".to_string());
@@ -53,13 +53,13 @@ async fn log_action_handler(
         user_id: Some(auth.user_id),
     };
 
-    let entry = log_action(&state.db, req).await?;
+    let entry = log_action(&db, req).await?;
     Ok((StatusCode::CREATED, Json(json!(entry))))
 }
 
 async fn list_actions_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<QueryActionsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
@@ -69,16 +69,8 @@ async fn list_actions_handler(
     let service = params.service.as_deref();
     let action = params.action.as_deref();
 
-    let mut entries = query_actions(
-        &state.db,
-        agent,
-        service,
-        action,
-        limit,
-        offset,
-        auth.user_id,
-    )
-    .await?;
+    let mut entries =
+        query_actions(&db, agent, service, action, limit, offset, auth.user_id).await?;
 
     // Apply since filter in-memory if provided
     if let Some(ref since) = params.since {
@@ -89,17 +81,17 @@ async fn list_actions_handler(
 }
 
 async fn get_action_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let entry = get_action(&state.db, id, auth.user_id).await?;
+    let entry = get_action(&db, id, auth.user_id).await?;
     Ok(Json(json!(entry)))
 }
 
 async fn get_feed_handler(
-    State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<QueryActionsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
@@ -107,7 +99,7 @@ async fn get_feed_handler(
     let agent = params.agent.as_deref();
 
     let mut entries =
-        query_actions(&state.db, agent, None, None, limit, offset, auth.user_id).await?;
+        query_actions(&db, agent, None, None, limit, offset, auth.user_id).await?;
 
     if let Some(ref since) = params.since {
         entries.retain(|e| e.created_at.as_str() >= since.as_str());
@@ -117,9 +109,9 @@ async fn get_feed_handler(
 }
 
 async fn get_stats(
-    State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_broca_stats(&state.db).await?;
+    let stats = get_broca_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }
