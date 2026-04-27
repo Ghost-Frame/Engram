@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-# Find engram-cli
-ENGRAM_CLI="${ENGRAM_CLI:-$(command -v engram-cli 2>/dev/null || echo '')}"
+# Find kleos-cli
+ENGRAM_CLI="${ENGRAM_CLI:-$(command -v kleos-cli 2>/dev/null || echo '')}"
 if [ -z "$ENGRAM_CLI" ] || [ ! -f "$ENGRAM_CLI" ]; then
   exit 0
 fi

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Claude Code PostToolUse hook - Mnemonic observer (Rust sidecar)
-# Reports tool usage to engram-sidecar for pattern learning and auto-capture.
-# Requires: engram-sidecar running on localhost:7711
+# Reports tool usage to kleos-sidecar for pattern learning and auto-capture.
+# Requires: kleos-sidecar running on localhost:7711
 # Accepts both legacy {tool, summary} and current {tool_name, content} formats.
 
 set -euo pipefail

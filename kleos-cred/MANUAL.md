@@ -167,8 +167,8 @@ cred store kleos credd-$(hostname) --secret-type api-key
 cred bootstrap wrap kleos credd-$(hostname)
 # wraps the privileged Kleos master bearer for credd
 
-cred agent-key generate shell-wsl --scope bootstrap/claude-code-wsl \
-    -d "WSL shell+hooks credd auth"
+cred agent-key generate shell-$(hostname) --scope "bootstrap/claude-code-${USER}-$(hostname)" \
+    -d "shell+hooks credd auth"
 # token prints once; save to ~/.config/cred/credd-agent-key.token
 ```
 

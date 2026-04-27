@@ -349,7 +349,7 @@ const ECDH_HKDF_SALT: &[u8] = b"credd-ecdh-v1";
 
 #[derive(Deserialize)]
 pub struct EcdhBearerRequest {
-    /// Agent slot (e.g. "claude-code-wsl"). Used for HKDF info field.
+    /// Agent slot (e.g. "claude-code-alice-myhost"). Used for HKDF info field.
     pub agent: String,
     /// Client's ephemeral P-256 public key, hex-encoded SubjectPublicKeyInfo
     /// DER (the form `p256::PublicKey::to_public_key_der().as_bytes()`

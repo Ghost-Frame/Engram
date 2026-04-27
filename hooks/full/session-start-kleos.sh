@@ -1,7 +1,7 @@
 #!/bin/bash
 # Claude Code SessionStart hook: bootstrap context via Eidolon daemon.
 # Calls Eidolon /prompt/generate for brain-aware context, /activity for registration.
-# Falls back to direct engram-cli if Eidolon unreachable.
+# Falls back to direct kleos-cli if Eidolon unreachable.
 
 set -euo pipefail
 
@@ -27,11 +27,11 @@ mkdir -p "$LOG_DIR" "$STATE_DIR" 2>/dev/null || true
 
 # --- Write bootstrap stamps IMMEDIATELY (before any fallible call). ---
 # Rationale: the rest of this script makes network calls to Eidolon and
-# engram-cli under `set -euo pipefail`. Any sporadic failure there used to
+# kleos-cli under `set -euo pipefail`. Any sporadic failure there used to
 # silently kill the script before the stamp was written, leaving the
 # pre-bash-guardrail blocking every subsequent command. The stamp represents
 # "bootstrap started" not "bootstrap succeeded" -- the guardrail fallback
-# just needs any engram-ready-* file to exist. We rewrite STAMP_FILE with
+# just needs any kleos-ready-* file to exist. We rewrite STAMP_FILE with
 # the success marker at the end of the script.
 _NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)"
 printf 'bootstrapping\t%s\t%s\n' "$_NOW" "early" > "$STATE_DIR/engram-ready-${PPID:-$$}" 2>/dev/null || true
@@ -109,17 +109,21 @@ except: pass
   fi
 fi
 
-# --- 3. Recent memories via engram-cli (lightweight, local) ---
-resolve_engram_cli() {
+# --- 3. Recent memories via kleos-cli (lightweight, local) ---
+# Resolves kleos-cli, falling back to the legacy engram-cli alias for installs
+# that haven't reinstalled since the rename.
+resolve_kleos_cli() {
+  if [ -n "${KLEOS_CLI:-}" ]; then printf '%s\n' "$KLEOS_CLI"; return; fi
   if [ -n "${ENGRAM_CLI:-}" ]; then printf '%s\n' "$ENGRAM_CLI"; return; fi
+  if command -v kleos-cli >/dev/null 2>&1; then command -v kleos-cli; return; fi
   if command -v engram-cli >/dev/null 2>&1; then command -v engram-cli; return; fi
-  printf '%s/.local/bin/engram-cli\n' "$HOME_DIR"
+  printf '%s/.local/bin/kleos-cli\n' "$HOME_DIR"
 }
 
-ENGRAM_CLI="$(resolve_engram_cli)"
+KLEOS_CLI="$(resolve_kleos_cli)"
 RECENT_MEMORIES=""
-if [ -f "$ENGRAM_CLI" ]; then
-  LIST_RAW=$("$ENGRAM_CLI" list --limit 5 --json --quiet 2>/dev/null || echo "")
+if [ -f "$KLEOS_CLI" ]; then
+  LIST_RAW=$("$KLEOS_CLI" list --limit 5 --json --quiet 2>/dev/null || echo "")
   if [ -n "$LIST_RAW" ]; then
     RECENT_MEMORIES=$(python3 -c "
 import sys, json
@@ -137,29 +141,30 @@ except: pass
   fi
 fi
 
-# --- 4. Fallback: if Eidolon unreachable, query engram-cli directly ---
+# --- 4. Fallback: if Eidolon unreachable, query kleos-cli directly ---
 if [ -z "$PROMPT_RESULT" ]; then
-  log "Eidolon unreachable, falling back to direct engram-cli"
-  _resolve_engram_key() {
+  log "Eidolon unreachable, falling back to direct kleos-cli"
+  _resolve_kleos_key() {
+    if [ -n "${KLEOS_API_KEY:-}" ]; then printf '%s\n' "$KLEOS_API_KEY"; return; fi
     if [ -n "${ENGRAM_API_KEY:-}" ]; then printf '%s\n' "$ENGRAM_API_KEY"; return; fi
     if command -v cred >/dev/null 2>&1; then
       local resolved
-      resolved="$(cred get engram api-key-claude --raw 2>/dev/null || true)"
+      resolved="$(cred get kleos api-key-claude --raw 2>/dev/null || cred get engram api-key-claude --raw 2>/dev/null || true)"
       if [ -n "$resolved" ]; then printf '%s\n' "$resolved"; return; fi
     fi
     printf '\n'
   }
-  ENGRAM_API_KEY="$(_resolve_engram_key)"
-  if [ -f "$ENGRAM_CLI" ] && [ -n "$ENGRAM_API_KEY" ]; then
-    PROMPT_RESULT=$("$ENGRAM_CLI" context "agent-rules critical infrastructure active-tasks recent-decisions personality" --budget 3000 --quiet 2>/dev/null || echo "")
+  KLEOS_API_KEY="$(_resolve_kleos_key)"
+  if [ -f "$KLEOS_CLI" ] && [ -n "$KLEOS_API_KEY" ]; then
+    PROMPT_RESULT=$("$KLEOS_CLI" context "agent-rules critical infrastructure active-tasks recent-decisions personality" --budget 3000 --quiet 2>/dev/null || echo "")
   fi
 fi
 
 # --- Handle total failure ---
 if [ -z "$PROMPT_RESULT" ] && [ -z "$RECENT_MEMORIES" ]; then
-  log "No context from Eidolon or Engram"
-  echo "EIDOLON AND ENGRAM UNREACHABLE. Do NOT proceed with infrastructure work until context is confirmed."
-  echo "MANDATORY: Use engram-cli to check connectivity."
+  log "No context from Eidolon or Kleos"
+  echo "EIDOLON AND KLEOS UNREACHABLE. Do NOT proceed with infrastructure work until context is confirmed."
+  echo "MANDATORY: Use kleos-cli to check connectivity."
   exit 0
 fi
 
@@ -181,10 +186,10 @@ fi
 CONTEXT_BLOCK+="
 
 === MANDATORY RULES ===
-Use the Engram skill and local engram-cli via Git Bash (Bash tool) for ALL Engram operations (search, store, list, context). Never use curl for Engram. Do NOT use WSL.
+Use the Kleos skill and local kleos-cli via Git Bash (Bash tool) for ALL Kleos operations (search, store, list, context). Never use curl for Kleos. Do NOT use WSL.
 Use OpenSpace MCP tools for all OpenSpace operations.
-Search Engram BEFORE asking Master any question about servers, credentials, or past decisions.
-Store outcomes to Engram AFTER completing any task. Do not batch. Do not wait.
+Search Kleos BEFORE asking Master any question about servers, credentials, or past decisions.
+Store outcomes to Kleos AFTER completing any task. Do not batch. Do not wait.
 If Chiasm task ID exists at /tmp/chiasm-claude-task-id, update task status on changes.
 EIDOLON: Before ANY destructive/irreversible action, the pre-bash-guardrail hook handles gate checks automatically. If gate returns deny, STOP and ask Master. No exceptions."
 

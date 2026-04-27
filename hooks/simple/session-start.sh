@@ -1,7 +1,7 @@
 #!/bin/bash
 # Claude Code SessionStart hook - Simple version
 # Bootstraps context from Engram at session start.
-# Requires: engram-cli in PATH, ENGRAM_URL and ENGRAM_API_KEY env vars
+# Requires: kleos-cli in PATH, ENGRAM_URL and ENGRAM_API_KEY env vars
 
 set -euo pipefail
 
@@ -21,10 +21,10 @@ json_escape() {
   printf '%s' "$s"
 }
 
-# Find engram-cli
-ENGRAM_CLI="${ENGRAM_CLI:-$(command -v engram-cli 2>/dev/null || echo '')}"
+# Find kleos-cli
+ENGRAM_CLI="${ENGRAM_CLI:-$(command -v kleos-cli 2>/dev/null || echo '')}"
 if [ -z "$ENGRAM_CLI" ] || [ ! -f "$ENGRAM_CLI" ]; then
-  echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"engram-cli not found. Install it or set ENGRAM_CLI env var."}}'
+  echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"kleos-cli not found. Install it or set ENGRAM_CLI env var."}}'
   exit 0
 fi
 
