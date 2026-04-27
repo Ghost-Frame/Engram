@@ -350,8 +350,23 @@ mod tests {
         env::remove_var("CREDD_AGENT_KEY");
         env::remove_var("CREDD_SOCKET");
         env::remove_var("CREDD_BIND");
+        // Hosts with PIV configured carry a real ~/.config/cred/piv-9d-pubkey.pem
+        // which would otherwise route resolve_api_key through ECDH and miss the
+        // env-var assertion under test. Point XDG_CONFIG_HOME at a fresh tempdir
+        // so piv_pubkey_path() resolves to a non-existent file.
+        let prev_xdg = env::var("XDG_CONFIG_HOME").ok();
+        let isolated = tempfile::tempdir().unwrap();
+        env::set_var("XDG_CONFIG_HOME", isolated.path());
         let result = resolve_api_key("no-credd-slot-unique-xyz").await;
-        assert!(matches!(result, Err(CredError::NoAgentKey)));
+        match prev_xdg {
+            Some(v) => env::set_var("XDG_CONFIG_HOME", v),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+        assert!(
+            matches!(result, Err(CredError::NoAgentKey)),
+            "expected NoAgentKey, got {:?}",
+            result
+        );
     }
 
     #[cfg(unix)]
@@ -385,11 +400,20 @@ mod tests {
         env::remove_var("ENGRAM_API_KEY");
         env::set_var("CREDD_AGENT_KEY", "test-agent-token");
         env::set_var("CREDD_SOCKET", &sock_str);
+        // Skip the ECDH branch on PIV-configured hosts; see
+        // no_env_no_credd_returns_error above for the same isolation.
+        let prev_xdg = env::var("XDG_CONFIG_HOME").ok();
+        let isolated = tempfile::tempdir().unwrap();
+        env::set_var("XDG_CONFIG_HOME", isolated.path());
 
         let result = resolve_api_key("foo").await;
 
         env::remove_var("CREDD_AGENT_KEY");
         env::remove_var("CREDD_SOCKET");
+        match prev_xdg {
+            Some(v) => env::set_var("XDG_CONFIG_HOME", v),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
 
         server.abort();
 
