@@ -678,8 +678,11 @@ async fn gui_create_memory(
         )));
     }
 
+    // M-R3-007: route writes to the caller's shard so /gui/memory/* and
+    // /memory/* share the same backing store.
+    let db = crate::extractors::resolve_db_for_user(&state, user_id).await?;
     let result = memory::store(
-        &state.db,
+        &db,
         memory::types::StoreRequest {
             content: content.to_string(),
             category: body.category.unwrap_or_else(|| "general".to_string()),
@@ -720,7 +723,8 @@ async fn gui_update_memory(
         embedding: None,
     };
 
-    memory::update(&state.db, id, req, user_id).await?;
+    let db = crate::extractors::resolve_db_for_user(&state, user_id).await?;
+    memory::update(&db, id, req, user_id).await?;
     Ok(Json(json!({ "updated": true, "id": id })))
 }
 
@@ -731,7 +735,8 @@ async fn gui_delete_memory(
 ) -> Result<Json<Value>, AppError> {
     let user_id = require_gui_scope(&state, &headers, Scope::Write).await?;
 
-    memory::delete(&state.db, id, user_id).await?;
+    let db = crate::extractors::resolve_db_for_user(&state, user_id).await?;
+    memory::delete(&db, id, user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -742,9 +747,10 @@ async fn gui_bulk_archive(
 ) -> Result<Json<Value>, AppError> {
     let user_id = require_gui_scope(&state, &headers, Scope::Write).await?;
 
+    let db = crate::extractors::resolve_db_for_user(&state, user_id).await?;
     let mut archived = 0;
     for id in &body.ids {
-        if memory::mark_archived(&state.db, *id, user_id).await.is_ok() {
+        if memory::mark_archived(&db, *id, user_id).await.is_ok() {
             archived += 1;
         }
     }

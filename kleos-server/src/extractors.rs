@@ -4,10 +4,43 @@ use axum::http::StatusCode;
 use axum::Json;
 use kleos_lib::auth::AuthContext;
 use kleos_lib::db::Database;
+use kleos_lib::EngError;
 use serde_json::json;
 use std::sync::Arc;
 
 use crate::state::AppState;
+
+/// Resolve the per-tenant `Database` for an arbitrary `user_id` outside of
+/// a request-extraction context (cookie-auth GUI handlers, background
+/// jobs, etc.). Mirrors the routing rules of [`ResolvedDb`]:
+/// - `user_id == 1` returns the monolith fallback.
+/// - sharding enabled returns the per-tenant shard.
+/// - sharding disabled + non-system user returns Err so callers can map
+///   that to 503 Service Unavailable just like the request extractor.
+///
+/// M-R3-007: GUI handlers needed this so /gui/memory/* writes land in the
+/// same shard as /memory/*.
+pub async fn resolve_db_for_user(
+    state: &AppState,
+    user_id: i64,
+) -> Result<Arc<Database>, EngError> {
+    if user_id == 1 {
+        return Ok(Arc::clone(&state.db));
+    }
+    let registry = state
+        .tenant_registry
+        .as_ref()
+        .ok_or_else(|| {
+            EngError::Internal(
+                "tenant sharding disabled; non-system users are unsupported".into(),
+            )
+        })?;
+    let handle = registry
+        .get_or_create(&user_id.to_string())
+        .await
+        .map_err(|e| EngError::Internal(format!("tenant registry error: {}", e)))?;
+    Ok(handle.database())
+}
 
 pub struct Auth(pub AuthContext);
 
