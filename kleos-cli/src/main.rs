@@ -232,6 +232,31 @@ enum CredCommands {
         /// Agent name to revoke
         name: String,
     },
+    /// Fetch a secret from credd and exec a child command with the secret
+    /// injected as an environment variable. The secret is set in the
+    /// child's environment block directly and is never written to stdout,
+    /// stderr, or the process command line, so it does not leak into shell
+    /// history, agent context capture, or `ps` output.
+    ///
+    /// Example:
+    ///   kleos-cli cred exec kleos claude-code-wsl --env EIDOLON_KEY -- \
+    ///     curl -H "Authorization: Bearer $EIDOLON_KEY" http://...
+    Exec {
+        /// Category (service namespace)
+        category: String,
+        /// Secret name
+        name: String,
+        /// Env var name to set in the child process
+        #[arg(long)]
+        env: String,
+        /// Specific field to extract (defaults to the primary value:
+        /// key/password/client_secret/private_key/content in that order).
+        #[arg(long)]
+        field: Option<String>,
+        /// Command + args to exec. Use `--` to separate from cred flags.
+        #[arg(trailing_var_arg = true, required = true)]
+        cmd: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1389,6 +1414,79 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
             {
                 Ok(_) => println!("Revoked agent key: {}", name),
                 Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        CredCommands::Exec {
+            category,
+            name,
+            env,
+            field,
+            cmd,
+        } => {
+            // Fetch the secret over HTTP from credd and pull out the
+            // requested field (or the primary value).
+            let secret_value = match client.get(&format!("/secret/{}/{}", category, name)).await {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("Error fetching secret: {}", e);
+                    std::process::exit(2);
+                }
+            };
+            let value_obj = match secret_value.get("value") {
+                Some(v) => v,
+                None => {
+                    eprintln!("Error: response missing `value` field");
+                    std::process::exit(2);
+                }
+            };
+            let secret = if let Some(f) = field.as_deref() {
+                match value_obj.get(f).and_then(|v| v.as_str()) {
+                    Some(s) => s.to_string(),
+                    None => {
+                        eprintln!("Error: field `{}` not found or not a string", f);
+                        std::process::exit(2);
+                    }
+                }
+            } else {
+                let primary = value_obj
+                    .get("key")
+                    .or_else(|| value_obj.get("password"))
+                    .or_else(|| value_obj.get("client_secret"))
+                    .or_else(|| value_obj.get("private_key"))
+                    .or_else(|| value_obj.get("content"))
+                    .and_then(|v| v.as_str());
+                match primary {
+                    Some(s) => s.to_string(),
+                    None => {
+                        eprintln!(
+                            "Error: no primary value (key/password/client_secret/private_key/content) in secret"
+                        );
+                        std::process::exit(2);
+                    }
+                }
+            };
+
+            // Build child Command. The secret is passed via env() which
+            // hands it directly to the kernel exec call -- it never
+            // appears on the command line, in stdout, or in shell history.
+            let (program, args) = match cmd.split_first() {
+                Some((p, a)) => (p.clone(), a.to_vec()),
+                None => {
+                    eprintln!("Error: no command supplied after `--`");
+                    std::process::exit(2);
+                }
+            };
+            let status = std::process::Command::new(&program)
+                .args(&args)
+                .env(env, &secret)
+                .status();
+            match status {
+                Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+                Err(e) => {
+                    eprintln!("Error: failed to exec `{}`: {}", program, e);
+                    std::process::exit(2);
+                }
             }
         }
     }
