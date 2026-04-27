@@ -81,20 +81,13 @@ async fn test_webhook_handler(
     Path(id): Path<i64>,
     Json(body): Json<TestWebhookBody>,
 ) -> Result<Json<Value>, AppError> {
-    let exists = kleos_lib::webhooks::list_webhooks(&db, auth.user_id)
-        .await?
-        .into_iter()
-        .any(|hook| hook.id == id);
-    if !exists {
-        return Err(AppError(kleos_lib::EngError::NotFound(format!(
-            "webhook {} not found",
-            id
-        ))));
-    }
     let event = body.event.as_deref().unwrap_or("test");
     let payload = json!({ "webhook_id": id, "test": true });
-    kleos_lib::webhooks::emit_webhook_event(&db, event, &payload, auth.user_id).await;
-    Ok(Json(json!({ "dispatched": true, "event": event })))
+    let receipt =
+        kleos_lib::webhooks::emit_test_to_webhook(&db, id, event, &payload, auth.user_id).await?;
+    Ok(Json(serde_json::to_value(receipt).unwrap_or_else(
+        |_| json!({ "dispatched": false, "error": "receipt serialization failed" }),
+    )))
 }
 
 async fn list_dead_letters_handler(
