@@ -154,22 +154,6 @@ fn read_new_entries(
     Ok(entries)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn positions_lru_bounded() {
-        let mut positions: LruCache<PathBuf, u64> =
-            LruCache::new(NonZeroUsize::new(POSITIONS_CAPACITY).unwrap());
-        for i in 0..3000 {
-            positions.put(PathBuf::from(format!("/tmp/session-{i}.jsonl")), i as u64);
-        }
-        assert!(positions.len() <= POSITIONS_CAPACITY);
-        assert_eq!(positions.cap().get(), POSITIONS_CAPACITY);
-    }
-}
-
 async fn is_cooled_down(state: &SupervisorState, rule_id: &str) -> bool {
     let cooldowns = state.cooldowns.read().await;
     if let Some(last_fired) = cooldowns.get(rule_id) {
@@ -190,4 +174,20 @@ async fn set_cooldown(state: &SupervisorState, rule_id: &str, rules: &[checks::R
     let until = chrono::Utc::now() + chrono::Duration::seconds(cooldown_secs as i64);
     let mut cooldowns = state.cooldowns.write().await;
     cooldowns.insert(rule_id.to_string(), until);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positions_lru_bounded() {
+        let mut positions: LruCache<PathBuf, u64> =
+            LruCache::new(NonZeroUsize::new(POSITIONS_CAPACITY).unwrap());
+        for i in 0..3000 {
+            positions.put(PathBuf::from(format!("/tmp/session-{i}.jsonl")), i as u64);
+        }
+        assert!(positions.len() <= POSITIONS_CAPACITY);
+        assert_eq!(positions.cap().get(), POSITIONS_CAPACITY);
+    }
 }
