@@ -226,11 +226,20 @@ async fn execute_tool(
     Ok(Json(serde_json::to_value(result).unwrap_or(json!({}))))
 }
 
+// H-R3-004: tool_quality_records is operator-wide telemetry (tool_key /
+// tool_name fields can encode per-tenant invocation history). Gating the
+// surface behind admin scope keeps the data inside the operator boundary
+// instead of leaking enumeration to every auth+read user.
 async fn get_quality(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(params): Query<QualityQuery>,
 ) -> Result<Json<Value>, AppError> {
+    if !auth.has_scope(&kleos_lib::auth::Scope::Admin) {
+        return Err(AppError(kleos_lib::EngError::Auth(
+            "admin scope required for tool quality telemetry".into(),
+        )));
+    }
     let limit = params.limit.unwrap_or(50).min(200);
     let degraded_only = params.degraded.as_deref() == Some("true");
 
