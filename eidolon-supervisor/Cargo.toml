@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 chrono = { workspace = true }
+lru = "0.12"
 notify = "8"
 notify-debouncer-mini = "0.6"
 regex = "1"
