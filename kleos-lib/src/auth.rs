@@ -222,7 +222,23 @@ fn generate_key() -> Result<(String, String, String, i32)> {
     let (key_hash, hash_version) = if let Some(hash) = hash_key_v2(&full_key) {
         (hash, HASH_VERSION_PEPPERED)
     } else {
-        tracing::warn!("KLEOS_API_KEY_PEPPER not set; issuing v1 (unpeppered) key");
+        // M-R3-002: in release builds we refuse to mint a v1 (unpeppered)
+        // hash. The previous code only warned; an operator who started the
+        // server without setting KLEOS_API_KEY_PEPPER got v1 hashes
+        // silently. A leaked api_keys table with v1 hashes is brute-forceable
+        // depending on key entropy; v2 (peppered) is materially harder.
+        // Debug builds keep the legacy fallback so local dev ergonomics
+        // do not regress.
+        if !cfg!(debug_assertions) {
+            return Err(crate::EngError::Internal(
+                "KLEOS_API_KEY_PEPPER must be set to mint API keys in release builds. \
+                 Set a 32+ random byte value and restart."
+                    .into(),
+            ));
+        }
+        tracing::warn!(
+            "KLEOS_API_KEY_PEPPER not set; issuing v1 (unpeppered) key (debug build only)"
+        );
         (hash_key_v1(&full_key), HASH_VERSION_LEGACY)
     };
 
