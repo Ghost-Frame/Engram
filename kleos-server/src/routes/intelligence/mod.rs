@@ -798,11 +798,17 @@ async fn run_pipeline_handler(
     Ok(Json(json!(report)))
 }
 
-// Hybrid: needs state.brain for neural dream cycle.
+// H-R3-001: shadow path of /brain/dream. Both must require admin scope or
+// the gate on the other endpoint is meaningless.
 async fn dream_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
+    if !auth.has_scope(&kleos_lib::auth::Scope::Admin) {
+        return Err(AppError(kleos_lib::EngError::Auth(
+            "admin scope required for global dream cycle".into(),
+        )));
+    }
     if let Some(ref brain) = state.brain {
         // Brain manager is available -- invoke dream cycle
         match brain.dream_cycle().await {

@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
+use kleos_lib::auth::{AuthContext, Scope};
 use kleos_lib::services::brain::{
     get_memory_for_absorb, verify_memory_ownership, AbsorbRequest, BrainQueryOptions, DecayRequest,
     FeedbackRequest,
@@ -13,6 +14,24 @@ use kleos_lib::services::brain::{
 
 #[allow(dead_code)]
 mod types;
+
+// H-R3-001: dream / decay / evolution_train mutate the global brain. Any
+// auth+write user could pin CPU or corrupt the shared model. Gating these
+// behind admin scope keeps the surface available to operators while denying
+// it to ordinary tenants.
+fn require_admin(auth: &AuthContext) -> Result<(), AppError> {
+    if !auth.has_scope(&Scope::Admin) {
+        return Err(AppError(kleos_lib::EngError::Auth(
+            "admin scope required for global brain mutations".into(),
+        )));
+    }
+    Ok(())
+}
+
+/// Upper bound on /brain/decay ticks per call. Exists so a caller cannot
+/// pass body.ticks = u32::MAX and pin the decay loop. The chosen value is
+/// large enough for any realistic decay sweep without being weaponizable.
+const MAX_DECAY_TICKS: u32 = 10_000;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -101,13 +120,12 @@ async fn absorb_handler(
     Ok(Json(json!({ "ok": true, "id": body.id })))
 }
 
-// dream / decay / evolution_train mutate shared brain state. H-R3-001 tracks
-// gating these behind admin scope; for C-R3-001 we keep the existing surface
-// but switch to Auth(auth) so future logging/audit can attribute the call.
+// H-R3-001: dream_cycle is a global mutation; admin only.
 async fn dream_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
     require_brain(&state).await?;
     let brain = state
         .brain
@@ -145,18 +163,23 @@ async fn feedback_handler(
     Ok(Json(json!({ "ok": true, "result": result })))
 }
 
+// H-R3-001: decay tick was unbounded i64; any auth+write user could pass
+// i64::MAX and saturate the decay loop. Now admin-only and clamped to
+// MAX_DECAY_TICKS.
 async fn decay_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(body): Json<DecayRequest>,
 ) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
     require_brain(&state).await?;
     let brain = state
         .brain
         .as_ref()
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("brain not configured".into())))?;
-    brain.decay_tick(body.ticks).await?;
-    Ok(Json(json!({ "ok": true })))
+    let ticks = body.ticks.clamp(0, MAX_DECAY_TICKS);
+    brain.decay_tick(ticks).await?;
+    Ok(Json(json!({ "ok": true, "ticks_applied": ticks })))
 }
 
 // C-R3-001: same ownership gate as feedback_handler.
@@ -185,10 +208,12 @@ async fn evolution_feedback_handler(
     Ok(Json(json!({ "ok": true, "result": result })))
 }
 
+// H-R3-001: evolution training touches the global model; admin only.
 async fn evolution_train_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
     require_brain(&state).await?;
     let brain = state
         .brain
