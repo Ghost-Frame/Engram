@@ -30,7 +30,9 @@ pub fn router() -> Router<AppState> {
 }
 
 /// POST /personality/detect
-/// Detect personality signals from text content. No DB write.
+/// Detect personality signals from text content. Pure compute on the
+/// request body; no DB read or write, no tenant context needed.
+/// H-R3-002: Auth(_auth) is intentional here.
 async fn detect_handler(
     Auth(_auth): Auth,
     Json(body): Json<DetectBody>,

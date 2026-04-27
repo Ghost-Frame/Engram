@@ -186,6 +186,9 @@ pub fn router() -> Router<AppState> {
         .route("/intelligence/dreamer", get(dreamer_stats_handler))
 }
 
+// H-R3-002: dreamer stats are operator-wide telemetry (one shared dreamer
+// task across all tenants); no tenant data touched, so Auth(_auth) is
+// intentional.
 async fn dreamer_stats_handler(
     State(state): State<AppState>,
     Auth(_auth): Auth,

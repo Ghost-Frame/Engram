@@ -67,6 +67,8 @@ pub(super) struct WebSearchBody {
     pub limit: Option<u32>,
 }
 
+// H-R3-002: web search proxies SearXNG; no DB access, no tenant data
+// touched. Auth(_auth) is intentional.
 pub(super) async fn web_search(
     State(state): State<AppState>,
     Auth(_auth): Auth,

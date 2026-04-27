@@ -261,6 +261,9 @@ async fn get_balance(
 // GET /commerce/pricing
 // ---------------------------------------------------------------------------
 
+// H-R3-002: Auth(_auth) is intentional. Service pricing is operator-wide
+// configuration (every tenant sees the same price list). No tenant data
+// touched.
 async fn list_pricing(
     State(state): State<AppState>,
     Auth(_auth): Auth,

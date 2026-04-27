@@ -266,6 +266,8 @@ async fn get_quality(
     }
 }
 
+// H-R3-002: provider list is operator-wide and currently hardcoded; no
+// tenant data touched, so Auth(_auth) is intentional.
 async fn list_providers(Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
     // Currently only shell provider is registered
     Ok(Json(json!({
