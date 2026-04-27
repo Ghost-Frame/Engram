@@ -352,18 +352,19 @@ pub fn piv_sign(slot: PivSlot, payload: &[u8]) -> Result<Vec<u8>> {
     }
 
     let payload_hex = hex::encode(payload);
+    // NOTE: yubikit's PivSession.sign(message, hash_algorithm=SHA256()) hashes
+    // the message INTERNALLY when hash_algorithm is set. Pre-hashing and
+    // passing the digest causes a double-hash and verification failure on
+    // the server side. Pass the raw payload bytes.
     let script = format!(
         r#"
 import sys, base64
 from ykman.device import list_all_devices
-from yubikit.piv import PivSession, SLOT, KEY_TYPE, HASH_ALGORITHM
+from yubikit.piv import PivSession, SLOT, KEY_TYPE
 from yubikit.core.smartcard import SmartCardConnection
 from cryptography.hazmat.primitives import hashes
 
 payload = bytes.fromhex("{payload}")
-digest = hashes.Hash(hashes.SHA256())
-digest.update(payload)
-prehashed = digest.finalize()
 
 devices = list_all_devices()
 if not devices:
@@ -372,7 +373,7 @@ if not devices:
 dev, _info = devices[0]
 with dev.open_connection(SmartCardConnection) as conn:
     session = PivSession(conn)
-    sig = session.sign(SLOT.{slot}, KEY_TYPE.ECCP256, prehashed, hash_algorithm=HASH_ALGORITHM.SHA256)
+    sig = session.sign(SLOT.{slot}, KEY_TYPE.ECCP256, payload, hash_algorithm=hashes.SHA256())
     sys.stdout.write(base64.b16encode(sig).decode().lower())
 "#,
         payload = payload_hex,
