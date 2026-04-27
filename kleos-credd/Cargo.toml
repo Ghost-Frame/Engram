@@ -51,6 +51,15 @@ subtle = { workspace = true }
 zeroize = { workspace = true }
 rand = { workspace = true }
 
+# ECDH bootstrap auth (Stage 2 of ECDH PIV port).
+# p256 for ECDSA verify of client 9A signatures.
+# hkdf for deriving the bearer-encryption key from the ECDH shared secret.
+# aes-gcm for encrypting the bearer in transit. sha2 for HKDF.
+p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pem"] }
+hkdf = "0.12"
+aes-gcm = "0.10"
+sha2 = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 reqwest.workspace = true

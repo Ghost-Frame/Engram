@@ -30,6 +30,7 @@ gui/.svelte-kit/
 clippy_output.txt
 migration-data/
 data/
+kleos-lib/data/lance/
 migration-test/
 
 # Local cargo config (per-machine target-dir overrides, etc.)

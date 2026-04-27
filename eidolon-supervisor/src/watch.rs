@@ -17,6 +17,11 @@ use crate::alert;
 use crate::checks;
 use crate::checks::retry_loop::RetryTracker;
 
+// Cap the in-memory map of session-file -> read offset. Without this, the
+// supervisor's heap grows linearly with the number of distinct session JSONL
+// files it has ever seen across the lifetime of the process.
+const POSITIONS_CAPACITY: usize = 2048;
+
 pub struct SupervisorState {
     pub kleos_url: String,
     pub api_key: Option<String>,
@@ -54,14 +59,12 @@ pub async fn run(state: Arc<SupervisorState>, watch_dir: PathBuf) {
 
     tracing::info!(path = %watch_dir.display(), "watching for session changes");
 
-    // M-018: bound the positions map to prevent unbounded growth when many
-    // files are watched. Default cap is 1024; operator can override.
     let max_tracked: usize = std::env::var("EIDOLON_SUPERVISOR_MAX_TRACKED_FILES")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|&n: &usize| n > 0)
-        .unwrap_or(1024);
-    let cap = NonZeroUsize::new(max_tracked).unwrap();
+        .unwrap_or(POSITIONS_CAPACITY);
+    let cap = NonZeroUsize::new(max_tracked).expect("non-zero capacity");
     let mut positions: LruCache<PathBuf, u64> = LruCache::new(cap);
     let mut retry_tracker = RetryTracker::new();
 
@@ -149,6 +152,22 @@ fn read_new_entries(
 
     positions.put(path_buf, new_pos);
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positions_lru_bounded() {
+        let mut positions: LruCache<PathBuf, u64> =
+            LruCache::new(NonZeroUsize::new(POSITIONS_CAPACITY).unwrap());
+        for i in 0..3000 {
+            positions.put(PathBuf::from(format!("/tmp/session-{i}.jsonl")), i as u64);
+        }
+        assert!(positions.len() <= POSITIONS_CAPACITY);
+        assert_eq!(positions.cap().get(), POSITIONS_CAPACITY);
+    }
 }
 
 async fn is_cooled_down(state: &SupervisorState, rule_id: &str) -> bool {
