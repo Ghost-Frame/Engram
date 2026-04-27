@@ -19,3 +19,8 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json = { workspace = true }
+tempfile = { workspace = true }
+# Spelled out (not inheriting from workspace) so default-features=false takes
+# effect: kleos-fs is a small CLI binary; we only need the blocking+rustls-tls
+# stack, not the workspace default native-tls.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
