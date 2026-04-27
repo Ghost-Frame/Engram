@@ -1262,20 +1262,49 @@ pub struct AbsorbMemoryData {
     pub tags: Option<Vec<String>>,
 }
 
-/// Look up a memory row by id for the absorb route.
-#[tracing::instrument(skip(db), fields(memory_id = id))]
-pub async fn get_memory_for_absorb(db: &Database, id: i64) -> Result<AbsorbMemoryData> {
-    db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, category, source, importance, created_at, tags
-                 FROM memories WHERE id = ?1",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+/// Returns true if the `memories` table on `conn` carries a `user_id` column.
+/// Monolith schema keeps it; shard schema (tenant migration v22) drops it.
+fn memories_has_user_id_column(conn: &rusqlite::Connection) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = 'user_id'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|c| c > 0)
+    .unwrap_or(false)
+}
 
-        let mut rows = stmt
-            .query(rusqlite::params![id])
-            .map_err(rusqlite_to_eng_error)?;
+/// Look up a memory row by id for the absorb route.
+///
+/// `user_id` is required so callers cannot accidentally absorb memories they
+/// do not own when the underlying DB is the monolith (where `memories` has
+/// the `user_id` column and may hold rows from multiple tenants). On shard
+/// DBs the column was dropped in tenant v22; isolation is by-DB so the
+/// predicate is omitted.
+#[tracing::instrument(skip(db), fields(memory_id = id, user_id))]
+pub async fn get_memory_for_absorb(
+    db: &Database,
+    id: i64,
+    user_id: i64,
+) -> Result<AbsorbMemoryData> {
+    db.read(move |conn| {
+        let scoped = memories_has_user_id_column(conn);
+        let sql = if scoped {
+            "SELECT id, content, category, source, importance, created_at, tags
+             FROM memories WHERE id = ?1 AND user_id = ?2"
+        } else {
+            "SELECT id, content, category, source, importance, created_at, tags
+             FROM memories WHERE id = ?1"
+        };
+        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+
+        let mut rows = if scoped {
+            stmt.query(rusqlite::params![id, user_id])
+                .map_err(rusqlite_to_eng_error)?
+        } else {
+            stmt.query(rusqlite::params![id])
+                .map_err(rusqlite_to_eng_error)?
+        };
 
         let row = rows
             .next()
@@ -1304,30 +1333,57 @@ pub async fn get_memory_for_absorb(db: &Database, id: i64) -> Result<AbsorbMemor
     })
     .await
 }
-/// Verify that all memory IDs exist in the database. Returns true if all found.
-#[tracing::instrument(skip(db, memory_ids), fields(memory_count = memory_ids.len()))]
-pub async fn verify_memory_ownership(db: &Database, memory_ids: &[i64]) -> Result<bool> {
+
+/// Verify that every memory ID is OWNED by `user_id`. Returns true only if
+/// every id resolves to a row that the caller actually owns.
+///
+/// On monolith (memories has `user_id`) this is enforced by the SQL predicate.
+/// On shards (column dropped in tenant v22) the per-DB isolation is the
+/// ownership boundary, so existence-of-id implies ownership.
+///
+/// C-R3-001: the previous version of this function ignored `user_id` entirely
+/// and only checked that the IDs existed somewhere in the table. The name
+/// lied. With sharding ON by default and the conditional predicate below,
+/// the function now matches its name.
+#[tracing::instrument(skip(db, memory_ids), fields(memory_count = memory_ids.len(), user_id))]
+pub async fn verify_memory_ownership(
+    db: &Database,
+    memory_ids: &[i64],
+    user_id: i64,
+) -> Result<bool> {
     if memory_ids.is_empty() {
         return Ok(true);
     }
 
-    let placeholders: Vec<String> = (1..=memory_ids.len()).map(|i| format!("?{}", i)).collect();
-    let sql = format!(
-        "SELECT COUNT(*) FROM memories WHERE id IN ({})",
-        placeholders.join(","),
-    );
+    let id_count = memory_ids.len();
+    let id_placeholders: Vec<String> = (1..=id_count).map(|i| format!("?{}", i)).collect();
+    let placeholders_joined = id_placeholders.join(",");
 
-    let params: Vec<rusqlite::types::Value> = memory_ids
+    let mut params_vec: Vec<rusqlite::types::Value> = memory_ids
         .iter()
         .map(|id| rusqlite::types::Value::Integer(*id))
         .collect();
 
-    let expected = memory_ids.len() as i64;
+    let expected = id_count as i64;
 
     db.read(move |conn| {
+        let scoped = memories_has_user_id_column(conn);
+        let sql = if scoped {
+            params_vec.push(rusqlite::types::Value::Integer(user_id));
+            format!(
+                "SELECT COUNT(*) FROM memories WHERE id IN ({}) AND user_id = ?{}",
+                placeholders_joined,
+                id_count + 1,
+            )
+        } else {
+            format!(
+                "SELECT COUNT(*) FROM memories WHERE id IN ({})",
+                placeholders_joined,
+            )
+        };
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params_from_iter(params.iter().cloned()))
+            .query(rusqlite::params_from_iter(params_vec.iter().cloned()))
             .map_err(rusqlite_to_eng_error)?;
 
         let row = rows

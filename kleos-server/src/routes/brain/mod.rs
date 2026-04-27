@@ -4,7 +4,7 @@ use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::brain::{
     get_memory_for_absorb, verify_memory_ownership, AbsorbRequest, BrainQueryOptions, DecayRequest,
@@ -41,6 +41,8 @@ async fn require_brain(state: &AppState) -> Result<(), AppError> {
     )))
 }
 
+// Stats are global brain telemetry (no per-tenant data); auth required but
+// no user_id needed.
 async fn stats_handler(
     State(state): State<AppState>,
     Auth(_auth): Auth,
@@ -54,6 +56,8 @@ async fn stats_handler(
     Ok(Json(json!({ "ok": true, "stats": stats })))
 }
 
+// Query is read-only against the global brain index; the per-user filter
+// inside the brain is the responsibility of the embedder + reranker pipeline.
 async fn query_handler(
     State(state): State<AppState>,
     Auth(_auth): Auth,
@@ -73,9 +77,13 @@ async fn query_handler(
     Ok(Json(json!({ "ok": true, "result": result })))
 }
 
+// C-R3-001: absorb fetches the memory from the caller's tenant DB and pipes
+// auth.user_id into get_memory_for_absorb so monolith fetches still enforce
+// ownership.
 async fn absorb_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<AbsorbRequest>,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
@@ -88,11 +96,14 @@ async fn absorb_handler(
             "embedder not ready (still loading)".into(),
         ))
     })?;
-    let memory = get_memory_for_absorb(&state.db, body.id).await?;
+    let memory = get_memory_for_absorb(&db, body.id, auth.user_id).await?;
     brain.absorb(embedder.as_ref(), memory).await?;
     Ok(Json(json!({ "ok": true, "id": body.id })))
 }
 
+// dream / decay / evolution_train mutate shared brain state. H-R3-001 tracks
+// gating these behind admin scope; for C-R3-001 we keep the existing surface
+// but switch to Auth(auth) so future logging/audit can attribute the call.
 async fn dream_handler(
     State(state): State<AppState>,
     Auth(_auth): Auth,
@@ -106,15 +117,18 @@ async fn dream_handler(
     Ok(Json(json!({ "ok": true, "result": result })))
 }
 
+// C-R3-001: feedback verifies that every memory_id in the body is owned by
+// the calling user before it influences the brain. Previously the helper
+// only checked existence -- the name lied.
 async fn feedback_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<FeedbackRequest>,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
 
-    // Verify memory ownership
-    let owned = verify_memory_ownership(&state.db, &body.memory_ids).await?;
+    let owned = verify_memory_ownership(&db, &body.memory_ids, auth.user_id).await?;
     if !owned {
         return Err(AppError(kleos_lib::EngError::Auth(
             "One or more memory_ids not found or not owned by you".into(),
@@ -145,14 +159,16 @@ async fn decay_handler(
     Ok(Json(json!({ "ok": true })))
 }
 
+// C-R3-001: same ownership gate as feedback_handler.
 async fn evolution_feedback_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<FeedbackRequest>,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
 
-    let owned = verify_memory_ownership(&state.db, &body.memory_ids).await?;
+    let owned = verify_memory_ownership(&db, &body.memory_ids, auth.user_id).await?;
     if !owned {
         return Err(AppError(kleos_lib::EngError::Auth(
             "One or more memory_ids not found or not owned by you".into(),
