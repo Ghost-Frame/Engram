@@ -749,7 +749,29 @@ async fn main() {
         }
 
         Commands::Cred(cred_cmd) => {
-            let cred_client = Client::new(cli.credd_url.clone(), api_key.clone());
+            // credd's auth middleware only accepts the cred master key,
+            // a DB-backed agent key, or a file-backed bootstrap-agent
+            // token. The Kleos bearer in `api_key` is none of those, so
+            // pull credd auth from CREDD_AGENT_KEY env (set by the shell
+            // rc from ~/.config/cred/credd-agent-key.token) and only
+            // fall back to the Kleos bearer if that is missing.
+            let credd_token = std::env::var("CREDD_AGENT_KEY")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    let path = std::env::var("HOME")
+                        .map(|h| {
+                            std::path::PathBuf::from(h)
+                                .join(".config/cred/credd-agent-key.token")
+                        })
+                        .ok()?;
+                    std::fs::read_to_string(path)
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                })
+                .or_else(|| api_key.clone());
+            let cred_client = Client::new(cli.credd_url.clone(), credd_token);
             handle_cred_command(&cred_client, cred_cmd).await;
         }
 
