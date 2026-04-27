@@ -33,8 +33,9 @@ fn resolve_api_key() -> Option<String> {
             return Some(key);
         }
     }
+    let slot = cred_slot();
     let output = std::process::Command::new("cred")
-        .args(["get", "kleos", "claude-code", "--raw"])
+        .args(["get", "kleos", &slot, "--raw"])
         .output()
         .ok()?;
     if output.status.success() {
@@ -44,6 +45,42 @@ fn resolve_api_key() -> Option<String> {
         }
     }
     None
+}
+
+/// Slot identifier used to look up this agent's credential. Defaults to
+/// `claude-code-{user}-{host}`. Override with `KLEOS_CRED_KEY` (preferred)
+/// or `KLEOS_AGENT_SLOT` to pin to a specific slot (e.g. shared bootstrap
+/// credentials, or migration off the previous `claude-code-{host}` form).
+fn cred_slot() -> String {
+    if let Ok(slot) = std::env::var("KLEOS_CRED_KEY") {
+        if !slot.is_empty() {
+            return slot;
+        }
+    }
+    if let Ok(slot) = std::env::var("KLEOS_AGENT_SLOT") {
+        if !slot.is_empty() {
+            return slot;
+        }
+    }
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string());
+    format!("claude-code-{}-{}", user, read_hostname())
+}
+
+fn read_hostname() -> String {
+    if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
+        let trimmed = h.trim().to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+    if let Ok(h) = std::env::var("HOSTNAME") {
+        if !h.is_empty() {
+            return h;
+        }
+    }
+    "unknown-host".to_string()
 }
 
 fn server_url() -> String {
@@ -84,11 +121,6 @@ async fn main() {
 
     if command.trim().is_empty() {
         process::exit(0);
-    }
-
-    if let Some(reason) = gate::check_offline(&command) {
-        eprintln!("{}", reason);
-        process::exit(2);
     }
 
     let api_key = resolve_api_key();

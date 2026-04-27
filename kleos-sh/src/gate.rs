@@ -1,9 +1,4 @@
-use regex::Regex;
 use serde::{Deserialize, Serialize};
-
-const OFFLINE_BLOCK_PATTERNS: &[&str] = &[
-    r"rm\s+-rf\s+(./kleos|~/eidolon/data|~/kleos)",
-];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GateCheckRequest {
@@ -34,20 +29,6 @@ pub enum GateOutcome {
         reason: String,
         gate_id: i64,
     },
-}
-
-pub fn check_offline(command: &str) -> Option<String> {
-    for pattern in OFFLINE_BLOCK_PATTERNS {
-        if let Ok(re) = Regex::new(pattern) {
-            if re.is_match(command) {
-                return Some(format!(
-                    "EIDOLON GATE DENIED (offline): matched block pattern: {}",
-                    pattern
-                ));
-            }
-        }
-    }
-    None
 }
 
 pub async fn check_remote(
