@@ -447,7 +447,7 @@ mod tests {
     fn test_check_zero_limit_does_not_panic() {
         let rl = RateLimiter::new();
         let result = rl.check(1, 0);
-        assert!(matches!(result, Err(_)));
+        assert!(result.is_err());
     }
 
     /// H-R3-003: same zero case via check_key.
@@ -455,6 +455,6 @@ mod tests {
     fn test_check_key_zero_limit_does_not_panic() {
         let rl = RateLimiter::new_with_burst(0, 0);
         let result = rl.check_key("zero");
-        assert!(matches!(result, Err(_)));
+        assert!(result.is_err());
     }
 }
