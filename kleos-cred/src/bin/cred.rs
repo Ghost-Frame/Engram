@@ -25,6 +25,20 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 use zeroize::{Zeroize, Zeroizing};
 
+/// Single canonical user_id for the local cred SQLite store.
+///
+/// The cred CLI is host-local and single-user: only the YubiKey holder can
+/// unlock the vault. Memory #12624 captured a regression where `cmd_store`,
+/// `cmd_get`, and friends used `user_id=0` while `cmd_bootstrap_wrap` used
+/// `user_id=1`, so secrets stored via `cred store ...` were invisible to
+/// `cred bootstrap wrap ...`.
+///
+/// `1` is chosen to match the rest of the Kleos system, where user_id=1 is
+/// the canonical local-system user. A startup migration in
+/// [`migrate_legacy_user_id_zero_rows`] lifts any pre-existing user_id=0
+/// rows to user_id=1 the first time a fixed binary runs.
+const CRED_USER_ID: i64 = 1;
+
 /// YubiKey-encrypted credential manager.
 #[derive(Parser)]
 #[command(name = "cred", version, about)]
@@ -262,6 +276,24 @@ async fn main() -> Result<()> {
                 .await
                 .context("failed to open database")?;
 
+            // Lift any pre-fix user_id=0 rows produced by older binaries.
+            // No-op on already-migrated stores. Tolerated to fail silently
+            // when the table does not yet exist (fresh host before `cred
+            // init`); the user's actual command will surface the real
+            // error in that case.
+            match migrate_legacy_user_id_zero_rows(&db).await {
+                Ok(n) if n > 0 => eprintln!(
+                    "migrated {} legacy cred entries from user_id=0 to user_id=1",
+                    n
+                ),
+                Ok(_) => {}
+                Err(_) => {
+                    // Most likely the table does not yet exist (fresh host
+                    // before `cred init`). The user's actual command will
+                    // surface the real failure; suppress noise here.
+                }
+            }
+
             match cmd {
                 Commands::Store {
                     service,
@@ -472,7 +504,7 @@ async fn cmd_store(
 ) -> Result<()> {
     let data = prompt_secret_data(secret_type)?;
 
-    storage::store_secret(db, 0, service, key, &data, master_key)
+    storage::store_secret(db, CRED_USER_ID, service, key, &data, master_key)
         .await
         .context("failed to store secret")?;
 
@@ -488,7 +520,7 @@ async fn cmd_get(
     field: Option<&str>,
     raw: bool,
 ) -> Result<()> {
-    let (_row, data) = storage::get_secret(db, 0, service, key, master_key)
+    let (_row, data) = storage::get_secret(db, CRED_USER_ID, service, key, master_key)
         .await
         .context("secret not found")?;
 
@@ -530,7 +562,7 @@ async fn cmd_exec(
         anyhow::bail!("no command specified after `--`");
     }
 
-    let (_row, data) = storage::get_secret(db, 0, service, key, master_key)
+    let (_row, data) = storage::get_secret(db, CRED_USER_ID, service, key, master_key)
         .await
         .context("secret not found")?;
 
@@ -588,7 +620,7 @@ async fn cmd_list(
     _master_key: &[u8; KEY_SIZE],
     service_filter: Option<&str>,
 ) -> Result<()> {
-    let secrets = storage::list_secrets(db, 0, service_filter).await?;
+    let secrets = storage::list_secrets(db, CRED_USER_ID, service_filter).await?;
 
     if secrets.is_empty() {
         println!("no secrets stored");
@@ -648,7 +680,7 @@ async fn cmd_delete(
     skip_confirm: bool,
 ) -> Result<()> {
     // Verify it exists first
-    let _ = storage::get_secret(db, 0, service, key, master_key)
+    let _ = storage::get_secret(db, CRED_USER_ID, service, key, master_key)
         .await
         .context("secret not found")?;
 
@@ -663,7 +695,7 @@ async fn cmd_delete(
         }
     }
 
-    storage::delete_secret(db, 0, service, key).await?;
+    storage::delete_secret(db, CRED_USER_ID, service, key).await?;
     eprintln!("deleted: {}/{}", service, key);
     Ok(())
 }
@@ -721,7 +753,7 @@ async fn cmd_import_json(
                 entry.value.type_name()
             );
         } else {
-            storage::store_secret(db, 0, &entry.service, &entry.key, &entry.value, master_key)
+            storage::store_secret(db, CRED_USER_ID, &entry.service, &entry.key, &entry.value, master_key)
                 .await?;
             eprintln!("  stored: {}/{}", entry.service, entry.key);
         }
@@ -784,7 +816,7 @@ async fn cmd_import_tsv(
                 endpoint: None,
                 notes: None,
             };
-            storage::store_secret(db, 0, service, key, &data, master_key).await?;
+            storage::store_secret(db, CRED_USER_ID, service, key, &data, master_key).await?;
             eprintln!("  stored: {}/{}", service, key);
         }
         imported += 1;
@@ -803,7 +835,7 @@ async fn cmd_import_tsv(
 }
 
 async fn cmd_export(db: &Database, master_key: &[u8; KEY_SIZE]) -> Result<()> {
-    let rows = storage::list_secrets(db, 0, None).await?;
+    let rows = storage::list_secrets(db, CRED_USER_ID, None).await?;
 
     if rows.is_empty() {
         eprintln!("no secrets to export");
@@ -820,7 +852,7 @@ async fn cmd_export(db: &Database, master_key: &[u8; KEY_SIZE]) -> Result<()> {
     let mut entries = Vec::new();
     for row in rows {
         // Decrypt each secret
-        match storage::get_secret(db, 0, &row.category, &row.name, master_key).await {
+        match storage::get_secret(db, CRED_USER_ID, &row.category, &row.name, master_key).await {
             Ok((_row, data)) => {
                 entries.push(ExportEntry {
                     service: row.category,
@@ -1002,12 +1034,71 @@ fn program_yubikey_slot2(secret_hex: &str) -> Result<()> {
     Ok(())
 }
 
+/// One-shot migration that lifts pre-existing `cred_secrets.user_id = 0`
+/// rows up to `CRED_USER_ID = 1`, the post-fix canonical id.
+///
+/// Pre-fix builds wrote `user_id=0` from `cmd_store`/`cmd_get`/etc and
+/// `user_id=1` from `cmd_bootstrap_wrap`. After the fix every site uses
+/// `CRED_USER_ID`; rows produced by old binaries would otherwise become
+/// invisible. This function brings them into the visible namespace.
+///
+/// Idempotent: re-running on a migrated DB is a no-op (no rows match).
+/// Conflict-safe: when a `(user_id=0, category, name)` row would collide
+/// with an existing `(user_id=1, category, name)` row (UNIQUE constraint),
+/// the legacy row is left in place and a warning is printed so the human
+/// operator can reconcile. Returns the count of rows that were promoted.
+async fn migrate_legacy_user_id_zero_rows(db: &Database) -> Result<usize> {
+    db.write(|conn| {
+        // Collect collisions first so the UPDATE doesn't fight UNIQUE.
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.category, a.name FROM cred_secrets a
+             WHERE a.user_id = 0
+               AND EXISTS (
+                   SELECT 1 FROM cred_secrets b
+                   WHERE b.user_id = 1 AND b.category = a.category AND b.name = a.name
+               )",
+        )?;
+        let collisions: Vec<(i64, String, String)> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(stmt);
+
+        for (id, cat, name) in &collisions {
+            eprintln!(
+                "warning: legacy cred row id={} ({}/{}) cannot be promoted; \
+                 a user_id=1 row with the same key already exists. \
+                 Resolve manually with sqlite3 cred.db (DELETE the legacy row \
+                 or rename one of the entries).",
+                id, cat, name
+            );
+        }
+
+        let rows_promoted = conn.execute(
+            "UPDATE cred_secrets SET user_id = 1
+             WHERE user_id = 0
+               AND NOT EXISTS (
+                   SELECT 1 FROM cred_secrets b
+                   WHERE b.user_id = 1 AND b.category = cred_secrets.category AND b.name = cred_secrets.name
+               )",
+            [],
+        )?;
+        Ok(rows_promoted)
+    })
+    .await
+    .context("failed to run user_id=0 -> 1 migration")
+}
+
 async fn init_schema(db: &Database) -> Result<()> {
     db.write(|conn| {
+        // CRED_USER_ID is the canonical user_id for the local cred store.
+        // The DEFAULT keeps fresh installs aligned even if a future caller
+        // forgets to pass it explicitly.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS cred_secrets (
                 id INTEGER PRIMARY KEY,
-                user_id INTEGER NOT NULL DEFAULT 0,
+                user_id INTEGER NOT NULL DEFAULT 1,
                 name TEXT NOT NULL,
                 category TEXT NOT NULL,
                 secret_type TEXT NOT NULL,
@@ -1199,13 +1290,13 @@ impl<'a> TuiApp<'a> {
     }
 
     async fn refresh(&mut self) {
-        match storage::list_secrets(self.db, 0, None).await {
+        match storage::list_secrets(self.db, CRED_USER_ID, None).await {
             Ok(rows) => {
                 let mut secrets = Vec::new();
                 for row in rows {
                     match storage::get_secret(
                         self.db,
-                        0,
+                        CRED_USER_ID,
                         &row.category,
                         &row.name,
                         &self.master_key,
@@ -1387,7 +1478,7 @@ async fn cmd_tui(db: &Database, master_key: &[u8; 32]) -> Result<()> {
                                     app.input_buf.zeroize();
                                     match storage::store_secret(
                                         app.db,
-                                        0,
+                                        CRED_USER_ID,
                                         &add_service,
                                         &add_key,
                                         &data,
@@ -1461,7 +1552,7 @@ async fn cmd_tui(db: &Database, master_key: &[u8; 32]) -> Result<()> {
                             if let Some(secret) = app.selected_secret() {
                                 let svc = secret.service.clone();
                                 let k = secret.key.clone();
-                                match storage::delete_secret(app.db, 0, &svc, &k).await {
+                                match storage::delete_secret(app.db, CRED_USER_ID, &svc, &k).await {
                                     Ok(()) => {
                                         app.status_msg = format!("deleted {}/{}", svc, k);
                                         app.refresh().await;
@@ -1749,7 +1840,7 @@ async fn cmd_bootstrap_wrap(
 ) -> Result<()> {
     let out = out_path.unwrap_or_else(bootstrap_default_path);
 
-    let (_row, data) = storage::get_secret(db, 1, service, secret_key, master_key)
+    let (_row, data) = storage::get_secret(db, CRED_USER_ID, service, secret_key, master_key)
         .await
         .with_context(|| format!("entry {}/{} not found in cred store", service, secret_key))?;
 
@@ -1993,5 +2084,139 @@ mod bootstrap_tests {
     fn wrong_magic_detected() {
         let bad = b"BAD1somegarbage";
         assert_ne!(&bad[..4], BOOTSTRAP_MAGIC);
+    }
+}
+
+#[cfg(test)]
+mod user_id_migration_tests {
+    use super::*;
+
+    /// Build an in-memory cred_secrets table with the production schema and
+    /// return a Database handle. We construct it inline so the test does not
+    /// depend on the YubiKey-gated `cmd_init` path.
+    async fn fresh_cred_db() -> Database {
+        let db = Database::connect_memory().await.expect("in-memory db");
+        // Match init_schema's CREATE statements exactly so the migration
+        // runs against a representative schema.
+        db.write(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS cred_secrets (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL DEFAULT 1,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    secret_type TEXT NOT NULL,
+                    encrypted_data BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(user_id, category, name)
+                );",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        db
+    }
+
+    async fn insert_row(db: &Database, user_id: i64, category: &str, name: &str) {
+        let category = category.to_string();
+        let name = name.to_string();
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO cred_secrets (user_id, name, category, secret_type, encrypted_data, nonce, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'api-key', X'00', X'00', '2026-01-01', '2026-01-01')",
+                rusqlite::params![user_id, name, category],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn count_rows(db: &Database, user_id: i64) -> i64 {
+        db.read(move |conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM cred_secrets WHERE user_id = ?1",
+                rusqlite::params![user_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn migration_promotes_uid0_rows_when_no_collision() {
+        let db = fresh_cred_db().await;
+        insert_row(&db, 0, "authentik", "zan").await;
+        insert_row(&db, 0, "grafana", "admin").await;
+        insert_row(&db, 1, "kleos", "claude-code-host").await; // unrelated row
+
+        let promoted = migrate_legacy_user_id_zero_rows(&db).await.unwrap();
+        assert_eq!(promoted, 2, "both legacy rows should be promoted");
+
+        assert_eq!(count_rows(&db, 0).await, 0, "no uid=0 rows should remain");
+        assert_eq!(count_rows(&db, 1).await, 3, "all rows now live at uid=1");
+    }
+
+    #[tokio::test]
+    async fn migration_is_idempotent() {
+        let db = fresh_cred_db().await;
+        insert_row(&db, 0, "authentik", "zan").await;
+
+        let first = migrate_legacy_user_id_zero_rows(&db).await.unwrap();
+        let second = migrate_legacy_user_id_zero_rows(&db).await.unwrap();
+
+        assert_eq!(first, 1);
+        assert_eq!(second, 0, "second run is a no-op");
+        assert_eq!(count_rows(&db, 1).await, 1);
+    }
+
+    #[tokio::test]
+    async fn migration_skips_collisions() {
+        let db = fresh_cred_db().await;
+        // Pre-existing uid=1 row that conflicts with the legacy uid=0 row
+        insert_row(&db, 1, "authentik", "zan").await;
+        insert_row(&db, 0, "authentik", "zan").await;
+        // Non-colliding legacy row
+        insert_row(&db, 0, "grafana", "admin").await;
+
+        let promoted = migrate_legacy_user_id_zero_rows(&db).await.unwrap();
+        assert_eq!(promoted, 1, "only the non-colliding legacy row is promoted");
+
+        // The colliding legacy row is left at uid=0 for the human to resolve.
+        assert_eq!(count_rows(&db, 0).await, 1);
+        assert_eq!(count_rows(&db, 1).await, 2);
+    }
+
+    #[tokio::test]
+    async fn migration_on_missing_table_errors_but_does_not_panic() {
+        // Database::connect_memory() runs the full Kleos migration chain,
+        // which already creates `cred_secrets`. Drop it explicitly so we
+        // exercise the missing-table branch that main()'s error swallow
+        // guards against (e.g. a legacy install whose Kleos migrations
+        // did not yet add this table).
+        let db = Database::connect_memory().await.unwrap();
+        db.write(|conn| {
+            conn.execute("DROP TABLE IF EXISTS cred_secrets", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let result = migrate_legacy_user_id_zero_rows(&db).await;
+        assert!(
+            result.is_err(),
+            "missing table should yield Err so main() can swallow it"
+        );
+    }
+
+    #[test]
+    fn cred_user_id_constant_is_one() {
+        // Pin the chosen canonical id so future refactors don't silently
+        // drift back to 0.
+        assert_eq!(CRED_USER_ID, 1);
     }
 }
