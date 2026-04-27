@@ -27,11 +27,7 @@ pub struct PendingMemory {
 }
 
 #[tracing::instrument(skip(db), fields(limit, offset))]
-pub async fn list_pending(
-    db: &Database,
-    limit: i64,
-    offset: i64,
-) -> Result<Vec<PendingMemory>> {
+pub async fn list_pending(db: &Database, limit: i64, offset: i64) -> Result<Vec<PendingMemory>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(

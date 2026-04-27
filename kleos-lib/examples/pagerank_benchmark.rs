@@ -178,11 +178,8 @@ async fn build_dataset(db: &Database, args: &Args) -> kleos_lib::Result<(usize, 
 
 async fn clear_pagerank_cache(db: &Database, _user_id: i64) -> kleos_lib::Result<()> {
     db.write(move |conn| {
-        conn.execute(
-            "DELETE FROM memory_pagerank",
-            rusqlite::params![],
-        )
-        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("DELETE FROM memory_pagerank", rusqlite::params![])
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
         conn.execute("DELETE FROM pagerank_dirty", rusqlite::params![])
             .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
         Ok(())

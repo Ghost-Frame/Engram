@@ -819,11 +819,7 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
     if current_version < MIGRATION_READD_USER_ID_BROCA {
         info!("Running migration 45: readd_user_id_broca");
         run_migration_readd_user_id_broca(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_BROCA,
-            "readd_user_id_broca",
-        )?;
+        record_migration(conn, MIGRATION_READD_USER_ID_BROCA, "readd_user_id_broca")?;
     }
 
     Ok(())

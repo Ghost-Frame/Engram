@@ -4,8 +4,8 @@
 //! with two-tier authentication (master key vs agent keys).
 
 use clap::Parser;
-use kleos_cred::crypto::{derive_key, KEY_SIZE};
 use kleos_cred::agent_keys_file::FileAgentKeyStore;
+use kleos_cred::crypto::{derive_key, KEY_SIZE};
 use kleos_credd::{bootstrap, server};
 use kleos_lib::config::{Config, EncryptionMode};
 use tracing::info;
@@ -66,9 +66,7 @@ async fn main() -> anyhow::Result<()> {
             derive_key(1, password.as_bytes(), None)
         }
         other => {
-            anyhow::bail!(
-                "unknown CREDD_AUTH_MODE `{other}`; expected `yubikey` or `password`"
-            );
+            anyhow::bail!("unknown CREDD_AUTH_MODE `{other}`; expected `yubikey` or `password`");
         }
     };
 

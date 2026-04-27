@@ -159,8 +159,7 @@ pub async fn query_actions(
 
 #[tracing::instrument(skip(db), fields(action_id = id, user_id))]
 pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEntry> {
-    let sql =
-        format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
+    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;

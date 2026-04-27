@@ -117,10 +117,11 @@ pub async fn get_bootstrap_kleos_bearer(
             agent = %params.agent,
             "denied /bootstrap/kleos-bearer: no scope match"
         );
-        return Err(
-            CredError::PermissionDenied(format!("no bootstrap scope for agent={}", params.agent))
-                .into(),
-        );
+        return Err(CredError::PermissionDenied(format!(
+            "no bootstrap scope for agent={}",
+            params.agent
+        ))
+        .into());
     }
 
     // Fetch the [CRED:v3] kleos/<agent> memory from Kleos, decrypt it
@@ -138,32 +139,26 @@ pub async fn get_bootstrap_kleos_bearer(
     let http = reqwest::Client::new();
     let resp = http
         .get(format!("{}/list", kleos_url.trim_end_matches('/')))
-        .header("Authorization", format!("Bearer {}", bootstrap_master.as_str()))
+        .header(
+            "Authorization",
+            format!("Bearer {}", bootstrap_master.as_str()),
+        )
         .query(&[("category", "credential"), ("limit", "500")])
         .send()
         .await
         .map_err(|e| {
-            error!(
-                "Kleos /list failed for agent={}: {}",
-                params.agent, e
-            );
+            error!("Kleos /list failed for agent={}: {}", params.agent, e);
             CredError::InvalidInput(format!("kleos unreachable: {}", e))
         })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        error!(
-            "Kleos /list returned {} for agent={}",
-            status, params.agent
-        );
+        error!("Kleos /list returned {} for agent={}", status, params.agent);
         return Err(CredError::InvalidInput(format!("kleos /list error: {}", status)).into());
     }
 
     let list: KleosListResponse = resp.json().await.map_err(|e| {
-        error!(
-            "Kleos /list parse error for agent={}: {}",
-            params.agent, e
-        );
+        error!("Kleos /list parse error for agent={}: {}", params.agent, e);
         CredError::InvalidInput(format!("kleos response parse error: {}", e))
     })?;
 
@@ -182,26 +177,17 @@ pub async fn get_bootstrap_kleos_bearer(
 
     let hex_data = entry.content[target_prefix.len()..].trim();
     let ciphertext = hex::decode(hex_data).map_err(|e| {
-        error!(
-            "hex decode failed for agent={}: {}",
-            params.agent, e
-        );
+        error!("hex decode failed for agent={}: {}", params.agent, e);
         CredError::Decryption("corrupt cred entry: hex decode failed".into())
     })?;
 
     let plaintext = decrypt(state.master_key.as_ref(), &ciphertext).map_err(|e| {
-        error!(
-            "decrypt failed for agent={}: {}",
-            params.agent, e
-        );
+        error!("decrypt failed for agent={}: {}", params.agent, e);
         CredError::Decryption("corrupt cred entry: decrypt failed".into())
     })?;
 
     let value: serde_json::Value = serde_json::from_slice(&plaintext).map_err(|e| {
-        error!(
-            "JSON parse failed for agent={}: {}",
-            params.agent, e
-        );
+        error!("JSON parse failed for agent={}: {}", params.agent, e);
         CredError::InvalidInput("corrupt cred entry: JSON parse failed".into())
     })?;
 
@@ -210,10 +196,7 @@ pub async fn get_bootstrap_kleos_bearer(
         .get("key")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            error!(
-                "cred entry for agent={} has no `key` field",
-                params.agent
-            );
+            error!("cred entry for agent={} has no `key` field", params.agent);
             CredError::InvalidInput("expected ApiKey-typed cred entry".into())
         })?
         .to_string();
@@ -467,8 +450,7 @@ fn der_to_pem(der: &[u8]) -> String {
 
 /// Minimal base64 encoder so we do not pull a dep just for PEM wrap.
 fn base64_encode(input: &[u8]) -> String {
-    const CHARS: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0];

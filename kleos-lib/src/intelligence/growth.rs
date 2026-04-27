@@ -20,10 +20,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 }
 
 #[tracing::instrument(skip(db), fields(limit))]
-pub async fn list_observations(
-    db: &Database,
-    limit: usize,
-) -> Result<Vec<GrowthObservation>> {
+pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<GrowthObservation>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(

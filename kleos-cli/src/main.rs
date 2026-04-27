@@ -1449,14 +1449,14 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
                     }
                 }
             } else {
-                let secret_value =
-                    match client.get(&format!("/secret/{}/{}", category, name)).await {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("Error fetching secret: {}", e);
-                            std::process::exit(2);
-                        }
-                    };
+                let secret_value = match client.get(&format!("/secret/{}/{}", category, name)).await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("Error fetching secret: {}", e);
+                        std::process::exit(2);
+                    }
+                };
                 let value_obj = match secret_value.get("value") {
                     Some(v) => v,
                     None => {
@@ -1542,8 +1542,7 @@ fn detect_project(dir: Option<&str>) -> Option<String> {
         }
     }
 
-    dir.file_name()
-        .map(|n| n.to_string_lossy().to_string())
+    dir.file_name().map(|n| n.to_string_lossy().to_string())
 }
 
 fn detect_branch(dir: Option<&str>) -> Option<String> {
@@ -1616,10 +1615,12 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             } else {
                 use std::io::Read;
                 let mut buf = String::new();
-                std::io::stdin().read_to_string(&mut buf).unwrap_or_else(|e| {
-                    eprintln!("Error reading stdin: {}", e);
-                    std::process::exit(1);
-                });
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error reading stdin: {}", e);
+                        std::process::exit(1);
+                    });
                 if buf.is_empty() {
                     eprintln!("Error: provide --content or pipe content via stdin");
                     std::process::exit(1);
@@ -1782,13 +1783,24 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             let recent_files = std::process::Command::new("find")
                 .args([
                     &*work_dir,
-                    "-maxdepth", "4",
-                    "-mmin", "-30",
-                    "-not", "-path", "*/.git/*",
-                    "-not", "-path", "*/node_modules/*",
-                    "-not", "-path", "*/__pycache__/*",
-                    "-not", "-path", "*/target/*",
-                    "-type", "f",
+                    "-maxdepth",
+                    "4",
+                    "-mmin",
+                    "-30",
+                    "-not",
+                    "-path",
+                    "*/.git/*",
+                    "-not",
+                    "-path",
+                    "*/node_modules/*",
+                    "-not",
+                    "-path",
+                    "*/__pycache__/*",
+                    "-not",
+                    "-path",
+                    "*/target/*",
+                    "-type",
+                    "f",
                     "-print",
                 ])
                 .output()

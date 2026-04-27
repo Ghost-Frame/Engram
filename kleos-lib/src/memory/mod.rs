@@ -1268,7 +1268,6 @@ pub async fn get_version_chain(
     .await
 }
 
-
 #[tracing::instrument(skip(db))]
 pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile> {
     let (memory_count, oldest_memory, newest_memory, avg_importance) = db

@@ -532,7 +532,8 @@ button:hover { background: #6b4ed1; }\n\
 .error { color: #ff6b6b; margin-bottom: 1rem; text-align: center; display: none; }\n\
 .hint { color: #888; font-size: 0.8rem; text-align: center; margin-top: 1rem; }\n";
 
-const LOGIN_JS: &str = "document.getElementById('login-form').addEventListener('submit', async (e) => {\n\
+const LOGIN_JS: &str =
+    "document.getElementById('login-form').addEventListener('submit', async (e) => {\n\
     e.preventDefault();\n\
     const form = e.target;\n\
     const data = new FormData(form);\n\
@@ -583,7 +584,10 @@ async fn serve_login_css() -> Response {
 async fn serve_login_js() -> Response {
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/javascript; charset=utf-8")
+        .header(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )
         .header(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")
         .body(Body::from(LOGIN_JS))
         .unwrap()

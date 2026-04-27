@@ -601,11 +601,8 @@ impl BrainManager {
         for h in &handles {
             h.abort();
         }
-        let _ = tokio::time::timeout(
-            Duration::from_secs(5),
-            futures::future::join_all(handles),
-        )
-        .await;
+        let _ =
+            tokio::time::timeout(Duration::from_secs(5), futures::future::join_all(handles)).await;
 
         info!(msg = "brain_shutdown_complete");
     }

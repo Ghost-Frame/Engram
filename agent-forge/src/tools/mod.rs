@@ -36,8 +36,12 @@ impl std::error::Error for ToolError {}
 ///
 /// Writes ~/.claude/session-env/agent-forge-active with "<id>:<kind>".
 pub fn set_session_active(id: &str, kind: &str) {
-    let Ok(home) = std::env::var("HOME") else { return };
-    let dir = std::path::PathBuf::from(home).join(".claude").join("session-env");
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(home)
+        .join(".claude")
+        .join("session-env");
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::write(dir.join("agent-forge-active"), format!("{}:{}", id, kind));
 }

@@ -800,10 +800,7 @@ pub async fn emit_test_to_webhook(
     let hook = match get_webhook_with_secret(db, hook_id, user_id).await? {
         Some(h) => h,
         None => {
-            return Err(EngError::NotFound(format!(
-                "webhook {} not found",
-                hook_id
-            )));
+            return Err(EngError::NotFound(format!("webhook {} not found", hook_id)));
         }
     };
 
@@ -954,6 +951,7 @@ mod tests {
     // -- is_ipv4_denied unit tests --
 
     #[test]
+    #[serial_test::serial(loopback_env)]
     fn ipv4_loopback_denied() {
         assert!(is_ipv4_denied(&Ipv4Addr::LOCALHOST));
         assert!(is_ipv4_denied(&"127.0.0.2".parse().unwrap()));
@@ -993,6 +991,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(loopback_env)]
     fn ipv6_mapped_loopback_denied() {
         assert!(is_ipv6_denied(&"::ffff:127.0.0.1".parse().unwrap()));
     }
@@ -1033,6 +1032,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(loopback_env)]
     fn rejects_literal_private_ip() {
         assert!(validate_webhook_url("http://127.0.0.1/hook").is_err());
         assert!(validate_webhook_url("http://10.0.0.1/hook").is_err());
@@ -1232,7 +1232,10 @@ mod tests {
     /// Spawn a tiny axum receiver per webhook on a free 127.0.0.1 port. Each
     /// receiver records hits into a shared `Vec<i64>` so the test can later
     /// assert which hooks were actually contacted. Returns the bound URL.
-    async fn spawn_receiver(label: i64, hits: std::sync::Arc<tokio::sync::Mutex<Vec<i64>>>) -> String {
+    async fn spawn_receiver(
+        label: i64,
+        hits: std::sync::Arc<tokio::sync::Mutex<Vec<i64>>>,
+    ) -> String {
         use axum::{routing::post, Router};
         let app = Router::new().route(
             "/hook",
@@ -1270,14 +1273,7 @@ mod tests {
     #[tokio::test]
     async fn emit_test_returns_not_found_for_unknown_hook() {
         let db = seed_user_and_db().await;
-        let result = emit_test_to_webhook(
-            &db,
-            9999,
-            "test",
-            &serde_json::json!({"x": 1}),
-            1,
-        )
-        .await;
+        let result = emit_test_to_webhook(&db, 9999, "test", &serde_json::json!({"x": 1}), 1).await;
         assert!(matches!(result, Err(EngError::NotFound(_))));
     }
 
@@ -1296,8 +1292,7 @@ mod tests {
         })
         .await
         .unwrap();
-        let result =
-            emit_test_to_webhook(&db, 1, "test", &serde_json::json!({"x": 1}), 1).await;
+        let result = emit_test_to_webhook(&db, 1, "test", &serde_json::json!({"x": 1}), 1).await;
         assert!(
             matches!(result, Err(EngError::Conflict(_))),
             "expected Conflict, got {:?}",
@@ -1310,6 +1305,7 @@ mod tests {
     /// receiver for H2 received exactly one POST and the receivers for H1 and
     /// H3 received zero. Pre-fix this would have hit all three.
     #[tokio::test]
+    #[serial_test::serial(loopback_env)]
     async fn emit_test_targets_single_hook_no_fanout() {
         std::env::set_var("KLEOS_WEBHOOK_ALLOW_LOOPBACK_FOR_TEST", "1");
 
@@ -1332,22 +1328,25 @@ mod tests {
             .await
             .unwrap();
 
-        let receipt = emit_test_to_webhook(
-            &db,
-            id2,
-            "test",
-            &serde_json::json!({"webhook_id": id2}),
-            1,
-        )
-        .await
-        .expect("emit_test_to_webhook should not error on a healthy hook");
+        let receipt =
+            emit_test_to_webhook(&db, id2, "test", &serde_json::json!({"webhook_id": id2}), 1)
+                .await
+                .expect("emit_test_to_webhook should not error on a healthy hook");
 
         // Receipt content is correct.
         assert_eq!(receipt.hook_id, id2);
         assert_eq!(receipt.url, url2);
-        assert!(receipt.dispatched, "receipt should report dispatched=true; got {:?}", receipt);
+        assert!(
+            receipt.dispatched,
+            "receipt should report dispatched=true; got {:?}",
+            receipt
+        );
         assert_eq!(receipt.status_code, Some(200));
-        assert!(receipt.error.is_none(), "no error expected: {:?}", receipt.error);
+        assert!(
+            receipt.error.is_none(),
+            "no error expected: {:?}",
+            receipt.error
+        );
 
         // Settle: the test receiver pushes after returning 200, so give it a
         // moment in case ordering has not yet flushed.
@@ -1401,15 +1400,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let receipt = emit_test_to_webhook(
-            &db,
-            1,
-            "test",
-            &serde_json::json!({"x": 1}),
-            1,
-        )
-        .await
-        .expect("emit_test_to_webhook returns a receipt even on DNS failure");
+        let receipt = emit_test_to_webhook(&db, 1, "test", &serde_json::json!({"x": 1}), 1)
+            .await
+            .expect("emit_test_to_webhook returns a receipt even on DNS failure");
         assert!(!receipt.dispatched);
         assert!(receipt.status_code.is_none());
         assert!(receipt.error.is_some());

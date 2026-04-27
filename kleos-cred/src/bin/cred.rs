@@ -753,8 +753,15 @@ async fn cmd_import_json(
                 entry.value.type_name()
             );
         } else {
-            storage::store_secret(db, CRED_USER_ID, &entry.service, &entry.key, &entry.value, master_key)
-                .await?;
+            storage::store_secret(
+                db,
+                CRED_USER_ID,
+                &entry.service,
+                &entry.key,
+                &entry.value,
+                master_key,
+            )
+            .await?;
             eprintln!("  stored: {}/{}", entry.service, entry.key);
         }
         imported += 1;
@@ -1165,7 +1172,10 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
                 println!("{}", key_hex);
                 eprintln!();
                 eprintln!("To make this shell's hook bootstrap pick it up:");
-                eprintln!("  echo '{}' > ~/.config/cred/credd-agent-key.token", key_hex);
+                eprintln!(
+                    "  echo '{}' > ~/.config/cred/credd-agent-key.token",
+                    key_hex
+                );
                 eprintln!("  chmod 600 ~/.config/cred/credd-agent-key.token");
                 Ok(())
             } else {
@@ -1907,7 +1917,8 @@ async fn cmd_bootstrap_unwrap(
 ) -> Result<()> {
     let from = from_path.unwrap_or_else(bootstrap_default_path);
 
-    let data = std::fs::read(&from).with_context(|| format!("failed to read {}", from.display()))?;
+    let data =
+        std::fs::read(&from).with_context(|| format!("failed to read {}", from.display()))?;
 
     if data.len() < BOOTSTRAP_MAGIC.len() || &data[..BOOTSTRAP_MAGIC.len()] != BOOTSTRAP_MAGIC {
         anyhow::bail!(
@@ -1973,9 +1984,8 @@ async fn cmd_piv(cmd: PivCmd) -> Result<()> {
             // Make sure the config dir exists.
             let cfg_parent = pubkey_path(PivSlot::KeyManagement);
             if let Some(parent) = cfg_parent.parent() {
-                std::fs::create_dir_all(parent).with_context(|| {
-                    format!("create config dir at {}", parent.display())
-                })?;
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create config dir at {}", parent.display()))?;
             }
 
             for (slot, subject) in [
@@ -1999,7 +2009,10 @@ async fn cmd_piv(cmd: PivCmd) -> Result<()> {
                     );
                     generate_p256_key(slot, PinPolicy::Never, touch, &out)?;
                 }
-                eprintln!("  generating self-signed cert for slot {}...", slot.as_hex());
+                eprintln!(
+                    "  generating self-signed cert for slot {}...",
+                    slot.as_hex()
+                );
                 generate_self_signed_cert(slot, subject, &out)?;
                 eprintln!("  pubkey -> {}", out.display());
             }

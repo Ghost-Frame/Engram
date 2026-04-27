@@ -140,7 +140,11 @@ impl HandoffsDb {
         let writer = build_pool(&db_path, 1)?;
         let reader = build_pool(&db_path, 2)?;
 
-        let db = Self { writer, reader, gc_sem };
+        let db = Self {
+            writer,
+            reader,
+            gc_sem,
+        };
         db.setup_schema().await?;
 
         info!("handoffs db opened: {}", db_path);
@@ -148,8 +152,14 @@ impl HandoffsDb {
     }
 
     pub async fn store(&self, params: StoreParams, user_id: i64) -> Result<StoreResult> {
-        let handoff_type = params.handoff_type.clone().unwrap_or_else(|| "manual".to_string());
-        let agent = params.agent.clone().unwrap_or_else(|| "unknown".to_string());
+        let handoff_type = params
+            .handoff_type
+            .clone()
+            .unwrap_or_else(|| "manual".to_string());
+        let agent = params
+            .agent
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
         let content_hash = compute_content_hash(&params.content, &handoff_type);
         let metadata_str = match &params.metadata {
             Some(v) => Some(serde_json::to_string(v)?),
@@ -180,13 +190,17 @@ impl HandoffsDb {
                 .map_err(|e: rusqlite::Error| EngError::Database(e))?;
 
             if exists {
-                return Ok(StoreResult { id: None, skipped: true });
+                return Ok(StoreResult {
+                    id: None,
+                    skipped: true,
+                });
             }
         }
 
-        let conn = self.writer.get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
-        })?;
+        let conn =
+            self.writer.get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
+            })?;
 
         let branch = params.branch.clone();
         let directory = params.directory.clone();
@@ -273,14 +287,18 @@ impl HandoffsDb {
             }
         });
 
-        Ok(StoreResult { id: Some(new_id), skipped: false })
+        Ok(StoreResult {
+            id: Some(new_id),
+            skipped: false,
+        })
     }
 
     pub async fn list(&self, filters: HandoffFilters, user_id: i64) -> Result<Vec<Handoff>> {
         let limit = filters.limit.unwrap_or(20);
-        let conn = self.reader.get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
-        })?;
+        let conn =
+            self.reader.get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
+            })?;
 
         conn.interact(move |conn| {
             // Tenant scoping always first; subsequent filters are AND-joined.
@@ -360,7 +378,11 @@ impl HandoffsDb {
         .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
-    pub async fn get_latest(&self, filters: HandoffFilters, user_id: i64) -> Result<Option<Handoff>> {
+    pub async fn get_latest(
+        &self,
+        filters: HandoffFilters,
+        user_id: i64,
+    ) -> Result<Option<Handoff>> {
         let has_project = filters.project.is_some();
         let mut f = filters;
         f.limit = Some(1);
@@ -387,50 +409,55 @@ impl HandoffsDb {
         limit: i64,
         user_id: i64,
     ) -> Result<Vec<SearchResult>> {
-        let conn = self.reader.get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
-        })?;
+        let conn =
+            self.reader.get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
+            })?;
 
         let query = query.to_string();
         let project = project.map(|s| s.to_string());
 
         conn.interact(move |conn| {
-            let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(ref p) = project {
-                (
-                    format!(
-                        "SELECT h.id, h.created_at, h.project, h.agent, h.type, h.model,
+            let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+                if let Some(ref p) = project {
+                    (
+                        format!(
+                            "SELECT h.id, h.created_at, h.project, h.agent, h.type, h.model,
                                 snippet(handoffs_fts, 0, '>>>', '<<<', '...', 48)
                          FROM handoffs_fts fts
                          JOIN handoffs h ON h.id = fts.rowid
                          WHERE handoffs_fts MATCH ?1 AND h.project = ?2 AND h.user_id = ?3
                          ORDER BY rank
-                         LIMIT {}", limit
-                    ),
-                    vec![
-                        Box::new(query) as Box<dyn rusqlite::types::ToSql>,
-                        Box::new(p.clone()),
-                        Box::new(user_id),
-                    ],
-                )
-            } else {
-                (
-                    format!(
-                        "SELECT h.id, h.created_at, h.project, h.agent, h.type, h.model,
+                         LIMIT {}",
+                            limit
+                        ),
+                        vec![
+                            Box::new(query) as Box<dyn rusqlite::types::ToSql>,
+                            Box::new(p.clone()),
+                            Box::new(user_id),
+                        ],
+                    )
+                } else {
+                    (
+                        format!(
+                            "SELECT h.id, h.created_at, h.project, h.agent, h.type, h.model,
                                 snippet(handoffs_fts, 0, '>>>', '<<<', '...', 48)
                          FROM handoffs_fts fts
                          JOIN handoffs h ON h.id = fts.rowid
                          WHERE handoffs_fts MATCH ?1 AND h.user_id = ?2
                          ORDER BY rank
-                         LIMIT {}", limit
-                    ),
-                    vec![
-                        Box::new(query) as Box<dyn rusqlite::types::ToSql>,
-                        Box::new(user_id),
-                    ],
-                )
-            };
+                         LIMIT {}",
+                            limit
+                        ),
+                        vec![
+                            Box::new(query) as Box<dyn rusqlite::types::ToSql>,
+                            Box::new(user_id),
+                        ],
+                    )
+                };
 
-            let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params_refs.as_slice(), |row| {
                 Ok(SearchResult {
@@ -456,9 +483,10 @@ impl HandoffsDb {
     }
 
     pub async fn stats(&self, user_id: i64) -> Result<HandoffStats> {
-        let conn = self.reader.get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
-        })?;
+        let conn =
+            self.reader.get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
+            })?;
 
         conn.interact(move |conn| {
             let total: i64 = conn.query_row(
@@ -562,9 +590,10 @@ impl HandoffsDb {
     }
 
     pub async fn gc(&self, tiered: bool, keep: Option<i64>, user_id: i64) -> Result<GcResult> {
-        let conn = self.writer.get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
-        })?;
+        let conn =
+            self.writer.get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
+            })?;
 
         conn.interact(move |conn| {
             let before: i64 = conn.query_row(
@@ -638,9 +667,10 @@ impl HandoffsDb {
     }
 
     pub async fn delete(&self, id: i64, user_id: i64) -> Result<bool> {
-        let conn = self.writer.get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
-        })?;
+        let conn =
+            self.writer.get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
+            })?;
 
         conn.interact(move |conn| {
             let affected = conn.execute(
@@ -699,7 +729,9 @@ fn build_pool(db_path: &str, max_size: usize) -> Result<Pool> {
     config
         .builder(Runtime::Tokio1)
         .map_err(|e| {
-            EngError::Internal(format!("failed to configure handoffs pool for {db_path}: {e}"))
+            EngError::Internal(format!(
+                "failed to configure handoffs pool for {db_path}: {e}"
+            ))
         })?
         .post_create(Hook::async_fn(move |conn, _| {
             let db_path = db_path_owned.clone();
@@ -724,7 +756,9 @@ fn build_pool(db_path: &str, max_size: usize) -> Result<Pool> {
         })
 }
 
-fn apply_pragmas(conn: &mut deadpool_sqlite::rusqlite::Connection) -> deadpool_sqlite::rusqlite::Result<()> {
+fn apply_pragmas(
+    conn: &mut deadpool_sqlite::rusqlite::Connection,
+) -> deadpool_sqlite::rusqlite::Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -767,7 +801,11 @@ fn strip_mechanical_timestamps(content: &str) -> String {
     lines.join("\n")
 }
 
-fn run_tiered_gc(conn: &mut rusqlite::Connection, project: &str, user_id: i64) -> rusqlite::Result<()> {
+fn run_tiered_gc(
+    conn: &mut rusqlite::Connection,
+    project: &str,
+    user_id: i64,
+) -> rusqlite::Result<()> {
     conn.execute(
         "DELETE FROM handoffs WHERE user_id = ?1 AND type = 'mechanical' AND created_at < datetime('now', '-7 days')",
         rusqlite::params![user_id],
@@ -875,10 +913,7 @@ mod tests {
             .id
             .expect("id");
 
-        let alice = db
-            .list(HandoffFilters::default(), 7)
-            .await
-            .expect("list a");
+        let alice = db.list(HandoffFilters::default(), 7).await.expect("list a");
         let bob = db
             .list(HandoffFilters::default(), 99)
             .await
@@ -907,10 +942,7 @@ mod tests {
         assert!(!removed, "cross-user delete must return false");
 
         // Alice still sees her handoff.
-        let alice = db
-            .list(HandoffFilters::default(), 7)
-            .await
-            .expect("list");
+        let alice = db.list(HandoffFilters::default(), 7).await.expect("list");
         assert_eq!(alice.len(), 1);
 
         // Alice can delete her own.
@@ -921,18 +953,12 @@ mod tests {
     #[tokio::test]
     async fn search_scopes_to_user() {
         let (db, _dir) = fresh_db().await;
-        db.store(
-            store_params("proj-a", "alice has a uniquemarker phrase"),
-            7,
-        )
-        .await
-        .expect("store a");
-        db.store(
-            store_params("proj-b", "bob has a uniquemarker phrase"),
-            99,
-        )
-        .await
-        .expect("store b");
+        db.store(store_params("proj-a", "alice has a uniquemarker phrase"), 7)
+            .await
+            .expect("store a");
+        db.store(store_params("proj-b", "bob has a uniquemarker phrase"), 99)
+            .await
+            .expect("store b");
 
         let alice_hits = db
             .search("uniquemarker", None, 10, 7)
@@ -952,20 +978,14 @@ mod tests {
     async fn gc_scopes_to_user() {
         let (db, _dir) = fresh_db().await;
         for i in 0..5 {
-            db.store(
-                store_params("proj-a", &format!("alice {i}")),
-                7,
-            )
-            .await
-            .expect("store a");
+            db.store(store_params("proj-a", &format!("alice {i}")), 7)
+                .await
+                .expect("store a");
         }
         for i in 0..3 {
-            db.store(
-                store_params("proj-b", &format!("bob {i}")),
-                99,
-            )
-            .await
-            .expect("store b");
+            db.store(store_params("proj-b", &format!("bob {i}")), 99)
+                .await
+                .expect("store b");
         }
 
         // Bob runs gc with keep=1; expect his rows pruned, alice untouched.
@@ -980,9 +1000,15 @@ mod tests {
     #[tokio::test]
     async fn stats_scopes_to_user() {
         let (db, _dir) = fresh_db().await;
-        db.store(store_params("proj-a", "alice"), 7).await.expect("a");
-        db.store(store_params("proj-a", "alice 2"), 7).await.expect("a2");
-        db.store(store_params("proj-b", "bob"), 99).await.expect("b");
+        db.store(store_params("proj-a", "alice"), 7)
+            .await
+            .expect("a");
+        db.store(store_params("proj-a", "alice 2"), 7)
+            .await
+            .expect("a2");
+        db.store(store_params("proj-b", "bob"), 99)
+            .await
+            .expect("b");
 
         let alice = db.stats(7).await.expect("stats a");
         assert_eq!(alice.total, 2);

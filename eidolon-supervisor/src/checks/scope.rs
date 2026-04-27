@@ -1,5 +1,5 @@
-use super::Violation;
 use super::Severity;
+use super::Violation;
 
 #[allow(dead_code)]
 pub fn check_file_scope(entry: &serde_json::Value, allowed_paths: &[String]) -> Vec<Violation> {
@@ -12,7 +12,9 @@ pub fn check_file_scope(entry: &serde_json::Value, allowed_paths: &[String]) -> 
         None => return Vec::new(),
     };
 
-    let in_scope = allowed_paths.iter().any(|allowed| file_path.starts_with(allowed));
+    let in_scope = allowed_paths
+        .iter()
+        .any(|allowed| file_path.starts_with(allowed));
 
     if !in_scope {
         return vec![Violation {

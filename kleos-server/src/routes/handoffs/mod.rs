@@ -124,7 +124,9 @@ async fn run_gc(
         None => (true, None),
     };
     let result = db.gc(tiered, keep, auth.user_id).await?;
-    Ok(Json(json!({ "deleted": result.deleted, "remaining": result.remaining })))
+    Ok(Json(
+        json!({ "deleted": result.deleted, "remaining": result.remaining }),
+    ))
 }
 
 async fn delete_handoff(

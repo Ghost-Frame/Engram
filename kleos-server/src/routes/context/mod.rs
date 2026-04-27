@@ -86,9 +86,14 @@ async fn build_context_stream(
         .is_some_and(|v| v.contains("text/event-stream"));
     if !accepts_sse {
         let embedder = state.embedder.read().await.clone();
-        let result =
-            assemble_context(&resolved_db, body, auth.user_id, embedder, state.llm.clone())
-                .await?;
+        let result = assemble_context(
+            &resolved_db,
+            body,
+            auth.user_id,
+            embedder,
+            state.llm.clone(),
+        )
+        .await?;
         // Wrap in SSE-style JSON so callers get a consistent shape.
         return Ok(Sse::new(futures::stream::once(async move {
             Ok::<_, Infallible>(

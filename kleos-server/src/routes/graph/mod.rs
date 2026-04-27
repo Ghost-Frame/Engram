@@ -246,11 +246,8 @@ async fn delete_entity_handler(
     let _user_id = auth.user_id;
 
     db.write(move |conn| {
-        conn.execute(
-            "DELETE FROM entities WHERE id = ?1",
-            params![id],
-        )
-        .map_err(kleos_lib::EngError::Database)?;
+        conn.execute("DELETE FROM entities WHERE id = ?1", params![id])
+            .map_err(kleos_lib::EngError::Database)?;
         Ok(())
     })
     .await?;
@@ -869,13 +866,9 @@ async fn facts_handler(
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<FactsQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let facts = list_facts(
-        &db,
-        params.memory_id,
-        params.limit.unwrap_or(50).min(1000),
-    )
-    .await
-    .map_err(AppError)?;
+    let facts = list_facts(&db, params.memory_id, params.limit.unwrap_or(50).min(1000))
+        .await
+        .map_err(AppError)?;
     Ok(Json(json!({ "facts": facts })))
 }
 

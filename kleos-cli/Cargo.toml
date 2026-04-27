@@ -13,10 +13,6 @@ readme = "../README.md"
 name = "kleos-cli"
 path = "src/main.rs"
 
-[[bin]]
-name = "kleos-cli"
-path = "src/main.rs"
-
 [dependencies]
 kleos-lib = { path = "../kleos-lib", version = "0.3.2" }
 clap = { workspace = true }

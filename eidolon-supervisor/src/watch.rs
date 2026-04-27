@@ -141,7 +141,10 @@ fn read_new_entries(
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
             let obj = value.as_object();
             let is_tool = obj
-                .map(|o| o.contains_key("tool_name") || o.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
+                .map(|o| {
+                    o.contains_key("tool_name")
+                        || o.get("type").and_then(|v| v.as_str()) == Some("tool_use")
+                })
                 .unwrap_or(false);
 
             if is_tool {

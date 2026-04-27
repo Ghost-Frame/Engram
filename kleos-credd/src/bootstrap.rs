@@ -60,9 +60,7 @@ pub fn blob_path() -> PathBuf {
 ///     except `/bootstrap/kleos-bearer`, which will return 404).
 ///   * `Err(_)` if a blob exists but is malformed or decrypts wrong; credd
 ///     refuses to start because the operator's intent is unclear.
-pub async fn load_bootstrap_blob(
-    master_key: &[u8; KEY_SIZE],
-) -> Result<Option<Zeroizing<String>>> {
+pub async fn load_bootstrap_blob(master_key: &[u8; KEY_SIZE]) -> Result<Option<Zeroizing<String>>> {
     let path = blob_path();
 
     if !path.exists() {

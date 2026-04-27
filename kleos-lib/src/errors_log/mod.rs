@@ -66,7 +66,13 @@ pub async fn list_errors(
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![user_id_owned, level, source, limit, offset])
+            .query(rusqlite::params![
+                user_id_owned,
+                level,
+                source,
+                limit,
+                offset
+            ])
             .map_err(rusqlite_to_eng_error)?;
         let mut events = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -158,9 +164,15 @@ mod tests {
             context: None,
         };
 
-        log_error(&db, req("alice-svc"), Some("alice")).await.expect("a");
-        log_error(&db, req("alice-svc-2"), Some("alice")).await.expect("a2");
-        log_error(&db, req("bob-svc"), Some("bob")).await.expect("b");
+        log_error(&db, req("alice-svc"), Some("alice"))
+            .await
+            .expect("a");
+        log_error(&db, req("alice-svc-2"), Some("alice"))
+            .await
+            .expect("a2");
+        log_error(&db, req("bob-svc"), Some("bob"))
+            .await
+            .expect("b");
 
         let alice = list_errors(&db, "alice", ListErrorsRequest::default())
             .await

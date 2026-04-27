@@ -1,5 +1,5 @@
+use super::{CheckType, Rule, Violation};
 use std::collections::VecDeque;
-use super::{Rule, CheckType, Violation};
 
 const MAX_HISTORY: usize = 10;
 const RETRY_THRESHOLD: usize = 3;
@@ -34,12 +34,19 @@ impl RetryTracker {
             .count();
 
         if consecutive >= RETRY_THRESHOLD {
-            let rule = rules.iter().find(|r| matches!(r.check_type, CheckType::RetryLoop));
+            let rule = rules
+                .iter()
+                .find(|r| matches!(r.check_type, CheckType::RetryLoop));
             if let Some(rule) = rule {
                 return vec![Violation {
                     rule_id: rule.id.clone(),
                     severity: rule.severity.clone(),
-                    message: format!("{} ({} repeats of: {})", rule.message, consecutive, truncate(&cmd, 80)),
+                    message: format!(
+                        "{} ({} repeats of: {})",
+                        rule.message,
+                        consecutive,
+                        truncate(&cmd, 80)
+                    ),
                     context: cmd,
                 }];
             }
@@ -52,7 +59,10 @@ impl RetryTracker {
 fn extract_command(entry: &serde_json::Value) -> Option<String> {
     let obj = entry.as_object()?;
     let input = obj.get("tool_input").or(obj.get("input"))?;
-    input.get("command").and_then(|v| v.as_str()).map(|s| s.to_string())
+    input
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn truncate(s: &str, max: usize) -> String {

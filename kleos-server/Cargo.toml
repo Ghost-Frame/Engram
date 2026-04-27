@@ -13,10 +13,6 @@ readme = "../README.md"
 name = "kleos-server"
 path = "src/main.rs"
 
-[[bin]]
-name = "kleos-server"
-path = "src/main.rs"
-
 [lib]
 name = "kleos_server"
 

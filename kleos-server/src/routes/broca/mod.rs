@@ -98,8 +98,7 @@ async fn get_feed_handler(
     let offset = params.offset.unwrap_or(0);
     let agent = params.agent.as_deref();
 
-    let mut entries =
-        query_actions(&db, agent, None, None, limit, offset, auth.user_id).await?;
+    let mut entries = query_actions(&db, agent, None, None, limit, offset, auth.user_id).await?;
 
     if let Some(ref since) = params.since {
         entries.retain(|e| e.created_at.as_str() >= since.as_str());
@@ -108,10 +107,7 @@ async fn get_feed_handler(
     Ok(Json(json!({ "items": entries, "count": entries.len() })))
 }
 
-async fn get_stats(
-    Auth(auth): Auth,
-    ResolvedDb(db): ResolvedDb,
-) -> Result<Json<Value>, AppError> {
+async fn get_stats(Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
     let stats = get_broca_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }

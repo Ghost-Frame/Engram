@@ -285,8 +285,7 @@ async fn main() {
     if rc.log_format == "json" {
         init_json_tracing();
     } else {
-        let _guard =
-            kleos_lib::observability::init_tracing("kleos-sidecar", "kleos_sidecar=debug");
+        let _guard = kleos_lib::observability::init_tracing("kleos-sidecar", "kleos_sidecar=debug");
         // Note: _guard is intentionally not held for the process lifetime here;
         // the OTel shutdown happens at process exit via the guard's Drop. In
         // json mode we skip OTel to avoid the extra dependency on the recorder.
