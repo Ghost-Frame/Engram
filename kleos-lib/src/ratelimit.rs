@@ -87,7 +87,8 @@ impl RateLimiter {
             }
         };
 
-        let deque = map.entry(key.to_string()).or_insert_with(VecDeque::new);
+        let key_str = key.to_string();
+        let deque = map.entry(key_str.clone()).or_insert_with(VecDeque::new);
 
         // Prune timestamps older than the sliding window.
         while let Some(&front) = deque.front() {
@@ -101,10 +102,26 @@ impl RateLimiter {
         let count = deque.len() as u32;
 
         if count >= max_requests {
-            let oldest = deque.front().unwrap();
-            let expires_in = window.saturating_sub(now.duration_since(*oldest));
+            // H-R3-003: previously this called deque.front().unwrap(), which
+            // panics if max_requests == 0 (count == 0 >= 0 is true and the
+            // deque is empty). Use a graceful fallback so misconfig surfaces
+            // as a normal RateLimitExceeded instead of crashing the request
+            // thread.
+            let retry_after_secs = match deque.front() {
+                Some(&oldest) => window
+                    .saturating_sub(now.duration_since(oldest))
+                    .as_secs()
+                    .max(1),
+                None => window.as_secs(),
+            };
+            // M-R3-003: don't leave an empty deque in the map after a
+            // misconfig denial; remove the entry so the map doesn't bloat
+            // when callers rotate keys.
+            if deque.is_empty() {
+                map.remove(&key_str);
+            }
             Err(RateLimitExceeded {
-                retry_after_secs: expires_in.as_secs().max(1),
+                retry_after_secs,
                 limit: max_requests,
             })
         } else {
@@ -149,7 +166,7 @@ impl RateLimiter {
             }
         };
 
-        let deque = map.entry(key).or_insert_with(VecDeque::new);
+        let deque = map.entry(key.clone()).or_insert_with(VecDeque::new);
 
         while let Some(&front) = deque.front() {
             if now.duration_since(front) > window {
@@ -162,9 +179,20 @@ impl RateLimiter {
         let count = deque.len() as u32;
 
         if count >= max_requests {
-            let oldest = deque.front().unwrap();
-            let expires_in = window.saturating_sub(now.duration_since(*oldest));
-            Err(expires_in.as_secs().max(1))
+            // H-R3-003: same fallback as check_key. A zero limit (or zero
+            // burst with zero limit) collapsed the unwrap into a panic.
+            let retry_after_secs = match deque.front() {
+                Some(&oldest) => window
+                    .saturating_sub(now.duration_since(oldest))
+                    .as_secs()
+                    .max(1),
+                None => window.as_secs(),
+            };
+            // M-R3-003: drop empty entries on misconfig denial.
+            if deque.is_empty() {
+                map.remove(&key);
+            }
+            Err(retry_after_secs)
         } else {
             deque.push_back(now);
             Ok(count + 1)
@@ -412,5 +440,21 @@ mod tests {
         }
         // Key 2 should still be allowed
         assert!(rl.check(2, 10).is_ok());
+    }
+
+    /// H-R3-003: zero-limit must return Err gracefully, not panic.
+    #[test]
+    fn test_check_zero_limit_does_not_panic() {
+        let rl = RateLimiter::new();
+        let result = rl.check(1, 0);
+        assert!(matches!(result, Err(_)));
+    }
+
+    /// H-R3-003: same zero case via check_key.
+    #[test]
+    fn test_check_key_zero_limit_does_not_panic() {
+        let rl = RateLimiter::new_with_burst(0, 0);
+        let result = rl.check_key("zero");
+        assert!(matches!(result, Err(_)));
     }
 }
