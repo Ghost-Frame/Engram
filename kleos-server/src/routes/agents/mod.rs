@@ -197,29 +197,50 @@ async fn get_executions(
     Ok(Json(json!({ "agent_id": id, "executions": executions })))
 }
 
-async fn verify(Json(body): Json<VerifyBody>) -> Result<Json<Value>, AppError> {
+// M-R3-001: previously this returned 200 OK with valid:false + an error
+// string for execution/message/tool_manifest, which made callers branch on
+// "valid" and treat the request as a legitimate negative result. Now we
+// return 501 NOT_IMPLEMENTED so callers can distinguish "the server cannot
+// answer" from "the server says invalid".
+async fn verify(
+    Json(body): Json<VerifyBody>,
+) -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
     if let Some(passport) = body.passport {
-        let result = verify_signed_value(&passport)?;
+        let result = verify_signed_value(&passport).map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.0.to_string() })),
+            )
+        })?;
         return Ok(Json(json!({ "type": "passport", "valid": result })));
     }
-    if body.execution.is_some() {
-        return Ok(Json(
-            json!({ "type": "execution", "valid": false, "error": "verification not implemented" }),
+
+    let kind = if body.execution.is_some() {
+        Some("execution")
+    } else if body.message.is_some() {
+        Some("message")
+    } else if body.tool_manifest.is_some() {
+        Some("tool_manifest")
+    } else {
+        None
+    };
+
+    if let Some(kind) = kind {
+        return Err((
+            axum::http::StatusCode::NOT_IMPLEMENTED,
+            Json(json!({
+                "type": kind,
+                "error": format!("verification of '{}' is not implemented", kind),
+            })),
         ));
     }
-    if body.message.is_some() {
-        return Ok(Json(
-            json!({ "type": "message", "valid": false, "error": "verification not implemented" }),
-        ));
-    }
-    if body.tool_manifest.is_some() {
-        return Ok(Json(
-            json!({ "type": "tool_manifest", "valid": false, "error": "verification not implemented" }),
-        ));
-    }
-    Err(AppError(kleos_lib::EngError::InvalidInput(
-        "Provide 'passport', 'execution', 'message', or 'tool_manifest' to verify".into(),
-    )))
+
+    Err((
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": "Provide 'passport', 'execution', 'message', or 'tool_manifest' to verify",
+        })),
+    ))
 }
 
 fn signing_secret() -> Result<&'static str, AppError> {
