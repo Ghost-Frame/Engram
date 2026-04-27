@@ -128,6 +128,13 @@ pub async fn resolve_api_key(agent_slot: &str) -> Result<String, CredError> {
     // Prefer ECDH if PIV is set up on this host (server 9D pubkey is on
     // disk, client 9A signing works). Falls back silently to the legacy
     // token path if PIV is not configured.
+    //
+    // Windows gate: piv_sign_9a relies on python3 + yubikit, and pyscard
+    // currently has no prebuilt wheel for Windows Python. Each subprocess
+    // also pops a Smart Card consent dialog. Skip the ECDH attempt entirely
+    // on Windows until the client signing path is ported to the Rust
+    // `yubikey` crate.
+    #[cfg(not(target_os = "windows"))]
     if piv_pubkey_path().exists() {
         match ecdh::resolve_via_ecdh(agent_slot).await {
             Ok((key, expires_at)) => {
