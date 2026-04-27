@@ -1,7 +1,8 @@
 use std::env;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::time::Duration;
 
 mod observe;
 
@@ -12,6 +13,10 @@ const CODE_EXTENSIONS: &[&str] = &[
 ];
 
 const RAW_READ_THRESHOLD: u64 = 8192;
+// Capped raw fallback: when agent-forge fails on a large code file, emit
+// only head + tail to avoid silently undoing the token-budget promise.
+const RAW_FALLBACK_HEAD: usize = 4096;
+const RAW_FALLBACK_TAIL: usize = 4096;
 
 fn main() -> ExitCode {
     let binary_name = env::args()
@@ -62,16 +67,27 @@ fn cmd_kr(args: &[String]) -> ExitCode {
     let is_code = CODE_EXTENSIONS.contains(&ext);
     let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
-    // For code files above the threshold, delegate to agent-forge
+    // For code files above the threshold, delegate to agent-forge.
     if is_code && file_size > RAW_READ_THRESHOLD {
-        if let Some(output) = agent_forge_read(&path, symbol.as_deref()) {
-            print!("{}", output);
-            return ExitCode::SUCCESS;
+        match agent_forge_read(&path, symbol.as_deref()) {
+            Ok(output) => {
+                print!("{}", output);
+                return ExitCode::SUCCESS;
+            }
+            Err(err) => {
+                eprintln!("kleos-fs: agent-forge fallback ({}); reading raw", err);
+                if env::var("KLEOS_FS_NO_FALLBACK")
+                    .map(|v| !v.is_empty() && v != "0")
+                    .unwrap_or(false)
+                {
+                    return ExitCode::from(1);
+                }
+                return raw_fallback_read(&path);
+            }
         }
-        // Fall through to raw read on agent-forge failure
     }
 
-    // Raw read
+    // Small file or non-code: read directly without truncation.
     match std::fs::read_to_string(&path) {
         Ok(content) => {
             print!("{}", content);
@@ -82,6 +98,34 @@ fn cmd_kr(args: &[String]) -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+fn raw_fallback_read(path: &Path) -> ExitCode {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path.display(), e);
+            return ExitCode::from(1);
+        }
+    };
+
+    let total = bytes.len();
+    let cap = RAW_FALLBACK_HEAD + RAW_FALLBACK_TAIL;
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    if total <= cap {
+        let _ = out.write_all(&bytes);
+    } else {
+        let _ = out.write_all(&bytes[..RAW_FALLBACK_HEAD]);
+        let _ = writeln!(
+            out,
+            "\n... [truncated, raw fallback: {} bytes omitted] ...",
+            total - cap
+        );
+        let _ = out.write_all(&bytes[total - RAW_FALLBACK_TAIL..]);
+    }
+    ExitCode::SUCCESS
 }
 
 fn cmd_kw(args: &[String]) -> ExitCode {
@@ -193,11 +237,8 @@ fn resolve_path(path: &str) -> Option<PathBuf> {
     if p.exists() { Some(p) } else { None }
 }
 
-fn agent_forge_read(path: &Path, symbol: Option<&str>) -> Option<String> {
-    let forge_bin = find_agent_forge()?;
-    let tmp_dir = env::temp_dir();
-    let input_path = tmp_dir.join("kleos-fs-input.json");
-    let output_path = tmp_dir.join("kleos-fs-output.json");
+fn agent_forge_read(path: &Path, symbol: Option<&str>) -> Result<String, String> {
+    let forge_bin = find_agent_forge().ok_or_else(|| "agent-forge binary not found".to_string())?;
 
     let input_json = if let Some(sym) = symbol {
         serde_json::json!({
@@ -213,7 +254,28 @@ fn agent_forge_read(path: &Path, symbol: Option<&str>) -> Option<String> {
         })
     };
 
-    std::fs::write(&input_path, serde_json::to_string(&input_json).ok()?).ok()?;
+    // Per-invocation tempfiles so concurrent kr calls don't clobber each other.
+    let mut input_file = tempfile::Builder::new()
+        .prefix("kleos-fs-in-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(|e| format!("tempfile (input): {}", e))?;
+    input_file
+        .write_all(
+            serde_json::to_string(&input_json)
+                .map_err(|e| format!("serialize input: {}", e))?
+                .as_bytes(),
+        )
+        .map_err(|e| format!("write input: {}", e))?;
+    input_file
+        .flush()
+        .map_err(|e| format!("flush input: {}", e))?;
+
+    let output_file = tempfile::Builder::new()
+        .prefix("kleos-fs-out-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(|e| format!("tempfile (output): {}", e))?;
 
     let subcommand = if symbol.is_some() {
         "search-code"
@@ -223,30 +285,48 @@ fn agent_forge_read(path: &Path, symbol: Option<&str>) -> Option<String> {
 
     let status = Command::new(&forge_bin)
         .arg("--input")
-        .arg(&input_path)
+        .arg(input_file.path())
         .arg("--output")
-        .arg(&output_path)
+        .arg(output_file.path())
         .arg(subcommand)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .ok()?;
+        .map_err(|e| format!("spawn agent-forge: {}", e))?;
 
     if !status.success() {
-        return None;
+        return Err(format!(
+            "agent-forge exited with {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string())
+        ));
     }
 
-    let output_raw = std::fs::read_to_string(&output_path).ok()?;
-    let output: serde_json::Value = serde_json::from_str(&output_raw).ok()?;
+    let output_raw = std::fs::read_to_string(output_file.path())
+        .map_err(|e| format!("read output: {}", e))?;
+    let output: serde_json::Value =
+        serde_json::from_str(&output_raw).map_err(|e| format!("parse output: {}", e))?;
 
-    if !output.get("success")?.as_bool()? {
-        return None;
+    let success = output
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !success {
+        let msg = output
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("agent-forge reported failure");
+        return Err(msg.to_string());
     }
 
     if let Some(data) = output.get("data") {
-        Some(serde_json::to_string_pretty(data).unwrap_or_default())
+        Ok(serde_json::to_string_pretty(data).unwrap_or_default())
+    } else if let Some(msg) = output.get("message").and_then(|m| m.as_str()) {
+        Ok(msg.to_string())
     } else {
-        output.get("message").and_then(|m| m.as_str()).map(String::from)
+        Err("agent-forge returned success with no data or message".to_string())
     }
 }
 
@@ -291,39 +371,56 @@ fn check_scratchpad_ledger(key: &str) -> LedgerResult {
 
     let url = format!(
         "{}/scratchpad/get?namespace=spec-task&key={}",
-        server_url,
+        server_url.trim_end_matches('/'),
         urlencoded(key)
     );
 
-    let mut cmd = Command::new("curl");
-    cmd.arg("-sf")
-        .arg("--max-time")
-        .arg("3")
-        .arg(&url);
-
-    if let Some(ref k) = api_key {
-        cmd.arg("-H").arg(format!("Authorization: Bearer {}", k));
-    }
-
-    let output = match cmd.output() {
-        Ok(o) => o,
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
         Err(_) => return LedgerResult::ServerUnavailable,
     };
 
-    if !output.status.success() {
-        let code = output.status.code().unwrap_or(0);
-        if code == 22 || code == 7 {
-            return LedgerResult::ServerUnavailable;
-        }
-        return LedgerResult::NotFound;
+    let mut req = client.get(&url);
+    if let Some(ref k) = api_key {
+        req = req.bearer_auth(k);
     }
 
-    let body = String::from_utf8_lossy(&output.stdout);
+    let resp = match req.send() {
+        Ok(r) => r,
+        Err(e) => {
+            // Connect/DNS/timeout/TLS -- treat as server unavailable.
+            tracing_eprint(&format!("kleos-fs: scratchpad request failed: {}", e));
+            return LedgerResult::ServerUnavailable;
+        }
+    };
+
+    let status = resp.status();
+    if status.as_u16() == 404 {
+        return LedgerResult::NotFound;
+    }
+    if !status.is_success() {
+        // Non-2xx other than 404: ambiguous, treat as unavailable so callers
+        // can fail-open rather than silently blocking edits.
+        return LedgerResult::ServerUnavailable;
+    }
+
+    let body = match resp.text() {
+        Ok(b) => b,
+        Err(_) => return LedgerResult::ServerUnavailable,
+    };
     if body.trim().is_empty() || body.contains("\"value\":null") || body.contains("not found") {
         return LedgerResult::NotFound;
     }
-
     LedgerResult::Found
+}
+
+fn tracing_eprint(msg: &str) {
+    if env::var("KLEOS_FS_DEBUG").is_ok() {
+        eprintln!("{}", msg);
+    }
 }
 
 fn resolve_api_key() -> Option<String> {
