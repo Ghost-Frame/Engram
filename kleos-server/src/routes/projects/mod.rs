@@ -28,7 +28,7 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn create_project(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<kleos_lib::projects::CreateProjectBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -54,6 +54,7 @@ async fn create_project(
         body.description.as_deref(),
         status,
         metadata.as_deref(),
+        auth.user_id,
     )
     .await?;
     Ok(Json(
@@ -80,14 +81,14 @@ async fn get_project(
     let project = kleos_lib::projects::get_project(&db, id, auth.user_id)
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Project not found".into())))?;
-    let memory_ids = kleos_lib::projects::get_project_memory_ids(&db, id).await?;
+    let memory_ids = kleos_lib::projects::get_project_memory_ids(&db, id, auth.user_id).await?;
     Ok(Json(
         json!({ "id": project.id, "name": project.name, "description": project.description, "status": project.status, "metadata": project.metadata, "memory_ids": memory_ids, "created_at": project.created_at }),
     ))
 }
 
 async fn update_project(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<kleos_lib::projects::UpdateProjectBody>,
@@ -99,6 +100,7 @@ async fn update_project(
     kleos_lib::projects::update_project(
         &db,
         id,
+        auth.user_id,
         body.name.as_deref(),
         body.description.as_deref(),
         body.status.as_deref(),
@@ -109,31 +111,31 @@ async fn update_project(
 }
 
 async fn delete_project_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::projects::delete_project(&db, id).await?;
+    kleos_lib::projects::delete_project(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
 async fn link_memory(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path((id, mid)): Path<(i64, i64)>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::projects::link_memory(&db, mid, id).await?;
+    kleos_lib::projects::link_memory(&db, mid, id, auth.user_id).await?;
     Ok(Json(
         json!({ "linked": true, "project_id": id, "memory_id": mid }),
     ))
 }
 
 async fn unlink_memory(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path((id, mid)): Path<(i64, i64)>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::projects::unlink_memory(&db, mid, id).await?;
+    kleos_lib::projects::unlink_memory(&db, mid, id, auth.user_id).await?;
     Ok(Json(
         json!({ "unlinked": true, "project_id": id, "memory_id": mid }),
     ))

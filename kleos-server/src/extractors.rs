@@ -33,9 +33,17 @@ impl<S: Send + Sync> FromRequestParts<S> for Auth {
 
 /// Extractor that resolves the correct `Database` for the authenticated tenant.
 ///
-/// When tenant sharding is enabled (`state.tenant_registry` is `Some`), this
-/// looks up (or lazily creates) the per-tenant handle and returns its async
-/// database pool. Otherwise it falls back to the monolithic `state.db`.
+/// Behavior (post C-R3-004):
+/// - `auth.user_id == 1` always returns the monolith `state.db`. This is the
+///   system/admin user whose pre-existing data lives on the monolith.
+/// - When tenant sharding is enabled (`state.tenant_registry` is `Some`),
+///   non-system users get their per-tenant handle.
+/// - When tenant sharding is disabled (`state.tenant_registry` is `None`),
+///   non-system users receive **503 Service Unavailable**. The previous
+///   silent fallback to the monolith was a default-config BOLA: helpers in
+///   projects/webhooks/broca rely on shard isolation and have no `user_id`
+///   predicate, so falling back to the monolith leaks every other tenant's
+///   data. Failing closed surfaces the misconfig instead of leaking.
 pub struct ResolvedDb(pub Arc<Database>);
 
 impl FromRequestParts<AppState> for ResolvedDb {
@@ -57,27 +65,36 @@ impl FromRequestParts<AppState> for ResolvedDb {
                 )
             })?;
 
-            // Users whose data lives in the main DB bypass tenant sharding.
-            // user_id=1 is the system/admin user with pre-existing data.
+            // System user always uses the monolith (legacy data).
             if auth.user_id == 1 {
                 return Ok(ResolvedDb(fallback_db));
             }
 
-            if let Some(registry) = registry {
-                let handle = registry
-                    .get_or_create(&auth.user_id.to_string())
-                    .await
-                    .map_err(|e| {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({ "error": format!("tenant registry error: {}", e) })),
-                        )
-                    })?;
+            // Non-system users require tenant sharding to be enabled.
+            // Failing closed (503) prevents the silent monolith fallback that
+            // would otherwise allow cross-tenant reads/writes through helpers
+            // that dropped their user_id predicates in Phase 5.
+            let registry = registry.ok_or_else(|| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": "tenant sharding disabled; non-system users are unsupported. \
+                                  Enable KLEOS_TENANT_SHARDING (default ON) and restart."
+                    })),
+                )
+            })?;
 
-                Ok(ResolvedDb(handle.database()))
-            } else {
-                Ok(ResolvedDb(fallback_db))
-            }
+            let handle = registry
+                .get_or_create(&auth.user_id.to_string())
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("tenant registry error: {}", e) })),
+                    )
+                })?;
+
+            Ok(ResolvedDb(handle.database()))
         }
     }
 }

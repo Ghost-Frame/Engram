@@ -398,6 +398,23 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    // C-R3-004: re-add user_id to monolith projects + broca_actions so
+    // single-DB deployments are safe even when tenant sharding is disabled.
+    // Tenant shards remain user_id-free; only the monolith carries these.
+    Migration {
+        version: 44,
+        description: "readd_user_id_projects",
+        up: run_migration_readd_user_id_projects,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 45,
+        description: "readd_user_id_broca",
+        up: run_migration_readd_user_id_broca,
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -447,6 +464,8 @@ const MIGRATION_DROP_USER_ID_PORTABILITY: i64 = 40;
 const MIGRATION_DROP_USER_ID_INTELLIGENCE: i64 = 41;
 const MIGRATION_DROP_USER_ID_SKILLS: i64 = 42;
 const MIGRATION_DROP_USER_ID_EPISODES: i64 = 43;
+const MIGRATION_READD_USER_ID_PROJECTS: i64 = 44;
+const MIGRATION_READD_USER_ID_BROCA: i64 = 45;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -784,6 +803,26 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_DROP_USER_ID_EPISODES,
             "drop_user_id_episodes",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_PROJECTS {
+        info!("Running migration 44: readd_user_id_projects");
+        run_migration_readd_user_id_projects(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_PROJECTS,
+            "readd_user_id_projects",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_BROCA {
+        info!("Running migration 45: readd_user_id_broca");
+        run_migration_readd_user_id_broca(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_BROCA,
+            "readd_user_id_broca",
         )?;
     }
 
@@ -2911,6 +2950,105 @@ fn run_migration_drop_user_id_episodes(conn: &rusqlite::Connection) -> Result<()
     info!(
         "Migration 43 complete: user_id dropped from episodes (Shape A, FTS triggers unaffected)"
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 44: re-add user_id to projects (C-R3-004)
+// ---------------------------------------------------------------------------
+
+/// Migration 44: re-add user_id to monolith projects so single-DB deployments
+/// are safe even when tenant sharding is disabled. Phase 5 dropped user_id
+/// from projects (v31) on the assumption that every deployment ran with
+/// `KLEOS_TENANT_SHARDING=1`. The R-3 audit (C-R3-004) showed sharding was
+/// opt-in, leaving multi-user single-DB deployments cross-tenant exposed.
+///
+/// Tenant shards (one DB per user) intentionally do NOT carry user_id; only
+/// the monolith does. This migration is therefore monolith-only and reuses
+/// the 12-step rebuild path because of the existing UNIQUE(name) on projects.
+/// The new column is `NOT NULL DEFAULT 1` so legacy rows backfill to the
+/// system user, which matches the pre-Phase-5 ownership.
+fn run_migration_readd_user_id_projects(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id > 0 {
+        info!("projects.user_id already present, migration 44 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         ALTER TABLE projects RENAME TO _projects_old_v44;
+
+         DROP INDEX IF EXISTS idx_projects_status;
+         DROP INDEX IF EXISTS idx_projects_user;
+
+         CREATE TABLE projects (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             name TEXT NOT NULL,
+             description TEXT,
+             status TEXT NOT NULL DEFAULT 'active',
+             metadata TEXT,
+             user_id INTEGER NOT NULL DEFAULT 1,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(name, user_id)
+         );
+
+         INSERT INTO projects (id, name, description, status, metadata, user_id, created_at, updated_at)
+         SELECT id, name, description, status, metadata, 1, created_at, updated_at
+         FROM _projects_old_v44;
+
+         DROP TABLE _projects_old_v44;
+
+         CREATE INDEX idx_projects_status ON projects(status);
+         CREATE INDEX idx_projects_user ON projects(user_id);
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 44 complete: user_id re-added to projects (defaults to 1 for legacy rows)");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 45: re-add user_id to broca_actions (C-R3-004 / H-R3-006)
+// ---------------------------------------------------------------------------
+
+/// Migration 45: re-add user_id to monolith broca_actions. broca_actions has
+/// no UNIQUE/FK on the column, so the simpler ALTER TABLE ADD COLUMN path
+/// is sufficient. The column is non-nullable with DEFAULT 1 so legacy rows
+/// backfill to the system user. An idx_broca_actions_user index is added so
+/// per-user queries do not full-scan.
+fn run_migration_readd_user_id_broca(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('broca_actions') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id > 0 {
+        info!("broca_actions.user_id already present, migration 45 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "ALTER TABLE broca_actions ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1;
+         CREATE INDEX IF NOT EXISTS idx_broca_actions_user ON broca_actions(user_id, created_at DESC);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 45 complete: user_id re-added to broca_actions");
     Ok(())
 }
 

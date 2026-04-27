@@ -170,7 +170,20 @@ async fn main() {
         tracing::warn!("POST /admin/safe-mode/exit to recover");
     }
 
-    let tenant_registry = if std::env::var("KLEOS_TENANT_SHARDING").as_deref() == Ok("1") {
+    // C-R3-004: tenant sharding is ON by default. Set KLEOS_TENANT_SHARDING
+    // to "0" or "false" (case-insensitive) to fall back to monolith-only
+    // single-user mode. Multi-user deployments MUST keep sharding enabled --
+    // the ResolvedDb extractor refuses non-system users when the registry is
+    // missing, so disabling sharding renders the server effectively
+    // single-user (only user_id=1 keeps working).
+    let tenant_sharding_enabled = match std::env::var("KLEOS_TENANT_SHARDING") {
+        Ok(v) => {
+            let s = v.trim().to_ascii_lowercase();
+            !(s == "0" || s == "false" || s == "off" || s == "no")
+        }
+        Err(_) => true,
+    };
+    let tenant_registry = if tenant_sharding_enabled {
         use kleos_lib::tenant::{TenantConfig, TenantRegistry};
         let reg = TenantRegistry::new(
             &config.data_dir,
@@ -178,9 +191,14 @@ async fn main() {
             config.vector_dimensions,
         )
         .expect("failed to initialize tenant registry");
-        tracing::info!("tenant sharding enabled");
+        tracing::info!("tenant sharding enabled (default)");
         Some(Arc::new(reg))
     } else {
+        tracing::warn!(
+            "tenant sharding DISABLED via KLEOS_TENANT_SHARDING; \
+             non-system users (user_id != 1) will receive 503 from any \
+             tenant-scoped route. This mode is single-user only."
+        );
         None
     };
 

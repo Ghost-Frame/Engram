@@ -225,6 +225,20 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "episodes_user_id_drop",
         up: apply_schema_v40_episodes_drop,
     },
+    // C-R3-004 / H-R3-006: re-add user_id to projects + broca_actions on
+    // shard DBs so the same helper SQL works on shard and monolith. Each
+    // shard still belongs to one tenant; the column is redundant per row
+    // but keeps schema parity and supports defense-in-depth filtering.
+    TenantMigration {
+        version: 41,
+        description: "projects_user_id_readd",
+        up: apply_schema_v41_projects_readd,
+    },
+    TenantMigration {
+        version: 42,
+        description: "broca_actions_user_id_readd",
+        up: apply_schema_v42_broca_readd,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -427,6 +441,16 @@ fn apply_schema_v39_skills_drop(conn: &Connection) -> Result<()> {
 fn apply_schema_v40_episodes_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v40_episodes_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v40 failed: {e}")))
+}
+
+fn apply_schema_v41_projects_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v41_projects_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v41 failed: {e}")))
+}
+
+fn apply_schema_v42_broca_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v42_broca_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v42 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.
@@ -1629,9 +1653,12 @@ mod tests {
         assert_eq!(uid, 4);
     }
 
-    /// v27: broca_actions must NOT have a user_id column after the chain.
+    /// v27 dropped user_id from broca_actions; v42 (C-R3-004 / H-R3-006)
+    /// re-added it. After the full chain the column and its index must be
+    /// present so the broca helpers can filter by user_id on both shard and
+    /// monolith with one query shape.
     #[test]
-    fn user_id_absent_from_broca_after_v27() {
+    fn broca_user_id_present_after_full_chain() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn).unwrap();
 
@@ -1642,7 +1669,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(count, 0, "broca_actions still has user_id column after v27");
+        assert_eq!(
+            count, 1,
+            "broca_actions.user_id missing after v42 readd"
+        );
 
         let idx: i64 = conn
             .query_row(
@@ -1651,7 +1681,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx, 0);
+        assert_eq!(idx, 1, "idx_broca_actions_user missing after v42 readd");
     }
 
     /// v27: broca_actions supports the SQL shape kleos-lib services/broca.rs
@@ -1890,9 +1920,11 @@ mod tests {
         assert_eq!(uid, 4);
     }
 
-    /// v28: user_id column and idx_projects_user are gone after the drop.
+    /// v28 dropped user_id from projects; v41 (C-R3-004) re-added it.
+    /// After the full chain the column, idx_projects_user, and the
+    /// memory_projects FK must all be present.
     #[test]
-    fn user_id_absent_from_projects_after_v28() {
+    fn projects_user_id_present_after_full_chain() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn).unwrap();
 
@@ -1903,7 +1935,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(col_count, 0, "projects.user_id still present after v28");
+        assert_eq!(col_count, 1, "projects.user_id missing after v41 readd");
 
         let idx_count: i64 = conn
             .query_row(
@@ -1912,9 +1944,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx_count, 0, "idx_projects_user still present after v28");
+        assert_eq!(idx_count, 1, "idx_projects_user missing after v41 readd");
 
-        // memory_projects survives the rebuild and its FK to projects(id)
+        // memory_projects survives both rebuilds and its FK to projects(id)
         // still resolves.
         let mp: i64 = conn
             .query_row(

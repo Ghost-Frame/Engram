@@ -372,18 +372,20 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         CREATE INDEX IF NOT EXISTS idx_memory_entities_memory ON memory_entities(memory_id);
         CREATE INDEX IF NOT EXISTS idx_memory_entities_entity ON memory_entities(entity_id);
 
-        -- Projects
+        -- Projects (C-R3-004: user_id re-added for monolith multi-tenant safety)
         CREATE TABLE IF NOT EXISTS projects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             description TEXT,
             status TEXT NOT NULL DEFAULT 'active',
             metadata TEXT,
+            user_id INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(name)
+            UNIQUE(name, user_id)
         );
         CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+        CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
 
         -- Memory-project join
         CREATE TABLE IF NOT EXISTS memory_projects (
@@ -1218,7 +1220,7 @@ pub const KLEOS_SERVICES_SQL: &str = r#"
         PRIMARY KEY(agent, channel)
     );
 
-    -- Broca: action log ------------------------------------------------
+    -- Broca: action log (C-R3-004: user_id re-added for monolith multi-tenant safety)
     CREATE TABLE IF NOT EXISTS broca_actions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         agent TEXT NOT NULL,
@@ -1227,12 +1229,14 @@ pub const KLEOS_SERVICES_SQL: &str = r#"
         payload TEXT NOT NULL DEFAULT '{}',
         narrative TEXT,
         axon_event_id INTEGER,
+        user_id INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_broca_actions_agent ON broca_actions(agent, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_broca_actions_service ON broca_actions(service, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_broca_actions_action ON broca_actions(action, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_broca_actions_created ON broca_actions(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_broca_actions_user ON broca_actions(user_id, created_at DESC);
 
     -- Chiasm: task tracking with history ------------------------------
     CREATE TABLE IF NOT EXISTS chiasm_tasks (

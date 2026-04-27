@@ -42,13 +42,14 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-#[tracing::instrument(skip(db, description, metadata), fields(name = %name, status = %status))]
+#[tracing::instrument(skip(db, description, metadata), fields(name = %name, status = %status, user_id))]
 pub async fn create_project(
     db: &Database,
     name: &str,
     description: Option<&str>,
     status: &str,
     metadata: Option<&str>,
+    user_id: i64,
 ) -> Result<(i64, String)> {
     let name = name.to_string();
     let description = description.map(|s| s.to_string());
@@ -58,13 +59,13 @@ pub async fn create_project(
     db.write(move |conn| {
         let mut stmt = conn
             .prepare(
-                "INSERT INTO projects (name, description, status, metadata) \
-                 VALUES (?1, ?2, ?3, ?4) RETURNING id, created_at",
+                "INSERT INTO projects (name, description, status, metadata, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id, created_at",
             )
             .map_err(rusqlite_to_eng_error)?;
         let (id, created_at) = stmt
             .query_row(
-                rusqlite::params![name, description, status, metadata],
+                rusqlite::params![name, description, status, metadata, user_id],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )
             .map_err(|e| EngError::Internal(e.to_string()))?;
@@ -74,18 +75,18 @@ pub async fn create_project(
 }
 
 #[tracing::instrument(skip(db), fields(project_id = id, user_id))]
-pub async fn get_project(db: &Database, id: i64, _user_id: i64) -> Result<Option<ProjectRow>> {
+pub async fn get_project(db: &Database, id: i64, user_id: i64) -> Result<Option<ProjectRow>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT p.id, p.name, p.description, p.status, p.metadata, \
-                 p.created_at, p.updated_at, \
+                 p.user_id, p.created_at, p.updated_at, \
                  (SELECT COUNT(*) FROM memory_projects WHERE project_id = p.id) as memory_count \
-                 FROM projects p WHERE p.id = ?1",
+                 FROM projects p WHERE p.id = ?1 AND p.user_id = ?2",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id])
+            .query(rusqlite::params![id, user_id])
             .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => Ok(Some(row_to_project(row)?)),
@@ -98,7 +99,7 @@ pub async fn get_project(db: &Database, id: i64, _user_id: i64) -> Result<Option
 #[tracing::instrument(skip(db), fields(user_id, status = ?status))]
 pub async fn list_projects(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     status: Option<&str>,
 ) -> Result<Vec<ProjectRow>> {
     let status = status.map(|s| s.to_string());
@@ -109,14 +110,14 @@ pub async fn list_projects(
             let mut stmt = conn
                 .prepare(
                     "SELECT p.id, p.name, p.description, p.status, p.metadata, \
-                     p.created_at, p.updated_at, \
+                     p.user_id, p.created_at, p.updated_at, \
                      (SELECT COUNT(*) FROM memory_projects WHERE project_id = p.id) as memory_count \
-                     FROM projects p WHERE p.status = ?1 \
+                     FROM projects p WHERE p.user_id = ?1 AND p.status = ?2 \
                      ORDER BY p.name COLLATE NOCASE",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt
-                .query(rusqlite::params![s])
+                .query(rusqlite::params![user_id, s])
                 .map_err(rusqlite_to_eng_error)?;
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 result.push(row_to_project(row)?);
@@ -125,13 +126,15 @@ pub async fn list_projects(
             let mut stmt = conn
                 .prepare(
                     "SELECT p.id, p.name, p.description, p.status, p.metadata, \
-                     p.created_at, p.updated_at, \
+                     p.user_id, p.created_at, p.updated_at, \
                      (SELECT COUNT(*) FROM memory_projects WHERE project_id = p.id) as memory_count \
-                     FROM projects p \
+                     FROM projects p WHERE p.user_id = ?1 \
                      ORDER BY p.status = 'active' DESC, p.name COLLATE NOCASE",
                 )
                 .map_err(rusqlite_to_eng_error)?;
-            let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(rusqlite::params![user_id])
+                .map_err(rusqlite_to_eng_error)?;
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 result.push(row_to_project(row)?);
             }
@@ -141,10 +144,11 @@ pub async fn list_projects(
     .await
 }
 
-#[tracing::instrument(skip(db, name, description, metadata), fields(project_id = id, status = ?status))]
+#[tracing::instrument(skip(db, name, description, metadata), fields(project_id = id, user_id, status = ?status))]
 pub async fn update_project(
     db: &Database,
     id: i64,
+    user_id: i64,
     name: Option<&str>,
     description: Option<&str>,
     status: Option<&str>,
@@ -163,8 +167,8 @@ pub async fn update_project(
              status = COALESCE(?3, status), \
              metadata = COALESCE(?4, metadata), \
              updated_at = datetime('now') \
-             WHERE id = ?5",
-            rusqlite::params![name, description, status, metadata, id],
+             WHERE id = ?5 AND user_id = ?6",
+            rusqlite::params![name, description, status, metadata, id, user_id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -172,24 +176,32 @@ pub async fn update_project(
     .await
 }
 
-#[tracing::instrument(skip(db), fields(project_id = id))]
-pub async fn delete_project(db: &Database, id: i64) -> Result<()> {
+#[tracing::instrument(skip(db), fields(project_id = id, user_id))]
+pub async fn delete_project(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
-        conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])
-            .map_err(rusqlite_to_eng_error)?;
+        conn.execute(
+            "DELETE FROM projects WHERE id = ?1 AND user_id = ?2",
+            rusqlite::params![id, user_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })
     .await
 }
 
-#[tracing::instrument(skip(db), fields(memory_id, project_id))]
-pub async fn link_memory(db: &Database, memory_id: i64, project_id: i64) -> Result<()> {
+#[tracing::instrument(skip(db), fields(memory_id, project_id, user_id))]
+pub async fn link_memory(
+    db: &Database,
+    memory_id: i64,
+    project_id: i64,
+    user_id: i64,
+) -> Result<()> {
     db.write(move |conn| {
-        // Verify project exists in this tenant shard
+        // Verify project exists AND belongs to this user
         let project_exists: bool = conn
             .query_row(
-                "SELECT 1 FROM projects WHERE id = ?1",
-                rusqlite::params![project_id],
+                "SELECT 1 FROM projects WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![project_id, user_id],
                 |_| Ok(true),
             )
             .optional()
@@ -229,14 +241,19 @@ pub async fn link_memory(db: &Database, memory_id: i64, project_id: i64) -> Resu
     .await
 }
 
-#[tracing::instrument(skip(db), fields(memory_id, project_id))]
-pub async fn unlink_memory(db: &Database, memory_id: i64, project_id: i64) -> Result<()> {
+#[tracing::instrument(skip(db), fields(memory_id, project_id, user_id))]
+pub async fn unlink_memory(
+    db: &Database,
+    memory_id: i64,
+    project_id: i64,
+    user_id: i64,
+) -> Result<()> {
     db.write(move |conn| {
-        // Verify project exists before unlinking
+        // Verify project exists AND belongs to this user before unlinking
         let project_exists: bool = conn
             .query_row(
-                "SELECT 1 FROM projects WHERE id = ?1",
-                rusqlite::params![project_id],
+                "SELECT 1 FROM projects WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![project_id, user_id],
                 |_| Ok(true),
             )
             .optional()
@@ -259,9 +276,27 @@ pub async fn unlink_memory(db: &Database, memory_id: i64, project_id: i64) -> Re
     .await
 }
 
-#[tracing::instrument(skip(db), fields(project_id))]
-pub async fn get_project_memory_ids(db: &Database, project_id: i64) -> Result<Vec<i64>> {
+#[tracing::instrument(skip(db), fields(project_id, user_id))]
+pub async fn get_project_memory_ids(
+    db: &Database,
+    project_id: i64,
+    user_id: i64,
+) -> Result<Vec<i64>> {
     db.read(move |conn| {
+        // Defense-in-depth: enforce ownership before listing memory ids.
+        let owned: bool = conn
+            .query_row(
+                "SELECT 1 FROM projects WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![project_id, user_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(rusqlite_to_eng_error)?
+            .unwrap_or(false);
+        if !owned {
+            return Ok(Vec::new());
+        }
+
         let mut stmt = conn
             .prepare(
                 "SELECT mp.memory_id FROM memory_projects mp \
@@ -294,12 +329,14 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> Result<ProjectRow> {
             .get(3)
             .map_err(|e| crate::EngError::Internal(e.to_string()))?,
         metadata: row.get(4).unwrap_or(None),
-        user_id: 1,
-        created_at: row
+        user_id: row
             .get(5)
             .map_err(|e| crate::EngError::Internal(e.to_string()))?,
-        updated_at: row.get(6).unwrap_or(None),
-        memory_count: row.get(7).unwrap_or(None),
+        created_at: row
+            .get(6)
+            .map_err(|e| crate::EngError::Internal(e.to_string()))?,
+        updated_at: row.get(7).unwrap_or(None),
+        memory_count: row.get(8).unwrap_or(None),
     })
 }
 
