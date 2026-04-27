@@ -22,16 +22,35 @@ const ALLOWED_CATEGORIES: &[&str] = &[
 
 const HARD_LIMIT_MAX: u32 = 50;
 
-static SEARXNG_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
-    reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(3))
-        .timeout(std::time::Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("Kleos/1.0 (search-proxy)")
-        .pool_max_idle_per_host(4)
-        .build()
-        .expect("reqwest::Client::builder failed at SearXNG client startup")
-});
+// M-R3-005: previously a `LazyLock<Client>` with `.expect("...")` at the
+// build call. If the builder ever returned Err (TLS misconfig, native-tls
+// vs rustls feature drift, ...), the panic would poison the LazyLock slot
+// and every subsequent /search/web request would also panic on touch.
+// LazyLock cannot recover, so the route became permanently dead until a
+// process restart.
+//
+// Switching to `OnceLock<Result<Client, String>>` means a builder failure
+// caches the error string and the handler returns 503 SERVICE_UNAVAILABLE
+// instead of panicking. The Client itself is still built once for the
+// lifetime of the process so the connection pool keeps working.
+static SEARXNG_CLIENT: std::sync::OnceLock<std::result::Result<reqwest::Client, String>> =
+    std::sync::OnceLock::new();
+
+fn searxng_client() -> std::result::Result<&'static reqwest::Client, &'static str> {
+    SEARXNG_CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(3))
+                .timeout(std::time::Duration::from_secs(15))
+                .redirect(reqwest::redirect::Policy::none())
+                .user_agent("Kleos/1.0 (search-proxy)")
+                .pool_max_idle_per_host(4)
+                .build()
+                .map_err(|e| format!("reqwest::Client::builder failed: {}", e))
+        })
+        .as_ref()
+        .map_err(|s| s.as_str())
+}
 
 #[derive(Debug, Deserialize)]
 pub(super) struct WebSearchBody {
@@ -113,7 +132,12 @@ pub(super) async fn web_search(
         form.push(("safesearch", s.to_string()));
     }
 
-    let req_fut = SEARXNG_CLIENT
+    let client = searxng_client().map_err(|e| {
+        tracing::error!(error = %e, "searxng client unavailable");
+        AppError::from(kleos_lib::EngError::Internal(e.to_string()))
+    })?;
+
+    let req_fut = client
         .get(&url)
         .timeout(std::time::Duration::from_millis(
             state.config.web_search_timeout_ms,
