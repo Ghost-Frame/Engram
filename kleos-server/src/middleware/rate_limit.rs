@@ -22,7 +22,15 @@ fn too_many_requests(retry_after: i64) -> Response {
         .header("Content-Type", "application/json")
         .header("Retry-After", retry_after.to_string())
         .body(axum::body::Body::from(body.to_string()))
-        .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
+        // M-R3-004: builder failure must not fall back to empty 200; that
+        // would let a client whose request triggered builder failure bypass
+        // the rate limit silently. Return 500 instead.
+        .unwrap_or_else(|_| {
+            axum::response::Response::builder()
+                .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::empty())
+                .expect("static 500 response body")
+        })
 }
 
 // -- Per-endpoint cost multipliers (3.16) ------------------------------------

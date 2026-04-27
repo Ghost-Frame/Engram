@@ -32,7 +32,15 @@ fn forbid(msg: &str) -> Response {
         .status(StatusCode::FORBIDDEN)
         .header("Content-Type", "application/json")
         .body(axum::body::Body::from(body.to_string()))
-        .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
+        // M-R3-004: builder failure must not collapse to an empty 200.
+        // Empty Response::new uses status 200 and is fail-OPEN. Preserve
+        // the deny intent with a 500 fallback.
+        .unwrap_or_else(|_| {
+            axum::response::Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::empty())
+                .expect("static 500 response body")
+        })
 }
 
 fn open_access_context() -> AuthContext {
@@ -133,7 +141,13 @@ pub async fn auth_middleware(
                 .status(StatusCode::UNAUTHORIZED)
                 .header("Content-Type", "application/json")
                 .body(axum::body::Body::from(body.to_string()))
-                .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
+                // M-R3-004: 500 fallback instead of empty 200 (fail-OPEN).
+                .unwrap_or_else(|_| {
+                    axum::response::Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(axum::body::Body::empty())
+                        .expect("static 500 response body")
+                })
         }
         Some(raw_key) => match validate_key(&state.db, &raw_key).await {
             Ok(auth_ctx) => {
@@ -174,7 +188,13 @@ pub async fn auth_middleware(
                     .status(StatusCode::UNAUTHORIZED)
                     .header("Content-Type", "application/json")
                     .body(axum::body::Body::from(body.to_string()))
-                    .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
+                    // M-R3-004: 500 fallback instead of empty 200 (fail-OPEN).
+                    .unwrap_or_else(|_| {
+                        axum::response::Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(axum::body::Body::empty())
+                            .expect("static 500 response body")
+                    })
             }
         },
     }
