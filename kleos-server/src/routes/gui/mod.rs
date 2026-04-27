@@ -378,10 +378,14 @@ fn cookie_attributes(_headers: &HeaderMap) -> &'static str {
             .unwrap_or(false)
     });
 
+    // L-R3-005: prefer SameSite=Strict regardless of ENGRAM_SECURE_COOKIES.
+    // The previous default (Lax in non-secure mode) let any cross-site
+    // top-level GET (including links to /gui/logout) carry the cookie,
+    // which made forced-logout CSRF trivially exploitable.
     if secure {
         "Path=/; HttpOnly; Secure; SameSite=Strict"
     } else {
-        "Path=/; HttpOnly; SameSite=Lax"
+        "Path=/; HttpOnly; SameSite=Strict"
     }
 }
 
@@ -436,7 +440,10 @@ async fn gui_auth(
         .unwrap()
 }
 
-/// GET /gui/logout - clear auth cookie
+/// POST /gui/logout - clear auth cookie. POST-only so a top-level GET
+/// navigation from a third-party site cannot force-logout the user
+/// (L-R3-005). SameSite=Strict on the cookie is the primary defense; this
+/// is belt-and-suspenders.
 async fn gui_logout(headers: HeaderMap) -> Response {
     let attrs = cookie_attributes(&headers);
     let cookie = format!("{}=; Max-Age=0; {}", COOKIE_NAME, attrs);
@@ -761,7 +768,7 @@ async fn gui_bulk_archive(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/gui/auth", post(gui_auth))
-        .route("/gui/logout", get(gui_logout))
+        .route("/gui/logout", post(gui_logout))
         // H-013: login assets served as embedded constants; no build dir needed.
         // These specific routes shadow the wildcard below for these paths.
         .route("/_app/login.css", get(serve_login_css))

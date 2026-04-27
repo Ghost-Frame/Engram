@@ -255,14 +255,6 @@ fn signing_secret() -> Result<&'static str, AppError> {
 }
 
 fn load_or_create_signing_secret() -> String {
-    let path = signing_secret_path();
-    if let Ok(existing) = fs::read_to_string(&path) {
-        let trimmed = existing.trim().to_string();
-        if !trimmed.is_empty() {
-            return trimmed;
-        }
-    }
-
     // SECURITY (SEC-MED-5): use OsRng for 256-bit signing secret instead of
     // UUID v4 which has only ~122 bits and fixed version/variant bits.
     let generated = {
@@ -271,6 +263,32 @@ fn load_or_create_signing_secret() -> String {
         rand::rng().fill(&mut raw);
         hex::encode(raw)
     };
+
+    // L-R3-003: refuse to fall back to ./kleos-signing-secret.txt when
+    // dirs::data_dir() resolves to None. Writing the secret into CWD made
+    // it readable by any local user who could reach the working directory
+    // (e.g. /tmp during ad-hoc testing). If we cannot resolve a real
+    // user-data dir, run with an in-memory secret and surface a loud
+    // warning so the operator notices.
+    let path = match signing_secret_path() {
+        Some(p) => p,
+        None => {
+            tracing::error!(
+                "no env ENGRAM_SIGNING_SECRET_FILE and dirs::data_dir() returned None; \
+                 running with an in-memory signing secret (regenerates on every restart). \
+                 Set ENGRAM_SIGNING_SECRET_FILE to an absolute path to persist."
+            );
+            return generated;
+        }
+    };
+
+    if let Ok(existing) = fs::read_to_string(&path) {
+        let trimmed = existing.trim().to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+
     if let Some(parent) = path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
             tracing::warn!(
@@ -314,13 +332,16 @@ fn load_or_create_signing_secret() -> String {
     generated
 }
 
-fn signing_secret_path() -> PathBuf {
+fn signing_secret_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("ENGRAM_SIGNING_SECRET_FILE") {
-        return PathBuf::from(path);
+        if !path.trim().is_empty() {
+            return Some(PathBuf::from(path));
+        }
     }
-    dirs::data_dir()
-        .map(|d| d.join("kleos").join("signing-secret"))
-        .unwrap_or_else(|| PathBuf::from("kleos-signing-secret.txt"))
+    // L-R3-003: no CWD fallback. If neither env var nor data_dir resolves,
+    // the caller runs with an in-memory secret instead of leaking it into
+    // an unpredictable on-disk location.
+    dirs::data_dir().map(|d| d.join("kleos").join("signing-secret"))
 }
 
 fn sign_value(payload: &Value) -> Result<String, AppError> {
