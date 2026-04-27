@@ -615,28 +615,31 @@ async fn import_bulk(
     Auth(auth): Auth,
     Json(body): Json<ImportBulkBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    if body.text.is_none() && body.url.is_none() {
+    if body.url.as_deref().is_some_and(|s| !s.is_empty()) {
         return Err(AppError(kleos_lib::EngError::InvalidInput(
-            "Provide text or url parameter".to_string(),
+            "url ingest is not supported by /import/bulk; POST inline text instead".to_string(),
         )));
     }
-    let input = if let Some(ref text) = body.text {
-        if text.trim().is_empty() {
+    let input = match body.text.as_ref() {
+        Some(text) if !text.trim().is_empty() => {
+            if text.len() > MAX_INGEST_TEXT_BYTES {
+                return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+                    "text exceeds {} bytes; split the import",
+                    MAX_INGEST_TEXT_BYTES
+                ))));
+            }
+            text.clone()
+        }
+        Some(_) => {
             return Err(AppError(kleos_lib::EngError::InvalidInput(
                 "text must be a non-empty string".to_string(),
             )));
         }
-        if text.len() > MAX_INGEST_TEXT_BYTES {
-            return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
-                "text exceeds {} bytes; split the import",
-                MAX_INGEST_TEXT_BYTES
-            ))));
+        None => {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(
+                "text parameter is required".to_string(),
+            )));
         }
-        text.clone()
-    } else {
-        return Err(AppError(kleos_lib::EngError::NotImplemented(
-            "URL fetching not yet implemented".to_string(),
-        )));
     };
     let format: Option<SupportedFormat> = body.format.as_ref().and_then(|f| f.parse().ok());
     let mode = body
@@ -944,36 +947,39 @@ async fn ingest_text(
     Auth(auth): Auth,
     Json(body): Json<IngestBody>,
 ) -> Result<Json<Value>, AppError> {
-    if body.url.is_none() && body.text.is_none() {
+    if body.url.as_deref().is_some_and(|s| !s.is_empty()) {
         return Err(AppError(kleos_lib::EngError::InvalidInput(
-            "Provide url or text parameter".to_string(),
+            "url ingest is not supported by /ingest; POST inline text instead".to_string(),
         )));
     }
     let raw_text;
     let ingest_source;
     let title;
-    if let Some(ref text) = body.text {
-        if text.trim().is_empty() {
+    match body.text.as_ref() {
+        Some(text) if !text.trim().is_empty() => {
+            if text.len() > MAX_INGEST_TEXT_BYTES {
+                return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+                    "text exceeds {} bytes; split the ingest",
+                    MAX_INGEST_TEXT_BYTES
+                ))));
+            }
+            raw_text = text.trim().to_string();
+            title = body.title.unwrap_or_else(|| {
+                let t: String = raw_text.chars().take(60).collect();
+                t.replace(char::from(10u8), " ")
+            });
+            ingest_source = body.source.unwrap_or_else(|| "text".to_string());
+        }
+        Some(_) => {
             return Err(AppError(kleos_lib::EngError::InvalidInput(
                 "text must be a non-empty string".to_string(),
             )));
         }
-        if text.len() > MAX_INGEST_TEXT_BYTES {
-            return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
-                "text exceeds {} bytes; split the ingest",
-                MAX_INGEST_TEXT_BYTES
-            ))));
+        None => {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(
+                "text parameter is required".to_string(),
+            )));
         }
-        raw_text = text.trim().to_string();
-        title = body.title.unwrap_or_else(|| {
-            let t: String = raw_text.chars().take(60).collect();
-            t.replace(char::from(10u8), " ")
-        });
-        ingest_source = body.source.unwrap_or_else(|| "text".to_string());
-    } else {
-        return Err(AppError(kleos_lib::EngError::NotImplemented(
-            "URL fetching not yet implemented in Rust port".to_string(),
-        )));
     }
     let options = IngestOptions {
         mode: IngestMode::Raw,
@@ -1007,9 +1013,9 @@ async fn ingest_text_stream(
     headers: HeaderMap,
     Json(body): Json<IngestBody>,
 ) -> Result<impl IntoResponse, AppError> {
-    if body.url.is_none() && body.text.is_none() {
+    if body.url.as_deref().is_some_and(|s| !s.is_empty()) {
         return Err(AppError(kleos_lib::EngError::InvalidInput(
-            "Provide url or text parameter".to_string(),
+            "url ingest is not supported by /ingest/stream; POST inline text instead".to_string(),
         )));
     }
     let raw_text = match body.text.as_ref() {
@@ -1028,8 +1034,8 @@ async fn ingest_text_stream(
             )));
         }
         None => {
-            return Err(AppError(kleos_lib::EngError::NotImplemented(
-                "URL fetching not yet implemented in Rust port".to_string(),
+            return Err(AppError(kleos_lib::EngError::InvalidInput(
+                "text parameter is required".to_string(),
             )));
         }
     };
