@@ -1,9 +1,9 @@
 #!/bin/bash
-# PostToolUse hook: notify engram-sidecar (Rust) of tool use (fire-and-forget)
-# Reads tool_name + tool_input from stdin JSON, sends to engram-sidecar /observe.
+# PostToolUse hook: notify kleos-sidecar (Rust) of tool use (fire-and-forget)
+# Reads tool_name + tool_input from stdin JSON, sends to kleos-sidecar /observe.
 # Returns empty (no hookSpecificOutput) to avoid context noise.
 #
-# The Rust engram-sidecar replaces the legacy Node.js mnemonic sidecar.
+# The Rust kleos-sidecar replaces the legacy Node.js mnemonic sidecar.
 # It handles observe, recall, compress, and auto-capture in one binary.
 #
 # NOTE: Use absolute paths, not $HOME -- PostToolUse hooks don't expand $HOME on Windows.

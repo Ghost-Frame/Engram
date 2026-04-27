@@ -42,7 +42,7 @@ log "SessionEnd fired. session_id=$SESSION_ID"
 curl -sf --max-time 5 "http://localhost:7711/end" -X POST &>/dev/null || true
 
 # Build summary from recent Engram memories (best-effort, local)
-ENGRAM_CLI="$HOME_DIR/.local/bin/engram-cli"
+ENGRAM_CLI="$HOME_DIR/.local/bin/kleos-cli"
 SUMMARY=$("$ENGRAM_CLI" recall --limit 3 --json 2>/dev/null | python3 -c "
 import sys, json
 try:

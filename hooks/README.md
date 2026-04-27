@@ -1,21 +1,23 @@
-# Engram Hooks for Claude Code
+# Kleos Hooks for Claude Code
 
-Claude Code hooks that integrate with the Engram memory system.
+Claude Code hooks that integrate with the Kleos memory system.
+
+The CLIs and env vars below also accept their `engram-*` / `ENGRAM_*` predecessors as aliases for backwards compatibility with installs that came from the old project name.
 
 ## Versions
 
 ### `simple/` - Minimal Dependencies
 
 Lightweight hooks that only require:
-- `engram-cli` in PATH
-- `ENGRAM_URL` and `ENGRAM_API_KEY` environment variables
+- `kleos-cli` in PATH
+- `KLEOS_SERVER_URL` and `KLEOS_API_KEY` environment variables (or the `ENGRAM_*` aliases)
 - bash, curl
 
 **Hooks:**
-- `session-start.sh` - Loads context from Engram at session start
+- `session-start.sh` - Loads context from Kleos at session start
 - `session-end.sh` - Stores session summary when session ends
-- `user-prompt.sh` - Searches Engram for relevant memories each turn
-- `mnemonic-observe.sh` - Reports tool usage to engram-sidecar
+- `user-prompt.sh` - Searches Kleos for relevant memories each turn
+- `mnemonic-observe.sh` - Reports tool usage to kleos-sidecar
 
 ### `full/` - Full Integration
 
@@ -31,7 +33,7 @@ Advanced hooks with Eidolon guardian integration, cred credential management, an
 **Requires:**
 - Everything from simple/
 - Eidolon daemon (optional, falls back gracefully)
-- `cred` credential manager (from engram-cred)
+- `cred` credential manager (from kleos-cred)
 - python3 (for JSON handling)
 
 ## Installation
@@ -49,8 +51,8 @@ Advanced hooks with Eidolon guardian integration, cred credential management, an
    ```json
    {
      "env": {
-       "ENGRAM_URL": "http://localhost:4200",
-       "ENGRAM_API_KEY": "your-api-key"
+       "KLEOS_SERVER_URL": "http://localhost:4200",
+       "KLEOS_API_KEY": "your-api-key"
      },
      "hooks": {
        "SessionStart": [{
@@ -86,14 +88,14 @@ Advanced hooks with Eidolon guardian integration, cred credential management, an
    }
    ```
 
-3. Start engram-server and optionally engram-sidecar
+3. Start kleos-server and optionally kleos-sidecar
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ENGRAM_URL` | Yes | Engram server URL (e.g., `http://localhost:4200`) |
-| `ENGRAM_API_KEY` | Yes | API key for authentication |
-| `ENGRAM_CLI` | No | Path to engram-cli if not in PATH |
+| `KLEOS_SERVER_URL` | Yes | Kleos server URL (e.g., `http://localhost:4200`). Also accepts `ENGRAM_URL` / `ENGRAM_EIDOLON_URL`. |
+| `KLEOS_API_KEY` | Yes | API key for authentication. Also accepts `ENGRAM_API_KEY` / `EIDOLON_KEY`. |
+| `KLEOS_CLI` | No | Path to kleos-cli if not in PATH. Also accepts `ENGRAM_CLI`. |
 | `MNEMONIC_URL` | No | Sidecar URL (default: `http://localhost:7711`) |
 | `EIDOLON_URL` | No | Eidolon daemon URL (full hooks only) |

@@ -128,6 +128,30 @@ enum Commands {
         #[command(subcommand)]
         cmd: BootstrapCmd,
     },
+    /// Manage YubiKey PIV slots for ECDH bootstrap auth.
+    /// See ~/projects/plans/2026-04-26-ecdh-bootstrap-auth-piv.md.
+    Piv {
+        #[command(subcommand)]
+        cmd: PivCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum PivCmd {
+    /// Generate ECDH (slot 9D KEY_MANAGEMENT) and signing (slot 9A
+    /// AUTHENTICATION) P-256 keypairs on the YubiKey, generate
+    /// self-signed certs, and export both public keys to
+    /// ~/.config/cred/piv-{9a,9d}-pubkey.pem.
+    Setup {
+        /// Touch policy. `never` is fully automated; `cached` requires
+        /// physical touch with a 15s cache. Use `never` for systemd /
+        /// service contexts and `cached` for interactive use.
+        #[arg(long, default_value = "never")]
+        touch_policy: String,
+    },
+    /// Show which PIV slots have keys provisioned plus SHA-256 pubkey
+    /// fingerprints.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -227,6 +251,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Init => cmd_init().await,
         Commands::Recover { from } => cmd_recover(&from).await,
+        Commands::Piv { cmd } => cmd_piv(cmd).await,
         // All other commands need YubiKey
         cmd => {
             eprintln!("unlocking with YubiKey...");
@@ -289,7 +314,7 @@ async fn main() -> Result<()> {
                         cmd_bootstrap_unwrap(&key, from, raw).await
                     }
                 },
-                Commands::Init | Commands::Recover { .. } => unreachable!(),
+                Commands::Init | Commands::Recover { .. } | Commands::Piv { .. } => unreachable!(),
             }
         }
     }
@@ -1830,6 +1855,101 @@ async fn cmd_bootstrap_unwrap(
 
     drop(plaintext);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cred piv subcommand
+// ---------------------------------------------------------------------------
+
+async fn cmd_piv(cmd: PivCmd) -> Result<()> {
+    use kleos_cred::piv::{
+        export_pubkey_pem, generate_p256_key, generate_self_signed_cert, pubkey_fingerprint,
+        pubkey_path, slot_has_key, PinPolicy, PivSlot, TouchPolicy,
+    };
+
+    match cmd {
+        PivCmd::Setup { touch_policy } => {
+            let touch = match touch_policy.as_str() {
+                "never" => TouchPolicy::Never,
+                "cached" => TouchPolicy::Cached,
+                "always" => TouchPolicy::Always,
+                other => anyhow::bail!(
+                    "invalid touch policy `{}` (use: never, cached, always)",
+                    other
+                ),
+            };
+
+            // Make sure the config dir exists.
+            let cfg_parent = pubkey_path(PivSlot::KeyManagement);
+            if let Some(parent) = cfg_parent.parent() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("create config dir at {}", parent.display())
+                })?;
+            }
+
+            for (slot, subject) in [
+                (PivSlot::KeyManagement, "CN=credd-ecdh-9d,O=Syntheos"),
+                (PivSlot::Authentication, "CN=credd-auth-9a,O=Syntheos"),
+            ] {
+                let out = pubkey_path(slot);
+                if slot_has_key(slot) {
+                    eprintln!(
+                        "slot {} already has a key -- re-exporting pubkey + (re)generating cert",
+                        slot.as_hex()
+                    );
+                    let pem = export_pubkey_pem(slot)?;
+                    std::fs::write(&out, &pem)
+                        .with_context(|| format!("write pubkey to {}", out.display()))?;
+                } else {
+                    eprintln!(
+                        "generating P-256 keypair on YubiKey slot {} (touch-policy={})...",
+                        slot.as_hex(),
+                        touch.as_str()
+                    );
+                    generate_p256_key(slot, PinPolicy::Never, touch, &out)?;
+                }
+                eprintln!("  generating self-signed cert for slot {}...", slot.as_hex());
+                generate_self_signed_cert(slot, subject, &out)?;
+                eprintln!("  pubkey -> {}", out.display());
+            }
+            eprintln!("PIV setup complete.");
+            Ok(())
+        }
+        PivCmd::Status => {
+            for slot in [PivSlot::KeyManagement, PivSlot::Authentication] {
+                let path = pubkey_path(slot);
+                if !slot_has_key(slot) {
+                    println!("slot {}: empty", slot.as_hex());
+                    continue;
+                }
+                let pem = match export_pubkey_pem(slot) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        println!("slot {}: error -- {}", slot.as_hex(), e);
+                        continue;
+                    }
+                };
+                let fp = pubkey_fingerprint(&pem);
+                let cached_match = std::fs::read_to_string(&path)
+                    .map(|c| c.trim() == pem.trim())
+                    .unwrap_or(false);
+                println!("slot {}: provisioned", slot.as_hex());
+                println!("  fingerprint: SHA-256:{}", fp);
+                println!(
+                    "  cached pem : {} ({})",
+                    path.display(),
+                    if cached_match {
+                        "matches slot"
+                    } else if path.exists() {
+                        "DIFFERS from slot"
+                    } else {
+                        "missing"
+                    }
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

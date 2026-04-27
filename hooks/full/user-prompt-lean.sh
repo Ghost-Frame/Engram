@@ -29,17 +29,17 @@ log() {
   echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*" >> "$LOG_DIR/user-prompt-lean.log" 2>/dev/null || true
 }
 
-# ---- Resolve engram-cli binary ----
+# ---- Resolve kleos-cli binary ----
 resolve_engram_cli() {
   if [ -n "${ENGRAM_CLI:-}" ] && [ -f "$ENGRAM_CLI" ]; then
     printf '%s\n' "$ENGRAM_CLI"
     return
   fi
-  if command -v engram-cli >/dev/null 2>&1; then
-    command -v engram-cli
+  if command -v kleos-cli >/dev/null 2>&1; then
+    command -v kleos-cli
     return
   fi
-  printf '%s/.local/bin/engram-cli\n' "$HOME_DIR"
+  printf '%s/.local/bin/kleos-cli\n' "$HOME_DIR"
 }
 
 # ---- Resolve Engram API key from env or cred ----

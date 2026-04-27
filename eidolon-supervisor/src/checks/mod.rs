@@ -51,20 +51,12 @@ pub fn default_rules() -> Vec<Rule> {
             message: "Force push detected".into(),
         },
         Rule {
-            id: "no-ovh-reboot".into(),
+            id: "no-reboot".into(),
             check_type: CheckType::RuleMatch,
             pattern: r"reboot|shutdown|systemctl\s+(reboot|poweroff)".into(),
             severity: Severity::Critical,
             cooldown_secs: 600,
-            message: "Reboot/shutdown command detected -- LUKS vault risk".into(),
-        },
-        Rule {
-            id: "no-rm-critical".into(),
-            check_type: CheckType::RuleMatch,
-            pattern: r"rm\s+-rf\s+(/opt/engram|/home/zan/eidolon|/home/zan/zanverse)".into(),
-            severity: Severity::Critical,
-            cooldown_secs: 600,
-            message: "Destructive removal of critical path".into(),
+            message: "Reboot or shutdown command detected".into(),
         },
         Rule {
             id: "retry-loop".into(),
