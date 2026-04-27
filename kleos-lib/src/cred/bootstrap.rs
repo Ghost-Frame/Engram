@@ -72,16 +72,24 @@ fn cache_set(slot: String, key: String, expires_at: SystemTime) {
 
 /// Returns the agent slot string to use for this process.
 ///
-/// `KLEOS_AGENT_SLOT` env wins. Falls back to `claude-code-<hostname>`
-/// where hostname comes from `/proc/sys/kernel/hostname` or `HOSTNAME`.
+/// `KLEOS_AGENT_SLOT` env wins. Falls back to `claude-code-<user>-<hostname>`
+/// where `user` is `$USER` / `$USERNAME` (or `unknown` if unset) and hostname
+/// comes from `/proc/sys/kernel/hostname` or `HOSTNAME` (or `unknown-host`).
+///
+/// The `<user>` segment exists so two users on the same shared host don't
+/// collide on a single cred slot. Existing single-user installs that prefer
+/// the old `claude-code-<host>` form should set `KLEOS_AGENT_SLOT` explicitly.
 pub fn current_agent_slot() -> String {
     if let Ok(slot) = env::var("KLEOS_AGENT_SLOT") {
         if !slot.is_empty() {
             return slot;
         }
     }
+    let user = env::var("USER")
+        .or_else(|_| env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string());
     let hostname = read_hostname();
-    format!("claude-code-{}", hostname)
+    format!("claude-code-{}-{}", user, hostname)
 }
 
 fn read_hostname() -> String {
@@ -96,7 +104,7 @@ fn read_hostname() -> String {
             return h;
         }
     }
-    "wsl".to_string()
+    "unknown-host".to_string()
 }
 
 /// Resolve the Kleos API key for `agent_slot`. See module docs for order.
@@ -339,6 +347,27 @@ mod tests {
         let slot = current_agent_slot();
         env::remove_var("KLEOS_AGENT_SLOT");
         assert_eq!(slot, "my-custom-slot");
+    }
+
+    #[test]
+    fn current_agent_slot_default_includes_user_and_host() {
+        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        env::remove_var("KLEOS_AGENT_SLOT");
+        env::set_var("USER", "testuser");
+        env::set_var("HOSTNAME", "testhost");
+        let slot = current_agent_slot();
+        env::remove_var("USER");
+        env::remove_var("HOSTNAME");
+        assert!(slot.starts_with("claude-code-"), "slot was {slot}");
+        assert!(slot.contains("testuser"), "slot was {slot}");
+        // Hostname may come from /proc on Linux; user segment must always
+        // appear, hostname segment may differ but must be non-empty after
+        // the trailing dash.
+        let after = slot.trim_start_matches("claude-code-");
+        let parts: Vec<&str> = after.splitn(2, '-').collect();
+        assert_eq!(parts.len(), 2, "slot was {slot}");
+        assert_eq!(parts[0], "testuser");
+        assert!(!parts[1].is_empty(), "slot was {slot}");
     }
 
     #[test]
