@@ -35,9 +35,14 @@ pub fn router() -> Router<AppState> {
 // Handler
 // ---------------------------------------------------------------------------
 
+// M-R3-007: routes/batch wrote to state.db, so on a sharded deployment a
+// /batch caller's writes landed in the monolith while /memory writes went
+// to the shard. The data was effectively split-brain. Switching to
+// ResolvedDb means /batch and /memory both target the caller's shard.
 async fn batch_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    crate::extractors::ResolvedDb(db): crate::extractors::ResolvedDb,
     Json(req): Json<BatchRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     if req.ops.is_empty() {
@@ -60,7 +65,7 @@ async fn batch_handler(
     let mut results: Vec<BatchResult> = Vec::with_capacity(req.ops.len().min(MAX_BATCH_OPS));
 
     for (i, op) in req.ops.into_iter().enumerate() {
-        let res = execute_op(&state, user_id, i, op).await;
+        let res = execute_op(&state, &db, user_id, i, op).await;
         let failed = !res.success;
         results.push(res);
 
@@ -93,16 +98,23 @@ async fn batch_handler(
 // Per-op dispatch
 // ---------------------------------------------------------------------------
 
-async fn execute_op(state: &AppState, user_id: i64, index: usize, op: BatchOp) -> BatchResult {
+async fn execute_op(
+    state: &AppState,
+    db: &kleos_lib::db::Database,
+    user_id: i64,
+    index: usize,
+    op: BatchOp,
+) -> BatchResult {
     match op {
-        BatchOp::Store { body } => execute_store(state, user_id, index, body).await,
-        BatchOp::Update { body } => execute_update(state, user_id, index, body).await,
-        BatchOp::Link { body } => execute_link(state, user_id, index, body).await,
+        BatchOp::Store { body } => execute_store(state, db, user_id, index, body).await,
+        BatchOp::Update { body } => execute_update(db, user_id, index, body).await,
+        BatchOp::Link { body } => execute_link(db, user_id, index, body).await,
     }
 }
 
 async fn execute_store(
     state: &AppState,
+    db: &kleos_lib::db::Database,
     user_id: i64,
     index: usize,
     body: StoreBody,
@@ -139,7 +151,7 @@ async fn execute_store(
         }
     }
 
-    match memory::store(&state.db, req).await {
+    match memory::store(db, req).await {
         Ok(store_result) => {
             if let Some(existing_id) = store_result.duplicate_of {
                 BatchResult {
@@ -175,7 +187,7 @@ async fn execute_store(
 }
 
 async fn execute_update(
-    state: &AppState,
+    db: &kleos_lib::db::Database,
     user_id: i64,
     index: usize,
     body: UpdateBody,
@@ -190,7 +202,7 @@ async fn execute_update(
         embedding: None,
     };
 
-    match memory::update(&state.db, body.id, req, user_id).await {
+    match memory::update(db, body.id, req, user_id).await {
         Ok(mem) => BatchResult {
             index,
             op: "update".to_string(),
@@ -208,12 +220,17 @@ async fn execute_update(
     }
 }
 
-async fn execute_link(state: &AppState, user_id: i64, index: usize, body: LinkBody) -> BatchResult {
+async fn execute_link(
+    db: &kleos_lib::db::Database,
+    user_id: i64,
+    index: usize,
+    body: LinkBody,
+) -> BatchResult {
     let similarity = body.similarity.unwrap_or(1.0);
     let link_type = body.link_type.unwrap_or_else(|| "manual".to_string());
 
     match memory::insert_link(
-        &state.db,
+        db,
         body.source_id,
         body.target_id,
         similarity,

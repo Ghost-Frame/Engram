@@ -37,9 +37,13 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Standard JSON context assembly (backward-compatible).
+// M-R3-007: assemble_context reads memories from the caller's DB. Using
+// state.db (monolith) leaked context across tenants on a sharded
+// deployment. Switching to ResolvedDb routes to the caller's shard.
 async fn build_context(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    crate::extractors::ResolvedDb(db): crate::extractors::ResolvedDb,
     Json(body): Json<ContextOptions>,
 ) -> Result<Json<Value>, AppError> {
     if body.query.trim().is_empty() {
@@ -49,8 +53,7 @@ async fn build_context(
     }
 
     let embedder = state.embedder.read().await.clone();
-    let result =
-        assemble_context(&state.db, body, auth.user_id, embedder, state.llm.clone()).await?;
+    let result = assemble_context(&db, body, auth.user_id, embedder, state.llm.clone()).await?;
 
     Ok(Json(json!(result)))
 }
@@ -66,6 +69,7 @@ async fn build_context(
 async fn build_context_stream(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    crate::extractors::ResolvedDb(resolved_db): crate::extractors::ResolvedDb,
     headers: HeaderMap,
     Json(body): Json<ContextOptions>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -83,7 +87,8 @@ async fn build_context_stream(
     if !accepts_sse {
         let embedder = state.embedder.read().await.clone();
         let result =
-            assemble_context(&state.db, body, auth.user_id, embedder, state.llm.clone()).await?;
+            assemble_context(&resolved_db, body, auth.user_id, embedder, state.llm.clone())
+                .await?;
         // Wrap in SSE-style JSON so callers get a consistent shape.
         return Ok(Sse::new(futures::stream::once(async move {
             Ok::<_, Infallible>(
@@ -101,7 +106,8 @@ async fn build_context_stream(
     const CHANNEL_CAP: usize = 256;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ContextProgressEvent>(CHANNEL_CAP);
     let embedder = state.embedder.read().await.clone();
-    let db = state.db.clone();
+    // M-R3-007: stream assembly also routes to the caller's shard.
+    let db = resolved_db.clone();
     let llm = state.llm.clone();
     let user_id = auth.user_id;
 
