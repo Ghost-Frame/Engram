@@ -1424,45 +1424,70 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
             field,
             cmd,
         } => {
-            // Fetch the secret over HTTP from credd and pull out the
-            // requested field (or the primary value).
-            let secret_value = match client.get(&format!("/secret/{}/{}", category, name)).await {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("Error fetching secret: {}", e);
-                    std::process::exit(2);
-                }
-            };
-            let value_obj = match secret_value.get("value") {
-                Some(v) => v,
-                None => {
-                    eprintln!("Error: response missing `value` field");
-                    std::process::exit(2);
-                }
-            };
-            let secret = if let Some(f) = field.as_deref() {
-                match value_obj.get(f).and_then(|v| v.as_str()) {
-                    Some(s) => s.to_string(),
-                    None => {
-                        eprintln!("Error: field `{}` not found or not a string", f);
+            // Two routes depending on what the caller is asking for:
+            //
+            //   category in {"engram-rust","kleos"} -> per-agent Kleos
+            //     bearer via /bootstrap/kleos-bearer (the bootstrap-broker
+            //     path; bootstrap-agent token has scope for this).
+            //   otherwise -> centralized credd secret store via
+            //     /secret/{cat}/{name} (requires a DB-backed agent key
+            //     with category permissions).
+            //
+            // The bootstrap path is the one most agents need (injecting
+            // a Kleos API key into a child like curl), so it gets the
+            // easy `kleos-cli cred exec engram-rust <slot>` form.
+            let secret = if matches!(category.as_str(), "engram-rust" | "kleos") {
+                // Use the same bootstrap-broker path that resolve_api_key
+                // takes -- this picks up CREDD_SOCKET / CREDD_BIND /
+                // CREDD_AGENT_KEY / PIV pubkeys automatically and works
+                // without needing a Kleos API key already in hand.
+                match kleos_lib::cred::bootstrap::resolve_api_key(name).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Error fetching bootstrap bearer: {}", e);
                         std::process::exit(2);
                     }
                 }
             } else {
-                let primary = value_obj
-                    .get("key")
-                    .or_else(|| value_obj.get("password"))
-                    .or_else(|| value_obj.get("client_secret"))
-                    .or_else(|| value_obj.get("private_key"))
-                    .or_else(|| value_obj.get("content"))
-                    .and_then(|v| v.as_str());
-                match primary {
-                    Some(s) => s.to_string(),
+                let secret_value =
+                    match client.get(&format!("/secret/{}/{}", category, name)).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("Error fetching secret: {}", e);
+                            std::process::exit(2);
+                        }
+                    };
+                let value_obj = match secret_value.get("value") {
+                    Some(v) => v,
                     None => {
-                        eprintln!(
-                            "Error: no primary value (key/password/client_secret/private_key/content) in secret"
-                        );
+                        eprintln!("Error: response missing `value` field");
                         std::process::exit(2);
+                    }
+                };
+                if let Some(f) = field.as_deref() {
+                    match value_obj.get(f).and_then(|v| v.as_str()) {
+                        Some(s) => s.to_string(),
+                        None => {
+                            eprintln!("Error: field `{}` not found or not a string", f);
+                            std::process::exit(2);
+                        }
+                    }
+                } else {
+                    let primary = value_obj
+                        .get("key")
+                        .or_else(|| value_obj.get("password"))
+                        .or_else(|| value_obj.get("client_secret"))
+                        .or_else(|| value_obj.get("private_key"))
+                        .or_else(|| value_obj.get("content"))
+                        .and_then(|v| v.as_str());
+                    match primary {
+                        Some(s) => s.to_string(),
+                        None => {
+                            eprintln!(
+                                "Error: no primary value (key/password/client_secret/private_key/content) in secret"
+                            );
+                            std::process::exit(2);
+                        }
                     }
                 }
             };
