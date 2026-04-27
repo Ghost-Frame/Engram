@@ -110,8 +110,12 @@ except: pass
 fi
 
 # --- 3. Recent memories via kleos-cli (lightweight, local) ---
+# Resolves kleos-cli, falling back to the legacy kleos-cli alias for installs
+# that haven't reinstalled since the rename.
 resolve_kleos_cli() {
   if [ -n "${KLEOS_CLI:-}" ]; then printf '%s\n' "$KLEOS_CLI"; return; fi
+  if [ -n "${KLEOS_CLI:-}" ]; then printf '%s\n' "$KLEOS_CLI"; return; fi
+  if command -v kleos-cli >/dev/null 2>&1; then command -v kleos-cli; return; fi
   if command -v kleos-cli >/dev/null 2>&1; then command -v kleos-cli; return; fi
   printf '%s/.local/bin/kleos-cli\n' "$HOME_DIR"
 }
@@ -140,16 +144,17 @@ fi
 # --- 4. Fallback: if Eidolon unreachable, query kleos-cli directly ---
 if [ -z "$PROMPT_RESULT" ]; then
   log "Eidolon unreachable, falling back to direct kleos-cli"
-  _resolve_config_key() {
+  _resolve_kleos_key() {
+    if [ -n "${KLEOS_API_KEY:-}" ]; then printf '%s\n' "$KLEOS_API_KEY"; return; fi
     if [ -n "${KLEOS_API_KEY:-}" ]; then printf '%s\n' "$KLEOS_API_KEY"; return; fi
     if command -v cred >/dev/null 2>&1; then
       local resolved
-      resolved="$(cred get kleos api-key-claude --raw 2>/dev/null || true)"
+      resolved="$(cred get kleos api-key-claude --raw 2>/dev/null || cred get kleos api-key-claude --raw 2>/dev/null || true)"
       if [ -n "$resolved" ]; then printf '%s\n' "$resolved"; return; fi
     fi
     printf '\n'
   }
-  KLEOS_API_KEY="$(_resolve_config_key)"
+  KLEOS_API_KEY="$(_resolve_kleos_key)"
   if [ -f "$KLEOS_CLI" ] && [ -n "$KLEOS_API_KEY" ]; then
     PROMPT_RESULT=$("$KLEOS_CLI" context "agent-rules critical infrastructure active-tasks recent-decisions personality" --budget 3000 --quiet 2>/dev/null || echo "")
   fi

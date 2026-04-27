@@ -2,13 +2,15 @@
 
 Claude Code hooks that integrate with the Kleos memory system.
 
+The CLIs and env vars below also accept their `kleos-*` / `KLEOS_*` predecessors as aliases for backwards compatibility with installs that came from the old project name.
+
 ## Versions
 
 ### `simple/` - Minimal Dependencies
 
 Lightweight hooks that only require:
 - `kleos-cli` in PATH
-- `KLEOS_URL` and `KLEOS_API_KEY` environment variables
+- `KLEOS_SERVER_URL` and `KLEOS_API_KEY` environment variables (or the `KLEOS_*` aliases)
 - bash, curl
 
 **Hooks:**
@@ -49,7 +51,7 @@ Advanced hooks with Eidolon guardian integration, cred credential management, an
    ```json
    {
      "env": {
-       "KLEOS_URL": "http://localhost:4200",
+       "KLEOS_SERVER_URL": "http://localhost:4200",
        "KLEOS_API_KEY": "your-api-key"
      },
      "hooks": {
@@ -92,8 +94,8 @@ Advanced hooks with Eidolon guardian integration, cred credential management, an
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `KLEOS_URL` | Yes | Kleos server URL (e.g., `http://localhost:4200`) |
-| `KLEOS_API_KEY` | Yes | API key for authentication |
-| `KLEOS_CLI` | No | Path to kleos-cli if not in PATH |
+| `KLEOS_SERVER_URL` | Yes | Kleos server URL (e.g., `http://localhost:4200`). Also accepts `KLEOS_URL` / `KLEOS_EIDOLON_URL`. |
+| `KLEOS_API_KEY` | Yes | API key for authentication. Also accepts `KLEOS_API_KEY` / `EIDOLON_KEY`. |
+| `KLEOS_CLI` | No | Path to kleos-cli if not in PATH. Also accepts `KLEOS_CLI`. |
 | `MNEMONIC_URL` | No | Sidecar URL (default: `http://localhost:7711`) |
 | `EIDOLON_URL` | No | Eidolon daemon URL (full hooks only) |

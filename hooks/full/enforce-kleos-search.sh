@@ -4,12 +4,13 @@
 #
 # How it works:
 #   - Session start clears the stamp file
-#   - When a Bash command containing "kleos-cli search" runs, the PostToolUse
-#     hook (or this hook itself on pass-through) sets the stamp
+#   - When a Bash command containing "kleos-cli search" (or the legacy
+#     kleos-cli alias) runs, the PostToolUse hook (or this hook itself on
+#     pass-through) sets the stamp
 #   - Until the stamp exists, all non-exempt tool calls are BLOCKED
 #
 # Exempt tools/commands (always allowed through):
-#   - kleos-cli / cred / echo / cat / ls / pwd / which / test (bootstrap)
+#   - kleos-cli / kleos-cli (legacy alias) / cred / echo / cat / ls / pwd / which / test (bootstrap)
 #   - Read / Grep / Glob (read-only, needed to orient)
 #   - Skill / ToolSearch (meta-tools)
 #
@@ -30,7 +31,7 @@ resolve_home() {
 HOME_DIR="$(resolve_home)"
 STATE_DIR="$HOME_DIR/.claude/session-env"
 LOG_DIR="$HOME_DIR/.claude/logs"
-STAMP_FILE="$STATE_DIR/kleos-searched"
+STAMP_FILE="$STATE_DIR/kleos-searched"  # kept stable: shared with session-start/session-end
 LOG_FILE="$LOG_DIR/enforce-kleos-search.log"
 mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null || true
 
@@ -77,10 +78,10 @@ try:
 except: print('')
 " "$INPUT" 2>/dev/null || echo "")
 
-  # Allow bootstrap commands
-  if echo "$CMD" | grep -qE '(^|[[:space:]])(kleos-cli|cred|echo|cat|ls|pwd|mkdir|touch|chmod|which|command|test|\[|date|python3|node)([[:space:]]|$)'; then
-    # If this is an kleos-cli search, set the stamp
-    if echo "$CMD" | grep -qE 'kleos-cli\s+search'; then
+  # Allow bootstrap commands (kleos-cli + legacy kleos-cli alias)
+  if echo "$CMD" | grep -qE '(^|[[:space:]])(kleos-cli|kleos-cli|cred|echo|cat|ls|pwd|mkdir|touch|chmod|which|command|test|\[|date|python3|node)([[:space:]]|$)'; then
+    # If this is a kleos-cli/kleos-cli search, set the stamp
+    if echo "$CMD" | grep -qE '(kleos-cli|kleos-cli)\s+search'; then
       touch "$STAMP_FILE"
       log "STAMP SET: kleos-cli search detected in command"
     fi
@@ -100,7 +101,7 @@ try:
 except: print('')
 " "$INPUT" 2>/dev/null || echo "")
 
-  if echo "$PROMPT" | grep -qiE 'kleos'; then
+  if echo "$PROMPT" | grep -qiE 'kleos|kleos'; then
     touch "$STAMP_FILE"
     log "STAMP SET: Agent dispatched for kleos search"
     exit 0
