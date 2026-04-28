@@ -195,12 +195,166 @@ fn dry_run_does_not_write_target() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Dry run: source-filtered counts"),
+        stdout.contains("Dry run: monolith source-filtered counts"),
         "stdout should contain dry-run header; got: {}",
         stdout
     );
     assert!(
         stdout.contains("memories"),
         "stdout should list memories table"
+    );
+}
+
+/// Build a legacy plaintext `handoffs.db` matching the schema that
+/// `kleos_lib::handoffs::HandoffsDb::open` produced before the v43
+/// refactor (table + user_id column).
+fn write_legacy_handoffs(path: &std::path::Path) {
+    let conn = Connection::open(path).expect("open handoffs db");
+    conn.execute_batch(
+        "CREATE TABLE handoffs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            project TEXT NOT NULL,
+            branch TEXT,
+            directory TEXT,
+            agent TEXT DEFAULT 'unknown',
+            type TEXT DEFAULT 'manual',
+            content TEXT NOT NULL,
+            metadata TEXT,
+            session_id TEXT,
+            model TEXT,
+            host TEXT,
+            content_hash TEXT
+        );
+        INSERT INTO handoffs (user_id, project, content) VALUES
+            (1, 'Kleos', 'master handoff one'),
+            (1, 'Kleos', 'master handoff two'),
+            (2, 'Bot',   'bot handoff one'),
+            (1, 'Misc',  'master handoff three');",
+    )
+    .expect("seed legacy handoffs");
+}
+
+/// `--handoffs-source` alone (no `--source`) targets a fresh tenant shard
+/// and copies only the rows for `--filter-user-id`. Validates the
+/// reserved 'handoffs' tenant code path.
+#[test]
+fn handoffs_only_etl_into_handoffs_shard() {
+    let tmp = tempfile::tempdir().expect("mktemp");
+    let handoffs_src = tmp.path().join("legacy-handoffs.db");
+    let target_dir = tmp.path().join("tenants").join("handoffs");
+
+    write_legacy_handoffs(&handoffs_src);
+
+    let bin = env!("CARGO_BIN_EXE_kleos-migrate");
+    let output = Command::new(bin)
+        .args([
+            "--handoffs-source",
+            handoffs_src.to_str().unwrap(),
+            "--target",
+            target_dir.to_str().unwrap(),
+            "--filter-user-id",
+            "1",
+        ])
+        .output()
+        .expect("spawn");
+
+    assert!(
+        output.status.success(),
+        "handoffs-only run should succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let target_db = target_dir.join("kleos.db");
+    assert!(target_db.exists(), "target shard kleos.db must exist");
+
+    let target = Connection::open(&target_db).expect("open target");
+    let count: i64 = target
+        .query_row("SELECT COUNT(*) FROM handoffs", [], |r| r.get(0))
+        .expect("count handoffs");
+    assert_eq!(count, 3, "user_id=1 has 3 rows in legacy seed");
+
+    // FTS5 must be wired by schema_v43 trigger.
+    let fts_hits: i64 = target
+        .query_row(
+            "SELECT COUNT(*) FROM handoffs_fts WHERE handoffs_fts MATCH 'master'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("fts count");
+    assert!(
+        fts_hits >= 3,
+        "FTS5 must have indexed all copied rows, got {fts_hits}"
+    );
+
+    // A second pass for user_id=2 appends without clobbering the originals.
+    let output = Command::new(bin)
+        .args([
+            "--handoffs-source",
+            handoffs_src.to_str().unwrap(),
+            "--target",
+            target_dir.to_str().unwrap(),
+            "--filter-user-id",
+            "2",
+            "--force",
+        ])
+        .output()
+        .expect("spawn second pass");
+    assert!(
+        output.status.success(),
+        "second pass should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let master_rows: i64 = target
+        .query_row("SELECT COUNT(*) FROM handoffs WHERE user_id = 1", [], |r| {
+            r.get(0)
+        })
+        .expect("count master");
+    let bot_rows: i64 = target
+        .query_row("SELECT COUNT(*) FROM handoffs WHERE user_id = 2", [], |r| {
+            r.get(0)
+        })
+        .expect("count bot");
+    assert_eq!(master_rows, 3);
+    assert_eq!(bot_rows, 1);
+}
+
+/// Dry-run with --handoffs-source reports the filtered count without
+/// touching the target directory.
+#[test]
+fn handoffs_dry_run_reports_count() {
+    let tmp = tempfile::tempdir().expect("mktemp");
+    let handoffs_src = tmp.path().join("legacy-handoffs.db");
+    let target_dir = tmp.path().join("ghost-shard");
+
+    write_legacy_handoffs(&handoffs_src);
+
+    let bin = env!("CARGO_BIN_EXE_kleos-migrate");
+    let output = Command::new(bin)
+        .args([
+            "--handoffs-source",
+            handoffs_src.to_str().unwrap(),
+            "--target",
+            target_dir.to_str().unwrap(),
+            "--filter-user-id",
+            "1",
+            "--dry-run",
+        ])
+        .output()
+        .expect("spawn dry run");
+
+    assert!(output.status.success(), "dry run should succeed");
+    assert!(!target_dir.exists(), "dry run must not write target");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Handoffs (filtered)"),
+        "dry-run output should include handoffs row, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("3"),
+        "dry-run should report 3 rows for user_id=1, got: {stdout}"
     );
 }
