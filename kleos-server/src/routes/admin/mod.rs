@@ -1112,10 +1112,12 @@ async fn admin_pagerank_rebuild(
     require_admin(&auth)?;
     match params.user_id {
         Some(uid) => {
-            let scores =
-                kleos_lib::graph::pagerank::compute_pagerank_for_user(&state.db, uid).await?;
+            let db = crate::extractors::resolve_db_for_user(&state, uid)
+                .await
+                .map_err(AppError)?;
+            let scores = kleos_lib::graph::pagerank::compute_pagerank_for_user(&db, uid).await?;
             let count = scores.len();
-            kleos_lib::graph::pagerank::persist_pagerank(&state.db, &scores).await?;
+            kleos_lib::graph::pagerank::persist_pagerank(&db, &scores).await?;
             Ok(Json(json!({
                 "success": true,
                 "users_updated": 1,

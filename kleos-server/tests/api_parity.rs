@@ -37,6 +37,7 @@ struct TestApp {
     router: Router,
     api_key: String,
     db: Arc<Database>,
+    tenant_registry: Arc<TenantRegistry>,
     _tmp: TempDir,
 }
 
@@ -64,12 +65,14 @@ impl TestApp {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let db = Arc::new(Database::connect_memory().await.expect("in-memory db"));
-        let registry = TenantRegistry::new(
-            tmp.path().to_path_buf(),
-            TenantConfig::default(),
-            config.vector_dimensions,
-        )
-        .expect("tenant registry");
+        let registry = Arc::new(
+            TenantRegistry::new(
+                tmp.path().to_path_buf(),
+                TenantConfig::default(),
+                config.vector_dimensions,
+            )
+            .expect("tenant registry"),
+        );
         let credd = Arc::new(CreddClient::from_config(&config));
         let state = AppState {
             db: Arc::clone(&db),
@@ -86,7 +89,7 @@ impl TestApp {
             safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             dreamer_stats: kleos_server::dreamer::new_stats_handle(),
             last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            tenant_registry: Some(Arc::new(registry)),
+            tenant_registry: Some(Arc::clone(&registry)),
             handoffs_gc_sem: Arc::new(tokio::sync::Semaphore::new(8)),
             shutdown_token: CancellationToken::new(),
             background_tasks: Arc::new(Mutex::new(JoinSet::new())),
@@ -123,6 +126,7 @@ impl TestApp {
             router,
             api_key,
             db,
+            tenant_registry: registry,
             _tmp: tmp,
         }
     }
@@ -988,7 +992,13 @@ async fn admin_pagerank_rebuild_single_user_populates_cache() {
     )
     .await;
 
-    assert_eq!(pagerank_count_for_user(app.db.as_ref(), 1).await, 0);
+    let tenant_db = app
+        .tenant_registry
+        .get_or_create("1")
+        .await
+        .expect("tenant 1")
+        .database();
+    assert_eq!(pagerank_count_for_user(&tenant_db, 1).await, 0);
 
     let (status, body) = app
         .post("/admin/pagerank/rebuild?user_id=1", json!({}))
@@ -1000,7 +1010,7 @@ async fn admin_pagerank_rebuild_single_user_populates_cache() {
     assert_eq!(body["success"], json!(true));
     assert_eq!(body["users_updated"], json!(1));
     assert!(body["memories_updated"].as_u64().unwrap_or(0) >= 2);
-    assert_eq!(pagerank_count_for_user(app.db.as_ref(), 1).await, 2);
+    assert_eq!(pagerank_count_for_user(&tenant_db, 1).await, 2);
 }
 
 // Phase 5.1: user_id dropped from memories. rebuild_all_users now runs one
@@ -1868,8 +1878,13 @@ async fn ingest_enqueues_fact_extract_job() {
         .await;
     assert_eq!(status, StatusCode::OK);
 
-    let jobs: Vec<(String, String, String)> = app
-        .db
+    let tenant_db = app
+        .tenant_registry
+        .get_or_create("1")
+        .await
+        .expect("tenant 1")
+        .database();
+    let jobs: Vec<(String, String, String)> = tenant_db
         .read(|conn| {
             let mut stmt = conn
                 .prepare("SELECT type, payload, status FROM jobs ORDER BY id ASC")

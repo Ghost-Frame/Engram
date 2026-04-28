@@ -167,7 +167,7 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             scopes TEXT NOT NULL DEFAULT 'read,write',
             rate_limit INTEGER NOT NULL DEFAULT 1000,
             is_active BOOLEAN NOT NULL DEFAULT 1,
-            agent_id INTEGER REFERENCES agents(id),
+            agent_id INTEGER,
             last_used_at TEXT,
             expires_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
