@@ -467,8 +467,11 @@ impl Client {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let resp = req.send().await.map_err(|e| e.to_string())?;
-        self.handle_response(resp).await
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format_reqwest_error("GET", &url, &e))?;
+        self.handle_response("GET", &url, resp).await
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
@@ -477,8 +480,11 @@ impl Client {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let resp = req.send().await.map_err(|e| e.to_string())?;
-        self.handle_response(resp).await
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format_reqwest_error("POST", &url, &e))?;
+        self.handle_response("POST", &url, resp).await
     }
 
     async fn delete(&self, path: &str) -> Result<Value, String> {
@@ -487,24 +493,83 @@ impl Client {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let resp = req.send().await.map_err(|e| e.to_string())?;
-        self.handle_response(resp).await
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format_reqwest_error("DELETE", &url, &e))?;
+        self.handle_response("DELETE", &url, resp).await
     }
 
-    async fn handle_response(&self, resp: reqwest::Response) -> Result<Value, String> {
+    async fn handle_response(
+        &self,
+        method: &str,
+        url: &str,
+        resp: reqwest::Response,
+    ) -> Result<Value, String> {
         let status = resp.status();
-        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+        let bytes = resp.bytes().await.map_err(|e| {
+            format!(
+                "{} {} succeeded but reading response body failed: {}",
+                method,
+                url,
+                format_error_chain(&e)
+            )
+        })?;
+        let parsed: Result<Value, _> = serde_json::from_slice(&bytes);
         if status.is_success() {
-            Ok(body)
+            parsed.map_err(|e| {
+                format!(
+                    "{} {} returned {} but body was not valid JSON: {} (body: {})",
+                    method,
+                    url,
+                    status,
+                    e,
+                    body_excerpt(&bytes)
+                )
+            })
         } else {
-            let msg = body
-                .get("error")
-                .or_else(|| body.get("message"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error");
+            let msg = parsed
+                .as_ref()
+                .ok()
+                .and_then(|b| {
+                    b.get("error")
+                        .or_else(|| b.get("message"))
+                        .and_then(|v| v.as_str())
+                        .map(ToOwned::to_owned)
+                })
+                .unwrap_or_else(|| body_excerpt(&bytes));
             Err(format!("HTTP {}: {}", status, msg))
         }
     }
+}
+
+fn format_reqwest_error(method: &str, url: &str, err: &reqwest::Error) -> String {
+    format!("{} {} failed: {}", method, url, format_error_chain(err))
+}
+
+fn format_error_chain<E: std::error::Error + ?Sized>(err: &E) -> String {
+    let mut out = err.to_string();
+    let mut source: Option<&dyn std::error::Error> = err.source();
+    for _ in 0..16 {
+        let Some(cause) = source else { break };
+        out.push_str(" -> ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
+}
+
+fn body_excerpt(bytes: &[u8]) -> String {
+    const MAX: usize = 512;
+    let s = String::from_utf8_lossy(bytes);
+    if s.len() <= MAX {
+        return s.into_owned();
+    }
+    let mut end = MAX;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}... ({} bytes total)", &s[..end], bytes.len())
 }
 
 fn truncate(s: &str, max: usize) -> &str {
