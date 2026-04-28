@@ -485,7 +485,7 @@ impl RequestSigner {
         let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
         let pubkey_pem = format!("-----BEGIN PUBLIC KEY-----\n{b64}\n-----END PUBLIC KEY-----");
 
-        let fingerprint = format!("SHA256:{}", &hex::encode(Sha256::digest(&der))[..32]);
+        let fingerprint = hex::encode(Sha256::digest(&der));
         let identity_hash = identity_hash_hex(&der, host, agent, model);
 
         Self {
@@ -525,13 +525,13 @@ impl RequestSigner {
         let pubkey_pem = {
             use base64::Engine;
             let b64 = base64::engine::general_purpose::STANDARD.encode(&pubkey_der);
-            format!("-----BEGIN PUBLIC KEY-----\n{b64}\n-----END PUBLIC KEY-----")
+            let wrapped: Vec<&str> = b64.as_bytes().chunks(64)
+                .map(|c| std::str::from_utf8(c).unwrap())
+                .collect();
+            format!("-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----", wrapped.join("\n"))
         };
 
-        let fingerprint = format!(
-            "SHA256:{}",
-            &hex::encode(Sha256::digest(&pubkey_der))[..32]
-        );
+        let fingerprint = hex::encode(Sha256::digest(&pubkey_der));
         let identity_hash = identity_hash_hex(&pubkey_der, host, agent, model);
 
         let serial = yk.serial().to_string();
@@ -992,6 +992,34 @@ mod tests {
 
         let result = verify_signature(SignatureAlgo::EcdsaP256, &pubkey_pem, msg, &bad_sig);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn p256_manual_pem_wrapping_roundtrip() {
+        use p256::ecdsa::{SigningKey, Signature, signature::Signer};
+        use p256::elliptic_curve::rand_core::OsRng;
+        use p256::pkcs8::EncodePublicKey;
+
+        let sk = SigningKey::random(&mut OsRng);
+        let vk = sk.verifying_key();
+
+        let pubkey_der = vk.to_public_key_der().unwrap();
+        let b64 = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(pubkey_der.as_ref())
+        };
+        assert!(b64.len() > 64, "P-256 SPKI base64 must exceed 64 chars to test wrapping");
+
+        let wrapped: Vec<&str> = b64.as_bytes().chunks(64)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect();
+        let pem = format!("-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----", wrapped.join("\n"));
+
+        let msg = b"KLEOS-ENROLL:ecdsa-p256:piv:testhost:fakepem";
+        let sig: Signature = sk.sign(msg.as_ref());
+        let sig_hex = hex::encode(sig.to_bytes());
+
+        verify_signature(SignatureAlgo::EcdsaP256, &pem, msg, &sig_hex).unwrap();
     }
 
     // -- Ed25519 sign/verify round-trip --

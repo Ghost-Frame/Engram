@@ -1,11 +1,11 @@
-use axum::extract::{Path, Query};
+use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use rusqlite::params;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::{Auth, ResolvedDb};
+use crate::extractors::Auth;
 use crate::state::AppState;
 use kleos_lib::auth::Scope;
 
@@ -20,7 +20,7 @@ pub fn router() -> Router<AppState> {
 
 async fn list_handler(
     Auth(auth): Auth,
-    ResolvedDb(db): ResolvedDb,
+    State(state): State<AppState>,
     Query(params): Query<ListIdentitiesParams>,
 ) -> Result<Json<Value>, AppError> {
     if !auth.has_scope(&Scope::Admin) {
@@ -36,7 +36,7 @@ async fn list_handler(
     let model = params.model;
     let key_id = params.key_id;
 
-    let rows = db
+    let rows = state.db
         .read(move |conn| {
             let mut conditions = vec!["1=1".to_string()];
             let mut bind_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -114,7 +114,7 @@ async fn list_handler(
 
 async fn audit_handler(
     Auth(auth): Auth,
-    ResolvedDb(db): ResolvedDb,
+    State(state): State<AppState>,
     Path(identity_id): Path<i64>,
     Query(params): Query<AuditParams>,
 ) -> Result<Json<Value>, AppError> {
@@ -127,7 +127,7 @@ async fn audit_handler(
     let limit = params.limit.unwrap_or(50).min(500);
     let since = params.since.unwrap_or_else(|| "1970-01-01".to_string());
 
-    let rows = db
+    let rows = state.db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(

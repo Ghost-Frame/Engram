@@ -1085,7 +1085,24 @@ async fn handle_identity_init(
         "sig_hex": sig_hex,
     });
 
-    match client.post("/identity-keys/enroll", body).await {
+    // Enrollment uses proof-of-possession as auth, not signing headers.
+    // If the key is already enrolled, signing auth works. For bootstrap
+    // (first key), send without signing headers so the middleware's
+    // enrollment path handles it.
+    let url = format!("{}/identity-keys/enroll", client.base_url);
+    let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+    let mut req = client
+        .http
+        .post(&url)
+        .header("content-type", "application/json");
+    if let Some(key) = &client.api_key {
+        req = req.bearer_auth(key);
+    }
+    let result = match req.body(body_bytes).send().await {
+        Ok(r) => client.handle_response("POST", &url, r).await,
+        Err(e) => Err(format!("enrollment request failed: {}", e)),
+    };
+    match result {
         Ok(v) => {
             let id = v.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
             let fpr = v.get("pubkey_fingerprint").and_then(|s| s.as_str()).unwrap_or("?");
