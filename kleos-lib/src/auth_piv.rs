@@ -504,12 +504,12 @@ impl RequestSigner {
 
     #[cfg(feature = "piv")]
     pub fn from_yubikey(host: &str, agent: &str, model: &str) -> Result<Self> {
-        use yubikey::piv::{self as yk_piv, SlotId};
+        use yubikey::piv::SlotId;
 
         let mut yk = yubikey::YubiKey::open()
             .map_err(|e| EngError::Internal(format!("cannot open YubiKey: {e}")))?;
 
-        let cert = yk_piv::certificate::Certificate::read(&mut yk, SlotId::Authentication)
+        let cert = yubikey::certificate::Certificate::read(&mut yk, SlotId::Authentication)
             .map_err(|e| EngError::Internal(format!(
                 "cannot read PIV slot 9a certificate: {e}"
             )))?;
