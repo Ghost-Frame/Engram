@@ -145,6 +145,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::scratchpad::router())
         .merge(routes::activity::router())
         .merge(routes::gate::router())
+        .merge(routes::supervisor::router())
         .merge(routes::growth::router())
         .merge(routes::sessions::router())
         .merge(routes::agents::router())

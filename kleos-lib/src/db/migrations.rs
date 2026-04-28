@@ -437,6 +437,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 49,
+        description: "supervisor_injections",
+        up: run_migration_supervisor_injections,
+        down: Some(down_migration_supervisor_injections),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3225,6 +3232,45 @@ fn run_migration_audit_identity_columns(conn: &rusqlite::Connection) -> Result<(
     Ok(())
 }
 
+/// Migration 49: supervisor_injections table.
+///
+/// Records violations posted by eidolon-supervisor that need to be surfaced
+/// back to the agent on the next PreToolUse / UserPromptSubmit. The agent
+/// claims pending rows (sets claimed_at) and the supervisor never re-claims.
+fn run_migration_supervisor_injections(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS supervisor_injections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            session_id TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            claimed_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_supervisor_injections_pending
+            ON supervisor_injections(user_id, session_id)
+            WHERE claimed_at IS NULL;
+         CREATE INDEX IF NOT EXISTS idx_supervisor_injections_created
+            ON supervisor_injections(user_id, created_at DESC);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 49 complete: supervisor_injections table created");
+    Ok(())
+}
+
+fn down_migration_supervisor_injections(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_supervisor_injections_created;
+         DROP INDEX IF EXISTS idx_supervisor_injections_pending;
+         DROP TABLE IF EXISTS supervisor_injections;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -3284,6 +3330,126 @@ mod tests {
         assert_eq!(count, 1);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_supervisor_injections_migration() {
+        let conn = open_test_db();
+        apply_migrations_up_to(&conn, 49);
+
+        // Table exists with the expected columns.
+        let cols: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_table_info('supervisor_injections')")
+                .expect("prepare pragma");
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("query columns");
+            rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+                .expect("collect columns")
+        };
+        for expected in [
+            "id",
+            "user_id",
+            "session_id",
+            "rule_id",
+            "severity",
+            "message",
+            "created_at",
+            "claimed_at",
+        ] {
+            assert!(
+                cols.iter().any(|c| c == expected),
+                "missing column {expected}"
+            );
+        }
+
+        // Pending index exists.
+        let idx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_supervisor_injections_pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_count, 1);
+
+        // Re-running the migration is a no-op (CREATE TABLE IF NOT EXISTS).
+        run_migration_supervisor_injections(&conn).expect("idempotent up");
+
+        // Down migration drops the table.
+        down_migration_supervisor_injections(&conn).expect("down works");
+        let table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'supervisor_injections'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_count, 0);
+    }
+
+    #[test]
+    fn test_supervisor_injections_pending_atomic_claim() {
+        let conn = open_test_db();
+        apply_migrations_up_to(&conn, 49);
+
+        conn.execute_batch(
+            "INSERT INTO supervisor_injections (user_id, session_id, rule_id, severity, message)
+             VALUES (1, 'sess-a', 'no-force-push', 'Critical', 'msg1');
+             INSERT INTO supervisor_injections (user_id, session_id, rule_id, severity, message)
+             VALUES (1, 'sess-a', 'em-dash-usage', 'Info', 'msg2');
+             INSERT INTO supervisor_injections (user_id, session_id, rule_id, severity, message)
+             VALUES (2, 'sess-a', 'no-force-push', 'Critical', 'other-user');",
+        )
+        .unwrap();
+
+        // First claim returns user 1's two rows in session sess-a.
+        let claimed_first: Vec<i64> = {
+            let mut stmt = conn
+                .prepare(
+                    "UPDATE supervisor_injections
+                     SET claimed_at = datetime('now')
+                     WHERE user_id = ?1 AND session_id = ?2 AND claimed_at IS NULL
+                     RETURNING id",
+                )
+                .unwrap();
+            stmt.query_map(rusqlite::params![1i64, "sess-a"], |row| row.get::<_, i64>(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+                .unwrap()
+        };
+        assert_eq!(claimed_first.len(), 2);
+
+        // Second claim returns nothing (rows already claimed).
+        let claimed_second: Vec<i64> = {
+            let mut stmt = conn
+                .prepare(
+                    "UPDATE supervisor_injections
+                     SET claimed_at = datetime('now')
+                     WHERE user_id = ?1 AND session_id = ?2 AND claimed_at IS NULL
+                     RETURNING id",
+                )
+                .unwrap();
+            stmt.query_map(rusqlite::params![1i64, "sess-a"], |row| row.get::<_, i64>(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+                .unwrap()
+        };
+        assert!(claimed_second.is_empty());
+
+        // User 2's row is untouched.
+        let user2_pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM supervisor_injections
+                 WHERE user_id = 2 AND claimed_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(user2_pending, 1);
     }
 
     // -----------------------------------------------------------------------

@@ -21,6 +21,7 @@ pub fn check(entry: &serde_json::Value, rules: &[Rule]) -> Vec<Violation> {
                     severity: rule.severity.clone(),
                     message: rule.message.clone(),
                     context: truncate(&text, 200),
+                    session_id: None,
                 });
             }
         }
