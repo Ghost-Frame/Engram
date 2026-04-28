@@ -12,6 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{info, warn};
 
+use std::collections::HashSet;
+
 use crate::source::{self, SourceDb};
 
 const TABLE_NAME: &str = "memory_vectors";
@@ -220,16 +222,46 @@ pub async fn extract_and_insert(
     })
 }
 
+/// Collect memory IDs for a given user from the source SQLite. Used to
+/// filter LanceDB rows when the source Lance lacks a user_id column.
+fn collect_user_memory_ids(source: &SourceDb, filter_user_id: i64) -> Result<HashSet<i64>> {
+    let source_cols = source::get_columns(source, "memories")?;
+    let has_user_id = source_cols.iter().any(|c| c == "user_id");
+    let sql = if has_user_id {
+        "SELECT id FROM memories WHERE user_id = ?1"
+    } else {
+        "SELECT id FROM memories"
+    };
+    let mut stmt = source.conn.prepare(sql)?;
+    let mut rows = if has_user_id {
+        stmt.query(rusqlite::params![filter_user_id])?
+    } else {
+        stmt.query([])?
+    };
+    let mut ids = HashSet::new();
+    while let Some(row) = rows.next()? {
+        ids.insert(row.get::<_, i64>(0)?);
+    }
+    Ok(ids)
+}
+
+/// Check whether a LanceDB table schema contains a given column.
+async fn lance_table_has_column(table: &lancedb::Table, col: &str) -> bool {
+    match table.schema().await {
+        Ok(schema) => schema.field_with_name(col).is_ok(),
+        Err(_) => false,
+    }
+}
+
 /// Copy vectors from a source LanceDB directory into the target LanceDB,
-/// filtering by user_id. The source is expected to hold the shared table
-/// name "memory_vectors" with schema (memory_id i64, user_id i64, vector
-/// FixedSizeList<Float32, 1024>) -- the same schema the monolith writes
-/// via kleos_lib::vector::lance::vector_schema.
+/// filtering by user_id (or by memory_id when the source Lance schema
+/// lacks a user_id column -- common in production monoliths).
 ///
 /// Used when the monolith keeps embeddings in LanceDB rather than in the
 /// memories.embedding_vec_1024 SQL column.
 pub async fn extract_from_source_lance(
     source_lance: &Path,
+    source_db: Option<&SourceDb>,
     target: &LanceDb,
     filter_user_id: i64,
 ) -> Result<VectorStats> {
@@ -249,13 +281,32 @@ pub async fn extract_from_source_lance(
     }
     let src_table = src_conn.open_table(TABLE_NAME).execute().await?;
 
-    // Filter on the fly so we only hold one tenant's rows in memory.
-    let filter_expr = format!("user_id = {}", filter_user_id);
-    let mut stream = src_table
-        .query()
-        .only_if(filter_expr.clone())
-        .execute()
-        .await?;
+    let has_user_id = lance_table_has_column(&src_table, "user_id").await;
+
+    // Build the allowed memory_id set when we can't filter by user_id in Lance.
+    let allowed_ids: Option<HashSet<i64>> = if !has_user_id {
+        let sdb = source_db.ok_or_else(|| {
+            anyhow!(
+                "source LanceDB has no user_id column; --source is required \
+                 to resolve memory ownership"
+            )
+        })?;
+        let ids = collect_user_memory_ids(sdb, filter_user_id)?;
+        info!(
+            "source LanceDB lacks user_id; filtering by {} memory_ids from SQL",
+            ids.len()
+        );
+        Some(ids)
+    } else {
+        None
+    };
+
+    let mut stream = if has_user_id {
+        let filter_expr = format!("user_id = {}", filter_user_id);
+        src_table.query().only_if(filter_expr).execute().await?
+    } else {
+        src_table.query().execute().await?
+    };
 
     let mut memory_ids: Vec<i64> = Vec::new();
     let mut user_ids: Vec<i64> = Vec::new();
@@ -263,15 +314,9 @@ pub async fn extract_from_source_lance(
     let mut source_eligible = 0usize;
 
     while let Some(batch) = stream.try_next().await? {
-        source_eligible += batch.num_rows();
         let mid_col = batch
             .column_by_name("memory_id")
             .ok_or_else(|| anyhow!("source lance missing memory_id column"))?
-            .as_primitive::<arrow_array::types::Int64Type>()
-            .clone();
-        let uid_col = batch
-            .column_by_name("user_id")
-            .ok_or_else(|| anyhow!("source lance missing user_id column"))?
             .as_primitive::<arrow_array::types::Int64Type>()
             .clone();
         let vec_col = batch
@@ -282,7 +327,14 @@ pub async fn extract_from_source_lance(
 
         for i in 0..batch.num_rows() {
             let mid = mid_col.value(i);
-            let _uid = uid_col.value(i);
+
+            if let Some(ref allowed) = allowed_ids {
+                if !allowed.contains(&mid) {
+                    continue;
+                }
+            }
+
+            source_eligible += 1;
             let values = vec_col.value(i);
             let floats = values.as_primitive::<Float32Type>();
             if floats.len() != DIMENSIONS {
@@ -316,7 +368,7 @@ pub async fn extract_from_source_lance(
     );
 
     if vectors.is_empty() {
-        info!("No vectors matched user_id filter -- skipping LanceDB write");
+        info!("No vectors matched filter -- skipping LanceDB write");
         return Ok(VectorStats {
             source_eligible,
             inserted,
@@ -368,20 +420,52 @@ pub async fn extract_from_source_lance(
     })
 }
 
-/// Count rows in source LanceDB matching a user_id filter. Used by the
-/// dry-run report so operators can see vector counts before committing.
-pub async fn dry_run_source_lance_count(source_lance: &Path, filter_user_id: i64) -> Result<usize> {
+/// Count rows in source LanceDB matching a user_id filter (or memory_id
+/// filter when user_id is absent from the schema). Used by the dry-run
+/// report so operators can see vector counts before committing.
+pub async fn dry_run_source_lance_count(
+    source_lance: &Path,
+    source_db: Option<&SourceDb>,
+    filter_user_id: i64,
+) -> Result<usize> {
     let src_conn = open_source_lance_parent(source_lance).await?;
     let table_names = src_conn.table_names().execute().await?;
     if !table_names.iter().any(|n| n == TABLE_NAME) {
         return Ok(0);
     }
     let src_table = src_conn.open_table(TABLE_NAME).execute().await?;
-    let filter_expr = format!("user_id = {}", filter_user_id);
-    let mut stream = src_table.query().only_if(filter_expr).execute().await?;
-    let mut count = 0usize;
-    while let Some(batch) = stream.try_next().await? {
-        count += batch.num_rows();
+
+    let has_user_id = lance_table_has_column(&src_table, "user_id").await;
+
+    if has_user_id {
+        let filter_expr = format!("user_id = {}", filter_user_id);
+        let mut stream = src_table.query().only_if(filter_expr).execute().await?;
+        let mut count = 0usize;
+        while let Some(batch) = stream.try_next().await? {
+            count += batch.num_rows();
+        }
+        Ok(count)
+    } else {
+        let allowed = match source_db {
+            Some(sdb) => collect_user_memory_ids(sdb, filter_user_id)?,
+            None => return Err(anyhow!(
+                "source LanceDB has no user_id column; --source is required for filtered count"
+            )),
+        };
+        let mut stream = src_table.query().execute().await?;
+        let mut count = 0usize;
+        while let Some(batch) = stream.try_next().await? {
+            let mid_col = batch
+                .column_by_name("memory_id")
+                .ok_or_else(|| anyhow!("source lance missing memory_id column"))?
+                .as_primitive::<arrow_array::types::Int64Type>()
+                .clone();
+            for i in 0..batch.num_rows() {
+                if allowed.contains(&mid_col.value(i)) {
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
     }
-    Ok(count)
 }
