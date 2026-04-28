@@ -353,16 +353,20 @@ async fn guard_handler(
         )));
     }
 
-    // Search for high-importance static memories that might conflict
-    let user_id = auth.user_id;
+    // Search for high-importance static memories that might conflict.
+    // ResolvedDb hands us the caller's tenant shard; tenant scoping is
+    // implicit. Migration #25 (drop_user_id_memory_core) removed the
+    // per-row user_id column, so a WHERE user_id = ? predicate here
+    // erroneously errors with "no such column".
+    let _ = auth;
     let rules: Vec<Value> = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, content, importance FROM memories
-                 WHERE user_id = ?1 AND is_static = 1 AND importance >= 8 AND is_forgotten = 0
+                 WHERE is_static = 1 AND importance >= 8 AND is_forgotten = 0
                  ORDER BY importance DESC LIMIT 20",
             )?;
-            let rows = stmt.query_map(params![user_id], |row| {
+            let rows = stmt.query_map([], |row| {
                 let id: i64 = row.get(0)?;
                 let content: String = row.get(1)?;
                 let importance: i64 = row.get(2)?;

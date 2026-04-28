@@ -676,7 +676,11 @@ fn value_as_string(value: Option<&Value>) -> Option<String> {
 async fn main() {
     kleos_lib::config::migrate_env_prefix();
 
-    let _otel_guard = kleos_lib::observability::init_tracing("kleos-cli", "warn");
+    // yubikey=off suppresses the upstream crate's "no YubiKey detected!" ERROR
+    // emitted on every probe when no card is plugged in. We handle the Err
+    // return explicitly in RequestSigner::from_yubikey, so the tracing log
+    // is just stderr noise on YubiKey-less hosts.
+    let _otel_guard = kleos_lib::observability::init_tracing("kleos-cli", "warn,yubikey=off");
 
     let cli = Cli::parse();
     let host_label = hostname::get()
@@ -698,6 +702,11 @@ async fn main() {
             }
         };
 
+    if signer.is_some() && cli.key.is_some() {
+        eprintln!(
+            "warning: --key ignored; identity-key signer takes precedence over bearer auth"
+        );
+    }
     let api_key = if signer.is_some() {
         None
     } else if let Some(k) = cli.key.clone() {
@@ -804,8 +813,35 @@ async fn main() {
             Err(e) => eprintln!("Error: {}", e),
         },
 
-        Commands::Guard { content: _ } => {
-            println!("guard not implemented");
+        Commands::Guard { content } => {
+            let body = json!({ "action": content });
+            match client.post("/guard", body).await {
+                Ok(v) => {
+                    let signal = v.get("signal").and_then(|s| s.as_str()).unwrap_or("?");
+                    let message = v.get("message").and_then(|s| s.as_str()).unwrap_or("");
+                    let rules = v
+                        .get("rules")
+                        .and_then(|r| r.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    println!("{}: {}", signal, message);
+                    for rule in &rules {
+                        let id = value_as_string(rule.get("id")).unwrap_or_else(|| "?".into());
+                        let importance =
+                            rule.get("importance").and_then(|x| x.as_i64()).unwrap_or(0);
+                        let rule_content =
+                            rule.get("content").and_then(|x| x.as_str()).unwrap_or("");
+                        println!("  rule #{} [imp={}] {}", id, importance, truncate(rule_content, 100));
+                    }
+                    if signal == "warn" || signal == "block" {
+                        std::process::exit(2);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
 
         Commands::RecallDue {
