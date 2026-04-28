@@ -441,6 +441,263 @@ pub fn generate_nonce() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Client-side request signing
+// ---------------------------------------------------------------------------
+
+pub struct RequestSigner {
+    signing_key: ed25519_dalek::SigningKey,
+    pubkey_pem: String,
+    pubkey_der: Vec<u8>,
+    fingerprint: String,
+    host_label: String,
+    agent_label: String,
+    model_label: String,
+    identity_hash: String,
+    session_token: Mutex<Option<String>>,
+}
+
+const ED25519_SPKI_PREFIX_CONST: [u8; 12] = [
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+];
+
+impl RequestSigner {
+    pub fn from_key_bytes(
+        secret: [u8; 32],
+        host: &str,
+        agent: &str,
+        model: &str,
+    ) -> Self {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret);
+        let vk = signing_key.verifying_key();
+
+        let mut der = Vec::with_capacity(44);
+        der.extend_from_slice(&ED25519_SPKI_PREFIX_CONST);
+        der.extend_from_slice(vk.as_bytes());
+
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
+        let pubkey_pem = format!("-----BEGIN PUBLIC KEY-----\n{b64}\n-----END PUBLIC KEY-----");
+
+        let fingerprint = format!("SHA256:{}", &hex::encode(Sha256::digest(&der))[..32]);
+        let identity_hash = identity_hash_hex(&der, host, agent, model);
+
+        Self {
+            signing_key,
+            pubkey_pem,
+            pubkey_der: der,
+            fingerprint,
+            host_label: host.to_string(),
+            agent_label: agent.to_string(),
+            model_label: model.to_string(),
+            identity_hash,
+            session_token: Mutex::new(None),
+        }
+    }
+
+    pub fn from_file(
+        path: &std::path::Path,
+        host: &str,
+        agent: &str,
+        model: &str,
+    ) -> Result<Self> {
+        let raw = std::fs::read(path).map_err(|e| {
+            EngError::Internal(format!("cannot read identity key {}: {e}", path.display()))
+        })?;
+
+        if raw.len() == 32 {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&raw);
+            return Ok(Self::from_key_bytes(arr, host, agent, model));
+        }
+
+        let text = std::str::from_utf8(&raw).map_err(|_| {
+            EngError::InvalidInput("identity key file is not valid UTF-8 or 32-byte raw".into())
+        })?;
+
+        if text.contains("PRIVATE KEY") {
+            let der = decode_pem_der(text, "PRIVATE KEY")?;
+            // PKCS8 Ed25519 private key: 16-byte prefix + 34-byte wrapped key
+            // The 34 bytes are: 04 20 <32 bytes of private key>
+            if der.len() == 48 && der[14] == 0x04 && der[15] == 0x20 {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&der[16..48]);
+                return Ok(Self::from_key_bytes(arr, host, agent, model));
+            }
+            return Err(EngError::InvalidInput(
+                "unsupported PEM private key format (expected Ed25519 PKCS8)".into(),
+            ));
+        }
+
+        let decoded = hex::decode(text.trim()).map_err(|_| {
+            EngError::InvalidInput("identity key file is not 32-byte raw, PEM, or hex".into())
+        })?;
+        if decoded.len() != 32 {
+            return Err(EngError::InvalidInput(format!(
+                "hex-encoded key must be 32 bytes, got {}",
+                decoded.len()
+            )));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&decoded);
+        Ok(Self::from_key_bytes(arr, host, agent, model))
+    }
+
+    pub fn from_env_or_file(host: &str, agent: &str, model: &str) -> Result<Option<Self>> {
+        if let Ok(hex_key) = std::env::var("KLEOS_IDENTITY_KEY") {
+            let bytes = hex::decode(hex_key.trim()).map_err(|e| {
+                EngError::InvalidInput(format!("KLEOS_IDENTITY_KEY bad hex: {e}"))
+            })?;
+            if bytes.len() != 32 {
+                return Err(EngError::InvalidInput(format!(
+                    "KLEOS_IDENTITY_KEY must be 32 bytes, got {}",
+                    bytes.len()
+                )));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            return Ok(Some(Self::from_key_bytes(arr, host, agent, model)));
+        }
+
+        let key_path = if let Ok(p) = std::env::var("KLEOS_IDENTITY_KEY_FILE") {
+            std::path::PathBuf::from(p)
+        } else if let Some(home) = dirs_for_key_path() {
+            home.join(".kleos").join("identity.key")
+        } else {
+            return Ok(None);
+        };
+
+        if key_path.exists() {
+            Ok(Some(Self::from_file(&key_path, host, agent, model)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn pubkey_pem(&self) -> &str {
+        &self.pubkey_pem
+    }
+
+    pub fn pubkey_der(&self) -> &[u8] {
+        &self.pubkey_der
+    }
+
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
+    pub fn identity_hash(&self) -> &str {
+        &self.identity_hash
+    }
+
+    pub fn host_label(&self) -> &str {
+        &self.host_label
+    }
+
+    pub fn agent_label(&self) -> &str {
+        &self.agent_label
+    }
+
+    pub fn model_label(&self) -> &str {
+        &self.model_label
+    }
+
+    pub fn cached_session(&self) -> Option<String> {
+        self.session_token.lock().unwrap().clone()
+    }
+
+    pub fn set_session(&self, token: String) {
+        *self.session_token.lock().unwrap() = Some(token);
+    }
+
+    pub fn clear_session(&self) {
+        *self.session_token.lock().unwrap() = None;
+    }
+
+    pub fn sign_request(
+        &self,
+        method: &str,
+        path: &str,
+        query: &str,
+        body: &[u8],
+    ) -> SignedRequest {
+        use ed25519_dalek::Signer;
+
+        let ts_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let nonce = generate_nonce();
+
+        let envelope = CanonicalEnvelope::new(
+            method, path, query, body, ts_ms, &nonce, &self.identity_hash,
+        );
+        let msg = envelope.build();
+        let sig = self.signing_key.sign(&msg);
+
+        SignedRequest {
+            sig_hex: hex::encode(sig.to_bytes()),
+            algo: SignatureAlgo::Ed25519,
+            identity_hash: self.identity_hash.clone(),
+            ts_ms,
+            nonce,
+            key_fp: self.fingerprint.clone(),
+            host_label: self.host_label.clone(),
+            agent_label: self.agent_label.clone(),
+            model_label: self.model_label.clone(),
+        }
+    }
+
+    pub fn generate_keypair() -> ([u8; 32], String) {
+        let mut secret = [0u8; 32];
+        use rand::Rng;
+        rand::rng().fill(&mut secret);
+        let sk = ed25519_dalek::SigningKey::from_bytes(&secret);
+        let vk = sk.verifying_key();
+
+        let mut der = Vec::with_capacity(44);
+        der.extend_from_slice(&ED25519_SPKI_PREFIX_CONST);
+        der.extend_from_slice(vk.as_bytes());
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
+        let pubkey_pem = format!("-----BEGIN PUBLIC KEY-----\n{b64}\n-----END PUBLIC KEY-----");
+
+        (secret, pubkey_pem)
+    }
+}
+
+pub struct SignedRequest {
+    pub sig_hex: String,
+    pub algo: SignatureAlgo,
+    pub identity_hash: String,
+    pub ts_ms: u64,
+    pub nonce: String,
+    pub key_fp: String,
+    pub host_label: String,
+    pub agent_label: String,
+    pub model_label: String,
+}
+
+impl SignedRequest {
+    pub fn apply_headers(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        req.header("X-Kleos-Sig", &self.sig_hex)
+            .header("X-Kleos-Algo", self.algo.as_str())
+            .header("X-Kleos-Identity", &self.identity_hash)
+            .header("X-Kleos-Ts", self.ts_ms.to_string())
+            .header("X-Kleos-Nonce", &self.nonce)
+            .header("X-Kleos-Key-Fp", &self.key_fp)
+            .header("X-Kleos-Host", &self.host_label)
+            .header("X-Kleos-Agent", &self.agent_label)
+            .header("X-Kleos-Model", &self.model_label)
+    }
+}
+
+fn dirs_for_key_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

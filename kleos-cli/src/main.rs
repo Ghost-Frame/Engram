@@ -456,53 +456,95 @@ struct Client {
     http: reqwest::Client,
     base_url: String,
     api_key: Option<String>,
+    signer: Option<kleos_lib::auth_piv::RequestSigner>,
 }
 
 impl Client {
-    fn new(base_url: String, api_key: Option<String>) -> Self {
+    fn new(
+        base_url: String,
+        api_key: Option<String>,
+        signer: Option<kleos_lib::auth_piv::RequestSigner>,
+    ) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
+            signer,
+        }
+    }
+
+    fn apply_auth(
+        &self,
+        req: reqwest::RequestBuilder,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> reqwest::RequestBuilder {
+        if let Some(signer) = &self.signer {
+            if let Some(session) = signer.cached_session() {
+                return req.header("X-Kleos-Session", session);
+            }
+            let (url_path, query) = match path.split_once('?') {
+                Some((p, q)) => (p, q),
+                None => (path, ""),
+            };
+            let signed = signer.sign_request(method, url_path, query, body);
+            return signed.apply_headers(req);
+        }
+        if let Some(key) = &self.api_key {
+            return req.bearer_auth(key);
+        }
+        req
+    }
+
+    fn capture_session(&self, resp: &reqwest::Response) {
+        if let Some(signer) = &self.signer {
+            if let Some(token) = resp.headers().get("x-kleos-session-issued") {
+                if let Ok(t) = token.to_str() {
+                    signer.set_session(t.to_string());
+                }
+            }
         }
     }
 
     async fn get(&self, path: &str) -> Result<Value, String> {
         let url = format!("{}{}", self.base_url, path);
-        let mut req = self.http.get(&url);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
+        let req = self.http.get(&url);
+        let req = self.apply_auth(req, "GET", path, b"");
         let resp = req
             .send()
             .await
             .map_err(|e| format_reqwest_error("GET", &url, &e))?;
+        self.capture_session(&resp);
         self.handle_response("GET", &url, resp).await
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
         let url = format!("{}{}", self.base_url, path);
-        let mut req = self.http.post(&url).json(&body);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
+        let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+        let req = self
+            .http
+            .post(&url)
+            .header("content-type", "application/json")
+            .body(body_bytes.clone());
+        let req = self.apply_auth(req, "POST", path, &body_bytes);
         let resp = req
             .send()
             .await
             .map_err(|e| format_reqwest_error("POST", &url, &e))?;
+        self.capture_session(&resp);
         self.handle_response("POST", &url, resp).await
     }
 
     async fn delete(&self, path: &str) -> Result<Value, String> {
         let url = format!("{}{}", self.base_url, path);
-        let mut req = self.http.delete(&url);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
+        let req = self.http.delete(&url);
+        let req = self.apply_auth(req, "DELETE", path, b"");
         let resp = req
             .send()
             .await
             .map_err(|e| format_reqwest_error("DELETE", &url, &e))?;
+        self.capture_session(&resp);
         self.handle_response("DELETE", &url, resp).await
     }
 
@@ -513,6 +555,13 @@ impl Client {
         resp: reqwest::Response,
     ) -> Result<Value, String> {
         let status = resp.status();
+
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            if let Some(signer) = &self.signer {
+                signer.clear_session();
+            }
+        }
+
         let bytes = resp.bytes().await.map_err(|e| {
             format!(
                 "{} {} succeeded but reading response body failed: {}",
@@ -602,7 +651,28 @@ async fn main() {
     let _otel_guard = kleos_lib::observability::init_tracing("kleos-cli", "warn");
 
     let cli = Cli::parse();
-    let api_key = if let Some(k) = cli.key.clone() {
+    let host_label = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".into());
+    let agent_label = std::env::var("KLEOS_AGENT_LABEL")
+        .unwrap_or_else(|_| "kleos-cli".into());
+    let model_label = std::env::var("KLEOS_MODEL_LABEL")
+        .unwrap_or_else(|_| "none".into());
+
+    let signer =
+        match kleos_lib::auth_piv::RequestSigner::from_env_or_file(
+            &host_label, &agent_label, &model_label,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("warning: identity key error: {e}");
+                None
+            }
+        };
+
+    let api_key = if signer.is_some() {
+        None
+    } else if let Some(k) = cli.key.clone() {
         Some(k)
     } else {
         let slot = kleos_lib::cred::bootstrap::current_agent_slot();
@@ -614,7 +684,7 @@ async fn main() {
             }
         }
     };
-    let client = Client::new(cli.server.clone(), api_key.clone());
+    let client = Client::new(cli.server.clone(), api_key.clone(), signer);
 
     match &cli.command {
         Commands::Store {
@@ -842,7 +912,7 @@ async fn main() {
                         .filter(|s| !s.is_empty())
                 })
                 .or_else(|| api_key.clone());
-            let cred_client = Client::new(cli.credd_url.clone(), credd_token);
+            let cred_client = Client::new(cli.credd_url.clone(), credd_token, None);
             handle_cred_command(&cred_client, cred_cmd).await;
         }
 

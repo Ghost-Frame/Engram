@@ -27,6 +27,7 @@ base64 = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
 percent-encoding = "2"
+hostname = "0.4"
 
 # Windows needs bundled SQLCipher since there's no system sqlite3.lib
 [target.'cfg(windows)'.dependencies]
