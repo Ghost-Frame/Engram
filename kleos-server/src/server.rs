@@ -150,6 +150,8 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::agents::router())
         .merge(routes::artifacts::router())
         .merge(routes::auth_keys::router())
+        .merge(routes::identity_keys::router())
+        .merge(routes::identities::router())
         .merge(routes::fsrs::router())
         .merge(routes::grounding::router())
         .merge(routes::search::router())
