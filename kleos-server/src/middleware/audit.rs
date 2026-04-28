@@ -54,9 +54,16 @@ pub async fn audit_middleware(
     let mut bg = state.background_tasks.lock().await;
     bg.spawn(async move {
         let _permit = permit;
-        let (user_id, agent_id) = auth_ctx
-            .map(|ctx| (Some(ctx.user_id), ctx.key.agent_id))
-            .unwrap_or((None, None));
+        let (user_id, agent_id, identity_id, tier) = auth_ctx
+            .map(|ctx| {
+                let (iid, t) = ctx
+                    .identity
+                    .as_ref()
+                    .map(|id| (id.identity_id, Some(id.tier.as_str().to_string())))
+                    .unwrap_or((None, None));
+                (Some(ctx.user_id), ctx.key.agent_id, iid, t)
+            })
+            .unwrap_or((None, None, None, None));
 
         let action = format!("http.{}", method.to_lowercase());
         let details = format!("path={} status={}", path, status);
@@ -76,6 +83,8 @@ pub async fn audit_middleware(
                     Some(&details),
                     ip.as_deref(),
                     None,
+                    identity_id,
+                    tier.as_deref(),
                 )
                 .await
                 {

@@ -90,6 +90,8 @@ pub struct AppState {
     pub brain_absorb_sem: Arc<Semaphore>,
     pub audit_log_sem: Arc<Semaphore>,
     pub ingest_sem: Arc<Semaphore>,
+    pub replay_guard: Arc<kleos_lib::auth_piv::ReplayGuard>,
+    pub session_manager: Arc<kleos_lib::auth_piv::SessionManager>,
 }
 
 impl AppState {

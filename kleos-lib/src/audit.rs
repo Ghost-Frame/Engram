@@ -105,18 +105,21 @@ pub async fn log_request(
     details: Option<&str>,
     ip: Option<&str>,
     request_id: Option<&str>,
+    identity_id: Option<i64>,
+    tier: Option<&str>,
 ) -> Result<()> {
     let action = action.to_string();
     let target_type = target_type.map(|s| s.to_string());
     let details = details.map(|s| s.to_string());
     let ip = ip.map(|s| s.to_string());
     let request_id = request_id.map(|s| s.to_string());
+    let tier = tier.map(|s| s.to_string());
 
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO audit_log (user_id, agent_id, action, target_type, target_id, details, ip, request_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![user_id, agent_id, action, target_type, target_id, details, ip, request_id],
+            "INSERT INTO audit_log (user_id, agent_id, action, target_type, target_id, details, ip, request_id, identity_id, tier)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![user_id, agent_id, action, target_type, target_id, details, ip, request_id, identity_id, tier],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())

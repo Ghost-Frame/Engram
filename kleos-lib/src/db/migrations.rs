@@ -481,6 +481,8 @@ const MIGRATION_DROP_USER_ID_SKILLS: i64 = 42;
 const MIGRATION_DROP_USER_ID_EPISODES: i64 = 43;
 const MIGRATION_READD_USER_ID_PROJECTS: i64 = 44;
 const MIGRATION_READD_USER_ID_BROCA: i64 = 45;
+const MIGRATION_IDENTITY_TABLES: i64 = 46;
+const MIGRATION_AUDIT_IDENTITY_COLUMNS: i64 = 47;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -835,6 +837,18 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 45: readd_user_id_broca");
         run_migration_readd_user_id_broca(conn)?;
         record_migration(conn, MIGRATION_READD_USER_ID_BROCA, "readd_user_id_broca")?;
+    }
+
+    if current_version < MIGRATION_IDENTITY_TABLES {
+        info!("Running migration 46: identity_keys_and_identities");
+        run_migration_identity_tables(conn)?;
+        record_migration(conn, MIGRATION_IDENTITY_TABLES, "identity_keys_and_identities")?;
+    }
+
+    if current_version < MIGRATION_AUDIT_IDENTITY_COLUMNS {
+        info!("Running migration 47: audit_log_identity_columns");
+        run_migration_audit_identity_columns(conn)?;
+        record_migration(conn, MIGRATION_AUDIT_IDENTITY_COLUMNS, "audit_log_identity_columns")?;
     }
 
     Ok(())
