@@ -3,6 +3,8 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
+use std::time::Duration;
+use tower_http::timeout::TimeoutLayer;
 
 use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
@@ -111,17 +113,31 @@ pub fn router() -> Router<AppState> {
         .route("/skills/dashboard/overview", get(overview_handler))
         .route("/skills/dashboard/stats", get(stats_handler))
         .route("/skills/{id}/detail", get(detail_handler))
-        // Evolution
-        .route("/skills/evolve", post(evolve_handler))
-        .route("/skills/{id}/fix", post(fix_handler))
-        .route("/skills/derive", post(derive_handler))
-        .route("/skills/capture", post(capture_handler))
+        // Evolution (read-only)
         .route("/skills/evolution/recent", get(evolution_recent_handler))
+        // Evolution (LLM-backed, needs longer timeout than the global 120s)
+        .merge(llm_routes())
         // Analyzer
         .route("/skills/usage-stats", get(usage_stats_handler))
         // Cloud
         .route("/skills/cloud/search", post(cloud_search_handler))
         .route("/skills/cloud/upload", post(cloud_upload_handler))
+}
+
+fn llm_routes() -> Router<AppState> {
+    let timeout_ms: u64 = std::env::var("OLLAMA_TIMEOUT_BG_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60_000);
+    Router::new()
+        .route("/skills/evolve", post(evolve_handler))
+        .route("/skills/{id}/fix", post(fix_handler))
+        .route("/skills/derive", post(derive_handler))
+        .route("/skills/capture", post(capture_handler))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_millis(timeout_ms),
+        ))
 }
 
 // ---------------------------------------------------------------------------
