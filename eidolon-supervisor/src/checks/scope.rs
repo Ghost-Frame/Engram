@@ -22,6 +22,7 @@ pub fn check_file_scope(entry: &serde_json::Value, allowed_paths: &[String]) -> 
             severity: Severity::Warning,
             message: format!("Edit outside allowed scope: {}", file_path),
             context: file_path,
+            session_id: None,
         }];
     }
 

@@ -38,6 +38,10 @@ pub struct Violation {
     pub severity: Severity,
     pub message: String,
     pub context: String,
+    /// Claude session id extracted from the JSONL line, used to route the
+    /// supervisor's deny back to the same agent on the next PreToolUse via
+    /// /supervisor/inject. None when the line had no sessionId field.
+    pub session_id: Option<String>,
 }
 
 pub fn default_rules() -> Vec<Rule> {

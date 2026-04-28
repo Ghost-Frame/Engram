@@ -5,6 +5,56 @@ use serde_json::json;
 pub async fn send_alert(state: &SupervisorState, violation: &Violation) {
     send_inbox(state, violation).await;
     send_axon(state, violation).await;
+    send_inject(state, violation).await;
+}
+
+/// Post the violation to /supervisor/inject so the agent picks it up on the
+/// next PreToolUse / UserPromptSubmit hook. Skipped when no session_id is
+/// known -- inbox + axon still capture the event for offline review.
+async fn send_inject(state: &SupervisorState, violation: &Violation) {
+    let session_id = match &violation.session_id {
+        Some(s) if !s.is_empty() => s,
+        _ => return,
+    };
+
+    let url = format!("{}/supervisor/inject", state.kleos_url);
+    let body = json!({
+        "session_id": session_id,
+        "rule_id": violation.rule_id,
+        "severity": format!("{:?}", violation.severity),
+        "message": violation.message,
+    });
+
+    let mut req = state.client.post(&url).json(&body);
+    if let Some(ref key) = state.api_key {
+        req = req.bearer_auth(key);
+    }
+
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::debug!(
+                rule = %violation.rule_id,
+                session_id = %session_id,
+                "supervisor inject sent"
+            );
+        }
+        Ok(resp) => {
+            tracing::warn!(
+                rule = %violation.rule_id,
+                session_id = %session_id,
+                status = %resp.status(),
+                "supervisor inject failed"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                rule = %violation.rule_id,
+                session_id = %session_id,
+                error = %e,
+                "supervisor inject unreachable"
+            );
+        }
+    }
 }
 
 async fn send_inbox(state: &SupervisorState, violation: &Violation) {
