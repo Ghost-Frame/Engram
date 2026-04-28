@@ -5,6 +5,7 @@ pub mod approvals;
 pub mod artifacts;
 pub mod audit;
 pub mod auth;
+pub mod auth_piv;
 pub mod cognitive;
 pub mod commerce;
 pub mod config;
