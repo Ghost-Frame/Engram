@@ -24,6 +24,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use axum::Router;
+use kleos_lib::auth_piv::{ReplayGuard, SessionManager};
 use kleos_lib::config::Config;
 use kleos_lib::db::Database;
 use serde_json::Value;
@@ -76,6 +77,8 @@ pub async fn test_app() -> (Router, AppState) {
         brain_absorb_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         audit_log_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        replay_guard: Arc::new(ReplayGuard::new()),
+        session_manager: Arc::new(SessionManager::new([0u8; 32])),
     };
     let router = build_router(state.clone());
     (router, state)
