@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
+use kleos_lib::auth_piv::{ReplayGuard, SessionManager};
 use kleos_lib::config::Config;
 use kleos_lib::cred::CreddClient;
 use kleos_lib::db::Database;
@@ -75,6 +76,8 @@ async fn test_app_with_sharding() -> (axum::Router, AppState, TempDir) {
         brain_absorb_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         audit_log_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        replay_guard: Arc::new(ReplayGuard::new()),
+        session_manager: Arc::new(SessionManager::new([0u8; 32])),
     };
 
     let router = build_router(state.clone());
