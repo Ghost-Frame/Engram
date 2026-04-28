@@ -24,8 +24,10 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 use kleos_lib::cred::CreddClient;
+use kleos_lib::tenant::{TenantConfig, TenantRegistry};
 use kleos_server::server::build_router;
 use kleos_server::state::AppState;
+use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -35,6 +37,7 @@ struct TestApp {
     router: Router,
     api_key: String,
     db: Arc<Database>,
+    _tmp: TempDir,
 }
 
 impl TestApp {
@@ -59,7 +62,14 @@ impl TestApp {
             },
         );
 
+        let tmp = tempfile::tempdir().expect("tempdir");
         let db = Arc::new(Database::connect_memory().await.expect("in-memory db"));
+        let registry = TenantRegistry::new(
+            tmp.path().to_path_buf(),
+            TenantConfig::default(),
+            config.vector_dimensions,
+        )
+        .expect("tenant registry");
         let credd = Arc::new(CreddClient::from_config(&config));
         let state = AppState {
             db: Arc::clone(&db),
@@ -76,7 +86,7 @@ impl TestApp {
             safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             dreamer_stats: kleos_server::dreamer::new_stats_handle(),
             last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            tenant_registry: None,
+            tenant_registry: Some(Arc::new(registry)),
             handoffs_gc_sem: Arc::new(tokio::sync::Semaphore::new(8)),
             shutdown_token: CancellationToken::new(),
             background_tasks: Arc::new(Mutex::new(JoinSet::new())),
@@ -113,6 +123,7 @@ impl TestApp {
             router,
             api_key,
             db,
+            _tmp: tmp,
         }
     }
 
