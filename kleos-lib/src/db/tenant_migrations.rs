@@ -247,6 +247,16 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "handoffs_table_in_tenant_shard",
         up: apply_schema_v43_handoffs,
     },
+    // Full schema parity with monolith. Creates every table that
+    // ResolvedDb-backed routes query but that was never in the tenant
+    // migration chain. Without this, removing the user_id==1 monolith
+    // carve-out causes "no such table" for agents, gate, brain,
+    // personality, tasks, events, and several supporting tables.
+    TenantMigration {
+        version: 44,
+        description: "monolith_schema_parity",
+        up: apply_schema_v44_parity,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -464,6 +474,11 @@ fn apply_schema_v42_broca_readd(conn: &Connection) -> Result<()> {
 fn apply_schema_v43_handoffs(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v43_handoffs.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v43 failed: {e}")))
+}
+
+fn apply_schema_v44_parity(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v44_parity.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v44 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.

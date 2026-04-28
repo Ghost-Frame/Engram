@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
         info!("Phase 4: Extracting vectors to LanceDB...");
         let lance = vectors::open_lance(&args.target).await?;
         let stats = if let Some(src_lance) = args.source_lance.as_deref() {
-            vectors::extract_from_source_lance(src_lance, &lance, args.filter_user_id).await?
+            vectors::extract_from_source_lance(src_lance, Some(source), &lance, args.filter_user_id).await?
         } else {
             vectors::extract_and_insert(source, &lance, args.filter_user_id).await?
         };
@@ -251,7 +251,7 @@ async fn dry_run_report(
 
         // If a source LanceDB was given, count filtered rows there too.
         if let Some(src_lance) = source_lance {
-            match vectors::dry_run_source_lance_count(src_lance, filter_user_id).await {
+            match vectors::dry_run_source_lance_count(src_lance, Some(source), filter_user_id).await {
                 Ok(count) => {
                     println!("{:<40} {:>10}", "Embeddings (source LanceDB)", count);
                 }

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -166,6 +166,7 @@ async fn get_passport(
 }
 
 async fn link_key(
+    State(state): State<AppState>,
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
@@ -175,7 +176,8 @@ async fn link_key(
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Agent not found".into())))?;
 
-    agents::link_key_to_agent(&db, agent.id, body.key_id, auth.user_id).await?;
+    // api_keys lives in the system DB, not the tenant shard.
+    agents::link_key_to_agent(&state.db, agent.id, body.key_id, auth.user_id).await?;
     Ok(Json(
         json!({ "linked": true, "agent_id": id, "key_id": body.key_id }),
     ))
