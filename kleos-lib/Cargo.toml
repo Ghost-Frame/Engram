@@ -19,6 +19,7 @@ test-utils = []
 # Enable per-tenant sharding (rusqlite-based). Mutually exclusive with libsql tests.
 tenant-sharding = []
 credd-raw = []
+piv = ["yubikey"]
 # Vendor SQLCipher for at-rest encryption. Mutually exclusive with libsql
 # in the same binary (symbol collision), so kleos-migrate must NOT enable this.
 sqlcipher = ["rusqlite/bundled-sqlcipher"]
@@ -76,6 +77,7 @@ p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pem"] }
 ed25519-dalek = { workspace = true }
 hkdf = "0.12"
 aes-gcm = "0.10"
+yubikey = { version = "0.9.0-pre.0", optional = true }
 
 # Vendored protoc binary -- only available for Linux x86_64.
 # Other platforms install protoc via system package manager.

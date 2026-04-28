@@ -444,8 +444,15 @@ pub fn generate_nonce() -> String {
 // Client-side request signing
 // ---------------------------------------------------------------------------
 
+enum SigningBackend {
+    Ed25519(ed25519_dalek::SigningKey),
+    #[cfg(feature = "piv")]
+    Piv(Mutex<yubikey::YubiKey>),
+}
+
 pub struct RequestSigner {
-    signing_key: ed25519_dalek::SigningKey,
+    backend: SigningBackend,
+    algo: SignatureAlgo,
     pubkey_pem: String,
     pubkey_der: Vec<u8>,
     fingerprint: String,
@@ -482,7 +489,8 @@ impl RequestSigner {
         let identity_hash = identity_hash_hex(&der, host, agent, model);
 
         Self {
-            signing_key,
+            backend: SigningBackend::Ed25519(signing_key),
+            algo: SignatureAlgo::Ed25519,
             pubkey_pem,
             pubkey_der: der,
             fingerprint,
@@ -492,6 +500,59 @@ impl RequestSigner {
             identity_hash,
             session_token: Mutex::new(None),
         }
+    }
+
+    #[cfg(feature = "piv")]
+    pub fn from_yubikey(host: &str, agent: &str, model: &str) -> Result<Self> {
+        use yubikey::piv::{self as yk_piv, SlotId};
+
+        let mut yk = yubikey::YubiKey::open()
+            .map_err(|e| EngError::Internal(format!("cannot open YubiKey: {e}")))?;
+
+        let cert = yk_piv::certificate::Certificate::read(&mut yk, SlotId::Authentication)
+            .map_err(|e| EngError::Internal(format!(
+                "cannot read PIV slot 9a certificate: {e}"
+            )))?;
+
+        // Extract SPKI DER bytes from the certificate
+        let spki = cert.subject_pki();
+        let pubkey_der = {
+            use p256::pkcs8::der::Encode;
+            spki.to_der()
+                .map_err(|e| EngError::Internal(format!("cannot encode SPKI to DER: {e}")))?
+        };
+
+        let pubkey_pem = {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&pubkey_der);
+            format!("-----BEGIN PUBLIC KEY-----\n{b64}\n-----END PUBLIC KEY-----")
+        };
+
+        let fingerprint = format!(
+            "SHA256:{}",
+            &hex::encode(Sha256::digest(&pubkey_der))[..32]
+        );
+        let identity_hash = identity_hash_hex(&pubkey_der, host, agent, model);
+
+        let serial = yk.serial().to_string();
+        tracing::info!(
+            serial = %serial,
+            fingerprint = %fingerprint,
+            "PIV signer initialized from YubiKey"
+        );
+
+        Ok(Self {
+            backend: SigningBackend::Piv(Mutex::new(yk)),
+            algo: SignatureAlgo::EcdsaP256,
+            pubkey_pem,
+            pubkey_der,
+            fingerprint,
+            host_label: host.to_string(),
+            agent_label: agent.to_string(),
+            model_label: model.to_string(),
+            identity_hash,
+            session_token: Mutex::new(None),
+        })
     }
 
     pub fn from_file(
@@ -543,6 +604,18 @@ impl RequestSigner {
     }
 
     pub fn from_env_or_file(host: &str, agent: &str, model: &str) -> Result<Option<Self>> {
+        // T1: Try PIV YubiKey first (highest auth tier)
+        #[cfg(feature = "piv")]
+        {
+            match Self::from_yubikey(host, agent, model) {
+                Ok(signer) => return Ok(Some(signer)),
+                Err(e) => {
+                    tracing::debug!("PIV YubiKey not available, falling back to software key: {e}");
+                }
+            }
+        }
+
+        // T2: Software Ed25519 key from env var or file
         if let Ok(hex_key) = std::env::var("KLEOS_IDENTITY_KEY") {
             let bytes = hex::decode(hex_key.trim()).map_err(|e| {
                 EngError::InvalidInput(format!("KLEOS_IDENTITY_KEY bad hex: {e}"))
@@ -620,8 +693,6 @@ impl RequestSigner {
         query: &str,
         body: &[u8],
     ) -> SignedRequest {
-        use ed25519_dalek::Signer;
-
         let ts_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -632,11 +703,34 @@ impl RequestSigner {
             method, path, query, body, ts_ms, &nonce, &self.identity_hash,
         );
         let msg = envelope.build();
-        let sig = self.signing_key.sign(&msg);
+
+        let sig_hex = match &self.backend {
+            SigningBackend::Ed25519(sk) => {
+                use ed25519_dalek::Signer;
+                hex::encode(sk.sign(&msg).to_bytes())
+            }
+            #[cfg(feature = "piv")]
+            SigningBackend::Piv(yk_mutex) => {
+                // PIV ECDSA: card expects pre-hashed digest
+                let digest = Sha256::digest(&msg);
+                let mut yk = yk_mutex.lock().unwrap();
+                let sig_der = yubikey::piv::sign_data(
+                    &mut yk,
+                    &digest,
+                    yubikey::piv::AlgorithmId::EccP256,
+                    yubikey::piv::SlotId::Authentication,
+                )
+                .expect("YubiKey PIV signing failed");
+                // Convert DER-encoded ECDSA signature to raw r||s for verify_p256
+                let sig = p256::ecdsa::Signature::from_der(&sig_der)
+                    .expect("YubiKey returned invalid ECDSA DER signature");
+                hex::encode(sig.to_bytes())
+            }
+        };
 
         SignedRequest {
-            sig_hex: hex::encode(sig.to_bytes()),
-            algo: SignatureAlgo::Ed25519,
+            sig_hex,
+            algo: self.algo,
             identity_hash: self.identity_hash.clone(),
             ts_ms,
             nonce,
