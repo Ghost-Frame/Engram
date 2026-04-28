@@ -415,6 +415,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 46,
+        description: "drop_api_keys_agent_fk",
+        up: run_migration_drop_api_keys_agent_fk,
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3045,6 +3052,69 @@ fn run_migration_readd_user_id_broca(conn: &rusqlite::Connection) -> Result<()> 
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 45 complete: user_id re-added to broca_actions");
+    Ok(())
+}
+
+fn run_migration_drop_api_keys_agent_fk(conn: &rusqlite::Connection) -> Result<()> {
+    // In the sharded architecture agents live in per-tenant databases while
+    // api_keys stays in the system DB. The FK `agent_id REFERENCES agents(id)`
+    // cannot be satisfied cross-database, so we rebuild the table without it.
+    // Idempotent: if the FK is already absent, skip.
+    let has_fk: bool = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='api_keys'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map(|sql| sql.contains("REFERENCES agents"))
+        .unwrap_or(false);
+
+    if !has_fk {
+        info!("api_keys agent FK already absent, migration 46 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         ALTER TABLE api_keys RENAME TO _api_keys_old_v46;
+
+         CREATE TABLE api_keys (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+             key_prefix TEXT NOT NULL,
+             key_hash TEXT NOT NULL,
+             name TEXT NOT NULL DEFAULT 'default',
+             scopes TEXT NOT NULL DEFAULT 'read,write',
+             rate_limit INTEGER NOT NULL DEFAULT 1000,
+             is_active BOOLEAN NOT NULL DEFAULT 1,
+             agent_id INTEGER,
+             last_used_at TEXT,
+             expires_at TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+
+         INSERT INTO api_keys
+             (id, user_id, key_prefix, key_hash, name, scopes, rate_limit,
+              is_active, agent_id, last_used_at, expires_at, created_at)
+         SELECT
+             id, user_id, key_prefix, key_hash, name, scopes, rate_limit,
+              is_active, agent_id, last_used_at, expires_at, created_at
+         FROM _api_keys_old_v46;
+
+         DROP TABLE _api_keys_old_v46;
+
+         CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix);
+         CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+         CREATE INDEX IF NOT EXISTS idx_api_keys_expires ON api_keys(expires_at) WHERE expires_at IS NOT NULL;
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 46 complete: dropped FK on api_keys.agent_id (agents now live in tenant shards)");
     Ok(())
 }
 
