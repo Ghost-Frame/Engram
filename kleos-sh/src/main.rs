@@ -107,9 +107,12 @@ fn resolve_api_key() -> Option<String> {
             return Some(key);
         }
     }
-    // cred can be transiently unavailable (credd restart, YubiKey re-tap
-    // window). Retry once with a 500ms backoff before giving up so a brief
-    // outage does not push us straight into the fail-closed path.
+    // Primary path: ask credd for a bearer via its Unix socket. This is the
+    // same flow as lib-eidolon.sh's _eidolon_key_via_credd().
+    if let Some(key) = resolve_key_via_credd() {
+        return Some(key);
+    }
+    // Fallback: standalone cred CLI (legacy, pre-Sparkling-Fairy).
     let slot = cred_slot();
     for attempt in 0..2 {
         let output = std::process::Command::new("cred")
@@ -129,14 +132,53 @@ fn resolve_api_key() -> Option<String> {
     None
 }
 
-/// Fail-open opt-in. By default kleos-sh fails CLOSED when the gate is
-/// unreachable or no API key is available; setting KLEOS_SH_FAIL_OPEN=1
-/// reverts to the prior best-effort behaviour for local development.
-fn fail_open_allowed() -> bool {
-    matches!(
-        std::env::var("KLEOS_SH_FAIL_OPEN").as_deref(),
-        Ok("1") | Ok("true")
-    )
+fn resolve_key_via_credd() -> Option<String> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let socket_path = std::env::var("CREDD_SOCKET").ok()?;
+    let agent_key = std::env::var("CREDD_AGENT_KEY").ok()?;
+    if socket_path.is_empty() || agent_key.is_empty() {
+        return None;
+    }
+
+    let slot = std::env::var("KLEOS_AGENT_SLOT").unwrap_or_else(|_| "claude-code".into());
+    let request = format!(
+        "GET /bootstrap/kleos-bearer?agent={} HTTP/1.1\r\n\
+         Host: localhost\r\n\
+         Authorization: Bearer {}\r\n\
+         Connection: close\r\n\
+         \r\n",
+        slot, agent_key
+    );
+
+    let mut stream = UnixStream::connect(&socket_path).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .ok()?;
+    stream.write_all(request.as_bytes()).ok()?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+
+    let body = response.split("\r\n\r\n").nth(1)?;
+    let v: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
+    let key = v.get("key")?.as_str()?;
+    if key.is_empty() {
+        return None;
+    }
+    Some(key.to_string())
+}
+
+/// Fail-open policy. In --claude-hook mode the default is OPEN (matching
+/// the legacy bash hook that always failed open with local safety blocks).
+/// In exec mode the default is CLOSED. Override with KLEOS_SH_FAIL_OPEN.
+fn fail_open_allowed(claude_hook: bool) -> bool {
+    match std::env::var("KLEOS_SH_FAIL_OPEN").as_deref() {
+        Ok("0") | Ok("false") => false,
+        Ok("1") | Ok("true") => true,
+        _ => claude_hook,
+    }
 }
 
 /// Best-effort alert to Eidolon when the gate degrades. Fire-and-forget; we
@@ -202,7 +244,9 @@ fn read_hostname() -> String {
 
 fn server_url() -> String {
     std::env::var("KLEOS_SERVER_URL")
+        .or_else(|_| std::env::var("KLEOS_URL"))
         .or_else(|_| std::env::var("KLEOS_EIDOLON_URL"))
+        .or_else(|_| std::env::var("EIDOLON_URL"))
         .unwrap_or_else(|_| "http://127.0.0.1:4200".to_string())
 }
 
@@ -211,9 +255,13 @@ fn sidecar_url() -> String {
 }
 
 fn build_client() -> reqwest::Client {
+    let timeout_secs: u64 = std::env::var("KLEOS_SH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
     reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(150))
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(timeout_secs))
         .redirect(reqwest::redirect::Policy::limited(1))
         .build()
         .expect("failed to build HTTP client")
@@ -280,16 +328,15 @@ async fn main() {
             .or_else(|| Some("Bash".to_string())),
     };
 
-    // Retry the gate up to four times with exponential backoff before deciding
-    // the gate is genuinely unreachable. Most outages here are 1-2 second
-    // restarts, not sustained. After the retries exhaust we fall closed
-    // unless KLEOS_SH_FAIL_OPEN is explicitly set.
+    // In hook mode: single 4s attempt, fail open on timeout (matching bash).
+    // Non-hook (exec) mode: 4 retries with exponential backoff, fail closed.
+    let max_attempts: usize = if cli.claude_hook { 1 } else { 4 };
     let outcome = match &api_key {
         Some(key) => {
             let mut last_err: Option<String> = None;
             let mut delay_ms = 250u64;
             let mut got: Option<gate::GateOutcome> = None;
-            for attempt in 0..4 {
+            for attempt in 0..max_attempts {
                 match gate::check_remote(&client, &server, key, &req).await {
                     Ok(outcome) => {
                         got = Some(outcome);
@@ -297,7 +344,7 @@ async fn main() {
                     }
                     Err(err) => {
                         last_err = Some(err);
-                        if attempt < 3 {
+                        if attempt + 1 < max_attempts {
                             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                             delay_ms *= 2;
                         }
@@ -308,7 +355,7 @@ async fn main() {
                 Some(o) => o,
                 None => {
                     let err_msg = last_err.unwrap_or_else(|| "unknown error".to_string());
-                    if fail_open_allowed() {
+                    if fail_open_allowed(cli.claude_hook) {
                         if !cli.claude_hook {
                             eprintln!(
                                 "kleos-sh: gate unreachable after retries ({}), failing OPEN per KLEOS_SH_FAIL_OPEN",
@@ -347,7 +394,7 @@ async fn main() {
             }
         }
         None => {
-            if fail_open_allowed() {
+            if fail_open_allowed(cli.claude_hook) {
                 if !cli.claude_hook {
                     eprintln!(
                         "kleos-sh: no API key available, failing OPEN per KLEOS_SH_FAIL_OPEN"
