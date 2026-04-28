@@ -1,3 +1,6 @@
+mod hook;
+use hook::{run_hook, HookCommands};
+
 use clap::{Parser, Subcommand};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
@@ -130,6 +133,9 @@ enum Commands {
     /// Session handoff management
     #[command(subcommand)]
     Handoff(HandoffCommands),
+    /// Claude Code hook handlers (native replacements for bash hooks)
+    #[command(subcommand)]
+    Hook(HookCommands),
 }
 
 #[derive(Subcommand)]
@@ -842,6 +848,10 @@ async fn main() {
 
         Commands::Handoff(handoff_cmd) => {
             handle_handoff_command(&client, handoff_cmd).await;
+        }
+
+        Commands::Hook(hook_cmd) => {
+            run_hook(hook_cmd, &cli.server, api_key.as_deref()).await;
         }
     }
 }

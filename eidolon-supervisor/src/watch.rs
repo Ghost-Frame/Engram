@@ -83,19 +83,22 @@ pub async fn run(state: Arc<SupervisorState>, watch_dir: PathBuf) {
 
         if let Ok(entries) = read_new_entries(path, &mut positions) {
             for entry in entries {
+                let session_id = extract_session_id(&entry);
                 let mut violations = Vec::new();
 
                 violations.extend(checks::rule_match::check(&entry, &state.rules));
                 violations.extend(retry_tracker.check(&entry, &state.rules));
 
-                for violation in violations {
+                for mut violation in violations {
                     if is_cooled_down(&state, &violation.rule_id).await {
                         continue;
                     }
+                    violation.session_id = session_id.clone();
 
                     tracing::warn!(
                         rule = %violation.rule_id,
                         severity = ?violation.severity,
+                        session_id = ?violation.session_id,
                         message = %violation.message,
                         "violation detected"
                     );
@@ -106,6 +109,17 @@ pub async fn run(state: Arc<SupervisorState>, watch_dir: PathBuf) {
             }
         }
     }
+}
+
+/// Pull a Claude session id out of a JSONL entry. Claude Code writes
+/// `sessionId` (camelCase) on every event; some older transcripts use
+/// `session_id`. Returns None if neither is present or non-string.
+fn extract_session_id(entry: &serde_json::Value) -> Option<String> {
+    let obj = entry.as_object()?;
+    obj.get("sessionId")
+        .or_else(|| obj.get("session_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn read_new_entries(

@@ -48,6 +48,7 @@ impl RetryTracker {
                         truncate(&cmd, 80)
                     ),
                     context: cmd,
+                    session_id: None,
                 }];
             }
         }
