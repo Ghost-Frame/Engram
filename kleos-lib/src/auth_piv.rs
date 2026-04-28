@@ -680,7 +680,7 @@ impl RequestSigner {
         Ok((signer, key_path))
     }
 
-    pub fn sign_enrollment_proof(&self) -> String {
+    pub fn sign_enrollment_proof(&self) -> Result<String> {
         let proof_msg = format!(
             "KLEOS-ENROLL:{}:{}:{}:{}",
             self.algo.as_str(),
@@ -691,7 +691,7 @@ impl RequestSigner {
         match &self.backend {
             SigningBackend::Ed25519(sk) => {
                 use ed25519_dalek::Signer;
-                hex::encode(sk.sign(proof_msg.as_bytes()).to_bytes())
+                Ok(hex::encode(sk.sign(proof_msg.as_bytes()).to_bytes()))
             }
             #[cfg(feature = "piv")]
             SigningBackend::Piv(yk_mutex) => {
@@ -703,10 +703,10 @@ impl RequestSigner {
                     yubikey::piv::AlgorithmId::EccP256,
                     yubikey::piv::SlotId::Authentication,
                 )
-                .expect("YubiKey PIV enrollment proof signing failed");
+                .map_err(|e| EngError::Internal(format!("YubiKey PIV signing failed: {e}")))?;
                 let sig = p256::ecdsa::Signature::from_der(&sig_der)
-                    .expect("YubiKey returned invalid ECDSA DER signature");
-                hex::encode(sig.to_bytes())
+                    .map_err(|e| EngError::Internal(format!("invalid ECDSA DER from YubiKey: {e}")))?;
+                Ok(hex::encode(sig.to_bytes()))
             }
         }
     }
@@ -780,7 +780,7 @@ impl RequestSigner {
         path: &str,
         query: &str,
         body: &[u8],
-    ) -> SignedRequest {
+    ) -> Result<SignedRequest> {
         let ts_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -799,7 +799,6 @@ impl RequestSigner {
             }
             #[cfg(feature = "piv")]
             SigningBackend::Piv(yk_mutex) => {
-                // PIV ECDSA: card expects pre-hashed digest
                 let digest = Sha256::digest(&msg);
                 let mut yk = yk_mutex.lock().unwrap();
                 let sig_der = yubikey::piv::sign_data(
@@ -808,15 +807,14 @@ impl RequestSigner {
                     yubikey::piv::AlgorithmId::EccP256,
                     yubikey::piv::SlotId::Authentication,
                 )
-                .expect("YubiKey PIV signing failed");
-                // Convert DER-encoded ECDSA signature to raw r||s for verify_p256
+                .map_err(|e| EngError::Internal(format!("YubiKey PIV signing failed: {e}")))?;
                 let sig = p256::ecdsa::Signature::from_der(&sig_der)
-                    .expect("YubiKey returned invalid ECDSA DER signature");
+                    .map_err(|e| EngError::Internal(format!("invalid ECDSA DER from YubiKey: {e}")))?;
                 hex::encode(sig.to_bytes())
             }
         };
 
-        SignedRequest {
+        Ok(SignedRequest {
             sig_hex,
             algo: self.algo,
             identity_hash: self.identity_hash.clone(),
@@ -826,7 +824,7 @@ impl RequestSigner {
             host_label: self.host_label.clone(),
             agent_label: self.agent_label.clone(),
             model_label: self.model_label.clone(),
-        }
+        })
     }
 
     pub fn generate_keypair() -> ([u8; 32], String) {

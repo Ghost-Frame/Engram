@@ -516,8 +516,12 @@ impl Client {
                 Some((p, q)) => (p, q),
                 None => (path, ""),
             };
-            let signed = signer.sign_request(method, url_path, query, body);
-            return signed.apply_headers(req);
+            match signer.sign_request(method, url_path, query, body) {
+                Ok(signed) => return signed.apply_headers(req),
+                Err(e) => {
+                    eprintln!("warning: PIV signing failed, falling back to API key: {e}");
+                }
+            }
         }
         if let Some(key) = &self.api_key {
             return req.bearer_auth(key);
@@ -1107,7 +1111,13 @@ async fn handle_identity_init(
         }
     }
 
-    let sig_hex = signer.sign_enrollment_proof();
+    let sig_hex = match signer.sign_enrollment_proof() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error signing enrollment proof: {}", e);
+            std::process::exit(1);
+        }
+    };
     let body = json!({
         "tier": signer.tier(),
         "algo": signer.algo().as_str(),
