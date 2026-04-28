@@ -23,6 +23,8 @@ pub mod growth;
 pub mod gui;
 pub mod handoffs;
 pub mod health;
+pub mod identities;
+pub mod identity_keys;
 pub mod inbox;
 pub mod ingestion;
 pub mod intelligence;

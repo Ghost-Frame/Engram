@@ -35,6 +35,7 @@ tower-http = { version = "0.6", features = ["cors", "trace", "timeout", "set-hea
 reqwest = { version = "0.12", features = ["json", "gzip", "brotli"] }
 clap = { version = "4", features = ["derive", "env"] }
 toml = "0.8"
+ed25519-dalek = { version = "2", features = ["std"] }
 hmac = "0.12"
 sha2 = "0.10"
 subtle = "2.5"
