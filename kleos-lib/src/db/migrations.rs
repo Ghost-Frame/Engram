@@ -444,6 +444,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_supervisor_injections),
         transactional: true,
     },
+    Migration {
+        version: 50,
+        description: "gate_requests_session_id",
+        up: run_migration_gate_requests_session_id,
+        down: Some(down_migration_gate_requests_session_id),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3266,6 +3273,27 @@ fn down_migration_supervisor_injections(conn: &rusqlite::Connection) -> Result<(
         "DROP INDEX IF EXISTS idx_supervisor_injections_created;
          DROP INDEX IF EXISTS idx_supervisor_injections_pending;
          DROP TABLE IF EXISTS supervisor_injections;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+fn run_migration_gate_requests_session_id(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE gate_requests ADD COLUMN session_id TEXT;
+         CREATE INDEX IF NOT EXISTS idx_gate_requests_session_open
+            ON gate_requests(user_id, session_id, status)
+            WHERE output IS NULL;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 50 complete: gate_requests.session_id added");
+    Ok(())
+}
+
+fn down_migration_gate_requests_session_id(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_gate_requests_session_open;",
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
