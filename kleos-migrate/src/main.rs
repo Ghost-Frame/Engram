@@ -1,3 +1,4 @@
+mod handoffs;
 mod source;
 mod tables;
 mod target;
@@ -13,9 +14,11 @@ use tracing::info;
 #[command(name = "kleos-migrate")]
 #[command(about = "ETL tool to copy an encrypted SQLCipher monolith into a per-tenant shard")]
 struct Args {
-    /// Absolute path to source monolith .db file
+    /// Absolute path to source monolith .db file. Optional: omit to run a
+    /// handoffs-only migration. At least one of --source or
+    /// --handoffs-source must be set.
     #[arg(long)]
-    source: PathBuf,
+    source: Option<PathBuf>,
 
     /// Name of env var holding SQLCipher raw hex key (default: ENGRAM_DB_KEY).
     /// If the env var is unset or empty, source is opened as plaintext.
@@ -29,6 +32,14 @@ struct Args {
     /// Only copy rows where user_id = FILTER_USER_ID
     #[arg(long)]
     filter_user_id: i64,
+
+    /// Path to a legacy plaintext handoffs.db. When set, after the table
+    /// copy phase the tool runs a handoffs ETL into the target shard's
+    /// v43 handoffs table, filtered by --filter-user-id. Use without
+    /// --source for a handoffs-only run targeting the reserved
+    /// "handoffs" tenant shard.
+    #[arg(long)]
+    handoffs_source: Option<PathBuf>,
 
     /// Path to an existing source LanceDB directory (or the `.lance` table
     /// inside it). When set, vectors are read from this LanceDB and filtered
@@ -55,20 +66,41 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    info!("kleos-migrate starting");
-    info!("Source:         {:?}", args.source);
-    info!("Source key env: {}", args.source_key_env);
-    info!("Target:         {:?}", args.target);
-    info!("Filter user_id: {}", args.filter_user_id);
-    info!("Force:          {}", args.force);
-    info!("Dry run:        {}", args.dry_run);
+    if args.source.is_none() && args.handoffs_source.is_none() {
+        return Err(anyhow!(
+            "at least one of --source or --handoffs-source must be set"
+        ));
+    }
 
-    // Phase 1: open source (always, also in dry-run).
-    info!("Phase 1: Opening source database...");
-    let source = source::open(&args.source, Some(args.source_key_env.as_str()))?;
+    info!("kleos-migrate starting");
+    info!("Source:           {:?}", args.source);
+    info!("Source key env:   {}", args.source_key_env);
+    info!("Handoffs source:  {:?}", args.handoffs_source);
+    info!("Target:           {:?}", args.target);
+    info!("Filter user_id:   {}", args.filter_user_id);
+    info!("Force:            {}", args.force);
+    info!("Dry run:          {}", args.dry_run);
+
+    // Phase 1: open source if provided (also in dry-run).
+    let source = match args.source.as_deref() {
+        Some(path) => {
+            info!("Phase 1: Opening source database...");
+            Some(source::open(path, Some(args.source_key_env.as_str()))?)
+        }
+        None => {
+            info!("Phase 1: --source omitted; skipping monolith table/vector copy");
+            None
+        }
+    };
 
     if args.dry_run {
-        return dry_run_report(&source, args.filter_user_id, args.source_lance.as_deref()).await;
+        return dry_run_report(
+            source.as_ref(),
+            args.filter_user_id,
+            args.source_lance.as_deref(),
+            args.handoffs_source.as_deref(),
+        )
+        .await;
     }
 
     // Safety check: refuse to overwrite a non-empty target unless --force.
@@ -86,22 +118,39 @@ async fn main() -> Result<()> {
     info!("Phase 2: Opening target tenant shard...");
     let target = target::open(&args.target).await?;
 
-    // Phase 3: copy relational tables.
-    info!("Phase 3: Copying relational tables...");
-    let counts = tables::copy_all(&source, &target, args.filter_user_id).await?;
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let vector_stats = if let Some(source) = source.as_ref() {
+        // Phase 3: copy relational tables.
+        info!("Phase 3: Copying relational tables...");
+        counts = tables::copy_all(source, &target, args.filter_user_id).await?;
 
-    // Phase 4: extract and write vectors.
-    info!("Phase 4: Extracting vectors to LanceDB...");
-    let lance = vectors::open_lance(&args.target).await?;
-    let vector_stats = if let Some(src_lance) = args.source_lance.as_deref() {
-        vectors::extract_from_source_lance(src_lance, &lance, args.filter_user_id).await?
+        // Phase 4: extract and write vectors.
+        info!("Phase 4: Extracting vectors to LanceDB...");
+        let lance = vectors::open_lance(&args.target).await?;
+        let stats = if let Some(src_lance) = args.source_lance.as_deref() {
+            vectors::extract_from_source_lance(src_lance, &lance, args.filter_user_id).await?
+        } else {
+            vectors::extract_and_insert(source, &lance, args.filter_user_id).await?
+        };
+
+        // Phase 5: validate monolith-derived rows.
+        info!("Phase 5: Validating...");
+        validate::run(source, &target, args.filter_user_id, stats).await?;
+        Some(stats)
     } else {
-        vectors::extract_and_insert(&source, &lance, args.filter_user_id).await?
+        None
     };
 
-    // Phase 5: validate.
-    info!("Phase 5: Validating...");
-    validate::run(&source, &target, args.filter_user_id, vector_stats).await?;
+    // Phase 3.5: handoffs ETL (always after table copy when both sides set;
+    // standalone when --source is omitted).
+    let handoff_count = if let Some(handoffs_source) = args.handoffs_source.as_deref() {
+        info!("Phase 3.5: Copying handoffs from legacy DB...");
+        let n = handoffs::copy(handoffs_source, &target, args.filter_user_id)?;
+        counts.insert("handoffs".to_string(), n);
+        Some(n)
+    } else {
+        None
+    };
 
     // Print per-table summary.
     println!("\n=== Migration summary ===");
@@ -116,88 +165,115 @@ async fn main() -> Result<()> {
     println!("{}", "-".repeat(52));
     println!("{:<40} {:>10}", "TOTAL", total);
 
+    if let Some(stats) = vector_stats {
+        println!(
+            "Vectors: {} eligible, {} inserted",
+            stats.source_eligible, stats.inserted
+        );
+    }
+    if let Some(n) = handoff_count {
+        println!(
+            "Handoffs: {} rows copied (user_id={})",
+            n, args.filter_user_id
+        );
+    }
+
     info!("kleos-migrate complete");
     Ok(())
 }
 
-/// Read-only pre-flight: report per-table source-filtered row counts and
-/// total embedding rows without touching the target directory or LanceDB.
-/// The target arg is accepted but ignored in dry-run mode.
+/// Read-only pre-flight: report source-filtered row counts (monolith and/or
+/// handoffs) without touching the target directory or LanceDB.
 async fn dry_run_report(
-    source: &source::SourceDb,
+    source: Option<&source::SourceDb>,
     filter_user_id: i64,
     source_lance: Option<&std::path::Path>,
+    handoffs_source: Option<&std::path::Path>,
 ) -> Result<()> {
     info!("DRY RUN: reporting source-side counts only; target untouched");
 
-    let tables = source::get_tables(source)?;
-    println!("\n=== Dry run: source-filtered counts ===");
-    println!("{:<40} {:>10}", "Table", "Rows (filtered)");
-    println!("{}", "-".repeat(52));
-    let mut total = 0i64;
-    let mut rows: Vec<(String, i64)> = Vec::new();
-    for table in &tables {
-        let cols = source::get_columns(source, table)?;
+    if let Some(source) = source {
+        let tables = source::get_tables(source)?;
+        println!("\n=== Dry run: monolith source-filtered counts ===");
+        println!("{:<40} {:>10}", "Table", "Rows (filtered)");
+        println!("{}", "-".repeat(52));
+        let mut total = 0i64;
+        let mut rows: Vec<(String, i64)> = Vec::new();
+        for table in &tables {
+            let cols = source::get_columns(source, table)?;
+            let has_user_id = cols.iter().any(|c| c == "user_id");
+            let count: i64 = if has_user_id {
+                source.conn.query_row(
+                    &format!("SELECT COUNT(*) FROM \"{}\" WHERE user_id = ?1", table),
+                    rusqlite::params![filter_user_id],
+                    |r| r.get(0),
+                )?
+            } else {
+                source
+                    .conn
+                    .query_row(&format!("SELECT COUNT(*) FROM \"{}\"", table), [], |r| {
+                        r.get(0)
+                    })?
+            };
+            rows.push((table.clone(), count));
+            total += count;
+        }
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        for (table, count) in &rows {
+            println!("{:<40} {:>10}", table, count);
+        }
+        println!("{}", "-".repeat(52));
+        println!("{:<40} {:>10}", "TOTAL (non-vector rows)", total);
+
+        // Embedding preview: count eligible source rows with a vector blob.
+        let cols = source::get_columns(source, "memories")?;
         let has_user_id = cols.iter().any(|c| c == "user_id");
-        let count: i64 = if has_user_id {
-            source.conn.query_row(
-                &format!("SELECT COUNT(*) FROM \"{}\" WHERE user_id = ?1", table),
-                rusqlite::params![filter_user_id],
-                |r| r.get(0),
-            )?
+        let has_vec = cols.iter().any(|c| c == "embedding_vec_1024");
+        if has_vec {
+            let vec_count: i64 = if has_user_id {
+                source.conn.query_row(
+                    "SELECT COUNT(*) FROM memories \
+                     WHERE embedding_vec_1024 IS NOT NULL AND user_id = ?1",
+                    rusqlite::params![filter_user_id],
+                    |r| r.get(0),
+                )?
+            } else {
+                source.conn.query_row(
+                    "SELECT COUNT(*) FROM memories WHERE embedding_vec_1024 IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )?
+            };
+            println!("{:<40} {:>10}", "Embeddings (eligible)", vec_count);
         } else {
-            source
-                .conn
-                .query_row(&format!("SELECT COUNT(*) FROM \"{}\"", table), [], |r| {
-                    r.get(0)
-                })?
-        };
-        rows.push((table.clone(), count));
-        total += count;
-    }
-    rows.sort_by(|a, b| a.0.cmp(&b.0));
-    for (table, count) in &rows {
-        println!("{:<40} {:>10}", table, count);
-    }
-    println!("{}", "-".repeat(52));
-    println!("{:<40} {:>10}", "TOTAL (non-vector rows)", total);
+            println!("{:<40} {:>10}", "Embeddings (eligible, SQL)", "n/a");
+        }
 
-    // Embedding preview: count eligible source rows with a vector blob.
-    let cols = source::get_columns(source, "memories")?;
-    let has_user_id = cols.iter().any(|c| c == "user_id");
-    let has_vec = cols.iter().any(|c| c == "embedding_vec_1024");
-    if has_vec {
-        let vec_count: i64 = if has_user_id {
-            source.conn.query_row(
-                "SELECT COUNT(*) FROM memories \
-                 WHERE embedding_vec_1024 IS NOT NULL AND user_id = ?1",
-                rusqlite::params![filter_user_id],
-                |r| r.get(0),
-            )?
-        } else {
-            source.conn.query_row(
-                "SELECT COUNT(*) FROM memories WHERE embedding_vec_1024 IS NOT NULL",
-                [],
-                |r| r.get(0),
-            )?
-        };
-        println!("{:<40} {:>10}", "Embeddings (eligible)", vec_count);
-    } else {
-        println!("{:<40} {:>10}", "Embeddings (eligible, SQL)", "n/a");
+        // If a source LanceDB was given, count filtered rows there too.
+        if let Some(src_lance) = source_lance {
+            match vectors::dry_run_source_lance_count(src_lance, filter_user_id).await {
+                Ok(count) => {
+                    println!("{:<40} {:>10}", "Embeddings (source LanceDB)", count);
+                }
+                Err(e) => {
+                    println!(
+                        "{:<40} {:>10}",
+                        format!("Embeddings (source LanceDB): ERROR {}", e),
+                        ""
+                    );
+                }
+            }
+        }
     }
 
-    // If a source LanceDB was given, count filtered rows there too.
-    if let Some(src_lance) = source_lance {
-        match vectors::dry_run_source_lance_count(src_lance, filter_user_id).await {
+    if let Some(handoffs_source) = handoffs_source {
+        match handoffs::dry_run_count(handoffs_source, filter_user_id) {
             Ok(count) => {
-                println!("{:<40} {:>10}", "Embeddings (source LanceDB)", count);
+                println!("\n=== Dry run: handoffs source-filtered count ===");
+                println!("{:<40} {:>10}", "Handoffs (filtered)", count);
             }
             Err(e) => {
-                println!(
-                    "{:<40} {:>10}",
-                    format!("Embeddings (source LanceDB): ERROR {}", e),
-                    ""
-                );
+                println!("\n=== Dry run: handoffs source ERROR ===\n{}", e);
             }
         }
     }

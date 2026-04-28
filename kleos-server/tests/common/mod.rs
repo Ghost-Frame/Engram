@@ -69,7 +69,7 @@ pub async fn test_app() -> (Router, AppState) {
         dreamer_stats: kleos_server::dreamer::new_stats_handle(),
         last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         tenant_registry: None,
-        handoffs_db: None,
+        handoffs_gc_sem: Arc::new(tokio::sync::Semaphore::new(8)),
         shutdown_token: CancellationToken::new(),
         background_tasks: Arc::new(Mutex::new(JoinSet::new())),
         fact_extract_sem: Arc::new(tokio::sync::Semaphore::new(64)),
