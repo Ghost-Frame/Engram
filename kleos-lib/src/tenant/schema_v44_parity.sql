@@ -43,11 +43,13 @@ CREATE TABLE IF NOT EXISTS gate_requests (
     status TEXT NOT NULL DEFAULT 'pending',
     reason TEXT,
     output TEXT,
+    session_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_gate_requests_user ON gate_requests(user_id);
 CREATE INDEX IF NOT EXISTS idx_gate_requests_status ON gate_requests(status);
+CREATE INDEX IF NOT EXISTS idx_gate_requests_session_open ON gate_requests(user_id, session_id, status) WHERE output IS NULL;
 
 -- Personality signals -- memory/profile handler passes ResolvedDb to personality
 CREATE TABLE IF NOT EXISTS personality_signals (

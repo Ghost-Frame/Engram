@@ -15,6 +15,14 @@ pub(super) struct CompleteBody {
     pub known_secrets: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct CompleteLatestBody {
+    pub session_id: String,
+    pub output: String,
+    #[serde(default)]
+    pub known_secrets: Vec<String>,
+}
+
 #[derive(Deserialize)]
 pub(super) struct GuardBody {
     pub action: String,

@@ -4,6 +4,7 @@ use hook::{run_hook, HookCommands};
 use clap::{Parser, Subcommand};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "kleos-cli")]
@@ -480,11 +481,11 @@ enum HandoffCommands {
     },
 }
 
-struct Client {
+pub(crate) struct Client {
     http: reqwest::Client,
     base_url: String,
     api_key: Option<String>,
-    signer: Option<kleos_lib::auth_piv::RequestSigner>,
+    pub(crate) signer: Option<kleos_lib::auth_piv::RequestSigner>,
 }
 
 impl Client {
@@ -501,7 +502,7 @@ impl Client {
         }
     }
 
-    fn apply_auth(
+    pub(crate) fn apply_auth(
         &self,
         req: reqwest::RequestBuilder,
         method: &str,
@@ -529,7 +530,7 @@ impl Client {
         req
     }
 
-    fn capture_session(&self, resp: &reqwest::Response) {
+    pub(crate) fn capture_session(&self, resp: &reqwest::Response) {
         if let Some(signer) = &self.signer {
             if let Some(token) = resp.headers().get("x-kleos-session-issued") {
                 if let Ok(t) = token.to_str() {
@@ -627,6 +628,54 @@ impl Client {
                 .unwrap_or_else(|| body_excerpt(&bytes));
             Err(format!("HTTP {}: {}", status, msg))
         }
+    }
+
+    pub(crate) async fn get_with_timeout(&self, path: &str, timeout: Duration) -> Result<Value, String> {
+        let url = format!("{}{}", self.base_url, path);
+        let http = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_default();
+        let req = http.get(&url);
+        let req = self.apply_auth(req, "GET", path, b"");
+        let resp = req.send().await.map_err(|e| e.to_string())?;
+        self.capture_session(&resp);
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if status.is_success() || status.as_u16() == 404 {
+            Ok(serde_json::from_str(&text).unwrap_or(json!({})))
+        } else {
+            Err(format!("HTTP {}: {}", status, text))
+        }
+    }
+
+    pub(crate) async fn post_with_timeout(&self, path: &str, body: Value, timeout: Duration) -> Result<Value, String> {
+        let url = format!("{}{}", self.base_url, path);
+        let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+        let http = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_default();
+        let req = http.post(&url)
+            .header("Content-Type", "application/json")
+            .body(body_bytes.clone());
+        let req = self.apply_auth(req, "POST", path, &body_bytes);
+        let resp = req.send().await.map_err(|e| e.to_string())?;
+        self.capture_session(&resp);
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if status.is_success() {
+            Ok(serde_json::from_str(&text).unwrap_or(json!({"ok": true})))
+        } else {
+            Err(format!("HTTP {}: {}", status, text))
+        }
+    }
+
+    pub(crate) fn agent_label(&self) -> String {
+        self.signer
+            .as_ref()
+            .map(|s| s.agent_label().to_string())
+            .unwrap_or_else(|| "claude-code".to_string())
     }
 }
 
@@ -986,7 +1035,7 @@ async fn main() {
         }
 
         Commands::Hook(hook_cmd) => {
-            run_hook(hook_cmd, &cli.server, api_key.as_deref()).await;
+            run_hook(hook_cmd, &client).await;
         }
 
         Commands::Identity(id_cmd) => match id_cmd {

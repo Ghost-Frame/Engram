@@ -7,19 +7,20 @@ use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::gate::{
     check_command_with_context, check_ssh_dns_rebind, cleanup_expired_approvals, complete_gate,
-    mark_gate_timed_out, parse_ssh_target, read_gate_decision, respond_to_gate, store_gate_request,
-    GateCheckRequest, GateCheckResult, PendingApproval, APPROVAL_TIMEOUT_SECS,
-    TOOLS_REQUIRING_APPROVAL,
+    complete_latest_gate, mark_gate_timed_out, parse_ssh_target, read_gate_decision,
+    respond_to_gate, store_gate_request, GateCheckRequest, GateCheckResult, PendingApproval,
+    APPROVAL_TIMEOUT_SECS, TOOLS_REQUIRING_APPROVAL,
 };
 
 mod types;
-use types::{CompleteBody, GuardBody, RespondBody};
+use types::{CompleteBody, CompleteLatestBody, GuardBody, RespondBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/gate/check", post(check_handler))
         .route("/gate/respond", post(respond_handler))
         .route("/gate/complete", post(complete_handler))
+        .route("/gate/complete-latest", post(complete_latest_handler))
         // Alias for parity with original kleos
         .route("/guard", post(guard_handler))
 }
@@ -85,6 +86,7 @@ async fn check_handler(
         Some(&resolved_command),
         &resolved_patterns,
         &state.config,
+        body.session_id.as_deref(),
     )
     .await?;
 
@@ -103,6 +105,7 @@ async fn check_handler(
                 body.context.as_deref(),
                 "blocked",
                 Some(&reason),
+                body.session_id.as_deref(),
             )
             .await?;
             let denied = GateCheckResult {
@@ -114,6 +117,18 @@ async fn check_handler(
                 enrichment: None,
             };
             return Ok((StatusCode::CREATED, Json(json!(denied))));
+        }
+    }
+
+    // Agent-tool model preference enrichment
+    if result.allowed && body.tool_name.as_deref() == Some("Agent") {
+        if let Some(directive) = agent_model_enrichment(&db).await {
+            let mut e = result.enrichment.unwrap_or_default();
+            if !e.is_empty() {
+                e.push_str("\n\n");
+            }
+            e.push_str(&directive);
+            result.enrichment = Some(e);
         }
     }
 
@@ -132,6 +147,7 @@ async fn check_handler(
                     body.context.as_deref(),
                     "blocked",
                     Some(&block_reason),
+                    body.session_id.as_deref(),
                 )
                 .await?;
                 result = GateCheckResult {
@@ -149,7 +165,7 @@ async fn check_handler(
 
     // If the command was allowed (not blocked, not pending secrets), and the tool
     // requires human approval, pause here and wait for a decision via /gate/respond.
-    if result.allowed && !result.requires_approval {
+    if result.allowed && !result.requires_approval && !body.skip_approval {
         let tool_name = body.tool_name.as_deref().unwrap_or("");
         if TOOLS_REQUIRING_APPROVAL.contains(&tool_name) {
             let gate_id = result.gate_id;
@@ -510,6 +526,61 @@ async fn brain_grounded_check(state: &AppState, _user_id: i64, command: &str) ->
         ));
     }
     None
+}
+
+async fn complete_latest_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Json(body): Json<CompleteLatestBody>,
+) -> Result<Json<Value>, AppError> {
+    match complete_latest_gate(
+        &db,
+        auth.user_id,
+        &body.session_id,
+        &body.output,
+        &body.known_secrets,
+    )
+    .await?
+    {
+        Some((gate_id, count)) => Ok(Json(json!({
+            "ok": true,
+            "completed": true,
+            "gate_id": gate_id,
+            "kleos_stores": count,
+        }))),
+        None => Ok(Json(json!({
+            "ok": true,
+            "completed": false,
+            "reason": "no open gate for session",
+        }))),
+    }
+}
+
+async fn agent_model_enrichment(db: &kleos_lib::db::Database) -> Option<String> {
+    let rules: Vec<String> = db
+        .read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT content FROM memories
+                 WHERE is_static = 1 AND is_forgotten = 0 AND importance >= 8
+                 AND (content LIKE '%agent.model.preference%'
+                      OR content LIKE '%force-agent-models%'
+                      OR content LIKE '%delegate to opencode%'
+                      OR content LIKE '%MODEL DELEGATION%')
+                 ORDER BY importance DESC LIMIT 3",
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?);
+            }
+            Ok(out)
+        })
+        .await
+        .ok()?;
+    if rules.is_empty() {
+        return None;
+    }
+    Some(format!("AGENT MODEL PREFERENCE:\n{}", rules.join("\n---\n")))
 }
 
 fn truncate(s: &str, max: usize) -> String {

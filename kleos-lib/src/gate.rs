@@ -51,6 +51,14 @@ pub struct GateCheckRequest {
     /// Optional tool name -- used for read-only fast path.
     #[serde(default)]
     pub tool_name: Option<String>,
+    /// Optional Claude Code session identifier -- used to correlate gate
+    /// requests with complete-latest calls.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Skip the human-approval long-poll. Set to true when the caller
+    /// already handles its own permission layer (e.g. Claude Code hooks).
+    #[serde(default)]
+    pub skip_approval: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,7 +80,7 @@ pub async fn check_command(
     req: &GateCheckRequest,
     user_id: i64,
 ) -> Result<GateCheckResult> {
-    check_command_with_context(db, req, user_id, None, &[], &Config::default()).await
+    check_command_with_context(db, req, user_id, None, &[], &Config::default(), req.session_id.as_deref()).await
 }
 
 /// Check a command against blocked patterns using a resolved copy while storing
@@ -85,6 +93,7 @@ pub async fn check_command_with_context(
     resolved_command: Option<&str>,
     blocked_patterns: &[String],
     config: &Config,
+    session_id: Option<&str>,
 ) -> Result<GateCheckResult> {
     // Fast path: read-only tools are always allowed.
     if let Some(ref tool) = req.tool_name {
@@ -97,6 +106,7 @@ pub async fn check_command_with_context(
                 req.context.as_deref(),
                 "allowed",
                 None,
+                session_id,
             )
             .await?;
             return Ok(GateCheckResult {
@@ -125,6 +135,7 @@ pub async fn check_command_with_context(
             req.context.as_deref(),
             "blocked",
             Some(&reason),
+            session_id,
         )
         .await?;
         return Ok(GateCheckResult {
@@ -148,6 +159,7 @@ pub async fn check_command_with_context(
                 req.context.as_deref(),
                 "blocked",
                 Some(&block_reason),
+                session_id,
             )
             .await?;
             return Ok(GateCheckResult {
@@ -190,6 +202,7 @@ pub async fn check_command_with_context(
         req.context.as_deref(),
         status,
         reason,
+        session_id,
     )
     .await?;
 
@@ -379,6 +392,68 @@ pub async fn complete_gate(
     .await
 }
 
+/// Close the most recent open gate for the caller's user_id+session_id.
+/// Returns Some((gate_id, kleos_stores_count)) or None if no open gate.
+pub async fn complete_latest_gate(
+    db: &Database,
+    user_id: i64,
+    session_id: &str,
+    output: &str,
+    known_secrets: &[String],
+) -> Result<Option<(i64, i64)>> {
+    let sid = session_id.to_string();
+    let uid = user_id;
+
+    // Step 1: find the most recent open gate for this session
+    let row: Option<(i64, String, String)> = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT id, agent, created_at FROM gate_requests
+                 WHERE user_id = ?1 AND session_id = ?2 AND output IS NULL
+                 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![uid, sid],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?;
+
+    let (gate_id, agent, opened_at) = match row {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+
+    // Step 2: count memories stored by the agent since the gate opened.
+    // Note: migration #25 dropped per-row user_id from memories, so
+    // tenant scoping is implicit via the ResolvedDb shard.
+    let agent_filter = agent.clone();
+    let opened_filter = opened_at.clone();
+    let stored_count: i64 = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories
+                 WHERE source = ?1 AND created_at >= ?2",
+                rusqlite::params![agent_filter, opened_filter],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await?;
+
+    if stored_count == 0 {
+        return Err(EngError::InvalidInput(format!(
+            "gate {} cannot be completed: agent '{}' has not stored any memories \
+             since the gate was opened at {}. Store the outcome first.",
+            gate_id, agent, opened_at
+        )));
+    }
+
+    // Step 3: complete the gate
+    complete_gate(db, gate_id, output, known_secrets, user_id).await?;
+    Ok(Some((gate_id, stored_count)))
+}
+
 // -- Internal helpers --
 
 pub async fn store_gate_request(
@@ -389,18 +464,20 @@ pub async fn store_gate_request(
     context: Option<&str>,
     status: &str,
     reason: Option<&str>,
+    session_id: Option<&str>,
 ) -> Result<i64> {
     let agent = agent.to_string();
     let command = command.to_string();
     let context = context.map(|s| s.to_string());
     let status = status.to_string();
     let reason = reason.map(|s| s.to_string());
+    let session_id = session_id.map(|s| s.to_string());
 
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO gate_requests (user_id, agent, command, context, status, reason)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![user_id, agent, command, context, status, reason],
+            "INSERT INTO gate_requests (user_id, agent, command, context, status, reason, session_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![user_id, agent, command, context, status, reason, session_id],
         )
         .map_err(rusqlite_to_eng_error)?;
 
@@ -1239,6 +1316,8 @@ mod tests {
             agent: "test-agent".to_string(),
             context: None,
             tool_name: None,
+            session_id: None,
+            skip_approval: false,
         };
         let result = check_command(&db, &req, 1).await;
         assert!(result.is_ok());
@@ -1256,6 +1335,8 @@ mod tests {
             agent: "test-agent".to_string(),
             context: None,
             tool_name: None,
+            session_id: None,
+            skip_approval: false,
         };
         let result = check_command(&db, &req, 1).await.unwrap();
         assert!(!result.allowed);
@@ -1271,6 +1352,8 @@ mod tests {
             agent: "test-agent".to_string(),
             context: None,
             tool_name: Some("Read".to_string()),
+            session_id: None,
+            skip_approval: false,
         };
         let result = check_command(&db, &req, 1).await.unwrap();
         assert!(result.allowed);
