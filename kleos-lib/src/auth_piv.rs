@@ -697,13 +697,26 @@ impl RequestSigner {
             SigningBackend::Piv(yk_mutex) => {
                 let digest = Sha256::digest(proof_msg.as_bytes());
                 let mut yk = yk_mutex.lock().unwrap();
-                let sig_der = yubikey::piv::sign_data(
+                let result = yubikey::piv::sign_data(
                     &mut yk,
                     &digest,
                     yubikey::piv::AlgorithmId::EccP256,
                     yubikey::piv::SlotId::Authentication,
-                )
-                .map_err(|e| EngError::Internal(format!("YubiKey PIV signing failed: {e}")))?;
+                );
+                let sig_der = match result {
+                    Ok(d) => d,
+                    Err(_) => {
+                        *yk = yubikey::YubiKey::open()
+                            .map_err(|e| EngError::Internal(format!("YubiKey reconnect failed: {e}")))?;
+                        yubikey::piv::sign_data(
+                            &mut yk,
+                            &digest,
+                            yubikey::piv::AlgorithmId::EccP256,
+                            yubikey::piv::SlotId::Authentication,
+                        )
+                        .map_err(|e| EngError::Internal(format!("YubiKey PIV signing failed after reconnect: {e}")))?
+                    }
+                };
                 let sig = p256::ecdsa::Signature::from_der(&sig_der)
                     .map_err(|e| EngError::Internal(format!("invalid ECDSA DER from YubiKey: {e}")))?;
                 Ok(hex::encode(sig.to_bytes()))
@@ -801,13 +814,27 @@ impl RequestSigner {
             SigningBackend::Piv(yk_mutex) => {
                 let digest = Sha256::digest(&msg);
                 let mut yk = yk_mutex.lock().unwrap();
-                let sig_der = yubikey::piv::sign_data(
+                let result = yubikey::piv::sign_data(
                     &mut yk,
                     &digest,
                     yubikey::piv::AlgorithmId::EccP256,
                     yubikey::piv::SlotId::Authentication,
-                )
-                .map_err(|e| EngError::Internal(format!("YubiKey PIV signing failed: {e}")))?;
+                );
+                // Reconnect once on ResetCard / stale PCSC state
+                let sig_der = match result {
+                    Ok(d) => d,
+                    Err(_) => {
+                        *yk = yubikey::YubiKey::open()
+                            .map_err(|e| EngError::Internal(format!("YubiKey reconnect failed: {e}")))?;
+                        yubikey::piv::sign_data(
+                            &mut yk,
+                            &digest,
+                            yubikey::piv::AlgorithmId::EccP256,
+                            yubikey::piv::SlotId::Authentication,
+                        )
+                        .map_err(|e| EngError::Internal(format!("YubiKey PIV signing failed after reconnect: {e}")))?
+                    }
+                };
                 let sig = p256::ecdsa::Signature::from_der(&sig_der)
                     .map_err(|e| EngError::Internal(format!("invalid ECDSA DER from YubiKey: {e}")))?;
                 hex::encode(sig.to_bytes())
