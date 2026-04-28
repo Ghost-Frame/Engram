@@ -268,4 +268,30 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Jobs: durable queue -- ingestion routes enqueue via ResolvedDb
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    claimed_at TEXT,
+    completed_at TEXT,
+    next_retry_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type, status);
+
+-- Scheduler: named leases for singleton background jobs
+CREATE TABLE IF NOT EXISTS scheduler_leases (
+    job_name TEXT PRIMARY KEY,
+    holder_id TEXT NOT NULL,
+    acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    last_run_at TEXT
+);
+
 INSERT OR IGNORE INTO schema_migrations (version) VALUES (44);
