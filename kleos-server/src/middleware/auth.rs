@@ -535,24 +535,8 @@ pub async fn auth_middleware(
         .map(|s| s.to_string());
 
     let mut request = request;
-    match token {
-        None => {
-            if open_access_allowed() {
-                if requires_write_scope(&method) {
-                    return forbid(
-                        "KLEOS_OPEN_ACCESS is read-only; writes require an API key",
-                    );
-                }
-                tracing::warn!(path = %path,
-                    "KLEOS_OPEN_ACCESS bypassing authentication");
-                request.extensions_mut().insert(open_access_context());
-                return next.run(request).await;
-            }
-            unauthorized(
-                "Authentication required. Provide Bearer eg_* token or X-Kleos-Sig header.",
-            )
-        }
-        Some(raw_key) => match validate_key(&state.db, &raw_key).await {
+    if let Some(raw_key) = token {
+        match validate_key(&state.db, &raw_key).await {
             Ok(auth_ctx) => {
                 if signature_required_for_user(auth_ctx.user_id) {
                     tracing::warn!(user_id = auth_ctx.user_id,
@@ -576,15 +560,115 @@ pub async fn auth_middleware(
                 let span = tracing::info_span!("request",
                     user_id = user_id, method = %method, path = %path,
                     tier = "bearer");
-                next.run(request).instrument(span).await
+                return next.run(request).instrument(span).await;
             }
             Err(e) => {
                 tracing::warn!(error = %e, client_ip = %req_client_ip,
-                    path = %path, method = %method, "authentication failed");
-                unauthorized("invalid credentials")
+                    path = %path, method = %method, "bearer auth failed");
             }
-        },
+        }
     }
+
+    // ---------------------------------------------------------------
+    // Path 4: Enrollment proof-of-possession (PIV bootstrap)
+    //
+    // Only for POST /identity-keys/enroll. The request body carries a
+    // self-signature proving the client holds the private key. The
+    // middleware verifies that proof and determines the user:
+    //   - No identity_keys in DB yet: bootstrap -- assign to owner (user_id=1)
+    //   - Keys already exist: reject (must use an enrolled key via Path 2)
+    // ---------------------------------------------------------------
+    if path == "/identity-keys/enroll" && method == Method::POST {
+        let (parts, body) = request.into_parts();
+        let body_bytes = match to_bytes(body, MAX_AUTH_BODY_BUFFER).await {
+            Ok(b) => b,
+            Err(_) => return unauthorized("failed to read enrollment request body"),
+        };
+
+        #[derive(serde::Deserialize)]
+        struct EnrollProof {
+            algo: String,
+            tier: String,
+            pubkey_pem: String,
+            host_label: String,
+            sig_hex: String,
+        }
+
+        let proof: EnrollProof = match serde_json::from_slice(&body_bytes) {
+            Ok(p) => p,
+            Err(_) => return unauthorized("invalid enrollment body"),
+        };
+
+        let algo = match auth_piv::SignatureAlgo::from_header(&proof.algo) {
+            Ok(a) => a,
+            Err(_) => return unauthorized("unsupported algorithm in enrollment"),
+        };
+
+        let proof_msg = format!(
+            "KLEOS-ENROLL:{}:{}:{}:{}",
+            proof.algo, proof.tier, proof.host_label, proof.pubkey_pem,
+        );
+        if let Err(e) = auth_piv::verify_signature(
+            algo,
+            &proof.pubkey_pem,
+            proof_msg.as_bytes(),
+            &proof.sig_hex,
+        ) {
+            tracing::warn!(client_ip = %req_client_ip,
+                "enrollment proof-of-possession failed: {e}");
+            return unauthorized("enrollment proof-of-possession verification failed");
+        }
+
+        let key_count: i64 = match state
+            .db
+            .read(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM identity_keys", [], |row| row.get(0))
+                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            })
+            .await
+        {
+            Ok(c) => c,
+            Err(_) => return unauthorized("internal error checking enrollment state"),
+        };
+
+        if key_count > 0 {
+            tracing::warn!(client_ip = %req_client_ip,
+                "enrollment rejected: keys exist, must authenticate with existing identity");
+            return unauthorized(
+                "identity keys already enrolled; authenticate with an existing \
+                 key (X-Kleos-Sig) to enroll additional keys",
+            );
+        }
+
+        tracing::info!(client_ip = %req_client_ip,
+            "bootstrap enrollment: first identity key, assigning to owner (user_id=1)");
+
+        let auth_ctx = AuthContext {
+            key: synthetic_key_for_identity(1),
+            user_id: 1,
+            identity: None,
+        };
+
+        let mut request = Request::from_parts(parts, Body::from(body_bytes));
+        request.extensions_mut().insert(auth_ctx);
+        let span = tracing::info_span!("request",
+            user_id = 1, method = %method, path = %path, tier = "enrollment-bootstrap");
+        return next.run(request).instrument(span).await;
+    }
+
+    // ---------------------------------------------------------------
+    // No auth method succeeded
+    // ---------------------------------------------------------------
+    if open_access_allowed() {
+        if requires_write_scope(&method) {
+            return forbid("KLEOS_OPEN_ACCESS is read-only; writes require an API key");
+        }
+        tracing::warn!(path = %path, "KLEOS_OPEN_ACCESS bypassing authentication");
+        request.extensions_mut().insert(open_access_context());
+        return next.run(request).await;
+    }
+
+    unauthorized("Authentication required. Provide X-Kleos-Sig header or Bearer token.")
 }
 
 fn decode_pem_der(pem: &str) -> Option<Vec<u8>> {

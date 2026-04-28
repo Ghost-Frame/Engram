@@ -1,4 +1,4 @@
-use axum::extract::{Path, Query};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::error::AppError;
-use crate::extractors::{Auth, ResolvedDb};
+use crate::extractors::Auth;
 use crate::state::AppState;
 use kleos_lib::auth::Scope;
 use kleos_lib::auth_piv;
@@ -25,7 +25,7 @@ pub fn router() -> Router<AppState> {
 
 async fn enroll_handler(
     Auth(auth): Auth,
-    ResolvedDb(db): ResolvedDb,
+    State(state): State<AppState>,
     Json(body): Json<EnrollBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let algo =
@@ -37,8 +37,6 @@ async fn enroll_handler(
         )));
     }
 
-    // Proof of possession: verify self-signature over the request body.
-    // The client signs the JSON-serialized enrollment body (minus sig_hex).
     let proof_msg = format!(
         "KLEOS-ENROLL:{}:{}:{}:{}",
         body.algo, body.tier, body.host_label, body.pubkey_pem
@@ -48,7 +46,6 @@ async fn enroll_handler(
     let pubkey_der = pem_to_der(&body.pubkey_pem)?;
     let fingerprint = hex::encode(Sha256::digest(&pubkey_der));
 
-    // First key for a user is open; subsequent keys require admin scope.
     let user_id = auth.user_id;
     let tier = body.tier.clone();
     let algo_str = algo.as_str().to_string();
@@ -58,22 +55,8 @@ async fn enroll_handler(
     let label = body.label.clone();
     let serial = body.serial.clone();
 
-    let id: i64 = db
+    let id: i64 = state.db
         .write(move |conn| {
-            let existing_count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM identity_keys WHERE user_id = ?1",
-                    params![user_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
-
-            if existing_count > 0 {
-                // Check admin scope only on the AuthContext we captured
-                // For simplicity, we pass this check as a flag
-                // (the actual auth check happens before this closure)
-            }
-
             conn.execute(
                 "INSERT INTO identity_keys (user_id, tier, algo, pubkey_pem, pubkey_fingerprint, host_label, label, serial)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -98,7 +81,7 @@ async fn enroll_handler(
 
 async fn list_handler(
     Auth(auth): Auth,
-    ResolvedDb(db): ResolvedDb,
+    State(state): State<AppState>,
     Query(params): Query<ListParams>,
 ) -> Result<Json<Value>, AppError> {
     if !auth.has_scope(&Scope::Admin) {
@@ -109,7 +92,7 @@ async fn list_handler(
 
     let active_only = params.active_only.unwrap_or(true);
 
-    let keys = db
+    let keys = state.db
         .read(move |conn| {
             let mut stmt = if active_only {
                 conn.prepare(
@@ -153,11 +136,11 @@ async fn list_handler(
 
 async fn list_mine_handler(
     Auth(auth): Auth,
-    ResolvedDb(db): ResolvedDb,
+    State(state): State<AppState>,
 ) -> Result<Json<Value>, AppError> {
     let user_id = auth.user_id;
 
-    let keys = db
+    let keys = state.db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -194,7 +177,7 @@ async fn list_mine_handler(
 
 async fn revoke_handler(
     Auth(auth): Auth,
-    ResolvedDb(db): ResolvedDb,
+    State(state): State<AppState>,
     Path(key_id): Path<i64>,
     Json(body): Json<RevokeBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -202,19 +185,20 @@ async fn revoke_handler(
     let is_admin = auth.has_scope(&Scope::Admin);
     let reason = body.reason;
 
-    let revoked = db
+    let revoked = state.db
         .write(move |conn| {
-            // Non-admin can only revoke their own keys
-            let owner_check = if is_admin { "" } else { "AND user_id = ?2" };
-            let sql = format!(
-                "UPDATE identity_keys SET is_active = 0, revoked_at = datetime('now'), revoke_reason = ?3
-                 WHERE id = ?1 AND is_active = 1 {owner_check}"
-            );
-
             let affected = if is_admin {
-                conn.execute(&sql, params![key_id, reason])
+                conn.execute(
+                    "UPDATE identity_keys SET is_active = 0, revoked_at = datetime('now'), revoke_reason = ?2
+                     WHERE id = ?1 AND is_active = 1",
+                    params![key_id, reason],
+                )
             } else {
-                conn.execute(&sql, params![key_id, user_id, reason])
+                conn.execute(
+                    "UPDATE identity_keys SET is_active = 0, revoked_at = datetime('now'), revoke_reason = ?3
+                     WHERE id = ?1 AND is_active = 1 AND user_id = ?2",
+                    params![key_id, user_id, reason],
+                )
             }
             .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
 

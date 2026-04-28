@@ -14,7 +14,7 @@ name = "kleos-cli"
 path = "src/main.rs"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "0.3.2" }
+kleos-lib = { path = "../kleos-lib", version = "0.3.2", features = ["piv"] }
 clap = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -27,6 +27,7 @@ base64 = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
 percent-encoding = "2"
+hostname = "0.4"
 
 # Windows needs bundled SQLCipher since there's no system sqlite3.lib
 [target.'cfg(windows)'.dependencies]
