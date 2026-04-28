@@ -702,21 +702,18 @@ async fn main() {
             }
         };
 
-    if signer.is_some() && cli.key.is_some() {
-        eprintln!(
-            "warning: --key ignored; identity-key signer takes precedence over bearer auth"
-        );
-    }
-    let api_key = if signer.is_some() {
-        None
-    } else if let Some(k) = cli.key.clone() {
+    // Always resolve the API key. The signer takes precedence for normal
+    // request auth, but enrollment and other bootstrap paths need the key.
+    let api_key = if let Some(k) = cli.key.clone() {
         Some(k)
     } else {
         let slot = kleos_lib::cred::bootstrap::current_agent_slot();
         match kleos_lib::cred::bootstrap::resolve_api_key(&slot).await {
             Ok(k) => Some(k),
             Err(e) => {
-                eprintln!("warning: could not resolve API key: {}", e);
+                if signer.is_none() {
+                    eprintln!("warning: could not resolve API key: {}", e);
+                }
                 None
             }
         }
