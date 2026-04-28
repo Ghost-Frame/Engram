@@ -117,11 +117,23 @@ fn default_hash_version() -> i32 {
 // AuthContext
 // ---------------------------------------------------------------------------
 
-/// Result of validating an API key -- includes resolved user info.
+#[derive(Debug, Clone)]
+pub struct IdentityCtx {
+    pub identity_id: Option<i64>,
+    pub identity_key_id: i64,
+    pub hash: String,
+    pub tier: crate::auth_piv::AuthTier,
+    pub host: String,
+    pub agent: String,
+    pub model: String,
+}
+
+/// Result of validating an API key or signature -- includes resolved user info.
 #[derive(Debug, Clone)]
 pub struct AuthContext {
     pub key: ApiKey,
     pub user_id: i64,
+    pub identity: Option<IdentityCtx>,
 }
 
 impl AuthContext {
@@ -491,6 +503,7 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     Ok(AuthContext {
         key: api_key,
         user_id,
+        identity: None,
     })
 }
 

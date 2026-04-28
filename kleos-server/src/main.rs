@@ -282,6 +282,11 @@ async fn main() {
         brain_absorb_sem,
         audit_log_sem,
         ingest_sem,
+        replay_guard: Arc::new(kleos_lib::auth_piv::ReplayGuard::new()),
+        session_manager: Arc::new(
+            kleos_lib::auth_piv::SessionManager::from_env_or_generate()
+                .expect("failed to initialize session manager"),
+        ),
     };
 
     // R8 R-008: every background task is described by a factory so the
