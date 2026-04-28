@@ -82,19 +82,15 @@ fn migrates_encrypted_monolith_into_tenant_shard() {
         .expect("count memories");
     assert_eq!(memories_count, 3, "only user_id=1 rows should be copied");
 
-    // spaces is a monolith-only system table and is expected to be skipped
-    // (not present in tenant schema). It should not cause a validation
-    // mismatch.
-    let spaces_exists: Option<i64> = target_conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='spaces'",
-            [],
-            |r| r.get(0),
-        )
-        .ok();
-    assert!(
-        spaces_exists.is_none(),
-        "spaces should not be copied to tenant shard"
+    // spaces is now a valid tenant table (v44 parity). The source
+    // spaces table lacks a user_id column so all rows are copied
+    // unfiltered via column intersection (id + name).
+    let spaces_count: i64 = target_conn
+        .query_row("SELECT COUNT(*) FROM spaces", [], |r| r.get(0))
+        .expect("count spaces");
+    assert_eq!(
+        spaces_count, 1,
+        "source spaces row should be copied (no user_id filter)"
     );
 
     // Contents round-trip.
