@@ -415,8 +415,23 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    // Sparkling Fairy Stage 1: identity tables for PIV-Everywhere auth.
     Migration {
         version: 46,
+        description: "identity_keys_and_identities",
+        up: run_migration_identity_tables,
+        down: None,
+        transactional: true,
+    },
+    Migration {
+        version: 47,
+        description: "audit_log_identity_columns",
+        up: run_migration_audit_identity_columns,
+        down: None,
+        transactional: false,
+    },
+    Migration {
+        version: 48,
         description: "drop_api_keys_agent_fk",
         up: run_migration_drop_api_keys_agent_fk,
         down: None,
@@ -3070,7 +3085,7 @@ fn run_migration_drop_api_keys_agent_fk(conn: &rusqlite::Connection) -> Result<(
         .unwrap_or(false);
 
     if !has_fk {
-        info!("api_keys agent FK already absent, migration 46 is a no-op");
+        info!("api_keys agent FK already absent, migration 48 is a no-op");
         return Ok(());
     }
 
@@ -3114,7 +3129,85 @@ fn run_migration_drop_api_keys_agent_fk(conn: &rusqlite::Connection) -> Result<(
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    info!("Migration 46 complete: dropped FK on api_keys.agent_id (agents now live in tenant shards)");
+    info!("Migration 48 complete: dropped FK on api_keys.agent_id (agents now live in tenant shards)");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 46: identity_keys + identities tables
+// ---------------------------------------------------------------------------
+
+fn run_migration_identity_tables(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS identity_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            tier TEXT NOT NULL CHECK (tier IN ('piv', 'soft')),
+            algo TEXT NOT NULL CHECK (algo IN ('ecdsa-p256', 'ed25519')),
+            pubkey_pem TEXT NOT NULL,
+            pubkey_fingerprint TEXT NOT NULL UNIQUE,
+            host_label TEXT NOT NULL,
+            label TEXT,
+            serial TEXT,
+            enrolled_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT,
+            is_active BOOLEAN NOT NULL DEFAULT 1,
+            revoked_at TEXT,
+            revoke_reason TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_identity_keys_user ON identity_keys(user_id);
+        CREATE INDEX IF NOT EXISTS idx_identity_keys_fpr ON identity_keys(pubkey_fingerprint);
+        CREATE INDEX IF NOT EXISTS idx_identity_keys_active ON identity_keys(is_active);
+
+        CREATE TABLE IF NOT EXISTS identities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            identity_key_id INTEGER NOT NULL REFERENCES identity_keys(id) ON DELETE CASCADE,
+            identity_hash TEXT NOT NULL UNIQUE,
+            host_label TEXT NOT NULL,
+            agent_label TEXT NOT NULL,
+            model_label TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            request_count INTEGER NOT NULL DEFAULT 0,
+            is_active BOOLEAN NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_identities_key ON identities(identity_key_id);
+        CREATE INDEX IF NOT EXISTS idx_identities_hash ON identities(identity_hash);
+        CREATE INDEX IF NOT EXISTS idx_identities_labels ON identities(host_label, agent_label, model_label);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 46 complete: identity_keys + identities tables created");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 47: audit_log identity columns
+// ---------------------------------------------------------------------------
+
+fn run_migration_audit_identity_columns(conn: &rusqlite::Connection) -> Result<()> {
+    let has_identity_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('audit_log') WHERE name = 'identity_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    if has_identity_id > 0 {
+        info!("audit_log.identity_id already present, migration 47 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "ALTER TABLE audit_log ADD COLUMN identity_id INTEGER REFERENCES identities(id);
+         ALTER TABLE audit_log ADD COLUMN tier TEXT;
+         CREATE INDEX IF NOT EXISTS idx_audit_identity ON audit_log(identity_id);
+         CREATE INDEX IF NOT EXISTS idx_audit_tier ON audit_log(tier);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 47 complete: identity_id + tier columns added to audit_log");
     Ok(())
 }
 

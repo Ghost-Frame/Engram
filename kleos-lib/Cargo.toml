@@ -71,11 +71,9 @@ toml = { workspace = true }
 metrics = { workspace = true }
 rust_decimal = { workspace = true }
 
-# ECDH bootstrap auth (Stage 3 of ECDH PIV port).
-# p256: ephemeral keypair gen + ECDH-from-pubkey.
-# hkdf: derive bearer-decryption key from shared secret.
-# aes-gcm: decrypt the credd response.
+# Crypto: ECDH bootstrap + Sparkling Fairy PIV-Everywhere auth.
 p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pem"] }
+ed25519-dalek = { workspace = true }
 hkdf = "0.12"
 aes-gcm = "0.10"
 
