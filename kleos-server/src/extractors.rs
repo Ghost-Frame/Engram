@@ -27,14 +27,9 @@ pub async fn resolve_db_for_user(
     if user_id == 1 {
         return Ok(Arc::clone(&state.db));
     }
-    let registry = state
-        .tenant_registry
-        .as_ref()
-        .ok_or_else(|| {
-            EngError::Internal(
-                "tenant sharding disabled; non-system users are unsupported".into(),
-            )
-        })?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        EngError::Internal("tenant sharding disabled; non-system users are unsupported".into())
+    })?;
     let handle = registry
         .get_or_create(&user_id.to_string())
         .await

@@ -232,6 +232,31 @@ enum CredCommands {
         /// Agent name to revoke
         name: String,
     },
+    /// Fetch a secret from credd and exec a child command with the secret
+    /// injected as an environment variable. The secret is set in the
+    /// child's environment block directly and is never written to stdout,
+    /// stderr, or the process command line, so it does not leak into shell
+    /// history, agent context capture, or `ps` output.
+    ///
+    /// Example:
+    ///   kleos-cli cred exec kleos claude-code --env EIDOLON_KEY -- \
+    ///     curl -H "Authorization: Bearer $EIDOLON_KEY" http://...
+    Exec {
+        /// Category (service namespace)
+        category: String,
+        /// Secret name
+        name: String,
+        /// Env var name to set in the child process
+        #[arg(long)]
+        env: String,
+        /// Specific field to extract (defaults to the primary value:
+        /// key/password/client_secret/private_key/content in that order).
+        #[arg(long)]
+        field: Option<String>,
+        /// Command + args to exec. Use `--` to separate from cred flags.
+        #[arg(trailing_var_arg = true, required = true)]
+        cmd: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -724,7 +749,29 @@ async fn main() {
         }
 
         Commands::Cred(cred_cmd) => {
-            let cred_client = Client::new(cli.credd_url.clone(), api_key.clone());
+            // credd's auth middleware only accepts the cred master key,
+            // a DB-backed agent key, or a file-backed bootstrap-agent
+            // token. The Kleos bearer in `api_key` is none of those, so
+            // pull credd auth from CREDD_AGENT_KEY env (set by the shell
+            // rc from ~/.config/cred/credd-agent-key.token) and only
+            // fall back to the Kleos bearer if that is missing.
+            let credd_token = std::env::var("CREDD_AGENT_KEY")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    let path = std::env::var("HOME")
+                        .map(|h| {
+                            std::path::PathBuf::from(h)
+                                .join(".config/cred/credd-agent-key.token")
+                        })
+                        .ok()?;
+                    std::fs::read_to_string(path)
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                })
+                .or_else(|| api_key.clone());
+            let cred_client = Client::new(cli.credd_url.clone(), credd_token);
             handle_cred_command(&cred_client, cred_cmd).await;
         }
 
@@ -1391,6 +1438,104 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
                 Err(e) => eprintln!("Error: {}", e),
             }
         }
+
+        CredCommands::Exec {
+            category,
+            name,
+            env,
+            field,
+            cmd,
+        } => {
+            // Two routes depending on what the caller is asking for:
+            //
+            //   category in {"kleos","kleos"} -> per-agent Kleos
+            //     bearer via /bootstrap/kleos-bearer (the bootstrap-broker
+            //     path; bootstrap-agent token has scope for this).
+            //   otherwise -> centralized credd secret store via
+            //     /secret/{cat}/{name} (requires a DB-backed agent key
+            //     with category permissions).
+            //
+            // The bootstrap path is the one most agents need (injecting
+            // a Kleos API key into a child like curl), so it gets the
+            // easy `kleos-cli cred exec kleos <slot>` form.
+            let secret = if matches!(category.as_str(), "kleos" | "kleos") {
+                // Use the same bootstrap-broker path that resolve_api_key
+                // takes -- this picks up CREDD_SOCKET / CREDD_BIND /
+                // CREDD_AGENT_KEY / PIV pubkeys automatically and works
+                // without needing a Kleos API key already in hand.
+                match kleos_lib::cred::bootstrap::resolve_api_key(name).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Error fetching bootstrap bearer: {}", e);
+                        std::process::exit(2);
+                    }
+                }
+            } else {
+                let secret_value = match client.get(&format!("/secret/{}/{}", category, name)).await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("Error fetching secret: {}", e);
+                        std::process::exit(2);
+                    }
+                };
+                let value_obj = match secret_value.get("value") {
+                    Some(v) => v,
+                    None => {
+                        eprintln!("Error: response missing `value` field");
+                        std::process::exit(2);
+                    }
+                };
+                if let Some(f) = field.as_deref() {
+                    match value_obj.get(f).and_then(|v| v.as_str()) {
+                        Some(s) => s.to_string(),
+                        None => {
+                            eprintln!("Error: field `{}` not found or not a string", f);
+                            std::process::exit(2);
+                        }
+                    }
+                } else {
+                    let primary = value_obj
+                        .get("key")
+                        .or_else(|| value_obj.get("password"))
+                        .or_else(|| value_obj.get("client_secret"))
+                        .or_else(|| value_obj.get("private_key"))
+                        .or_else(|| value_obj.get("content"))
+                        .and_then(|v| v.as_str());
+                    match primary {
+                        Some(s) => s.to_string(),
+                        None => {
+                            eprintln!(
+                                "Error: no primary value (key/password/client_secret/private_key/content) in secret"
+                            );
+                            std::process::exit(2);
+                        }
+                    }
+                }
+            };
+
+            // Build child Command. The secret is passed via env() which
+            // hands it directly to the kernel exec call -- it never
+            // appears on the command line, in stdout, or in shell history.
+            let (program, args) = match cmd.split_first() {
+                Some((p, a)) => (p.clone(), a.to_vec()),
+                None => {
+                    eprintln!("Error: no command supplied after `--`");
+                    std::process::exit(2);
+                }
+            };
+            let status = std::process::Command::new(&program)
+                .args(&args)
+                .env(env, &secret)
+                .status();
+            match status {
+                Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+                Err(e) => {
+                    eprintln!("Error: failed to exec `{}`: {}", program, e);
+                    std::process::exit(2);
+                }
+            }
+        }
     }
 }
 
@@ -1419,8 +1564,7 @@ fn detect_project(dir: Option<&str>) -> Option<String> {
         }
     }
 
-    dir.file_name()
-        .map(|n| n.to_string_lossy().to_string())
+    dir.file_name().map(|n| n.to_string_lossy().to_string())
 }
 
 fn detect_branch(dir: Option<&str>) -> Option<String> {
@@ -1493,10 +1637,12 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             } else {
                 use std::io::Read;
                 let mut buf = String::new();
-                std::io::stdin().read_to_string(&mut buf).unwrap_or_else(|e| {
-                    eprintln!("Error reading stdin: {}", e);
-                    std::process::exit(1);
-                });
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error reading stdin: {}", e);
+                        std::process::exit(1);
+                    });
                 if buf.is_empty() {
                     eprintln!("Error: provide --content or pipe content via stdin");
                     std::process::exit(1);
@@ -1659,13 +1805,24 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             let recent_files = std::process::Command::new("find")
                 .args([
                     &*work_dir,
-                    "-maxdepth", "4",
-                    "-mmin", "-30",
-                    "-not", "-path", "*/.git/*",
-                    "-not", "-path", "*/node_modules/*",
-                    "-not", "-path", "*/__pycache__/*",
-                    "-not", "-path", "*/target/*",
-                    "-type", "f",
+                    "-maxdepth",
+                    "4",
+                    "-mmin",
+                    "-30",
+                    "-not",
+                    "-path",
+                    "*/.git/*",
+                    "-not",
+                    "-path",
+                    "*/node_modules/*",
+                    "-not",
+                    "-path",
+                    "*/__pycache__/*",
+                    "-not",
+                    "-path",
+                    "*/target/*",
+                    "-type",
+                    "f",
                     "-print",
                 ])
                 .output()

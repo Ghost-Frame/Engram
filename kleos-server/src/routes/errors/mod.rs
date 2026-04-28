@@ -31,8 +31,7 @@ async fn get_errors(
     Auth(auth): Auth,
     Query(query): Query<ListErrorsRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let events =
-        errors_log::list_errors(&state.db, &auth.user_id.to_string(), query).await?;
+    let events = errors_log::list_errors(&state.db, &auth.user_id.to_string(), query).await?;
     Ok(Json(
         serde_json::to_value(events).map_err(kleos_lib::EngError::Serialization)?,
     ))

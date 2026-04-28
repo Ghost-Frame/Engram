@@ -693,8 +693,7 @@ mod tests {
 
     #[test]
     fn list_backups_filters_by_prefix_and_sorts() {
-        let dir =
-            std::env::temp_dir().join(format!("kleos-backups-list-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("kleos-backups-list-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         // Create files out of order; list_backups should sort them.
         for name in [

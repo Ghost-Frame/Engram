@@ -64,10 +64,9 @@ fn cache_get(slot: &str) -> Option<String> {
 
 fn cache_set(slot: String, key: String, expires_at: SystemTime) {
     let mut guard = KEY_CACHE.lock().unwrap();
-    guard.get_or_insert_with(HashMap::new).insert(
-        slot,
-        CacheEntry { key, expires_at },
-    );
+    guard
+        .get_or_insert_with(HashMap::new)
+        .insert(slot, CacheEntry { key, expires_at });
 }
 
 /// Returns the agent slot string to use for this process.
@@ -149,7 +148,10 @@ pub async fn resolve_api_key(agent_slot: &str) -> Result<String, CredError> {
                 // PIV is configured but bootstrap failed (sig, ECDH,
                 // decrypt, etc). Surface the error rather than silently
                 // falling back: a failure here is meaningful.
-                return Err(CredError::BadResponse(format!("ECDH bootstrap failed: {}", e)));
+                return Err(CredError::BadResponse(format!(
+                    "ECDH bootstrap failed: {}",
+                    e
+                )));
             }
         }
     }
@@ -471,7 +473,10 @@ mod tests {
         let t = parse_expires_at(&body).expect("should parse");
         let in_30s = SystemTime::now() + Duration::from_secs(30);
         let in_2m = SystemTime::now() + Duration::from_secs(120);
-        assert!(t > in_30s && t < in_2m, "ttl 60s puts expiry inside 30s..2m");
+        assert!(
+            t > in_30s && t < in_2m,
+            "ttl 60s puts expiry inside 30s..2m"
+        );
     }
 }
 
@@ -588,9 +593,8 @@ mod ecdh {
         let bearer = String::from_utf8(plaintext)
             .map_err(|e| EcdhClientError::Decrypt(format!("utf8: {}", e)))?;
 
-        let expires_at = parse_expires_at(&response).unwrap_or_else(|| {
-            SystemTime::now() + Duration::from_secs(3600)
-        });
+        let expires_at = parse_expires_at(&response)
+            .unwrap_or_else(|| SystemTime::now() + Duration::from_secs(3600));
 
         Ok((bearer, expires_at))
     }

@@ -96,8 +96,8 @@ pub async fn auth_middleware(
     // Capture before any consuming use of `request` so auth-fail logs can
     // identify the offending host. Uses the same trusted-proxy-aware
     // resolver as the rate limit and audit middlewares.
-    let req_client_ip = client_ip(&request, &state.config.trusted_proxies)
-        .unwrap_or_else(|| "unknown".to_string());
+    let req_client_ip =
+        client_ip(&request, &state.config.trusted_proxies).unwrap_or_else(|| "unknown".to_string());
 
     // Skip auth for public paths
     if OPEN_PATHS

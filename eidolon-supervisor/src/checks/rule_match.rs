@@ -1,5 +1,5 @@
+use super::{CheckType, Rule, Violation};
 use regex::Regex;
-use super::{Rule, CheckType, Violation};
 
 pub fn check(entry: &serde_json::Value, rules: &[Rule]) -> Vec<Violation> {
     let mut violations = Vec::new();

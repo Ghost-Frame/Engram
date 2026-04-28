@@ -242,9 +242,7 @@ async fn main() {
         }
         None => {
             if fail_open_allowed() {
-                eprintln!(
-                    "kleos-sh: no API key available, failing OPEN per KLEOS_SH_FAIL_OPEN"
-                );
+                eprintln!("kleos-sh: no API key available, failing OPEN per KLEOS_SH_FAIL_OPEN");
                 alert_gate_degraded(
                     &client,
                     &server,

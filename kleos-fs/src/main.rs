@@ -7,9 +7,8 @@ use std::sync::LazyLock;
 mod observe;
 
 const CODE_EXTENSIONS: &[&str] = &[
-    "rs", "py", "js", "ts", "tsx", "jsx", "go", "c", "cpp", "h", "hpp",
-    "java", "rb", "swift", "kt", "scala", "zig", "hs", "ml", "ex", "exs",
-    "lua", "pl", "pm", "sh", "bash", "zsh", "fish",
+    "rs", "py", "js", "ts", "tsx", "jsx", "go", "c", "cpp", "h", "hpp", "java", "rb", "swift",
+    "kt", "scala", "zig", "hs", "ml", "ex", "exs", "lua", "pl", "pm", "sh", "bash", "zsh", "fish",
 ];
 
 const RAW_READ_THRESHOLD: u64 = 8192;
@@ -65,7 +64,11 @@ fn canonicalize_within_roots(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> 
 fn main() -> ExitCode {
     let binary_name = env::args()
         .next()
-        .and_then(|a| Path::new(&a).file_stem().map(|s| s.to_string_lossy().to_string()))
+        .and_then(|a| {
+            Path::new(&a)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+        })
         .unwrap_or_else(|| "kr".to_string());
 
     let args: Vec<String> = env::args().skip(1).collect();
@@ -75,7 +78,10 @@ fn main() -> ExitCode {
         "kw" => cmd_kw(&args),
         "ke" => cmd_ke(&args),
         _ => {
-            eprintln!("Unknown binary name: {}. Expected kr, kw, or ke.", binary_name);
+            eprintln!(
+                "Unknown binary name: {}. Expected kr, kw, or ke.",
+                binary_name
+            );
             ExitCode::from(2)
         }
     }
@@ -103,10 +109,7 @@ fn cmd_kr(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     let is_code = CODE_EXTENSIONS.contains(&ext);
     let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -195,9 +198,7 @@ fn cmd_kw(args: &[String]) -> ExitCode {
 
     let roots = allowed_roots();
     if roots.is_empty() {
-        eprintln!(
-            "kw: KLEOS_FS_ALLOWED_ROOTS unset and CWD unresolvable; refusing to write"
-        );
+        eprintln!("kw: KLEOS_FS_ALLOWED_ROOTS unset and CWD unresolvable; refusing to write");
         return ExitCode::from(2);
     }
 
@@ -296,19 +297,14 @@ fn cmd_ke(args: &[String]) -> ExitCode {
     // ledger key embeds the path, so we still pin the path under a root.
     let roots = allowed_roots();
     if roots.is_empty() {
-        eprintln!(
-            "ke: KLEOS_FS_ALLOWED_ROOTS unset and CWD unresolvable; refusing"
-        );
+        eprintln!("ke: KLEOS_FS_ALLOWED_ROOTS unset and CWD unresolvable; refusing");
         return ExitCode::from(2);
     }
     let path_buf = PathBuf::from(&raw_path);
     let path = match canonicalize_within_roots(&path_buf, &roots) {
         Some(p) => p.to_string_lossy().into_owned(),
         None => {
-            eprintln!(
-                "ke: {} is outside KLEOS_FS_ALLOWED_ROOTS",
-                raw_path
-            );
+            eprintln!("ke: {} is outside KLEOS_FS_ALLOWED_ROOTS", raw_path);
             return ExitCode::from(2);
         }
     };
@@ -458,8 +454,8 @@ fn agent_forge_read(path: &Path, symbol: Option<&str>) -> Result<String, String>
         ));
     }
 
-    let output_raw = std::fs::read_to_string(output_file.path())
-        .map_err(|e| format!("read output: {}", e))?;
+    let output_raw =
+        std::fs::read_to_string(output_file.path()).map_err(|e| format!("read output: {}", e))?;
     let output: serde_json::Value =
         serde_json::from_str(&output_raw).map_err(|e| format!("parse output: {}", e))?;
 
@@ -516,7 +512,11 @@ fn which_in_path(name: &str) -> Option<PathBuf> {
     env::var("PATH").ok().and_then(|paths| {
         paths.split(':').find_map(|dir| {
             let candidate = PathBuf::from(dir).join(name);
-            if candidate.exists() { Some(candidate) } else { None }
+            if candidate.exists() {
+                Some(candidate)
+            } else {
+                None
+            }
         })
     })
 }

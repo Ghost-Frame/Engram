@@ -37,9 +37,7 @@ pub async fn build_cooccurrence_edges(
             let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
 
             let rows = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-                })
+                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
                 .map_err(rusqlite_to_eng_error)?;
 
             for row in rows {
@@ -180,9 +178,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
             let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
 
             let rows = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-                })
+                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
                 .map_err(rusqlite_to_eng_error)?;
 
             for row in rows {

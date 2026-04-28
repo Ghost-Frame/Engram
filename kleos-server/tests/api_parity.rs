@@ -274,12 +274,8 @@ async fn body_bytes(res: axum::response::Response) -> Vec<u8> {
 
 async fn pagerank_count_for_user(db: &Database, _user_id: i64) -> i64 {
     db.read(move |conn| {
-        conn.query_row(
-            "SELECT COUNT(*) FROM memory_pagerank",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
     })
     .await
     .expect("query pagerank count")

@@ -108,9 +108,8 @@ async fn ensure_file(path: &Path, url: &str, offline_only: bool) -> Result<()> {
     let mut total: u64 = 0;
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| {
-            EngError::Internal(format!("stream read failed from {}: {}", url, e))
-        })?;
+        let bytes = chunk
+            .map_err(|e| EngError::Internal(format!("stream read failed from {}: {}", url, e)))?;
         total = total.saturating_add(bytes.len() as u64);
         if total > max_bytes {
             // Best-effort cleanup of the partial tmp file.

@@ -1669,10 +1669,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(
-            count, 1,
-            "broca_actions.user_id missing after v42 readd"
-        );
+        assert_eq!(count, 1, "broca_actions.user_id missing after v42 readd");
 
         let idx: i64 = conn
             .query_row(

@@ -208,13 +208,16 @@ async fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(8usize),
     ));
-    let handoffs_db = match kleos_lib::handoffs::HandoffsDb::open(&config.data_dir, Arc::clone(&handoffs_gc_sem)).await {
-        Ok(db) => Some(Arc::new(db)),
-        Err(e) => {
-            tracing::warn!("handoffs subsystem disabled: {e}");
-            None
-        }
-    };
+    let handoffs_db =
+        match kleos_lib::handoffs::HandoffsDb::open(&config.data_dir, Arc::clone(&handoffs_gc_sem))
+            .await
+        {
+            Ok(db) => Some(Arc::new(db)),
+            Err(e) => {
+                tracing::warn!("handoffs subsystem disabled: {e}");
+                None
+            }
+        };
 
     // H-005: per-pattern semaphores cap concurrent fire-and-forget background tasks.
     // Each defaults to 64 permits; set KLEOS_BG_SEM_<NAME>=N to override.

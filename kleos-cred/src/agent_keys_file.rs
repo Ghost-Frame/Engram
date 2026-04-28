@@ -101,10 +101,11 @@ impl FileAgentKeyStore {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("failed to create {}", dir.display()))?;
 
-        let tmp = self.path.with_extension(format!("tmp.{}", std::process::id()));
+        let tmp = self
+            .path
+            .with_extension(format!("tmp.{}", std::process::id()));
         let json = serde_json::to_string_pretty(&self)?;
-        std::fs::write(&tmp, json)
-            .with_context(|| format!("failed to write {}", tmp.display()))?;
+        std::fs::write(&tmp, json).with_context(|| format!("failed to write {}", tmp.display()))?;
 
         #[cfg(unix)]
         {
@@ -114,7 +115,11 @@ impl FileAgentKeyStore {
         }
 
         std::fs::rename(&tmp, &self.path).with_context(|| {
-            format!("failed to rename {} -> {}", tmp.display(), self.path.display())
+            format!(
+                "failed to rename {} -> {}",
+                tmp.display(),
+                self.path.display()
+            )
         })?;
 
         debug!(
@@ -178,11 +183,7 @@ impl FileAgentKeyStore {
                 continue;
             }
             if token.len() == entry.key.len()
-                && token
-                    .as_bytes()
-                    .ct_eq(entry.key.as_bytes())
-                    .unwrap_u8()
-                    == 1
+                && token.as_bytes().ct_eq(entry.key.as_bytes()).unwrap_u8() == 1
             {
                 return Some(id.clone());
             }
@@ -290,7 +291,10 @@ fn validate_scope(scope: &str) -> Result<()> {
     }
     let valid_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.';
     if !parts[0].bytes().all(valid_byte) {
-        anyhow::bail!("invalid scope '{}': service name has invalid characters", scope);
+        anyhow::bail!(
+            "invalid scope '{}': service name has invalid characters",
+            scope
+        );
     }
     if parts[1] != "*" && !parts[1].bytes().all(valid_byte) {
         anyhow::bail!("invalid scope '{}': key name has invalid characters", scope);

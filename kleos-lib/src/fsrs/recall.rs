@@ -11,10 +11,7 @@ pub struct RecallDueEntry {
     pub recall_due_score: f64,
 }
 
-pub fn rerank_by_retrievability(
-    results: &[SearchResult],
-    w20: Option<f32>,
-) -> Vec<RecallDueEntry> {
+pub fn rerank_by_retrievability(results: &[SearchResult], w20: Option<f32>) -> Vec<RecallDueEntry> {
     let w20 = w20.unwrap_or(FSRS6_WEIGHTS[20]);
     let now_ms = chrono::Utc::now().timestamp_millis();
 

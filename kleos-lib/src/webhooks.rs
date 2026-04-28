@@ -77,6 +77,9 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 /// Returns true if the IPv4 address falls in a range that should never be
 /// reachable from an outbound webhook or proxy request.
 pub fn is_ipv4_denied(ip: &Ipv4Addr) -> bool {
+    if loopback_test_override(IpAddr::V4(*ip)) {
+        return false;
+    }
     let octets = ip.octets();
     ip.is_loopback()
         || ip.is_private()
@@ -118,9 +121,41 @@ pub fn is_ipv6_denied(ip: &Ipv6Addr) -> bool {
 
 /// Returns true if the socket address points to a denied IP range.
 pub fn is_addr_denied(addr: &SocketAddr) -> bool {
+    if loopback_test_override(addr.ip()) {
+        return false;
+    }
     match addr.ip() {
         IpAddr::V4(v4) => is_ipv4_denied(&v4),
         IpAddr::V6(v6) => is_ipv6_denied(&v6),
+    }
+}
+
+/// Test-only escape hatch: when this crate is compiled under `cfg(test)`,
+/// loopback URLs are accepted by the SSRF validators if the
+/// `KLEOS_WEBHOOK_ALLOW_LOOPBACK_FOR_TEST` env var is set to `1`. This lets
+/// the unit tests below stand up a real `127.0.0.1` receiver to prove
+/// single-target delivery semantics. The override applies only to loopback
+/// addresses; CGNAT, link-local, ULA, and metadata ranges remain blocked.
+///
+/// In non-test builds this function is a constant `false` so the override
+/// has zero attack surface in production.
+#[inline]
+fn loopback_test_override(ip: IpAddr) -> bool {
+    #[cfg(test)]
+    {
+        let is_loopback = match ip {
+            IpAddr::V4(v) => v.is_loopback(),
+            IpAddr::V6(v) => v.is_loopback() || v.to_ipv4_mapped().is_some_and(|m| m.is_loopback()),
+        };
+        is_loopback
+            && std::env::var("KLEOS_WEBHOOK_ALLOW_LOOPBACK_FOR_TEST")
+                .map(|v| v == "1")
+                .unwrap_or(false)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = ip;
+        false
     }
 }
 
@@ -323,6 +358,55 @@ pub async fn list_webhooks(db: &Database, user_id: i64) -> Result<Vec<Webhook>> 
     .await
 }
 
+/// Internal-only: fetch a single webhook by id with its secret loaded. The
+/// caller has already passed the tenant-scoping check via `ResolvedDb`, so the
+/// row's mere existence implies the user owns it. Returns `None` when no
+/// webhook with that id exists in this tenant.
+///
+/// Used by [`emit_test_to_webhook`] to ensure single-target delivery without
+/// re-using the fan-out [`list_webhooks_with_secrets`] path.
+async fn get_webhook_with_secret(
+    db: &Database,
+    hook_id: i64,
+    user_id: i64,
+) -> Result<Option<Webhook>> {
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, url, events, secret, is_active, failure_count, last_triggered_at, created_at \
+                 FROM webhooks WHERE id = ?1",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![hook_id])
+            .map_err(rusqlite_to_eng_error)?;
+        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let events_str: String = row
+                .get::<_, String>(2)
+                .unwrap_or_else(|_| "[\"*\"]".to_string());
+            let events: Vec<String> =
+                serde_json::from_str(&events_str).unwrap_or_else(|_| vec!["*".to_string()]);
+            let secret: Option<String> = row.get(3).unwrap_or(None);
+            let has_secret = secret.as_deref().is_some_and(|s| !s.is_empty());
+            Ok(Some(Webhook {
+                id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                user_id,
+                url: row.get(1).map_err(rusqlite_to_eng_error)?,
+                events,
+                secret,
+                has_secret,
+                is_active: row.get::<_, i64>(4).unwrap_or(1) != 0,
+                failure_count: row.get(5).unwrap_or(0),
+                last_triggered_at: row.get(6).unwrap_or(None),
+                created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    })
+    .await
+}
+
 /// Internal-only: returns webhooks WITH secrets loaded, for delivery paths that
 /// need to sign outgoing payloads. Never expose the returned `secret` field to
 /// API callers.
@@ -391,6 +475,25 @@ pub struct WebhookDeadLetter {
     pub last_error: Option<String>,
     pub last_status_code: Option<i64>,
     pub created_at: String,
+}
+
+/// Receipt returned by [`emit_test_to_webhook`]. Captures the actual delivery
+/// outcome for one specific webhook so the `/webhooks/test/{id}` route can
+/// surface a real status to the caller instead of "dispatched to N hooks".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookTestReceipt {
+    pub hook_id: i64,
+    pub event: String,
+    pub url: String,
+    /// True if the request was sent and the receiver responded with 2xx.
+    pub dispatched: bool,
+    /// HTTP status code if the receiver responded at all. None on connect /
+    /// DNS failure / timeout / SSRF rejection.
+    pub status_code: Option<u16>,
+    /// Wall-clock time spent in the single delivery attempt, in milliseconds.
+    pub latency_ms: u64,
+    /// Human-readable error if the attempt did not succeed.
+    pub error: Option<String>,
 }
 
 /// Increment `failure_count` for a webhook and auto-disable if threshold
@@ -664,6 +767,133 @@ pub async fn emit_webhook_event(
     }
 }
 
+/// Single-shot delivery to one specific webhook for the `/webhooks/test/{id}`
+/// route. Unlike [`emit_webhook_event`], which fans out to every active
+/// webhook for the user, this targets exactly the row identified by
+/// `hook_id` and returns a [`WebhookTestReceipt`] describing the actual HTTP
+/// outcome.
+///
+/// Behavior:
+/// - 404-equivalent: returns `Err(EngError::NotFound)` if the webhook id does
+///   not exist in this tenant database.
+/// - 409-equivalent: returns `Err(EngError::Conflict)` if the webhook is
+///   disabled (failure_count threshold tripped or operator-disabled). Test
+///   should not silently re-enable a disabled hook.
+/// - SSRF: applies the same DNS-resolved deny check as production delivery.
+///   On rejection the receipt is returned with `dispatched=false` and an
+///   explanatory error string; this is `Ok(...)` because the test endpoint
+///   wants a structured outcome.
+/// - One attempt only. No exponential-backoff retry, no dead-letter row --
+///   tests should not pollute the dead-letter tray.
+/// - On 2xx success: failure_count is reset and last_triggered_at is bumped
+///   (same as a real delivery).
+/// - On non-2xx or transport error: failure_count is incremented (same as a
+///   real delivery), but no dead-letter row is written.
+#[tracing::instrument(skip(db, payload), fields(event = %event, hook_id))]
+pub async fn emit_test_to_webhook(
+    db: &Database,
+    hook_id: i64,
+    event: &str,
+    payload: &serde_json::Value,
+    user_id: i64,
+) -> Result<WebhookTestReceipt> {
+    let hook = match get_webhook_with_secret(db, hook_id, user_id).await? {
+        Some(h) => h,
+        None => {
+            return Err(EngError::NotFound(format!("webhook {} not found", hook_id)));
+        }
+    };
+
+    if !hook.is_active {
+        return Err(EngError::Conflict(format!(
+            "webhook {} is disabled (failure_count={}); enable it before testing",
+            hook.id, hook.failure_count
+        )));
+    }
+
+    // SSRF: re-validate the URL via DNS at delivery time. The synchronous
+    // create-time check could have been bypassed by DNS rebinding.
+    let started = std::time::Instant::now();
+    if let Err(err) = resolve_and_validate_url(&hook.url).await {
+        return Ok(WebhookTestReceipt {
+            hook_id: hook.id,
+            event: event.to_string(),
+            url: hook.url,
+            dispatched: false,
+            status_code: None,
+            latency_ms: started.elapsed().as_millis() as u64,
+            error: Some(format!("ssrf check rejected url: {}", err)),
+        });
+    }
+
+    let body = serde_json::json!({
+        "event": event,
+        "timestamp": Utc::now().to_rfc3339(),
+        "data": payload,
+    });
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+
+    let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+    if let Some(secret) = hook.secret.as_deref() {
+        if !secret.is_empty() {
+            let signature = sign_body(secret, body_str.as_bytes());
+            headers.push(("X-Kleos-Signature".to_string(), signature));
+        }
+    }
+
+    let mut req = WEBHOOK_CLIENT
+        .post(&hook.url)
+        .body(body_str)
+        .timeout(std::time::Duration::from_secs(10));
+    for (k, v) in &headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+
+    let outcome = req.send().await;
+    let latency_ms = started.elapsed().as_millis() as u64;
+
+    match outcome {
+        Ok(resp) if resp.status().is_success() => {
+            let status = resp.status().as_u16();
+            let _ = record_delivery_success(db, hook.id).await;
+            Ok(WebhookTestReceipt {
+                hook_id: hook.id,
+                event: event.to_string(),
+                url: hook.url,
+                dispatched: true,
+                status_code: Some(status),
+                latency_ms,
+                error: None,
+            })
+        }
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let _ = record_delivery_failure(db, hook.id).await;
+            Ok(WebhookTestReceipt {
+                hook_id: hook.id,
+                event: event.to_string(),
+                url: hook.url,
+                dispatched: false,
+                status_code: Some(status),
+                latency_ms,
+                error: Some(format!("receiver returned HTTP {}", status)),
+            })
+        }
+        Err(e) => {
+            let _ = record_delivery_failure(db, hook.id).await;
+            Ok(WebhookTestReceipt {
+                hook_id: hook.id,
+                event: event.to_string(),
+                url: hook.url,
+                dispatched: false,
+                status_code: None,
+                latency_ms,
+                error: Some(e.to_string()),
+            })
+        }
+    }
+}
+
 // -- Sync operations --
 
 #[tracing::instrument(skip(db, since))]
@@ -721,6 +951,7 @@ mod tests {
     // -- is_ipv4_denied unit tests --
 
     #[test]
+    #[serial_test::serial(loopback_env)]
     fn ipv4_loopback_denied() {
         assert!(is_ipv4_denied(&Ipv4Addr::LOCALHOST));
         assert!(is_ipv4_denied(&"127.0.0.2".parse().unwrap()));
@@ -760,6 +991,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(loopback_env)]
     fn ipv6_mapped_loopback_denied() {
         assert!(is_ipv6_denied(&"::ffff:127.0.0.1".parse().unwrap()));
     }
@@ -800,6 +1032,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(loopback_env)]
     fn rejects_literal_private_ip() {
         assert!(validate_webhook_url("http://127.0.0.1/hook").is_err());
         assert!(validate_webhook_url("http://10.0.0.1/hook").is_err());
@@ -992,5 +1225,195 @@ mod tests {
         assert_eq!(MAX_DELIVERY_ATTEMPTS, 3);
         const _: () = assert!(RETRY_BASE_MS >= 100);
         const _: () = assert!(WEBHOOK_FAILURE_THRESHOLD >= 5);
+    }
+
+    // -- emit_test_to_webhook (single-target delivery) tests --
+
+    /// Spawn a tiny axum receiver per webhook on a free 127.0.0.1 port. Each
+    /// receiver records hits into a shared `Vec<i64>` so the test can later
+    /// assert which hooks were actually contacted. Returns the bound URL.
+    async fn spawn_receiver(
+        label: i64,
+        hits: std::sync::Arc<tokio::sync::Mutex<Vec<i64>>>,
+    ) -> String {
+        use axum::{routing::post, Router};
+        let app = Router::new().route(
+            "/hook",
+            post(move || {
+                let hits = std::sync::Arc::clone(&hits);
+                async move {
+                    hits.lock().await.push(label);
+                    axum::http::StatusCode::OK
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{}/hook", addr)
+    }
+
+    async fn seed_user_and_db() -> Database {
+        let db = Database::connect_memory().await.unwrap();
+        db.write(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, username) VALUES (1, 'test')",
+                [],
+            )
+            .unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+        db
+    }
+
+    #[tokio::test]
+    async fn emit_test_returns_not_found_for_unknown_hook() {
+        let db = seed_user_and_db().await;
+        let result = emit_test_to_webhook(&db, 9999, "test", &serde_json::json!({"x": 1}), 1).await;
+        assert!(matches!(result, Err(EngError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn emit_test_returns_conflict_for_disabled_hook() {
+        let db = seed_user_and_db().await;
+        // Use a public-looking URL so create_webhook accepts it.
+        create_webhook(&db, "https://hooks.example.com/h", &["*".into()], None, 1)
+            .await
+            .unwrap();
+        // Disable the hook directly.
+        db.write(|conn| {
+            conn.execute("UPDATE webhooks SET is_active = 0 WHERE id = 1", [])
+                .unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let result = emit_test_to_webhook(&db, 1, "test", &serde_json::json!({"x": 1}), 1).await;
+        assert!(
+            matches!(result, Err(EngError::Conflict(_))),
+            "expected Conflict, got {:?}",
+            result
+        );
+    }
+
+    /// THE FANOUT REGRESSION TEST: create three hooks, each with its own
+    /// receiver. Call emit_test_to_webhook against hook H2 only. Assert the
+    /// receiver for H2 received exactly one POST and the receivers for H1 and
+    /// H3 received zero. Pre-fix this would have hit all three.
+    #[tokio::test]
+    #[serial_test::serial(loopback_env)]
+    async fn emit_test_targets_single_hook_no_fanout() {
+        std::env::set_var("KLEOS_WEBHOOK_ALLOW_LOOPBACK_FOR_TEST", "1");
+
+        let db = seed_user_and_db().await;
+        let hits: std::sync::Arc<tokio::sync::Mutex<Vec<i64>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
+        // Three hooks, each with its own listener bound to 127.0.0.1.
+        let url1 = spawn_receiver(1, std::sync::Arc::clone(&hits)).await;
+        let url2 = spawn_receiver(2, std::sync::Arc::clone(&hits)).await;
+        let url3 = spawn_receiver(3, std::sync::Arc::clone(&hits)).await;
+
+        let (id1, _) = create_webhook(&db, &url1, &["*".into()], None, 1)
+            .await
+            .unwrap();
+        let (id2, _) = create_webhook(&db, &url2, &["*".into()], None, 1)
+            .await
+            .unwrap();
+        let (id3, _) = create_webhook(&db, &url3, &["*".into()], None, 1)
+            .await
+            .unwrap();
+
+        let receipt =
+            emit_test_to_webhook(&db, id2, "test", &serde_json::json!({"webhook_id": id2}), 1)
+                .await
+                .expect("emit_test_to_webhook should not error on a healthy hook");
+
+        // Receipt content is correct.
+        assert_eq!(receipt.hook_id, id2);
+        assert_eq!(receipt.url, url2);
+        assert!(
+            receipt.dispatched,
+            "receipt should report dispatched=true; got {:?}",
+            receipt
+        );
+        assert_eq!(receipt.status_code, Some(200));
+        assert!(
+            receipt.error.is_none(),
+            "no error expected: {:?}",
+            receipt.error
+        );
+
+        // Settle: the test receiver pushes after returning 200, so give it a
+        // moment in case ordering has not yet flushed.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let observed = hits.lock().await.clone();
+        assert_eq!(
+            observed,
+            vec![id2],
+            "fanout regression: only hook id={} should have been contacted, got {:?}",
+            id2,
+            observed
+        );
+
+        // The other hooks must remain healthy (no failure_count bumps and
+        // still active). This rules out the pre-fix behaviour where H1 and
+        // H3 would have been contacted and failed for whatever reason.
+        let after = list_webhooks(&db, 1).await.unwrap();
+        for hook in &after {
+            if hook.id == id2 {
+                assert_eq!(hook.failure_count, 0);
+                assert!(hook.last_triggered_at.is_some());
+            } else {
+                assert_eq!(
+                    hook.failure_count, 0,
+                    "hook id={} (sibling of tested hook) should not have been touched",
+                    hook.id
+                );
+                assert!(
+                    hook.last_triggered_at.is_none(),
+                    "hook id={} should not have last_triggered_at set",
+                    hook.id
+                );
+            }
+        }
+        let _ = (id1, id3);
+
+        std::env::remove_var("KLEOS_WEBHOOK_ALLOW_LOOPBACK_FOR_TEST");
+    }
+
+    #[tokio::test]
+    async fn emit_test_records_failure_on_dns_failure() {
+        let db = seed_user_and_db().await;
+        // .invalid is reserved by RFC 2606 for guaranteed-NXDOMAIN.
+        create_webhook(
+            &db,
+            "https://nonexistent-test-target-12345.invalid/hook",
+            &["*".into()],
+            None,
+            1,
+        )
+        .await
+        .unwrap();
+        let receipt = emit_test_to_webhook(&db, 1, "test", &serde_json::json!({"x": 1}), 1)
+            .await
+            .expect("emit_test_to_webhook returns a receipt even on DNS failure");
+        assert!(!receipt.dispatched);
+        assert!(receipt.status_code.is_none());
+        assert!(receipt.error.is_some());
+        assert!(
+            receipt
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("ssrf check rejected url"),
+            "expected ssrf rejection error, got {:?}",
+            receipt.error
+        );
     }
 }
