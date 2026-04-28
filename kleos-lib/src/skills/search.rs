@@ -50,7 +50,7 @@ pub async fn search_skills(
             .prepare(&sql)
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let skills = stmt
-            .query_map(params![sanitized, limit as i64], |row| row_to_skill(row))
+            .query_map(params![sanitized, limit as i64], row_to_skill)
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;

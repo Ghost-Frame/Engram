@@ -20,6 +20,8 @@ use crate::{CredError, Result};
 pub enum PivSlot {
     /// 9A AUTHENTICATION -- client identity proof (ECDSA sign).
     Authentication,
+    /// 9C DIGITAL SIGNATURE -- SSH CA signing.
+    Signature,
     /// 9D KEY_MANAGEMENT -- ECDH key agreement (server side).
     KeyManagement,
 }
@@ -29,6 +31,7 @@ impl PivSlot {
     pub fn as_hex(&self) -> &'static str {
         match self {
             PivSlot::Authentication => "9a",
+            PivSlot::Signature => "9c",
             PivSlot::KeyManagement => "9d",
         }
     }
@@ -37,6 +40,7 @@ impl PivSlot {
     pub fn yubikit_name(&self) -> &'static str {
         match self {
             PivSlot::Authentication => "AUTHENTICATION",
+            PivSlot::Signature => "SIGNATURE",
             PivSlot::KeyManagement => "KEY_MANAGEMENT",
         }
     }
@@ -344,9 +348,9 @@ with dev.open_connection(SmartCardConnection) as conn:
 /// DER-encoded signature. Implemented via Python `yubikit`. Only
 /// `Authentication` (9A) is supported.
 pub fn piv_sign(slot: PivSlot, payload: &[u8]) -> Result<Vec<u8>> {
-    if slot != PivSlot::Authentication {
+    if slot != PivSlot::Authentication && slot != PivSlot::Signature {
         return Err(CredError::InvalidInput(format!(
-            "PIV sign only supported on AUTHENTICATION (9A), not {}",
+            "PIV sign only supported on AUTHENTICATION (9A) or SIGNATURE (9C), not {}",
             slot.as_hex()
         )));
     }

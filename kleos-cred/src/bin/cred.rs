@@ -3,7 +3,7 @@
 //! Compatible with private cred's data format when using legacy mode.
 
 use std::io::{self, BufRead, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -148,6 +148,12 @@ enum Commands {
         #[command(subcommand)]
         cmd: PivCmd,
     },
+    /// SSH Certificate Authority backed by YubiKey PIV slot 9C.
+    /// Sign agent public keys into short-lived SSH certificates.
+    SshCa {
+        #[command(subcommand)]
+        cmd: SshCaCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -163,9 +169,52 @@ enum PivCmd {
         #[arg(long, default_value = "never")]
         touch_policy: String,
     },
+    /// Provision SSH CA key in PIV slot 9C (DIGITAL SIGNATURE).
+    /// Generates P-256 keypair, self-signed cert, exports pubkey in
+    /// PEM and SSH formats to ~/.config/cred/.
+    SetupSshCa {
+        /// Touch policy for SSH CA signing operations.
+        #[arg(long, default_value = "never")]
+        touch_policy: String,
+    },
     /// Show which PIV slots have keys provisioned plus SHA-256 pubkey
     /// fingerprints.
     Status,
+}
+
+#[derive(Subcommand)]
+enum SshCaCmd {
+    /// Sign an agent's public key into a short-lived SSH certificate.
+    /// Uses ssh-keygen -s with PKCS#11 backed by YubiKey slot 9C.
+    Sign {
+        /// Key identity string (typically agent name).
+        #[arg(short = 'I', long)]
+        identity: String,
+        /// Valid principal(s), comma-separated.
+        #[arg(short = 'n', long, default_value = "zan")]
+        principal: String,
+        /// Validity period (e.g. +1h, +30m, +5m).
+        #[arg(short = 'V', long, default_value = "+1h")]
+        ttl: String,
+        /// Path to the agent's public key to sign.
+        pubkey: PathBuf,
+    },
+    /// Generate an ephemeral ed25519 keypair and sign it into a
+    /// short-lived SSH certificate. Prints key + cert paths.
+    Mint {
+        /// Agent name (used as key ID and filename).
+        #[arg(long)]
+        agent: String,
+        /// Valid principal(s), comma-separated.
+        #[arg(short = 'n', long, default_value = "zan")]
+        principal: String,
+        /// Validity period (e.g. +1h, +30m, +5m).
+        #[arg(long, default_value = "+1h")]
+        ttl: String,
+        /// Output directory (default: ~/.ssh/agent/).
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -266,6 +315,7 @@ async fn main() -> Result<()> {
         Commands::Init => cmd_init().await,
         Commands::Recover { from } => cmd_recover(&from).await,
         Commands::Piv { cmd } => cmd_piv(cmd).await,
+        Commands::SshCa { cmd } => cmd_ssh_ca(cmd).await,
         // All other commands need YubiKey
         cmd => {
             eprintln!("unlocking with YubiKey...");
@@ -346,7 +396,10 @@ async fn main() -> Result<()> {
                         cmd_bootstrap_unwrap(&key, from, raw).await
                     }
                 },
-                Commands::Init | Commands::Recover { .. } | Commands::Piv { .. } => unreachable!(),
+                Commands::Init
+                | Commands::Recover { .. }
+                | Commands::Piv { .. }
+                | Commands::SshCa { .. } => unreachable!(),
             }
         }
     }
@@ -2019,8 +2072,69 @@ async fn cmd_piv(cmd: PivCmd) -> Result<()> {
             eprintln!("PIV setup complete.");
             Ok(())
         }
+        PivCmd::SetupSshCa { touch_policy } => {
+            let touch = match touch_policy.as_str() {
+                "never" => TouchPolicy::Never,
+                "cached" => TouchPolicy::Cached,
+                "always" => TouchPolicy::Always,
+                other => anyhow::bail!(
+                    "invalid touch policy `{}` (use: never, cached, always)",
+                    other
+                ),
+            };
+
+            let slot = PivSlot::Signature;
+            let subject = "CN=ssh-ca,O=Kleos";
+            let out = pubkey_path(slot);
+
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create config dir at {}", parent.display()))?;
+            }
+
+            if slot_has_key(slot) {
+                eprintln!(
+                    "slot {} already has a key -- re-exporting pubkey + (re)generating cert",
+                    slot.as_hex()
+                );
+                let pem = export_pubkey_pem(slot)?;
+                std::fs::write(&out, &pem)
+                    .with_context(|| format!("write pubkey to {}", out.display()))?;
+            } else {
+                eprintln!(
+                    "generating P-256 SSH CA keypair on YubiKey slot {} (touch-policy={})...",
+                    slot.as_hex(),
+                    touch.as_str()
+                );
+                generate_p256_key(slot, PinPolicy::Never, touch, &out)?;
+            }
+            eprintln!("  generating self-signed cert for slot {}...", slot.as_hex());
+            generate_self_signed_cert(slot, subject, &out)?;
+            eprintln!("  pubkey PEM -> {}", out.display());
+
+            let ssh_ca_pub = out
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("ssh-ca.pub");
+            let convert = std::process::Command::new("ssh-keygen")
+                .args(["-i", "-m", "PKCS8", "-f"])
+                .arg(&out)
+                .output()
+                .context("ssh-keygen not found")?;
+            if !convert.status.success() {
+                anyhow::bail!(
+                    "ssh-keygen -i failed: {}",
+                    String::from_utf8_lossy(&convert.stderr)
+                );
+            }
+            std::fs::write(&ssh_ca_pub, &convert.stdout)
+                .with_context(|| format!("write SSH CA pubkey to {}", ssh_ca_pub.display()))?;
+            eprintln!("  ssh pubkey -> {}", ssh_ca_pub.display());
+            eprintln!("SSH CA setup complete. Deploy {} to servers as TrustedUserCAKeys.", ssh_ca_pub.display());
+            Ok(())
+        }
         PivCmd::Status => {
-            for slot in [PivSlot::KeyManagement, PivSlot::Authentication] {
+            for slot in [PivSlot::KeyManagement, PivSlot::Authentication, PivSlot::Signature] {
                 let path = pubkey_path(slot);
                 if !slot_has_key(slot) {
                     println!("slot {}: empty", slot.as_hex());
@@ -2051,6 +2165,146 @@ async fn cmd_piv(cmd: PivCmd) -> Result<()> {
                     }
                 );
             }
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// cred ssh-ca subcommand
+// ---------------------------------------------------------------------------
+
+const PKCS11_LIB_PATHS: &[&str] = &[
+    "/usr/lib/libykcs11.so",
+    "/usr/lib/x86_64-linux-gnu/libykcs11.so",
+    "/usr/local/lib/libykcs11.so",
+    "/opt/homebrew/lib/libykcs11.so",
+];
+
+fn find_pkcs11_lib() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("PKCS11_PROVIDER") {
+        let path = PathBuf::from(&p);
+        anyhow::ensure!(path.exists(), "PKCS11_PROVIDER={} does not exist", p);
+        return Ok(path);
+    }
+    for p in PKCS11_LIB_PATHS {
+        let path = PathBuf::from(p);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+    anyhow::bail!(
+        "libykcs11.so not found. Install yubico-piv-tool or set PKCS11_PROVIDER env var."
+    )
+}
+
+fn ssh_ca_pubkey_path() -> PathBuf {
+    kleos_cred::piv::pubkey_path(kleos_cred::piv::PivSlot::Signature)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("ssh-ca.pub")
+}
+
+fn ssh_ca_sign_impl(
+    identity: &str,
+    principal: &str,
+    ttl: &str,
+    pubkey: &Path,
+) -> Result<PathBuf> {
+    let pkcs11 = find_pkcs11_lib()?;
+    let ca_pub = ssh_ca_pubkey_path();
+    anyhow::ensure!(
+        ca_pub.exists(),
+        "SSH CA pubkey not found at {}. Run `cred piv setup-ssh-ca` first.",
+        ca_pub.display()
+    );
+    anyhow::ensure!(
+        pubkey.exists(),
+        "agent pubkey not found at {}",
+        pubkey.display()
+    );
+
+    let out = std::process::Command::new("ssh-keygen")
+        .args(["-s"])
+        .arg(&ca_pub)
+        .args(["-D"])
+        .arg(&pkcs11)
+        .args(["-I", identity, "-n", principal, "-V", ttl])
+        .arg(pubkey)
+        .output()
+        .context("ssh-keygen not found")?;
+
+    if !out.status.success() {
+        anyhow::bail!(
+            "ssh-keygen -s failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let stem = pubkey
+        .to_string_lossy()
+        .trim_end_matches(".pub")
+        .to_string();
+    Ok(PathBuf::from(format!("{}-cert.pub", stem)))
+}
+
+async fn cmd_ssh_ca(cmd: SshCaCmd) -> Result<()> {
+    match cmd {
+        SshCaCmd::Sign {
+            identity,
+            principal,
+            ttl,
+            pubkey,
+        } => {
+            let cert = ssh_ca_sign_impl(&identity, &principal, &ttl, &pubkey)?;
+            println!("{}", cert.display());
+            Ok(())
+        }
+        SshCaCmd::Mint {
+            agent,
+            principal,
+            ttl,
+            out_dir,
+        } => {
+            let dir = out_dir.unwrap_or_else(|| {
+                directories::BaseDirs::new()
+                    .map(|d| d.home_dir().to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".ssh")
+                    .join("agent")
+            });
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("create agent key dir at {}", dir.display()))?;
+
+            let key_path = dir.join(&agent);
+            let pub_path = dir.join(format!("{}.pub", agent));
+
+            if key_path.exists() {
+                std::fs::remove_file(&key_path).ok();
+            }
+            if pub_path.exists() {
+                std::fs::remove_file(&pub_path).ok();
+            }
+
+            let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M");
+            let comment = format!("{}@{}", agent, timestamp);
+
+            let gen = std::process::Command::new("ssh-keygen")
+                .args(["-t", "ed25519", "-N", "", "-C", &comment, "-f"])
+                .arg(&key_path)
+                .output()
+                .context("ssh-keygen not found")?;
+            if !gen.status.success() {
+                anyhow::bail!(
+                    "ssh-keygen keygen failed: {}",
+                    String::from_utf8_lossy(&gen.stderr)
+                );
+            }
+
+            let cert = ssh_ca_sign_impl(&agent, &principal, &ttl, &pub_path)?;
+
+            println!("key:  {}", key_path.display());
+            println!("cert: {}", cert.display());
             Ok(())
         }
     }
