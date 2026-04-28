@@ -239,6 +239,14 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "broca_actions_user_id_readd",
         up: apply_schema_v42_broca_readd,
     },
+    // Fold session-handoff storage into the tenant shard. The reserved
+    // tenant id "handoffs" backs /handoffs/* for every user; other tenants
+    // get the table too (harmless, idempotent).
+    TenantMigration {
+        version: 43,
+        description: "handoffs_table_in_tenant_shard",
+        up: apply_schema_v43_handoffs,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -451,6 +459,11 @@ fn apply_schema_v41_projects_readd(conn: &Connection) -> Result<()> {
 fn apply_schema_v42_broca_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v42_broca_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v42 failed: {e}")))
+}
+
+fn apply_schema_v43_handoffs(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v43_handoffs.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v43 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.

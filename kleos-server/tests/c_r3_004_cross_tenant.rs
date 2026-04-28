@@ -68,7 +68,7 @@ async fn test_app_with_sharding() -> (axum::Router, AppState, TempDir) {
         dreamer_stats: kleos_server::dreamer::new_stats_handle(),
         last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         tenant_registry: Some(Arc::new(registry)),
-        handoffs_db: None,
+        handoffs_gc_sem: Arc::new(tokio::sync::Semaphore::new(8)),
         shutdown_token: CancellationToken::new(),
         background_tasks: Arc::new(Mutex::new(JoinSet::new())),
         fact_extract_sem: Arc::new(tokio::sync::Semaphore::new(64)),
@@ -239,18 +239,93 @@ async fn non_system_user_gets_503_when_sharding_disabled() {
     );
 }
 
-/// With sharding DISABLED, the system user (user_id=1) keeps working on the
-/// monolith. This is the legacy single-user path and must not regress.
+/// With sharding DISABLED, even user_id=1 (the operator) gets 503 on
+/// tenant-scoped routes. The legacy carve-out that pinned user_id=1 to
+/// the monolith was removed during the monolith->tenant migration; the
+/// operator now lives in tenants/1/ like every other user, so disabling
+/// sharding takes the operator offline together with everyone else.
+/// System-only routes (admin/auth_keys/audit) keep working because they
+/// bypass ResolvedDb and go straight to `state.db`.
 #[tokio::test]
-async fn system_user_still_works_when_sharding_disabled() {
+async fn system_user_503s_for_tenant_routes_when_sharding_disabled() {
     let (app, _state) = common::test_app().await;
     let admin_key = bootstrap_admin_key(&app).await;
 
-    // Admin (user_id=1) lists projects -- should be empty but successful.
-    let (status, body) = get(&app, "/projects", &admin_key).await;
-    assert!(
-        status.is_success(),
-        "system user must keep working with sharding off, got {status}: {body}"
+    let (status, _body) = get(&app, "/projects", &admin_key).await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "user_id=1 must also fail closed when sharding is disabled (no monolith carve-out)"
     );
-    assert_eq!(body["count"], 0);
+}
+
+/// With sharding ENABLED, user_id=1 (Master) and user_id=2 see fully
+/// isolated projects. Anchors the post-migration contract: the operator
+/// is just another tenant.
+#[tokio::test]
+async fn user_one_isolated_from_user_two_with_sharding_on() {
+    let (app, _state, _tmp) = test_app_with_sharding().await;
+    let admin_key = bootstrap_admin_key(&app).await;
+
+    // user_id=1 is the bootstrap admin. user_id=2 is freshly seeded.
+    let (uid_two, user_two_key) = seed_user(&app, &admin_key, "tenant-two").await;
+    assert_ne!(uid_two, 1, "seeded user must not be the system user");
+
+    // Master creates a project.
+    let (status, _) = post(
+        &app,
+        "/projects",
+        &admin_key,
+        json!({"name": "master-only", "path": "/tmp/master"}),
+    )
+    .await;
+    assert!(status.is_success(), "master project create");
+
+    // Tenant 2 creates a project.
+    let (status, _) = post(
+        &app,
+        "/projects",
+        &user_two_key,
+        json!({"name": "tenant-two-only", "path": "/tmp/two"}),
+    )
+    .await;
+    assert!(status.is_success(), "tenant 2 project create");
+
+    // Master lists -- should see only their own.
+    let (_, body) = get(&app, "/projects", &admin_key).await;
+    let names: Vec<String> = body["projects"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v["name"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        names.contains(&"master-only".to_string()),
+        "master sees own"
+    );
+    assert!(
+        !names.contains(&"tenant-two-only".to_string()),
+        "master must not see tenant 2: {body}"
+    );
+
+    // Tenant 2 lists -- should see only their own.
+    let (_, body) = get(&app, "/projects", &user_two_key).await;
+    let names: Vec<String> = body["projects"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v["name"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        names.contains(&"tenant-two-only".to_string()),
+        "tenant 2 sees own"
+    );
+    assert!(
+        !names.contains(&"master-only".to_string()),
+        "tenant 2 must not see master: {body}"
+    );
 }

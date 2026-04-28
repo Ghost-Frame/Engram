@@ -13,20 +13,20 @@ use crate::state::AppState;
 /// Resolve the per-tenant `Database` for an arbitrary `user_id` outside of
 /// a request-extraction context (cookie-auth GUI handlers, background
 /// jobs, etc.). Mirrors the routing rules of [`ResolvedDb`]:
-/// - `user_id == 1` returns the monolith fallback.
-/// - sharding enabled returns the per-tenant shard.
-/// - sharding disabled + non-system user returns Err so callers can map
-///   that to 503 Service Unavailable just like the request extractor.
+/// - sharding enabled returns the per-tenant shard for the given user.
+/// - sharding disabled returns Err so callers can map that to 503 Service
+///   Unavailable just like the request extractor.
 ///
 /// M-R3-007: GUI handlers needed this so /gui/memory/* writes land in the
-/// same shard as /memory/*.
+/// same shard as /memory/*. The user_id==1 carve-out that previously
+/// returned the monolith was removed during the monolith->tenant
+/// migration; user_id=1 now lives in tenants/1/ like every other user.
+/// The monolith remains mounted only for system-scoped tables (users,
+/// api_keys, audit_log, agents, app_state).
 pub async fn resolve_db_for_user(
     state: &AppState,
     user_id: i64,
 ) -> Result<Arc<Database>, EngError> {
-    if user_id == 1 {
-        return Ok(Arc::clone(&state.db));
-    }
     let registry = state.tenant_registry.as_ref().ok_or_else(|| {
         EngError::Internal("tenant sharding disabled; non-system users are unsupported".into())
     })?;
@@ -61,17 +61,19 @@ impl<S: Send + Sync> FromRequestParts<S> for Auth {
 
 /// Extractor that resolves the correct `Database` for the authenticated tenant.
 ///
-/// Behavior (post C-R3-004):
-/// - `auth.user_id == 1` always returns the monolith `state.db`. This is the
-///   system/admin user whose pre-existing data lives on the monolith.
-/// - When tenant sharding is enabled (`state.tenant_registry` is `Some`),
-///   non-system users get their per-tenant handle.
-/// - When tenant sharding is disabled (`state.tenant_registry` is `None`),
-///   non-system users receive **503 Service Unavailable**. The previous
-///   silent fallback to the monolith was a default-config BOLA: helpers in
-///   projects/webhooks/broca rely on shard isolation and have no `user_id`
-///   predicate, so falling back to the monolith leaks every other tenant's
-///   data. Failing closed surfaces the misconfig instead of leaking.
+/// Every authenticated user, including user_id=1 (the operator), routes
+/// through their per-tenant shard via `tenant_registry`. The previous
+/// user_id==1 -> monolith carve-out was removed during the monolith
+/// migration: Master is tenant_1 like every other user, and the monolith
+/// only retains system-scoped tables (users, api_keys, audit_log, agents,
+/// app_state) accessed directly via `state.db`.
+///
+/// When tenant sharding is disabled (`state.tenant_registry` is `None`),
+/// every authenticated user receives **503 Service Unavailable**. The
+/// previous silent monolith fallback was a default-config BOLA: helpers
+/// in projects/webhooks/broca rely on shard isolation and dropped their
+/// user_id predicates in Phase 5; failing closed surfaces the misconfig
+/// instead of leaking other tenants' data.
 pub struct ResolvedDb(pub Arc<Database>);
 
 impl FromRequestParts<AppState> for ResolvedDb {
@@ -83,7 +85,6 @@ impl FromRequestParts<AppState> for ResolvedDb {
     ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
         let auth = parts.extensions.get::<AuthContext>().cloned();
         let registry = state.tenant_registry.clone();
-        let fallback_db = Arc::clone(&state.db);
 
         async move {
             let auth = auth.ok_or_else(|| {
@@ -93,20 +94,11 @@ impl FromRequestParts<AppState> for ResolvedDb {
                 )
             })?;
 
-            // System user always uses the monolith (legacy data).
-            if auth.user_id == 1 {
-                return Ok(ResolvedDb(fallback_db));
-            }
-
-            // Non-system users require tenant sharding to be enabled.
-            // Failing closed (503) prevents the silent monolith fallback that
-            // would otherwise allow cross-tenant reads/writes through helpers
-            // that dropped their user_id predicates in Phase 5.
             let registry = registry.ok_or_else(|| {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(json!({
-                        "error": "tenant sharding disabled; non-system users are unsupported. \
+                        "error": "tenant sharding disabled; tenant-scoped routes are unavailable. \
                                   Enable ENGRAM_TENANT_SHARDING (default ON) and restart."
                     })),
                 )

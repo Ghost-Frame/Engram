@@ -208,16 +208,29 @@ async fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(8usize),
     ));
-    let handoffs_db =
-        match kleos_lib::handoffs::HandoffsDb::open(&config.data_dir, Arc::clone(&handoffs_gc_sem))
+    // Eagerly create the reserved "handoffs" tenant so the shard exists at
+    // first /handoffs/* request. The route handler resolves it via the
+    // registry; failure here is fatal because the standalone handoffs.db
+    // path no longer exists.
+    if let Some(reg) = tenant_registry.as_ref() {
+        if let Err(e) = reg
+            .get_or_create(kleos_lib::tenant::HANDOFFS_TENANT_ID)
             .await
         {
-            Ok(db) => Some(Arc::new(db)),
-            Err(e) => {
-                tracing::warn!("handoffs subsystem disabled: {e}");
-                None
-            }
-        };
+            tracing::warn!(
+                "failed to pre-warm handoffs tenant shard: {e}; routes will retry on first request"
+            );
+        } else {
+            tracing::info!(
+                "handoffs tenant shard ready: tenants/{}/",
+                kleos_lib::tenant::HANDOFFS_TENANT_ID
+            );
+        }
+    } else {
+        tracing::warn!(
+            "tenant sharding disabled; /handoffs/* routes will return 503 until enabled"
+        );
+    }
 
     // H-005: per-pattern semaphores cap concurrent fire-and-forget background tasks.
     // Each defaults to 64 permits; set KLEOS_BG_SEM_<NAME>=N to override.
@@ -262,7 +275,7 @@ async fn main() {
         dreamer_stats: new_stats_handle(),
         last_request_time: Arc::new(AtomicU64::new(0)),
         tenant_registry,
-        handoffs_db,
+        handoffs_gc_sem,
         shutdown_token: shutdown.clone(),
         background_tasks: Arc::clone(&background_tasks),
         fact_extract_sem,
