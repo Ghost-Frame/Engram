@@ -74,11 +74,16 @@ jobs:
           CARGO_BUILD_JOBS: "2"
         run: cargo build --release -p kleos-credd -p kleos-cred -p kleos-mcp
 
+      - name: Build kleos-sh, kleos-fs, agent-forge, eidolon-supervisor
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: cargo build --release -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
+
       - name: Collect binaries
         shell: bash
         run: |
           mkdir -p release-artifacts
-          for bin in kleos-server kleos-cli kleos-sidecar kleos-credd kleos-cred kleos-mcp; do
+          for bin in kleos-server kleos-cli kleos-sidecar kleos-credd kleos-cred kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
             src="target/release/${bin}${{ matrix.ext }}"
             if [ -f "$src" ]; then
               cp "$src" "release-artifacts/${bin}-${{ matrix.suffix }}${{ matrix.ext }}"

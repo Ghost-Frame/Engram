@@ -1,0 +1,15 @@
+[Unit]
+Description=Eidolon Supervisor -- async session watcher for Claude Code agents
+Documentation=https://github.com/Ghost-Frame/Engram
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/eidolon-supervisor
+EnvironmentFile=-%h/.config/eidolon/supervisor.env
+Environment=RUST_LOG=info
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

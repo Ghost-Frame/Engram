@@ -7,14 +7,32 @@
 # Options (via environment variables):
 #   KLEOS_VERSION   -- version to install (default: latest)
 #   KLEOS_INSTALL   -- installation directory (default: ~/.local/bin)
-#   KLEOS_BINARIES  -- space-separated list of binaries (default: kleos-server kleos-cli kleos-mcp)
+#   KLEOS_PROFILE   -- "server" (default), "agent-host", or "full"
+#   KLEOS_BINARIES  -- space-separated list (overrides KLEOS_PROFILE if set)
 
 set -eu
 
 REPO="Ghost-Frame/Engram"
 VERSION="${KLEOS_VERSION:-}"
 INSTALL_DIR="${KLEOS_INSTALL:-$HOME/.local/bin}"
-BINARIES="${KLEOS_BINARIES:-kleos-server kleos-cli kleos-mcp}"
+PROFILE="${KLEOS_PROFILE:-server}"
+
+# Resolve KLEOS_BINARIES from profile if not set explicitly
+if [ -n "${KLEOS_BINARIES:-}" ]; then
+    BINARIES="$KLEOS_BINARIES"
+else
+    case "$PROFILE" in
+        agent-host|agent)
+            BINARIES="kleos-cli kleos-sh kr kw ke agent-forge eidolon-supervisor kleos-cred kleos-credd"
+            ;;
+        full)
+            BINARIES="kleos-server kleos-cli kleos-sidecar kleos-credd kleos-cred kleos-mcp kleos-sh kr kw ke agent-forge eidolon-supervisor"
+            ;;
+        *)
+            BINARIES="kleos-server kleos-cli kleos-mcp"
+            ;;
+    esac
+fi
 
 # ─── Detect platform ────────────────────────────────────────────────────────
 
@@ -207,6 +225,41 @@ main() {
         exit 1
     fi
 
+    # Agent-host profile: drop sample supervisor config if none exists
+    case "$PROFILE" in
+        agent-host|agent|full)
+            supervisor_config_dir="$HOME/.config/eidolon"
+            if [ ! -f "$supervisor_config_dir/supervisor.json" ]; then
+                mkdir -p "$supervisor_config_dir"
+                if [ -f "$(dirname "$0")/supervisor.example.json" ]; then
+                    cp "$(dirname "$0")/supervisor.example.json" "$supervisor_config_dir/supervisor.json"
+                else
+                    # Inline minimal default when running from curl pipe
+                    cat > "$supervisor_config_dir/supervisor.json" <<'RULES'
+[
+  {"id":"no-force-push","check_type":"rule_match","pattern":"git\\s+push\\s+.*--force","severity":"critical","cooldown_secs":300,"message":"Force push detected"},
+  {"id":"no-reboot","check_type":"rule_match","pattern":"reboot|shutdown|systemctl\\s+(reboot|poweroff)","severity":"critical","cooldown_secs":600,"message":"Reboot or shutdown command detected"},
+  {"id":"retry-loop","check_type":"retry_loop","pattern":"","severity":"warning","cooldown_secs":120,"message":"Agent stuck in retry loop (3+ identical failing commands)"}
+]
+RULES
+                fi
+                echo "  Dropped sample config: $supervisor_config_dir/supervisor.json"
+            fi
+
+            # Drop supervisor env file template if none exists
+            if [ ! -f "$supervisor_config_dir/supervisor.env" ]; then
+                cat > "$supervisor_config_dir/supervisor.env" <<'ENV'
+# Eidolon supervisor environment
+# KLEOS_SERVER_URL=http://172.30.0.201:4200
+# KLEOS_API_KEY=  (prefer cred/credd over plaintext)
+# CLAUDE_SESSIONS_DIR=~/.claude/projects
+ENV
+                echo "  Dropped template: $supervisor_config_dir/supervisor.env"
+            fi
+            echo ""
+            ;;
+    esac
+
     # Check if install dir is on PATH
     case ":${PATH}:" in
         *":${INSTALL_DIR}:"*) ;;
@@ -217,7 +270,11 @@ main() {
             ;;
     esac
 
-    echo "Done. Verify with: kleos-server --version"
+    verify_cmd="kleos-cli --version"
+    case "$PROFILE" in
+        server) verify_cmd="kleos-server --version" ;;
+    esac
+    echo "Done. Verify with: $verify_cmd"
 }
 
 main

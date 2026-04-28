@@ -1,0 +1,34 @@
+[
+  {
+    "id": "no-force-push",
+    "check_type": "rule_match",
+    "pattern": "git\\s+push\\s+.*--force",
+    "severity": "critical",
+    "cooldown_secs": 300,
+    "message": "Force push detected"
+  },
+  {
+    "id": "no-reboot",
+    "check_type": "rule_match",
+    "pattern": "reboot|shutdown|systemctl\\s+(reboot|poweroff)",
+    "severity": "critical",
+    "cooldown_secs": 600,
+    "message": "Reboot or shutdown command detected"
+  },
+  {
+    "id": "retry-loop",
+    "check_type": "retry_loop",
+    "pattern": "",
+    "severity": "warning",
+    "cooldown_secs": 120,
+    "message": "Agent stuck in retry loop (3+ identical failing commands)"
+  },
+  {
+    "id": "em-dash-usage",
+    "check_type": "rule_match",
+    "pattern": "—",
+    "severity": "info",
+    "cooldown_secs": 60,
+    "message": "Em dash used in output -- should use -- instead"
+  }
+]
