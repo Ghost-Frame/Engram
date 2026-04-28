@@ -646,6 +646,94 @@ impl RequestSigner {
         }
     }
 
+    pub fn generate_software_key(host: &str, agent: &str, model: &str) -> Result<(Self, std::path::PathBuf)> {
+        let home = dirs_for_key_path()
+            .ok_or_else(|| EngError::Internal("cannot determine home directory".into()))?;
+        let kleos_dir = home.join(".kleos");
+        std::fs::create_dir_all(&kleos_dir).map_err(|e| {
+            EngError::Internal(format!("cannot create ~/.kleos: {e}"))
+        })?;
+        let key_path = kleos_dir.join("identity.key");
+        if key_path.exists() {
+            return Err(EngError::InvalidInput(format!(
+                "software key already exists at {}; remove it first to regenerate",
+                key_path.display()
+            )));
+        }
+
+        let mut secret = [0u8; 32];
+        use rand::Rng;
+        rand::rng().fill(&mut secret);
+
+        std::fs::write(&key_path, hex::encode(secret)).map_err(|e| {
+            EngError::Internal(format!("cannot write key file: {e}"))
+        })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| EngError::Internal(format!("cannot chmod key file: {e}")))?;
+        }
+
+        let signer = Self::from_key_bytes(secret, host, agent, model);
+        Ok((signer, key_path))
+    }
+
+    pub fn sign_enrollment_proof(&self) -> String {
+        let proof_msg = format!(
+            "KLEOS-ENROLL:{}:{}:{}:{}",
+            self.algo.as_str(),
+            self.tier(),
+            self.host_label,
+            self.pubkey_pem,
+        );
+        match &self.backend {
+            SigningBackend::Ed25519(sk) => {
+                use ed25519_dalek::Signer;
+                hex::encode(sk.sign(proof_msg.as_bytes()).to_bytes())
+            }
+            #[cfg(feature = "piv")]
+            SigningBackend::Piv(yk_mutex) => {
+                let digest = Sha256::digest(proof_msg.as_bytes());
+                let mut yk = yk_mutex.lock().unwrap();
+                let sig_der = yubikey::piv::sign_data(
+                    &mut yk,
+                    &digest,
+                    yubikey::piv::AlgorithmId::EccP256,
+                    yubikey::piv::SlotId::Authentication,
+                )
+                .expect("YubiKey PIV enrollment proof signing failed");
+                let sig = p256::ecdsa::Signature::from_der(&sig_der)
+                    .expect("YubiKey returned invalid ECDSA DER signature");
+                hex::encode(sig.to_bytes())
+            }
+        }
+    }
+
+    #[cfg(feature = "piv")]
+    pub fn yubikey_serial(&self) -> Option<String> {
+        match &self.backend {
+            SigningBackend::Piv(yk_mutex) => {
+                let yk = yk_mutex.lock().unwrap();
+                Some(yk.serial().to_string())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn algo(&self) -> SignatureAlgo {
+        self.algo
+    }
+
+    pub fn tier(&self) -> &'static str {
+        match &self.backend {
+            SigningBackend::Ed25519(_) => "soft",
+            #[cfg(feature = "piv")]
+            SigningBackend::Piv(_) => "piv",
+        }
+    }
+
     pub fn pubkey_pem(&self) -> &str {
         &self.pubkey_pem
     }
