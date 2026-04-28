@@ -3,7 +3,6 @@ use kleos_lib::cred::CreddClient;
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::EmbeddingProvider;
 use kleos_lib::gate::PendingApproval;
-use kleos_lib::handoffs::HandoffsDb;
 use kleos_lib::llm::local::LocalModelClient;
 use kleos_lib::reranker::Reranker;
 use kleos_lib::services::brain::BrainBackend;
@@ -74,8 +73,10 @@ pub struct AppState {
     pub last_request_time: Arc<AtomicU64>,
     /// Tenant registry for multi-tenant dreamer and background jobs.
     pub tenant_registry: Option<Arc<TenantRegistry>>,
-    /// Dedicated handoffs database for session handoff storage.
-    pub handoffs_db: Option<Arc<HandoffsDb>>,
+    /// Semaphore throttling concurrent auto-GC spawns inside HandoffsDb.
+    /// Always present; the HandoffsDb facade is rebuilt per request from
+    /// the tenant registry's reserved "handoffs" shard.
+    pub handoffs_gc_sem: Arc<Semaphore>,
     /// Shutdown token propagated into all background tasks so SIGTERM drains
     /// in-flight work rather than abandoning it (H-005/M-008).
     pub shutdown_token: CancellationToken,

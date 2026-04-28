@@ -1,11 +1,11 @@
+use crate::db::Database;
 use crate::{EngError, Result};
-use deadpool_sqlite::{Config as PoolManagerConfig, Hook, HookError, Pool, PoolConfig, Runtime};
+use deadpool_sqlite::Pool;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Semaphore;
-use tracing::{error, info};
+use tracing::error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Handoff {
@@ -118,37 +118,26 @@ pub struct GcResult {
 }
 
 pub struct HandoffsDb {
-    writer: Pool,
-    reader: Pool,
+    /// Tenant database hosting the handoffs table set (schema_v43).
+    db: Arc<Database>,
     /// Semaphore throttling concurrent auto-GC spawns (M-005).
     gc_sem: Arc<Semaphore>,
 }
 
 impl HandoffsDb {
-    pub async fn open(data_dir: &str, gc_sem: Arc<Semaphore>) -> Result<Self> {
-        // Allow KLEOS_HANDOFFS_DB_PATH to override the full path (useful in
-        // containerized or read-only-root deployments).
-        let db_path = if let Ok(override_path) = std::env::var("KLEOS_HANDOFFS_DB_PATH") {
-            override_path
-        } else {
-            std::fs::create_dir_all(data_dir).map_err(|e| {
-                EngError::Internal(format!("failed to create handoffs data dir: {}", e))
-            })?;
-            format!("{}/handoffs.db", data_dir)
-        };
+    /// Build a handoffs facade over a tenant database. The caller resolves
+    /// the reserved "handoffs" tenant via the registry; schema_v43 runs
+    /// automatically on tenant open.
+    pub fn new(db: Arc<Database>, gc_sem: Arc<Semaphore>) -> Self {
+        Self { db, gc_sem }
+    }
 
-        let writer = build_pool(&db_path, 1)?;
-        let reader = build_pool(&db_path, 2)?;
+    fn reader(&self) -> Pool {
+        self.db.pools().reader().clone()
+    }
 
-        let db = Self {
-            writer,
-            reader,
-            gc_sem,
-        };
-        db.setup_schema().await?;
-
-        info!("handoffs db opened: {}", db_path);
-        Ok(db)
+    fn writer(&self) -> Pool {
+        self.db.pools().writer().clone()
     }
 
     pub async fn store(&self, params: StoreParams, user_id: i64) -> Result<StoreResult> {
@@ -173,7 +162,7 @@ impl HandoffsDb {
         if ht == "mechanical" {
             let hash2 = hash.clone();
             let project2 = project.clone();
-            let conn = self.reader.get().await.map_err(|e| {
+            let conn = self.reader().get().await.map_err(|e| {
                 EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
             })?;
             let exists: bool = conn
@@ -198,7 +187,7 @@ impl HandoffsDb {
         }
 
         let conn =
-            self.writer.get().await.map_err(|e| {
+            self.writer().get().await.map_err(|e| {
                 EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
             })?;
 
@@ -236,7 +225,7 @@ impl HandoffsDb {
             .map_err(|e| EngError::Internal(format!("handoffs writer interact failed: {e}")))?
             .map_err(|e: rusqlite::Error| EngError::Database(e))?;
 
-        let writer_clone = self.writer.clone();
+        let writer_clone = self.writer();
         let project3 = project.clone();
         let gc_sem = Arc::clone(&self.gc_sem);
         tokio::spawn(async move {
@@ -296,7 +285,7 @@ impl HandoffsDb {
     pub async fn list(&self, filters: HandoffFilters, user_id: i64) -> Result<Vec<Handoff>> {
         let limit = filters.limit.unwrap_or(20);
         let conn =
-            self.reader.get().await.map_err(|e| {
+            self.reader().get().await.map_err(|e| {
                 EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
             })?;
 
@@ -410,7 +399,7 @@ impl HandoffsDb {
         user_id: i64,
     ) -> Result<Vec<SearchResult>> {
         let conn =
-            self.reader.get().await.map_err(|e| {
+            self.reader().get().await.map_err(|e| {
                 EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
             })?;
 
@@ -484,7 +473,7 @@ impl HandoffsDb {
 
     pub async fn stats(&self, user_id: i64) -> Result<HandoffStats> {
         let conn =
-            self.reader.get().await.map_err(|e| {
+            self.reader().get().await.map_err(|e| {
                 EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
             })?;
 
@@ -591,7 +580,7 @@ impl HandoffsDb {
 
     pub async fn gc(&self, tiered: bool, keep: Option<i64>, user_id: i64) -> Result<GcResult> {
         let conn =
-            self.writer.get().await.map_err(|e| {
+            self.writer().get().await.map_err(|e| {
                 EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
             })?;
 
@@ -668,7 +657,7 @@ impl HandoffsDb {
 
     pub async fn delete(&self, id: i64, user_id: i64) -> Result<bool> {
         let conn =
-            self.writer.get().await.map_err(|e| {
+            self.writer().get().await.map_err(|e| {
                 EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
             })?;
 
@@ -683,89 +672,6 @@ impl HandoffsDb {
         .map_err(|e| EngError::Internal(format!("handoffs delete interact failed: {e}")))?
         .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
-
-    async fn setup_schema(&self) -> Result<()> {
-        let conn = self.writer.get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs writer for schema: {e}"))
-        })?;
-
-        conn.interact(|conn| {
-            conn.execute_batch(SCHEMA_SQL)?;
-
-            // Tenant migration: legacy handoffs DBs were created without a
-            // user_id column; ALTER it in if missing. Existing rows fall back
-            // to user_id = 1 (the operator) via the column default. The
-            // user_id index is created AFTER the ALTER so it can never run
-            // against a table that lacks the column.
-            let has_user_id: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('handoffs') WHERE name = 'user_id'",
-                [],
-                |r| r.get(0),
-            )?;
-            if has_user_id == 0 {
-                conn.execute(
-                    "ALTER TABLE handoffs ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
-                    [],
-                )?;
-            }
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_handoffs_user_created ON handoffs(user_id, created_at DESC)",
-                [],
-            )?;
-
-            Ok::<(), rusqlite::Error>(())
-        })
-            .await
-            .map_err(|e| EngError::Internal(format!("handoffs schema interact failed: {e}")))?
-            .map_err(|e: rusqlite::Error| EngError::Database(e))
-    }
-}
-
-fn build_pool(db_path: &str, max_size: usize) -> Result<Pool> {
-    let mut config = PoolManagerConfig::new(db_path);
-    config.pool = Some(PoolConfig::new(max_size));
-    let db_path_owned = db_path.to_string();
-
-    config
-        .builder(Runtime::Tokio1)
-        .map_err(|e| {
-            EngError::Internal(format!(
-                "failed to configure handoffs pool for {db_path}: {e}"
-            ))
-        })?
-        .post_create(Hook::async_fn(move |conn, _| {
-            let db_path = db_path_owned.clone();
-            Box::pin(async move {
-                conn.interact(move |conn: &mut deadpool_sqlite::rusqlite::Connection| {
-                    apply_pragmas(conn)
-                })
-                .await
-                .map_err(|e| {
-                    HookError::message(format!(
-                        "failed to initialize handoffs connection {}: {e}",
-                        db_path
-                    ))
-                })?
-                .map_err(HookError::Backend)?;
-                Ok(())
-            })
-        }))
-        .build()
-        .map_err(|e| {
-            EngError::Internal(format!("failed to build handoffs pool for {db_path}: {e}"))
-        })
-}
-
-fn apply_pragmas(
-    conn: &mut deadpool_sqlite::rusqlite::Connection,
-) -> deadpool_sqlite::rusqlite::Result<()> {
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.busy_timeout(Duration::from_millis(5000))?;
-    conn.pragma_update(None, "cache_size", -8192_i64)?;
-    conn.pragma_update(None, "temp_store", "MEMORY")?;
-    Ok(())
 }
 
 fn compute_content_hash(content: &str, handoff_type: &str) -> String {
@@ -823,49 +729,6 @@ fn run_tiered_gc(
     Ok(())
 }
 
-const SCHEMA_SQL: &str = "
-CREATE TABLE IF NOT EXISTS handoffs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
-    project TEXT NOT NULL,
-    branch TEXT,
-    directory TEXT,
-    agent TEXT DEFAULT 'unknown',
-    type TEXT DEFAULT 'manual',
-    content TEXT NOT NULL,
-    metadata TEXT,
-    session_id TEXT,
-    model TEXT,
-    host TEXT,
-    content_hash TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_handoffs_project ON handoffs(project, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_handoffs_created ON handoffs(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_handoffs_hash ON handoffs(content_hash);
-CREATE INDEX IF NOT EXISTS idx_handoffs_agent ON handoffs(agent, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_handoffs_type ON handoffs(type, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_handoffs_session ON handoffs(session_id);
-CREATE INDEX IF NOT EXISTS idx_handoffs_model ON handoffs(model, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_handoffs_restore ON handoffs(project, type, agent, created_at DESC);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS handoffs_fts USING fts5(
-    content, content='handoffs', content_rowid='id'
-);
-
-CREATE TRIGGER IF NOT EXISTS handoffs_fts_ai AFTER INSERT ON handoffs BEGIN
-    INSERT INTO handoffs_fts(rowid, content) VALUES (new.id, new.content);
-END;
-CREATE TRIGGER IF NOT EXISTS handoffs_fts_ad AFTER DELETE ON handoffs BEGIN
-    INSERT INTO handoffs_fts(handoffs_fts, rowid, content) VALUES('delete', old.id, old.content);
-END;
-CREATE TRIGGER IF NOT EXISTS handoffs_fts_au AFTER UPDATE OF content ON handoffs BEGIN
-    INSERT INTO handoffs_fts(handoffs_fts, rowid, content) VALUES('delete', old.id, old.content);
-    INSERT INTO handoffs_fts(rowid, content) VALUES (new.id, new.content);
-END;
-";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -885,21 +748,22 @@ mod tests {
         }
     }
 
-    /// Returns the DB plus the TempDir guard. Hold onto the TempDir for the
-    /// lifetime of the test so the directory is not deleted out from under
-    /// the connection pool.
-    async fn fresh_db() -> (HandoffsDb, tempfile::TempDir) {
-        let dir = tempfile::tempdir().expect("tempdir");
+    /// Build a handoffs DB backed by an in-memory tenant shard. The
+    /// shared-cache URI keeps reader and writer pools talking to the same
+    /// SQLite instance for the duration of the test.
+    async fn fresh_db() -> HandoffsDb {
+        let tenant = Arc::new(
+            crate::db::Database::open_tenant_memory()
+                .await
+                .expect("open tenant memory db"),
+        );
         let gc_sem = Arc::new(Semaphore::new(8));
-        let db = HandoffsDb::open(dir.path().to_str().expect("utf8 path"), gc_sem)
-            .await
-            .expect("open handoffs db");
-        (db, dir)
+        HandoffsDb::new(tenant, gc_sem)
     }
 
     #[tokio::test]
     async fn store_scopes_to_user() {
-        let (db, _dir) = fresh_db().await;
+        let db = fresh_db().await;
         let a = db
             .store(store_params("proj-a", "alice secret"), 7)
             .await
@@ -929,7 +793,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_refuses_cross_user() {
-        let (db, _dir) = fresh_db().await;
+        let db = fresh_db().await;
         let a_id = db
             .store(store_params("proj-a", "alice"), 7)
             .await
@@ -952,7 +816,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_scopes_to_user() {
-        let (db, _dir) = fresh_db().await;
+        let db = fresh_db().await;
         db.store(store_params("proj-a", "alice has a uniquemarker phrase"), 7)
             .await
             .expect("store a");
@@ -976,7 +840,7 @@ mod tests {
 
     #[tokio::test]
     async fn gc_scopes_to_user() {
-        let (db, _dir) = fresh_db().await;
+        let db = fresh_db().await;
         for i in 0..5 {
             db.store(store_params("proj-a", &format!("alice {i}")), 7)
                 .await
@@ -999,7 +863,7 @@ mod tests {
 
     #[tokio::test]
     async fn stats_scopes_to_user() {
-        let (db, _dir) = fresh_db().await;
+        let db = fresh_db().await;
         db.store(store_params("proj-a", "alice"), 7)
             .await
             .expect("a");
@@ -1015,60 +879,5 @@ mod tests {
 
         let bob = db.stats(99).await.expect("stats b");
         assert_eq!(bob.total, 1);
-    }
-
-    #[tokio::test]
-    async fn migration_adds_user_id_to_legacy_db() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db_path = dir.path().join("handoffs.db");
-
-        // Build a "legacy" DB without user_id by hand.
-        {
-            let conn = rusqlite::Connection::open(&db_path).expect("open");
-            conn.execute_batch(
-                "CREATE TABLE handoffs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
-                    project TEXT NOT NULL,
-                    branch TEXT,
-                    directory TEXT,
-                    agent TEXT DEFAULT 'unknown',
-                    type TEXT DEFAULT 'manual',
-                    content TEXT NOT NULL,
-                    metadata TEXT,
-                    session_id TEXT,
-                    model TEXT,
-                    host TEXT,
-                    content_hash TEXT
-                );",
-            )
-            .expect("create legacy table");
-            conn.execute(
-                "INSERT INTO handoffs (project, content) VALUES ('legacy', 'pre-migration row')",
-                [],
-            )
-            .expect("seed legacy row");
-        }
-
-        // Open via HandoffsDb -- this runs setup_schema which should ALTER.
-        let gc_sem = Arc::new(Semaphore::new(8));
-        let db = HandoffsDb::open(dir.path().to_str().expect("utf8 path"), gc_sem)
-            .await
-            .expect("open with migration");
-
-        // Operator (user_id = 1) should see the backfilled legacy row.
-        let listed = db
-            .list(HandoffFilters::default(), 1)
-            .await
-            .expect("list as operator");
-        assert_eq!(listed.len(), 1, "legacy row backfilled to operator");
-        assert_eq!(listed[0].project, "legacy");
-
-        // A different user must not see it.
-        let other = db
-            .list(HandoffFilters::default(), 42)
-            .await
-            .expect("list as other");
-        assert!(other.is_empty(), "non-operator does not see legacy row");
     }
 }
