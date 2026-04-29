@@ -86,6 +86,7 @@ pub async fn store(app: &App, args: Value) -> Result<Value> {
         user_id: Some(auth.user_id),
         space_id: args.get("space_id").and_then(Value::as_i64),
         parent_memory_id: args.get("parent_memory_id").and_then(Value::as_i64),
+        chunk_embeddings: None,
     };
     let stored = memory::store(&app.db, req).await?;
     let fetched = memory::get(&app.db, stored.id, auth.user_id).await?;
@@ -216,6 +217,7 @@ pub async fn update(app: &App, args: Value) -> Result<Value> {
             .and_then(Value::as_str)
             .map(str::to_string),
         embedding: None,
+        chunk_embeddings: None,
     };
     Ok(json!(memory::update(&app.db, id, req, auth.user_id).await?))
 }

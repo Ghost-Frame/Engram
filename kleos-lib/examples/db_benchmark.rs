@@ -210,6 +210,7 @@ fn store_request(content: &str, user_id: i64) -> StoreRequest {
         user_id: Some(user_id),
         space_id: None,
         parent_memory_id: None,
+        chunk_embeddings: None,
     }
 }
 

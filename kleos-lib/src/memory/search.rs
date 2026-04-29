@@ -1,5 +1,5 @@
 use super::fts::fts_search;
-use super::vector::vector_search;
+use super::vector::{chunk_vector_search, vector_search};
 use super::{row_to_memory, rusqlite_to_eng_error, MEMORY_COLUMNS};
 use crate::db::Database;
 use crate::memory::scoring::{
@@ -148,12 +148,22 @@ struct Candidate {
     root_memory_id: Option<i64>,
     access_count: i32,
     pagerank_score: f64,
+    /// Per-memory FSRS stability (in days). None when the column is NULL --
+    /// new or never-reviewed memories. The decay block falls back to
+    /// `initial_stability(Rating::Good)` in that case.
+    fsrs_stability: Option<f64>,
     semantic_score: Option<f64>,
     personality_signal_score: Option<f64>,
     score: f64,
     combined_score: f64,
     decay_score: Option<f64>,
     temporal_boost: Option<f64>,
+    rrf_pre_boost: Option<f64>,
+    verbose_decay_factor: Option<f64>,
+    verbose_pr_boost: Option<f64>,
+    verbose_src_boost: Option<f64>,
+    verbose_stat_boost: Option<f64>,
+    verbose_contradiction: Option<f64>,
 }
 
 struct HydratedCandidateRow {
@@ -168,6 +178,7 @@ struct HydratedCandidateRow {
     model: Option<String>,
     access_count: i32,
     pagerank_score: f64,
+    fsrs_stability: Option<f64>,
     content: String,
     category: String,
 }
@@ -201,7 +212,7 @@ async fn hydrate_candidates(
     let sql = format!(
         "SELECT id, created_at, importance, is_static, source_count, \
          version, is_latest, source, model, access_count, pagerank_score, \
-         content, category \
+         fsrs_stability, content, category \
          FROM memories WHERE id IN ({})",
         placeholders
     );
@@ -238,8 +249,9 @@ async fn hydrate_candidates(
                     .get::<_, Option<f64>>(10)
                     .map_err(rusqlite_to_eng_error)?
                     .unwrap_or(0.0),
-                content: row.get(11).map_err(rusqlite_to_eng_error)?,
-                category: row.get(12).map_err(rusqlite_to_eng_error)?,
+                fsrs_stability: row.get(11).map_err(rusqlite_to_eng_error)?,
+                content: row.get(12).map_err(rusqlite_to_eng_error)?,
+                category: row.get(13).map_err(rusqlite_to_eng_error)?,
             });
         }
         Ok(hydrated)
@@ -540,6 +552,39 @@ fn resolve_strategy(req: &SearchRequest) -> (QuestionType, crate::memory::types:
     (dominant, strategy)
 }
 
+/// Try the LanceDB centroid index first, fall back to the SQLite-vec
+/// `vector_search`. Centroid hits come back from the trait-object index
+/// in the `vector::VectorHit` shape and need re-mapping into the
+/// `memory::types::VectorHit` used by the rest of search.rs.
+async fn centroid_or_sqlite_vector(
+    db: &Database,
+    embedding: &[f32],
+    candidate_target: usize,
+    user_id: i64,
+) -> Result<Vec<super::types::VectorHit>> {
+    if let Some(index) = db.vector_index.as_ref() {
+        match index.search(embedding, candidate_target).await {
+            Ok(hits) => Ok(hits
+                .into_iter()
+                .map(|hit| super::types::VectorHit {
+                    memory_id: hit.memory_id,
+                    distance: hit.distance,
+                    rank: hit.rank,
+                })
+                .collect()),
+            Err(e) => {
+                warn!(
+                    "LanceDB vector search failed, falling back to SQLite vectors: {}",
+                    e
+                );
+                vector_search(db, embedding, candidate_target, user_id).await
+            }
+        }
+    } else {
+        vector_search(db, embedding, candidate_target, user_id).await
+    }
+}
+
 /// Run the full hybrid search pipeline matching TS hybridSearch.
 #[tracing::instrument(
     name = "hybrid_search",
@@ -579,53 +624,70 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
 
     // Channel 1: Vector ANN search
     if let Some(ref embedding) = req.embedding {
-        let vector_hits = if let Some(index) = db.vector_index.as_ref() {
-            match index.search(embedding, candidate_target).await {
-                Ok(hits) => Ok(hits
-                    .into_iter()
-                    .map(|hit| super::types::VectorHit {
-                        memory_id: hit.memory_id,
-                        rank: hit.rank,
-                    })
-                    .collect()),
+        let prefer_chunks = db.use_chunk_vector_search && db.chunk_vector_index.is_some();
+        let vector_hits = if prefer_chunks {
+            match chunk_vector_search(db, embedding, candidate_target).await {
+                Ok(hits) if !hits.is_empty() => Ok(hits),
+                Ok(_) => {
+                    // Empty chunk result. Fall back to centroid index so
+                    // partially-backfilled deployments still surface hits.
+                    warn!("chunk vector search returned no hits, falling back to centroid");
+                    centroid_or_sqlite_vector(db, embedding, candidate_target, user_id).await
+                }
                 Err(e) => {
                     warn!(
-                        "LanceDB vector search failed, falling back to SQLite vectors: {}",
+                        "LanceDB chunk vector search failed, falling back to centroid: {}",
                         e
                     );
-                    vector_search(db, embedding, candidate_target, user_id).await
+                    centroid_or_sqlite_vector(db, embedding, candidate_target, user_id).await
                 }
             }
         } else {
-            vector_search(db, embedding, candidate_target, user_id).await
+            centroid_or_sqlite_vector(db, embedding, candidate_target, user_id).await
         };
 
         match vector_hits {
             Ok(hits) => {
                 for hit in &hits {
                     vector_ranked.push((hit.memory_id, hit.rank as f64));
-                    results.entry(hit.memory_id).or_insert_with(|| Candidate {
-                        id: hit.memory_id,
-                        content: String::new(),
-                        category: String::new(),
-                        source: None,
-                        model: None,
-                        importance: 5,
-                        created_at: String::new(),
-                        version: None,
-                        is_latest: None,
-                        is_static: false,
-                        source_count: 1,
-                        root_memory_id: None,
-                        access_count: 0,
-                        pagerank_score: 0.0,
-                        semantic_score: None,
-                        personality_signal_score: None,
-                        score: 0.0,
-                        combined_score: 0.0,
-                        decay_score: None,
-                        temporal_boost: None,
-                    });
+                    let semantic = hit.distance.map(|d| 1.0 - d as f64);
+                    let entry =
+                        results.entry(hit.memory_id).or_insert_with(|| Candidate {
+                            id: hit.memory_id,
+                            content: String::new(),
+                            category: String::new(),
+                            source: None,
+                            model: None,
+                            importance: 5,
+                            created_at: String::new(),
+                            version: None,
+                            is_latest: None,
+                            is_static: false,
+                            source_count: 1,
+                            root_memory_id: None,
+                            access_count: 0,
+                            pagerank_score: 0.0,
+                            fsrs_stability: None,
+                            semantic_score: semantic,
+                            personality_signal_score: None,
+                            score: 0.0,
+                            combined_score: 0.0,
+                            decay_score: None,
+                            temporal_boost: None,
+                            rrf_pre_boost: None,
+                            verbose_decay_factor: None,
+                            verbose_pr_boost: None,
+                            verbose_src_boost: None,
+                            verbose_stat_boost: None,
+                            verbose_contradiction: None,
+                        });
+                    // If the candidate already existed (e.g. from FTS), prefer
+                    // the most recent semantic_score we have. LanceDB hits only
+                    // arrive here, so this is the only place semantic_score
+                    // gets populated.
+                    if entry.semantic_score.is_none() {
+                        entry.semantic_score = semantic;
+                    }
                 }
             }
             Err(e) => warn!("vector search failed: {}", e),
@@ -653,12 +715,19 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                     root_memory_id: None,
                     access_count: 0,
                     pagerank_score: 0.0,
+                    fsrs_stability: None,
                     semantic_score: None,
                     personality_signal_score: None,
                     score: 0.0,
                     combined_score: 0.0,
                     decay_score: None,
                     temporal_boost: None,
+                    rrf_pre_boost: None,
+                    verbose_decay_factor: None,
+                    verbose_pr_boost: None,
+                    verbose_src_boost: None,
+                    verbose_stat_boost: None,
+                    verbose_contradiction: None,
                 });
                 // FTS provides content we can use
                 let _ = entry;
@@ -727,6 +796,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                         }
                         c.access_count = row.access_count;
                         c.pagerank_score = row.pagerank_score;
+                        c.fsrs_stability = row.fsrs_stability;
                         if c.content.is_empty() {
                             c.content = row.content;
                         }
@@ -743,15 +813,15 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     for c in results.values_mut() {
         let rrf = rrf_scores.get(&c.id).copied().unwrap_or(0.0);
 
-        // Live FSRS retrievability
+        // Live FSRS retrievability. Read per-memory `fsrs_stability` when
+        // available; fall back to `initial_stability(Rating::Good)` when the
+        // column is NULL (memories that have never been reviewed).
         let retrievability = if c.is_static {
             1.0
         } else {
-            let stability = {
-                // Quick stability lookup -- use initial_stability(Good) as default
-                let default_s = crate::fsrs::initial_stability(crate::fsrs::Rating::Good);
-                default_s as f64
-            };
+            let stability = c.fsrs_stability.unwrap_or_else(|| {
+                crate::fsrs::initial_stability(crate::fsrs::Rating::Good) as f64
+            });
             let ref_str = &c.created_at;
             let elapsed = if !ref_str.is_empty() {
                 let normalized = if ref_str.contains('Z') {
@@ -800,6 +870,14 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
 
         c.score = rrf * decay_factor * src_boost * stat_boost * temp_boost * pr_boost * contr;
         c.combined_score = c.score;
+
+        let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
+        c.rrf_pre_boost = Some(r3(rrf));
+        c.verbose_decay_factor = Some(r3(decay_factor));
+        c.verbose_pr_boost = Some(r3(pr_boost));
+        c.verbose_src_boost = Some(r3(src_boost));
+        c.verbose_stat_boost = Some(r3(stat_boost));
+        c.verbose_contradiction = Some(r3(contr));
     }
 
     // Relationship expansion (2-hop) -- graph RRF channel
@@ -852,12 +930,19 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                             root_memory_id: None,
                             access_count: 0,
                             pagerank_score: 0.0,
+                            fsrs_stability: None,
                             semantic_score: None,
                             personality_signal_score: None,
                             score: 0.0,
                             combined_score: 0.0,
                             decay_score: None,
                             temporal_boost: None,
+                            rrf_pre_boost: None,
+                            verbose_decay_factor: None,
+                            verbose_pr_boost: None,
+                            verbose_src_boost: None,
+                            verbose_stat_boost: None,
+                            verbose_contradiction: None,
                         });
                         added += 1;
                     }
@@ -877,6 +962,34 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
         }
     }
     let graph_set: HashSet<i64> = graph_score_map.keys().copied().collect();
+
+    // SEC-recall-1.2: enforce strategy.vector_floor as a real filter. Drop
+    // candidates whose vector channel score is below the floor AND that did
+    // not also surface via FTS or graph (those channels carry their own
+    // signal independent of cosine similarity). Hits with no semantic_score
+    // (libSQL fallback path that doesn't project distance) are not filtered
+    // -- we have no signal to reject them on. The floor itself can be
+    // overridden via KLEOS_VECTOR_FLOOR for emergency tuning without a
+    // restart-blocking config change.
+    let env_floor: Option<f64> = std::env::var("KLEOS_VECTOR_FLOOR")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let effective_floor = env_floor.unwrap_or(strategy.vector_floor);
+    if effective_floor > 0.0 {
+        results.retain(|id, c| {
+            // Always keep candidates that surfaced from FTS or graph -- they
+            // carry signal beyond cosine similarity.
+            if fts_set.contains(id) || graph_set.contains(id) {
+                return true;
+            }
+            // Vector-only candidate: enforce the floor when we have a real
+            // semantic_score. Hits with None (fallback path) pass through.
+            match c.semantic_score {
+                Some(s) => s >= effective_floor,
+                None => true,
+            }
+        });
+    }
 
     // Guard NaN, sort, limit, and annotate channels
     for c in results.values_mut() {
@@ -952,6 +1065,12 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
             reranked: Some(false),
             reranker_ms: Some(0.0),
             candidate_count: Some(candidate_count),
+            rrf_pre_boost: c.rrf_pre_boost,
+            decay_factor: c.verbose_decay_factor,
+            pr_boost: c.verbose_pr_boost,
+            src_boost: c.verbose_src_boost,
+            stat_boost: c.verbose_stat_boost,
+            contradiction: c.verbose_contradiction,
             linked: None,
             version_chain: None,
         });
@@ -1054,6 +1173,34 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     cache_put(user_id, param_hash, Arc::clone(&arc_results));
 
     Ok(arc_results)
+}
+
+/// SEC-recall-1.5: run `hybrid_search` then apply the supplied reranker.
+/// Wrapping (rather than threading reranker into `hybrid_search` itself)
+/// keeps the existing 10+ call sites untouched while letting any in-process
+/// caller opt into reranking by passing `Some(reranker)`. The original query
+/// string is required because the cross-encoder scores query-document pairs.
+///
+/// Behaviour matches the route-level path: clone the cached `Arc<Vec<...>>`
+/// once so the caller can mutate, run `rerank_results` in place (which
+/// re-sorts internally), and return a fresh `Arc`. Reranker errors degrade
+/// gracefully -- a tracing warning, then the unranked results.
+pub async fn hybrid_search_reranked(
+    db: &Database,
+    req: SearchRequest,
+    query_for_rerank: &str,
+    reranker: Option<std::sync::Arc<dyn crate::reranker::Reranker>>,
+) -> Result<Arc<Vec<SearchResult>>> {
+    let arc_results = hybrid_search(db, req).await?;
+    let Some(reranker) = reranker else {
+        return Ok(arc_results);
+    };
+    let mut results = (*arc_results).clone();
+    if let Err(e) = reranker.rerank_results(query_for_rerank, &mut results).await {
+        tracing::warn!("reranker failed in hybrid_search_reranked: {}", e);
+        return Ok(arc_results);
+    }
+    Ok(Arc::new(results))
 }
 
 // ---------------------------------------------------------------------------
@@ -1367,6 +1514,12 @@ async fn faceted_db_scan(
                 reranked: None,
                 reranker_ms: None,
                 candidate_count: None,
+                rrf_pre_boost: None,
+                decay_factor: None,
+                pr_boost: None,
+                src_boost: None,
+                stat_boost: None,
+                contradiction: None,
                 linked: None,
                 version_chain: None,
             })
@@ -1471,6 +1624,16 @@ fn parse_iso_date(s: &str) -> Option<String> {
 
 /// Auto-link a memory to similar memories based on embedding similarity.
 /// Matches TS autoLink function.
+///
+/// SEC-recall-3.4: prefer the LanceDB vector index. The libSQL `vector_top_k`
+/// path requires the sqlite-vec extension which is not loaded by the active
+/// build (`db/schema.rs:17-19`), so the previous `vector_search` call was
+/// returning empty in practice and approximating similarity from rank.
+/// LanceDB returns real cosine distance per hit, so similarity is just
+/// `1 - distance` and the `AUTO_LINK_THRESHOLD = 0.55` cutoff becomes
+/// meaningful again. When LanceDB is unavailable the function falls back
+/// to the libSQL path with rank-approximated similarity (matching prior
+/// behavior).
 #[tracing::instrument(skip(db, embedding), fields(embedding_dim = embedding.len()))]
 pub async fn auto_link(
     db: &Database,
@@ -1478,20 +1641,34 @@ pub async fn auto_link(
     embedding: &[f32],
     user_id: i64,
 ) -> Result<usize> {
-    // Search for similar memories using vector search
-    let hits = vector_search(db, embedding, 50, user_id).await?;
-
     let mut similarities: Vec<(i64, f64)> = Vec::new();
-    // We use rank as a proxy for similarity since vector_top_k orders by distance
-    // In a full implementation, we would compute cosine similarity directly
-    for hit in &hits {
-        if hit.memory_id == memory_id {
-            continue;
+    if let Some(index) = db.vector_index.as_ref() {
+        let hits = index.search(embedding, 50).await.unwrap_or_default();
+        for hit in &hits {
+            if hit.memory_id == memory_id {
+                continue;
+            }
+            // LanceDB cosine distance -> similarity. If the column was
+            // missing (`distance: None`), fall back to rank-based approx
+            // so we still produce some links rather than zero.
+            let sim = match hit.distance {
+                Some(d) => 1.0 - d as f64,
+                None => 1.0 - (hit.rank as f64 / 50.0),
+            };
+            if sim >= scoring::AUTO_LINK_THRESHOLD {
+                similarities.push((hit.memory_id, sim));
+            }
         }
-        // Approximate similarity from rank (closer rank = higher similarity)
-        let approx_sim = 1.0 - (hit.rank as f64 / 50.0);
-        if approx_sim >= scoring::AUTO_LINK_THRESHOLD {
-            similarities.push((hit.memory_id, approx_sim));
+    } else {
+        let hits = vector_search(db, embedding, 50, user_id).await?;
+        for hit in &hits {
+            if hit.memory_id == memory_id {
+                continue;
+            }
+            let approx_sim = 1.0 - (hit.rank as f64 / 50.0);
+            if approx_sim >= scoring::AUTO_LINK_THRESHOLD {
+                similarities.push((hit.memory_id, approx_sim));
+            }
         }
     }
 

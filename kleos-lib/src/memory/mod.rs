@@ -36,7 +36,8 @@ use types::{
 
 pub use types::VectorSyncReplayReport;
 pub use vector_sync::{
-    build_lance_index_from_existing, replay_vector_sync_pending,
+    backfill_missing_embeddings, build_lance_chunk_index_from_existing,
+    build_lance_index_from_existing, BackfillReport, replay_vector_sync_pending,
     replay_vector_sync_pending_for_user, vector_sync_pending_users,
 };
 
@@ -107,9 +108,152 @@ async fn record_vector_sync_failure(
     }
 }
 
-/// Serialize an embedding as raw IEEE 754 little-endian bytes for BLOB storage.
-/// This is the same wire format that libsql's `vector()` function produces,
-/// so existing FLOAT32(1024) columns can be read by either backend.
+pub async fn write_chunks(db: &Database, memory_id: i64, chunks: &[(String, Vec<f32>)]) {
+    let chunks_for_tx: Vec<(String, Vec<u8>)> = chunks
+        .iter()
+        .map(|(text, emb)| (text.clone(), embedding_to_blob(emb)))
+        .collect();
+
+    let result = db
+        .write(move |conn| {
+            conn.execute(
+                "DELETE FROM memory_chunks WHERE memory_id = ?1",
+                rusqlite::params![memory_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO memory_chunks (memory_id, chunk_idx, content, embedding_vec_1024) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            for (idx, (text, blob)) in chunks_for_tx.iter().enumerate() {
+                stmt.execute(rusqlite::params![memory_id, idx as i64, text, blob])
+                    .map_err(rusqlite_to_eng_error)?;
+            }
+            Ok(())
+        })
+        .await;
+
+    if let Err(e) = result {
+        warn!("chunk row write failed for memory {}: {}", memory_id, e);
+    }
+
+    if let Some(index) = db.chunk_vector_index.as_ref() {
+        for (idx, (_, emb)) in chunks.iter().enumerate() {
+            let chunk_key = chunk_lance_key(memory_id, idx);
+            if let Err(e) = index.insert(chunk_key, emb).await {
+                warn!(
+                    "LanceDB chunk vector insert failed for memory {} chunk {}: {}",
+                    memory_id, idx, e
+                );
+            }
+        }
+    }
+}
+
+async fn carry_forward_chunks(db: &Database, old_memory_id: i64, new_memory_id: i64) {
+    let result = db
+        .write(move |conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memory_chunks WHERE memory_id = ?1",
+                    rusqlite::params![old_memory_id],
+                    |row| row.get(0),
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            if count == 0 {
+                return Ok(());
+            }
+
+            conn.execute(
+                "INSERT INTO memory_chunks (memory_id, chunk_idx, content, embedding_vec_1024)
+                 SELECT ?1, chunk_idx, content, embedding_vec_1024
+                 FROM memory_chunks WHERE memory_id = ?2",
+                rusqlite::params![new_memory_id, old_memory_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+            Ok(())
+        })
+        .await;
+
+    if let Err(e) = result {
+        warn!(
+            "carry_forward_chunks failed {} -> {}: {}",
+            old_memory_id, new_memory_id, e
+        );
+        return;
+    }
+
+    if let Some(index) = db.chunk_vector_index.as_ref() {
+        let chunks: Vec<(usize, Vec<f32>)> = match db
+            .read(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT chunk_idx, embedding_vec_1024 FROM memory_chunks \
+                         WHERE memory_id = ?1 ORDER BY chunk_idx",
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                let rows = stmt
+                    .query_map(rusqlite::params![new_memory_id], |row| {
+                        let idx: usize = row.get(0)?;
+                        let blob: Option<Vec<u8>> = row.get(1)?;
+                        Ok((idx, blob))
+                    })
+                    .map_err(rusqlite_to_eng_error)?;
+                let mut out = Vec::new();
+                for r in rows {
+                    let (idx, blob) = r.map_err(rusqlite_to_eng_error)?;
+                    if let Some(b) = blob {
+                        let emb: Vec<f32> = b
+                            .chunks_exact(4)
+                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                        out.push((idx, emb));
+                    }
+                }
+                Ok(out)
+            })
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("reading carried-forward chunks for LanceDB: {}", e);
+                return;
+            }
+        };
+
+        for (idx, emb) in &chunks {
+            let key = chunk_lance_key(new_memory_id, *idx);
+            if let Err(e) = index.insert(key, emb).await {
+                warn!(
+                    "LanceDB chunk carry-forward insert failed for memory {} chunk {}: {}",
+                    new_memory_id, idx, e
+                );
+            }
+        }
+
+        // Clean up old memory's chunk vectors
+        let old_chunks: Vec<usize> = chunks.iter().map(|(idx, _)| *idx).collect();
+        for idx in old_chunks {
+            let key = chunk_lance_key(old_memory_id, idx);
+            let _ = index.delete(key).await;
+        }
+    }
+}
+
+fn chunk_lance_key(memory_id: i64, chunk_idx: usize) -> i64 {
+    memory_id * 1000 + chunk_idx as i64
+}
+
+pub fn lance_key_to_memory_id(chunk_key: i64) -> i64 {
+    chunk_key / 1000
+}
+
 fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(embedding.len() * 4);
     for &f in embedding {
@@ -211,8 +355,44 @@ pub(crate) const MEMORY_COLUMN_COUNT: usize = 47;
 
 // -- Public CRUD functions ---
 
+/// Store a memory, computing chunk embeddings via `embedder` when the
+/// caller hasn't pre-supplied them. This is the path callers should use
+/// when they already hold an embedder reference (HTTP routes, ingestion,
+/// MCP tools, harness-seed). Internal subsystems without an embedder
+/// reference (intelligence/*, jobs/*) call `store` directly and rely on
+/// the admin backfill route to populate chunks later.
+#[tracing::instrument(skip(db, embedder, req), fields(user_id = req.user_id.unwrap_or(0), content_len = req.content.len()))]
+pub async fn store_with_chunks(
+    db: &Database,
+    embedder: &dyn crate::embeddings::EmbeddingProvider,
+    mut req: StoreRequest,
+) -> Result<StoreResult> {
+    if req.embedding.is_none() {
+        match embedder.embed(&req.content).await {
+            Ok(emb) => req.embedding = Some(emb),
+            Err(e) => tracing::warn!("embedding failed in store_with_chunks: {}", e),
+        }
+    }
+    if req.chunk_embeddings.is_none() {
+        match crate::embeddings::chunking::chunk_and_embed(
+            embedder,
+            &req.content,
+            db.embedding_chunk_max_chars,
+            db.embedding_chunk_overlap,
+            db.embedding_chunk_max_chunks,
+        )
+        .await
+        {
+            Ok(pairs) if !pairs.is_empty() => req.chunk_embeddings = Some(pairs),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("chunk embedding failed in store_with_chunks: {}", e),
+        }
+    }
+    store(db, req).await
+}
+
 #[tracing::instrument(skip(db, req), fields(user_id = req.user_id.unwrap_or(0), content_len = req.content.len()))]
-pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
+pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> {
     // 1. Validate content
     let content = req.content.trim().to_string();
     if content.is_empty() {
@@ -225,6 +405,14 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
             "content exceeds maximum size of {} bytes",
             MAX_CONTENT_SIZE
         )));
+    }
+
+    // SEC-recall-1.8: L2-normalize the embedding before any downstream use so
+    // cosine semantics are correct regardless of provider. OnnxProvider
+    // already normalizes its output; HttpProvider and OpenAiProvider do not.
+    // `l2_normalize` is idempotent for unit-norm input and zero-vector safe.
+    if let Some(ref mut emb) = req.embedding {
+        crate::embeddings::normalize::l2_normalize(emb);
     }
 
     // SECURITY: previous code defaulted to user 1 (typically the bootstrap
@@ -298,6 +486,10 @@ pub async fn store(db: &Database, req: StoreRequest) -> Result<StoreResult> {
                 record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string()).await;
             }
         }
+    }
+
+    if let Some(ref chunks) = req.chunk_embeddings {
+        write_chunks(db, new_id, chunks).await;
     }
 
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
@@ -647,7 +839,18 @@ pub async fn purge_trashed(db: &Database, retention_days: i64) -> Result<usize> 
 }
 
 #[tracing::instrument(skip(db, req))]
-pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) -> Result<Memory> {
+pub async fn update(
+    db: &Database,
+    id: i64,
+    mut req: UpdateRequest,
+    user_id: i64,
+) -> Result<Memory> {
+    // SEC-recall-1.8: L2-normalize a supplied embedding so cosine semantics
+    // hold regardless of provider. Mirrors the same step in `store`.
+    if let Some(ref mut emb) = req.embedding {
+        crate::embeddings::normalize::l2_normalize(emb);
+    }
+
     // 1. Get the existing memory (outside transaction - read only)
     let sql = format!(
         "SELECT {} FROM memories WHERE id = ?1 AND is_forgotten = 0",
@@ -726,20 +929,63 @@ pub async fn update(db: &Database, id: i64, req: UpdateRequest, user_id: i64) ->
         })
         .await?;
 
-    if let Some(ref emb) = req.embedding {
-        if let Some(index) = db.vector_index.as_ref() {
-            if let Err(e) = index.insert(new_id, emb).await {
-                warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
-                record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string()).await;
-            }
-            if let Err(e) = index.delete(id).await {
-                warn!(
-                    "LanceDB vector delete failed for superseded memory {}: {}",
-                    id, e
-                );
-                record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
+    // SEC-recall-1.7: keep LanceDB in sync with the new version row.
+    // Resolve the embedding to insert: either the freshly-supplied one, or
+    // the blob we carried forward inside the transaction. If neither exists
+    // (old row had NULL embedding), skip both insert and delete entirely.
+    // The old version's LanceDB row is only deleted AFTER the new insert
+    // succeeds -- otherwise a transient LanceDB failure would erase the
+    // memory's only vector row, leaving it invisible to vector search.
+    if let Some(index) = db.vector_index.as_ref() {
+        let resolved_embedding: Option<Vec<f32>> = if let Some(ref emb) = req.embedding {
+            Some(emb.clone())
+        } else {
+            let blob: Option<Vec<u8>> = db
+                .read(move |conn| {
+                    conn.query_row(
+                        "SELECT embedding_vec_1024 FROM memories WHERE id = ?1",
+                        rusqlite::params![new_id],
+                        |row| row.get::<_, Option<Vec<u8>>>(0),
+                    )
+                    .map_err(rusqlite_to_eng_error)
+                })
+                .await?;
+            blob.map(|b| {
+                b.chunks_exact(4)
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .collect()
+            })
+        };
+
+        if let Some(emb) = resolved_embedding {
+            match index.insert(new_id, &emb).await {
+                Ok(()) => {
+                    if let Err(e) = index.delete(id).await {
+                        warn!(
+                            "LanceDB vector delete failed for superseded memory {}: {}",
+                            id, e
+                        );
+                        record_vector_sync_failure(db, id, user_id, "delete", &e.to_string())
+                            .await;
+                    }
+                }
+                Err(e) => {
+                    warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
+                    record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string())
+                        .await;
+                    // Insert failed -- intentionally do NOT delete the old
+                    // row so the memory stays searchable via the previous
+                    // version's vector entry until the sync replay catches up.
+                }
             }
         }
+    }
+
+    // Carry forward or replace chunk embeddings for the new version.
+    if let Some(ref chunks) = req.chunk_embeddings {
+        write_chunks(db, new_id, chunks).await;
+    } else {
+        carry_forward_chunks(db, id, new_id).await;
     }
 
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
@@ -850,6 +1096,21 @@ fn update_transactional_rusqlite(
         tx.execute(
             "UPDATE memories SET embedding_vec_1024 = ?1 WHERE id = ?2",
             rusqlite::params![emb_blob, new_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+    } else {
+        // SEC-recall-1.7: when the caller does not supply a fresh embedding,
+        // carry forward the old version's `embedding_vec_1024` blob so the
+        // new version row stays vector-searchable. Without this, an update
+        // that only changes content would leave the new version row with a
+        // NULL embedding -- invisible to vector search until manually
+        // re-embedded. NULL on the source row stays NULL on the target row,
+        // which is what we want.
+        tx.execute(
+            "UPDATE memories SET embedding_vec_1024 = \
+                 (SELECT embedding_vec_1024 FROM memories WHERE id = ?1) \
+             WHERE id = ?2",
+            rusqlite::params![old_id, new_id],
         )
         .map_err(rusqlite_to_eng_error)?;
     }
@@ -1528,6 +1789,7 @@ mod tests {
             user_id: Some(user_id),
             space_id: None,
             parent_memory_id: None,
+            chunk_embeddings: None,
         }
     }
 

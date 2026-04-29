@@ -52,6 +52,7 @@ async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json
             is_static: None,
             space_id: None,
             parent_memory_id: None,
+            chunk_embeddings: None,
         },
     )
     .await;
@@ -299,6 +300,7 @@ async fn fetch_url(
             is_static: None,
             space_id: None,
             parent_memory_id: None,
+            chunk_embeddings: None,
         };
 
         if let Some(embedder) = state.current_embedder().await {

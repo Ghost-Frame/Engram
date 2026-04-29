@@ -2,6 +2,7 @@ use super::types::VectorHit;
 use crate::db::Database;
 use crate::EngError;
 use crate::Result;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use tracing::warn;
 
@@ -74,7 +75,11 @@ pub async fn vector_search(
                 let memory_id: i64 = row
                     .get(0)
                     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                hits.push(VectorHit { memory_id, rank });
+                hits.push(VectorHit {
+                    memory_id,
+                    distance: None,
+                    rank,
+                });
                 rank += 1;
             }
 
@@ -88,6 +93,47 @@ pub async fn vector_search(
             Ok(vec![])
         }
     }
+}
+
+/// Chunk-level vector search. Hits the per-chunk LanceDB table, decodes
+/// each result key back to its parent memory_id, and returns one hit per
+/// memory ranked by best (minimum) chunk distance. Falls back to an empty
+/// result if `db.chunk_vector_index` is absent.
+///
+/// `over_fetch_factor` should match `embedding_chunk_max_chunks` so that
+/// even when every memory has the maximum number of chunks we still see
+/// `limit` distinct memories.
+#[tracing::instrument(skip(db, embedding), fields(embedding_dim = embedding.len(), limit))]
+pub async fn chunk_vector_search(
+    db: &Database,
+    embedding: &[f32],
+    limit: usize,
+) -> Result<Vec<VectorHit>> {
+    let Some(index) = db.chunk_vector_index.as_ref() else {
+        return Ok(Vec::new());
+    };
+
+    let over_fetch_factor = db.embedding_chunk_max_chunks.max(1);
+    let raw_hits = index.search(embedding, limit * over_fetch_factor).await?;
+
+    let mut seen: HashSet<i64> = HashSet::with_capacity(limit);
+    let mut out: Vec<VectorHit> = Vec::with_capacity(limit);
+    let mut rank: usize = 0;
+    for hit in raw_hits {
+        let memory_id = super::lance_key_to_memory_id(hit.memory_id);
+        if seen.insert(memory_id) {
+            out.push(VectorHit {
+                memory_id,
+                distance: hit.distance,
+                rank,
+            });
+            rank += 1;
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -80,6 +80,7 @@ pub async fn receive_sync(
                     user_id: Some(user_id),
                     space_id: None,
                     parent_memory_id: None,
+                    chunk_embeddings: None,
                 };
                 memory::store(db, req).await?;
                 applied += 1;

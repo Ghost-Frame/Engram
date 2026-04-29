@@ -146,6 +146,7 @@ pub async fn extract_facts(app: &App, args: Value) -> Result<Value> {
                 user_id: Some(auth.user_id),
                 space_id: None,
                 parent_memory_id: None,
+                chunk_embeddings: None,
             },
         )
         .await?

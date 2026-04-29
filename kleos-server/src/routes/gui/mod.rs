@@ -706,6 +706,7 @@ async fn gui_create_memory(
             user_id: Some(user_id),
             space_id: None,
             parent_memory_id: None,
+            chunk_embeddings: None,
         },
     )
     .await?;
@@ -732,6 +733,7 @@ async fn gui_update_memory(
         tags: None,
         status: None,
         embedding: None,
+        chunk_embeddings: None,
     };
 
     let db = crate::extractors::resolve_db_for_user(&state, user_id).await?;

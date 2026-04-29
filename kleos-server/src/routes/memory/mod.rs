@@ -7,7 +7,7 @@ use axum::{
 use kleos_lib::intelligence::extraction::fast_extract_facts;
 use kleos_lib::memory::{
     self,
-    search::{faceted_search, hybrid_search},
+    search::{faceted_search, hybrid_search, hybrid_search_reranked},
     types::{FacetedSearchRequest, ListOptions, SearchRequest, StoreRequest, UpdateRequest},
 };
 use rusqlite::params;
@@ -102,17 +102,15 @@ async fn store_memory(
     }
 
     req.user_id = Some(auth.user_id);
-    if req.embedding.is_none() {
-        if let Some(embedder) = state.current_embedder().await {
-            match embedder.embed(&req.content).await {
-                Ok(emb) => req.embedding = Some(emb),
-                Err(e) => tracing::warn!("embedding failed for store: {}", e),
-            }
-        }
-    }
-    let embedded = req.embedding.is_some();
     let content = req.content.clone();
-    let result = memory::store(&db, req).await?;
+    let embedder = state.current_embedder().await;
+    let pre_embedded = req.embedding.is_some();
+    let result = if let Some(ref e) = embedder {
+        memory::store_with_chunks(&db, e.as_ref(), req).await?
+    } else {
+        memory::store(&db, req).await?
+    };
+    let embedded = pre_embedded || embedder.is_some();
     if let Some(existing_id) = result.duplicate_of {
         return Ok((
             StatusCode::OK,
@@ -232,17 +230,13 @@ async fn search_memories(
         source_filter: body.source_filter,
     };
 
-    let arc_results = hybrid_search(&db, req).await?;
-    let mut results = (*arc_results).clone();
-
-    {
-        let reranker_guard = state.reranker.read().await;
-        if let Some(ref reranker) = *reranker_guard {
-            if let Err(e) = reranker.rerank_results(&body_query, &mut results).await {
-                tracing::warn!("reranker failed, using original order: {}", e);
-            }
-        }
-    }
+    // SEC-recall-1.5: route the rerank through the library wrapper so any
+    // future in-process caller (context, MCP, sidecar) gets the same blend
+    // by supplying a reranker. The route still pulls the reranker from
+    // AppState; the wrapper handles the None case as a no-op.
+    let reranker = state.current_reranker().await;
+    let arc_results = hybrid_search_reranked(&db, req, &body_query, reranker).await?;
+    let results = (*arc_results).clone();
 
     let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
     let abstained = results.is_empty();
@@ -265,6 +259,26 @@ async fn search_memories(
             }
             if let Some(ref ch) = r.channels {
                 item["channels"] = json!(ch);
+            }
+            // SEC-recall-1.6: surface the per-channel breakdown that the
+            // backend SearchResult already carries. Operators previously saw
+            // only the compound `score` (RRF * decay * boosts), which
+            // collapses recall signal into a narrow band. Each field stays
+            // omitted when None so the wire shape remains compact.
+            if let Some(s) = r.semantic_score {
+                item["semantic_score"] = json!(s);
+            }
+            if let Some(s) = r.fts_score {
+                item["fts_score"] = json!(s);
+            }
+            if let Some(s) = r.graph_score {
+                item["graph_score"] = json!(s);
+            }
+            if let Some(s) = r.combined_score {
+                item["combined_score"] = json!(s);
+            }
+            if let Some(s) = r.temporal_boost {
+                item["temporal_boost"] = json!(s);
             }
             if let Some(ref linked) = r.linked {
                 item["linked"] = json!(linked);
@@ -366,6 +380,14 @@ async fn explain_search(
                     "fused": r.combined_score,
                     "reranked": r.reranked.unwrap_or(false),
                     "reranker_ms": r.reranker_ms,
+                },
+                "multipliers": {
+                    "rrf": r.rrf_pre_boost,
+                    "decay": r.decay_factor,
+                    "pagerank": r.pr_boost,
+                    "source_count": r.src_boost,
+                    "static": r.stat_boost,
+                    "contradiction": r.contradiction,
                 },
             })
         })

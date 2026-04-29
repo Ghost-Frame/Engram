@@ -136,6 +136,7 @@ pub fn start_pagerank_refresh_job(
     let token = CancellationToken::new();
     let cancel = token.clone();
     let interval = Duration::from_secs(config.pagerank_refresh_interval_secs.max(10));
+    let notify = db.pagerank_notify.clone();
 
     let handle = tokio::spawn(async move {
         info!(
@@ -151,6 +152,18 @@ pub fn start_pagerank_refresh_job(
                 _ = cancel.cancelled() => {
                     info!("pagerank refresh job shutting down");
                     break;
+                }
+                _ = notify.notified() => {
+                    info!("pagerank refresh triggered by notify");
+                    match run_once(&db, &config, &skip_until).await {
+                        Ok(outcomes) => {
+                            let refreshed = outcomes.iter().filter(|(_, ok)| *ok).count();
+                            if refreshed > 0 {
+                                info!(users_refreshed = refreshed, "pagerank batch complete (notify)");
+                            }
+                        }
+                        Err(e) => error!(error = %e, "pagerank notify cycle failed"),
+                    }
                 }
                 _ = tokio::time::sleep(interval) => {
                     match run_once(&db, &config, &skip_until).await {
@@ -208,6 +221,7 @@ mod tests {
             user_id: Some(user_id),
             space_id: None,
             parent_memory_id: None,
+            chunk_embeddings: None,
         }
     }
 

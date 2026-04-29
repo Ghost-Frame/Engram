@@ -314,6 +314,7 @@ mod tests {
             user_id: Some(user_id),
             space_id: None,
             parent_memory_id: None,
+            chunk_embeddings: None,
         }
     }
 

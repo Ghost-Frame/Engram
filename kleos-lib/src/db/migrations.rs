@@ -451,6 +451,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_gate_requests_session_id),
         transactional: true,
     },
+    Migration {
+        version: 51,
+        description: "memory_chunks",
+        up: run_migration_memory_chunks,
+        down: Some(down_migration_memory_chunks),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3294,6 +3301,34 @@ fn run_migration_gate_requests_session_id(conn: &rusqlite::Connection) -> Result
 fn down_migration_gate_requests_session_id(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "DROP INDEX IF EXISTS idx_gate_requests_session_open;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+fn run_migration_memory_chunks(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS memory_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            chunk_idx INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            embedding_vec_1024 BLOB,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(memory_id, chunk_idx)
+        );
+        CREATE INDEX IF NOT EXISTS idx_chunks_memory ON memory_chunks(memory_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 51 complete: memory_chunks table created");
+    Ok(())
+}
+
+fn down_migration_memory_chunks(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_chunks_memory;
+         DROP TABLE IF EXISTS memory_chunks;",
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
