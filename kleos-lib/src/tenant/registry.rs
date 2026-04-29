@@ -42,6 +42,7 @@ impl TenantRegistry {
         data_dir: impl Into<PathBuf>,
         config: TenantConfig,
         vector_dimensions: usize,
+        use_chunk_vector_search: bool,
     ) -> Result<Self> {
         let data_root = data_dir.into();
 
@@ -54,6 +55,7 @@ impl TenantRegistry {
             data_root.clone(),
             config.clone(),
             vector_dimensions,
+            use_chunk_vector_search,
         ));
 
         info!("tenant registry initialized at {}", data_root.display());
@@ -75,6 +77,7 @@ impl TenantRegistry {
             data_root.clone(),
             config.clone(),
             vector_dimensions,
+            false,
         ));
 
         Ok(Self {

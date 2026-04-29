@@ -71,6 +71,7 @@ impl TestApp {
                 tmp.path().to_path_buf(),
                 TenantConfig::default(),
                 config.vector_dimensions,
+                false,
             )
             .expect("tenant registry"),
         );
