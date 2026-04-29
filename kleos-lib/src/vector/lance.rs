@@ -13,7 +13,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
 
-const TABLE_NAME: &str = "memory_vectors";
+pub const DEFAULT_TABLE_NAME: &str = "memory_vectors";
+pub const CHUNK_TABLE_NAME: &str = "memory_chunk_vectors";
 const VECTOR_COLUMN: &str = "vector";
 
 /// Minimum number of rows before an IVF_HNSW_PQ index is built. Below this
@@ -73,11 +74,20 @@ fn single_embedding_batch(
 pub struct LanceIndex {
     db: lancedb::Connection,
     table: RwLock<Option<lancedb::Table>>,
+    table_name: String,
     dimensions: usize,
 }
 
 impl LanceIndex {
     pub async fn open(path: impl AsRef<str>, dimensions: usize) -> Result<Self> {
+        Self::open_with_table(path, dimensions, DEFAULT_TABLE_NAME).await
+    }
+
+    pub async fn open_with_table(
+        path: impl AsRef<str>,
+        dimensions: usize,
+        table_name: &str,
+    ) -> Result<Self> {
         let db = lancedb::connect(path.as_ref())
             .execute()
             .await
@@ -86,6 +96,7 @@ impl LanceIndex {
         let index = Self {
             db,
             table: RwLock::new(None),
+            table_name: table_name.to_string(),
             dimensions,
         };
         let _ = index.ensure_table().await?;
@@ -109,10 +120,10 @@ impl LanceIndex {
             .await
             .map_err(|e| lance_err("list LanceDB tables", e))?;
 
-        let table = if table_names.iter().any(|name| name == TABLE_NAME) {
+        let table = if table_names.iter().any(|name| name == &self.table_name) {
             let existing = self
                 .db
-                .open_table(TABLE_NAME)
+                .open_table(&self.table_name)
                 .execute()
                 .await
                 .map_err(|e| lance_err("open LanceDB vector table", e))?;
@@ -133,14 +144,14 @@ impl LanceIndex {
                     "LanceDB table '{}' has stale user_id column (pre-Phase-5.21 schema). \
                      Dropping and recreating with new schema. \
                      The index will be repopulated by the next ingestion/dreamer sweep.",
-                    TABLE_NAME
+                    self.table_name
                 );
                 self.db
-                    .drop_table(TABLE_NAME, &[])
+                    .drop_table(&self.table_name, &[])
                     .await
                     .map_err(|e| lance_err("drop stale LanceDB vector table", e))?;
                 self.db
-                    .create_empty_table(TABLE_NAME, vector_schema(self.dimensions))
+                    .create_empty_table(&self.table_name, vector_schema(self.dimensions))
                     .execute()
                     .await
                     .map_err(|e| lance_err("recreate LanceDB vector table after schema wipe", e))?
@@ -149,7 +160,7 @@ impl LanceIndex {
             }
         } else {
             self.db
-                .create_empty_table(TABLE_NAME, vector_schema(self.dimensions))
+                .create_empty_table(&self.table_name, vector_schema(self.dimensions))
                 .execute()
                 .await
                 .map_err(|e| lance_err("create LanceDB vector table", e))?

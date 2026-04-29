@@ -40,6 +40,7 @@ pub async fn correct_memory(
             user_id: Some(user_id),
             space_id: original.space_id,
             parent_memory_id: None,
+            chunk_embeddings: None,
         },
     )
     .await?;

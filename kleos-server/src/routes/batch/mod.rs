@@ -129,7 +129,7 @@ async fn execute_store(
         };
     }
 
-    let mut req = StoreRequest {
+    let req = StoreRequest {
         content: body.content,
         category: body.category.unwrap_or_else(|| "general".to_string()),
         source: body.source.unwrap_or_else(|| "batch".to_string()),
@@ -141,17 +141,16 @@ async fn execute_store(
         user_id: Some(user_id),
         embedding: None,
         parent_memory_id: None,
+        chunk_embeddings: None,
     };
 
-    // Embed if available
-    if let Some(embedder) = state.current_embedder().await {
-        match embedder.embed(&req.content).await {
-            Ok(emb) => req.embedding = Some(emb),
-            Err(e) => tracing::warn!("batch store embed failed: {}", e),
-        }
-    }
+    let store_outcome = if let Some(embedder) = state.current_embedder().await {
+        memory::store_with_chunks(db, embedder.as_ref(), req).await
+    } else {
+        memory::store(db, req).await
+    };
 
-    match memory::store(db, req).await {
+    match store_outcome {
         Ok(store_result) => {
             if let Some(existing_id) = store_result.duplicate_of {
                 BatchResult {
@@ -200,6 +199,7 @@ async fn execute_update(
         is_static: None,
         status: None,
         embedding: None,
+        chunk_embeddings: None,
     };
 
     match memory::update(db, body.id, req, user_id).await {

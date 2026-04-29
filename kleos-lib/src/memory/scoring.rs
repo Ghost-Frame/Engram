@@ -10,7 +10,13 @@ pub const SEARCH_PREFERENCE_VECTOR_FLOOR: f64 = 0.12;
 pub const SEARCH_REASONING_VECTOR_FLOOR: f64 = 0.10;
 pub const SEARCH_GENERALIZATION_VECTOR_FLOOR: f64 = 0.12;
 pub const SEARCH_PERSONALITY_MIN_SCORE: f64 = 0.30;
-pub const DECAY_FLOOR: f64 = 0.3;
+/// Lower bound on the FSRS decay multiplier applied per candidate inside
+/// `hybrid_search`. At retrievability=0 the multiplier is `DECAY_FLOOR`;
+/// at retrievability=1 it is 1.0. Lowered from 0.3 (R8 P-021) so the
+/// dynamic range now spans an order of magnitude per memory rather than
+/// a third, which keeps relevant-but-old memories rankable while still
+/// letting fresh memories outscore them.
+pub const DECAY_FLOOR: f64 = 0.1;
 pub const PAGERANK_WEIGHT: f64 = 0.15;
 pub const DEFAULT_VECTOR_FLOOR: f64 = 0.15;
 pub const RRF_K: f64 = 60.0;

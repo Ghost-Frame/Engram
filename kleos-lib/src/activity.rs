@@ -389,6 +389,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
             is_static: None,
             space_id: None,
             parent_memory_id: None,
+            chunk_embeddings: None,
         },
     )
     .await?;

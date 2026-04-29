@@ -444,6 +444,7 @@ pub struct Config {
     pub lance_index_path: Option<String>,
     pub vector_dimensions: usize,
     pub use_lance_index: bool,
+    pub use_chunk_vector_search: bool,
     /// Whether the GUI is enabled. Set via ENGRAM_GUI_PASSWORD (any non-empty
     /// value enables the GUI). A separate gui_password field can be added later
     /// when an actual password gate is needed; for now the field is a bool.
@@ -577,6 +578,7 @@ impl Default for Config {
             lance_index_path: None,
             vector_dimensions: 1024,
             use_lance_index: true,
+            use_chunk_vector_search: false,
             gui_enabled: false,
             gui_build_dir: None,
             pagerank_refresh_interval_secs: 300,
@@ -817,6 +819,10 @@ impl Config {
         }
         if let Ok(v) = std::env::var("ENGRAM_USE_LANCE_INDEX") {
             config.use_lance_index = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = std::env::var("KLEOS_USE_CHUNK_VECTOR_SEARCH") {
+            config.use_chunk_vector_search =
+                v == "1" || v.eq_ignore_ascii_case("true");
         }
         if let Ok(v) = std::env::var("ENGRAM_GUI_PASSWORD") {
             config.gui_enabled = !v.is_empty();

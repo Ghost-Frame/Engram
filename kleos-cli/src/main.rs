@@ -838,8 +838,29 @@ async fn main() {
                             .and_then(|x| x.as_f64())
                             .map(|s| format!("{:.3}", s))
                             .unwrap_or_else(|| "?".to_string());
+                        // SEC-recall-1.6: surface the per-channel breakdown
+                        // when the server returns it. Each field is optional;
+                        // a "-" placeholder keeps columns aligned for hits that
+                        // arrived only via FTS or graph (no cosine signal).
+                        let semantic = item
+                            .get("semantic_score")
+                            .and_then(|x| x.as_f64())
+                            .map(|s| format!("{:.3}", s))
+                            .unwrap_or_else(|| "-".to_string());
+                        let fts = item
+                            .get("fts_score")
+                            .and_then(|x| x.as_f64())
+                            .map(|s| format!("{:.3}", s))
+                            .unwrap_or_else(|| "-".to_string());
                         let content = item.get("content").and_then(|x| x.as_str()).unwrap_or("");
-                        println!("#{} [{}] {}", id, score, truncate(content, 100));
+                        println!(
+                            "#{} [final={} cos={} bm25={}] {}",
+                            id,
+                            score,
+                            semantic,
+                            fts,
+                            truncate(content, 100)
+                        );
                     }
                 }
                 Err(e) => eprintln!("Error: {}", e),

@@ -38,36 +38,29 @@ pub async fn process(
             continue;
         }
 
-        let embedding = match &ctx.embedder {
-            Some(embedder) => match embedder.embed(content).await {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!(
-                        "ingestion embedder failed for chunk {}: {} -- continuing without vector",
-                        chunk.index,
-                        e
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
-
         let req = StoreRequest {
             content: content.to_string(),
             category: options.category.clone(),
             source: options.source.clone(),
             importance: 5,
             tags: None,
-            embedding,
+            embedding: None,
             session_id: None,
             is_static: None,
             user_id: Some(options.user_id),
             space_id: options.space_id,
             parent_memory_id: None,
+            chunk_embeddings: None,
         };
 
-        match memory::store(db.as_ref(), req).await {
+        let store_outcome = match &ctx.embedder {
+            Some(embedder) => {
+                memory::store_with_chunks(db.as_ref(), embedder.as_ref(), req).await
+            }
+            None => memory::store(db.as_ref(), req).await,
+        };
+
+        match store_outcome {
             Ok(result) => {
                 if result.duplicate_of.is_some() {
                     continue;

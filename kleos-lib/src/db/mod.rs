@@ -21,6 +21,12 @@ pub struct Database {
     db_path: String,
     pools: DatabasePools,
     pub vector_index: Option<Arc<dyn VectorIndex>>,
+    pub chunk_vector_index: Option<Arc<dyn VectorIndex>>,
+    pub pagerank_notify: Arc<tokio::sync::Notify>,
+    pub use_chunk_vector_search: bool,
+    pub embedding_chunk_max_chars: usize,
+    pub embedding_chunk_overlap: usize,
+    pub embedding_chunk_max_chunks: usize,
     is_tenant: bool,
 }
 
@@ -78,12 +84,18 @@ impl Database {
         };
         info!("database connected: {}{}", db_path, encrypted_label);
 
-        let vector_index = open_vector_index(config).await;
+        let (vector_index, chunk_vector_index) = open_vector_indices(config).await;
 
         Ok(Self {
             db_path: db_path.clone(),
             pools,
             vector_index,
+            chunk_vector_index,
+            pagerank_notify: Arc::new(tokio::sync::Notify::new()),
+            use_chunk_vector_search: config.use_chunk_vector_search,
+            embedding_chunk_max_chars: config.embedding_chunk_max_chars,
+            embedding_chunk_overlap: config.embedding_chunk_overlap,
+            embedding_chunk_max_chunks: config.embedding_chunk_max_chunks,
             is_tenant: false,
         })
     }
@@ -110,6 +122,12 @@ impl Database {
             db_path: ":memory:".to_string(),
             pools,
             vector_index: None,
+            chunk_vector_index: None,
+            pagerank_notify: Arc::new(tokio::sync::Notify::new()),
+            use_chunk_vector_search: false,
+            embedding_chunk_max_chars: 1440,
+            embedding_chunk_overlap: 160,
+            embedding_chunk_max_chunks: 6,
             is_tenant: false,
         })
     }
@@ -147,6 +165,12 @@ impl Database {
             db_path: db_path.to_string(),
             pools,
             vector_index,
+            chunk_vector_index: None,
+            pagerank_notify: Arc::new(tokio::sync::Notify::new()),
+            use_chunk_vector_search: false,
+            embedding_chunk_max_chars: 1440,
+            embedding_chunk_overlap: 160,
+            embedding_chunk_max_chunks: 6,
             is_tenant: true,
         })
     }
@@ -178,6 +202,12 @@ impl Database {
             db_path: uri,
             pools,
             vector_index: None,
+            chunk_vector_index: None,
+            pagerank_notify: Arc::new(tokio::sync::Notify::new()),
+            use_chunk_vector_search: false,
+            embedding_chunk_max_chars: 1440,
+            embedding_chunk_overlap: 160,
+            embedding_chunk_max_chunks: 6,
             is_tenant: true,
         })
     }
@@ -255,9 +285,11 @@ impl Database {
     }
 }
 
-async fn open_vector_index(config: &Config) -> Option<Arc<dyn VectorIndex>> {
+async fn open_vector_indices(
+    config: &Config,
+) -> (Option<Arc<dyn VectorIndex>>, Option<Arc<dyn VectorIndex>>) {
     if !config.use_lance_index {
-        return None;
+        return (None, None);
     }
 
     let lance_path = config.lance_index_path.clone().unwrap_or_else(|| {
@@ -267,7 +299,7 @@ async fn open_vector_index(config: &Config) -> Option<Arc<dyn VectorIndex>> {
             .into_owned()
     });
 
-    match LanceIndex::open(&lance_path, config.vector_dimensions).await {
+    let memory_index = match LanceIndex::open(&lance_path, config.vector_dimensions).await {
         Ok(index) => {
             info!("LanceDB vector index connected: {}", lance_path);
             Some(Arc::new(index) as Arc<dyn VectorIndex>)
@@ -276,5 +308,24 @@ async fn open_vector_index(config: &Config) -> Option<Arc<dyn VectorIndex>> {
             warn!("LanceDB vector index unavailable: {}", e);
             None
         }
-    }
+    };
+
+    let chunk_index = match LanceIndex::open_with_table(
+        &lance_path,
+        config.vector_dimensions,
+        crate::vector::lance::CHUNK_TABLE_NAME,
+    )
+    .await
+    {
+        Ok(index) => {
+            info!("LanceDB chunk vector index connected: {}", lance_path);
+            Some(Arc::new(index) as Arc<dyn VectorIndex>)
+        }
+        Err(e) => {
+            warn!("LanceDB chunk vector index unavailable: {}", e);
+            None
+        }
+    };
+
+    (memory_index, chunk_index)
 }

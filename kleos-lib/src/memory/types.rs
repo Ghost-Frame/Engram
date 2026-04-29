@@ -268,6 +268,8 @@ pub struct StoreRequest {
     pub importance: i32,
     pub tags: Option<Vec<String>>,
     pub embedding: Option<Vec<f32>>,
+    #[serde(skip, default)]
+    pub chunk_embeddings: Option<Vec<(String, Vec<f32>)>>,
     pub session_id: Option<String>,
     pub is_static: Option<bool>,
     #[serde(alias = "userId")]
@@ -348,6 +350,18 @@ pub struct SearchResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub rrf_pre_boost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decay_factor: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_boost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub src_boost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stat_boost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contradiction: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub linked: Option<Vec<LinkedMemory>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_chain: Option<Vec<VersionChainEntry>>,
@@ -388,6 +402,8 @@ pub struct UpdateRequest {
     pub is_static: Option<bool>,
     pub status: Option<String>,
     pub embedding: Option<Vec<f32>>,
+    #[serde(skip, default)]
+    pub chunk_embeddings: Option<Vec<(String, Vec<f32>)>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -525,9 +541,16 @@ pub struct FtsHit {
     pub bm25_score: f64,
 }
 
-/// Result from vector ANN search -- id and its rank position (0-based, ascending similarity)
+/// Result from vector ANN search -- id, distance (cosine distance from LanceDB),
+/// and rank position (0-based, ascending similarity).
+///
+/// `distance` is `Some(d)` when LanceDB returns the `_distance` column on the hit.
+/// For cosine, `1.0 - d` is the cosine similarity. The libSQL `vector_top_k`
+/// fallback path does not project distance, so it produces `None` and downstream
+/// scoring should not reject those hits on the floor.
 #[derive(Debug, Clone)]
 pub struct VectorHit {
     pub memory_id: i64,
+    pub distance: Option<f32>,
     pub rank: usize,
 }

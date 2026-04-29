@@ -319,3 +319,182 @@ pub async fn replay_vector_sync_pending_for_user(
     process_pending_batch(db, index.as_ref(), pending, &mut report).await?;
     Ok(report)
 }
+
+/// Result of a chunk-and-embedding backfill pass.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BackfillReport {
+    pub scanned: usize,
+    pub primary_embeddings_filled: usize,
+    pub chunk_rows_written: usize,
+    pub failures: usize,
+}
+
+/// Walk every active memory that is missing either a primary embedding
+/// (`embedding_vec_1024 IS NULL`) or any rows in `memory_chunks`, and use
+/// `embedder` to populate them. This is the path called by the admin
+/// backfill route on production deploys (after migration 51 lands and
+/// existing memories haven't been chunked yet) and by harness-seed (which
+/// inserts memory rows via raw SQL and never gets to `memory::store`).
+///
+/// The function is best-effort and rate-limited (one memory at a time
+/// with a small sleep between iterations) because the ONNX session is a
+/// Mutex and concurrency does not help. Failures are counted; the loop
+/// continues so a single bad row does not block the rest.
+#[tracing::instrument(skip(db, embedder))]
+pub async fn backfill_missing_embeddings(
+    db: &Database,
+    embedder: &dyn crate::embeddings::EmbeddingProvider,
+) -> Result<BackfillReport> {
+    let chunk_max_chars = db.embedding_chunk_max_chars;
+    let chunk_overlap = db.embedding_chunk_overlap;
+    let chunk_max_chunks = db.embedding_chunk_max_chunks;
+
+    let candidates: Vec<(i64, String, bool, bool)> = db
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT m.id, m.content, \
+                            CASE WHEN m.embedding_vec_1024 IS NULL THEN 1 ELSE 0 END AS need_primary, \
+                            CASE WHEN NOT EXISTS (SELECT 1 FROM memory_chunks mc WHERE mc.memory_id = m.id) THEN 1 ELSE 0 END AS need_chunks \
+                     FROM memories m \
+                     WHERE m.is_forgotten = 0 AND m.is_latest = 1 AND TRIM(m.content) != '' \
+                       AND (m.embedding_vec_1024 IS NULL \
+                            OR NOT EXISTS (SELECT 1 FROM memory_chunks mc WHERE mc.memory_id = m.id))",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows: Vec<_> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)? != 0,
+                        row.get::<_, i64>(3)? != 0,
+                    ))
+                })
+                .map_err(rusqlite_to_eng_error)?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+        .await?;
+
+    let mut report = BackfillReport {
+        scanned: candidates.len(),
+        ..Default::default()
+    };
+
+    for (memory_id, content, need_primary, need_chunks) in candidates {
+        if need_primary {
+            match embedder.embed(&content).await {
+                Ok(emb) => {
+                    if let Err(e) = persist_primary_embedding(db, memory_id, &emb).await {
+                        warn!("primary embedding persist failed for {}: {}", memory_id, e);
+                        report.failures += 1;
+                    } else {
+                        report.primary_embeddings_filled += 1;
+                    }
+                }
+                Err(e) => {
+                    warn!("embed failed for {}: {}", memory_id, e);
+                    report.failures += 1;
+                }
+            }
+        }
+
+        if need_chunks {
+            match crate::embeddings::chunking::chunk_and_embed(
+                embedder,
+                &content,
+                chunk_max_chars,
+                chunk_overlap,
+                chunk_max_chunks,
+            )
+            .await
+            {
+                Ok(pairs) if !pairs.is_empty() => {
+                    let n = pairs.len();
+                    super::write_chunks(db, memory_id, &pairs).await;
+                    report.chunk_rows_written += n;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!("chunk_and_embed failed for {}: {}", memory_id, e);
+                    report.failures += 1;
+                }
+            }
+        }
+
+        // Light rate-limit: ONNX session is a single-threaded mutex, so
+        // queuing aggressively just adds contention. 50ms keeps a backfill
+        // of ~10k memories under 10 minutes.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    Ok(report)
+}
+
+async fn persist_primary_embedding(db: &Database, memory_id: i64, emb: &[f32]) -> Result<()> {
+    let blob: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE memories SET embedding_vec_1024 = ?1 WHERE id = ?2",
+            params![blob, memory_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await?;
+
+    if let Some(index) = db.vector_index.as_ref() {
+        index.insert(memory_id, emb).await?;
+    }
+    Ok(())
+}
+
+#[tracing::instrument(skip(db))]
+pub async fn build_lance_chunk_index_from_existing(db: &Database) -> Result<usize> {
+    let Some(index) = db.chunk_vector_index.as_ref() else {
+        return Ok(0);
+    };
+
+    let rows: Vec<(i64, usize, Vec<u8>)> = db
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT mc.memory_id, mc.chunk_idx, mc.embedding_vec_1024
+                     FROM memory_chunks mc
+                     JOIN memories m ON m.id = mc.memory_id
+                     WHERE mc.embedding_vec_1024 IS NOT NULL
+                       AND m.is_forgotten = 0
+                       AND m.is_latest = 1",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let rows: Vec<_> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, usize>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                })
+                .map_err(rusqlite_to_eng_error)?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+        .await?;
+
+    let mut count = 0usize;
+    for (memory_id, chunk_idx, emb_blob) in rows {
+        let embedding = blob_to_embedding(&emb_blob);
+        let key = super::chunk_lance_key(memory_id, chunk_idx);
+        index.insert(key, &embedding).await?;
+        count += 1;
+        #[allow(clippy::manual_is_multiple_of)]
+        if count % 1000 == 0 {
+            tracing::info!(count, "rebuilt LanceDB chunk vector index rows");
+        }
+    }
+
+    Ok(count)
+}

@@ -1,7 +1,31 @@
+use crate::Result;
+use crate::embeddings::EmbeddingProvider;
 use regex::Regex;
 use std::sync::LazyLock;
 
 static SENTENCE_BREAK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[.!?]\s").unwrap());
+
+/// Chunk `content` and embed each chunk via `embedder`. Returns the
+/// (chunk_text, embedding) pairs ready for `StoreRequest::chunk_embeddings`
+/// or direct insert into `memory_chunks`.
+///
+/// Empty or whitespace-only input returns an empty vec. Otherwise the
+/// returned vec has at least one entry (a single chunk equal to the full
+/// content when length is below `chunk_max_chars`).
+pub async fn chunk_and_embed(
+    embedder: &dyn EmbeddingProvider,
+    content: &str,
+    chunk_max_chars: usize,
+    chunk_overlap: usize,
+    chunk_max_chunks: usize,
+) -> Result<Vec<(String, Vec<f32>)>> {
+    let chunks = chunk_text_with_limit(content, chunk_max_chars, chunk_overlap, chunk_max_chunks);
+    if chunks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let embeddings = embedder.embed_batch(&chunks).await?;
+    Ok(chunks.into_iter().zip(embeddings).collect())
+}
 
 /// Split text into overlapping chunks of roughly `chunk_size` characters
 /// with `overlap` chars of context. Default max 6 chunks.

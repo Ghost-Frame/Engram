@@ -100,6 +100,10 @@ pub fn router() -> Router<AppState> {
             "/admin/vector/rebuild-index",
             post(admin_vector_rebuild_index),
         )
+        // Vector health diagnostic
+        .route("/admin/vector_health", get(admin_vector_health))
+        // Chunk + embedding backfill (Phase 2 rollout)
+        .route("/admin/backfill_chunks", post(admin_backfill_chunks))
         // Point-in-time recovery
         .route("/admin/pitr/snapshots", get(admin_pitr_snapshots))
         .route("/admin/pitr/prepare-restore", post(admin_pitr_prepare))
@@ -1086,6 +1090,100 @@ async fn admin_vector_rebuild_index(
         "rebuilt": rebuilt,
         "row_count": row_count,
         "min_rows_for_index": kleos_lib::vector::lance::MIN_ROWS_FOR_INDEX,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Vector health diagnostic
+// ---------------------------------------------------------------------------
+
+async fn admin_vector_health(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+
+    let lance_row_count: Option<usize> = if let Some(ref idx) = state.db.vector_index {
+        idx.count().await.ok()
+    } else {
+        None
+    };
+
+    let chunk_lance_row_count: Option<usize> = if let Some(ref idx) = state.db.chunk_vector_index {
+        idx.count().await.ok()
+    } else {
+        None
+    };
+
+    let lance_index_built: Option<bool> = if let Some(ref idx) = state.db.vector_index {
+        Some(idx.rebuild_index(false).await.unwrap_or(false))
+    } else {
+        None
+    };
+
+    let (memories_active_count, chunk_row_count, sync_pending_count): (i64, i64, i64) = state
+        .db
+        .read(|conn| {
+            let active: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0 AND is_latest = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let chunks: i64 = conn
+                .query_row("SELECT COUNT(*) FROM memory_chunks", [], |row| row.get(0))
+                .unwrap_or(0);
+            let pending: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM vector_sync_pending",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            Ok((active, chunks, pending))
+        })
+        .await
+        .unwrap_or((0, 0, 0));
+
+    Ok(Json(json!({
+        "lance_row_count": lance_row_count,
+        "chunk_lance_row_count": chunk_lance_row_count,
+        "memories_active_count": memories_active_count,
+        "chunk_row_count": chunk_row_count,
+        "lance_index_built": lance_index_built,
+        "vector_sync_pending_count": sync_pending_count,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Chunk + embedding backfill
+// ---------------------------------------------------------------------------
+
+async fn admin_backfill_chunks(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+
+    let embedder = state
+        .current_embedder()
+        .await
+        .ok_or_else(|| {
+            AppError(kleos_lib::EngError::Internal(
+                "no embedder configured; backfill requires an active embedding provider".into(),
+            ))
+        })?;
+
+    let report = kleos_lib::memory::backfill_missing_embeddings(&state.db, embedder.as_ref())
+        .await
+        .map_err(AppError)?;
+
+    Ok(Json(json!({
+        "scanned": report.scanned,
+        "primary_embeddings_filled": report.primary_embeddings_filled,
+        "chunk_rows_written": report.chunk_rows_written,
+        "failures": report.failures,
     })))
 }
 

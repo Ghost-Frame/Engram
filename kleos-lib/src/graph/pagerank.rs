@@ -857,10 +857,12 @@ pub async fn compute_pagerank_by_communities(
 }
 
 /// Ensure the pagerank cache is populated for this user. If empty, runs a
-/// synchronous compute and persists the result. Subsequent calls are cheap
-/// (single COUNT query that returns early).
+/// Non-blocking pagerank check. If `memory_pagerank` is empty, signals the
+/// background refresh job to compute ASAP and returns immediately. The search
+/// pipeline uses neutral `pr_boost = 1.0` (pagerank_score = 0.0) until scores
+/// are populated by the background job.
 #[tracing::instrument(skip(db))]
-pub async fn ensure_pagerank_for_user(db: &Database, user_id: i64) -> Result<()> {
+pub async fn ensure_pagerank_for_user(db: &Database, _user_id: i64) -> Result<()> {
     let count: i64 = db
         .read(move |conn| {
             conn.query_row("SELECT COUNT(*) FROM memory_pagerank LIMIT 1", [], |row| {
@@ -871,10 +873,7 @@ pub async fn ensure_pagerank_for_user(db: &Database, user_id: i64) -> Result<()>
         .await?;
 
     if count == 0 {
-        let scores = compute_pagerank_for_user(db, user_id).await?;
-        if !scores.is_empty() {
-            persist_pagerank(db, &scores).await?;
-        }
+        db.pagerank_notify.notify_one();
     }
     Ok(())
 }
@@ -915,6 +914,7 @@ mod tests {
             user_id: Some(user_id),
             space_id: None,
             parent_memory_id: None,
+            chunk_embeddings: None,
         }
     }
 
@@ -1094,6 +1094,12 @@ mod tests {
 
         assert_eq!(pagerank_count(&db, user_id).await, 0);
 
+        // ensure_pagerank_for_user is now non-blocking: it signals the
+        // background job instead of computing synchronously. In tests (no
+        // background job), manually compute to verify ranking.
+        let scores = compute_pagerank_for_user(&db, user_id).await.expect("compute");
+        persist_pagerank(&db, &scores).await.expect("persist");
+
         let results = hybrid_search(&db, search_request("alpha common signal", user_id, 3))
             .await
             .expect("hybrid search succeeds");
@@ -1107,7 +1113,6 @@ mod tests {
     async fn cached_search_returns_under_100ms_after_warm() {
         let db = Database::connect_memory().await.expect("in-memory db");
         let user_id = 1;
-        let mut created = 0_i64;
 
         for i in 0..100 {
             let content = format!(
@@ -1116,19 +1121,19 @@ mod tests {
                 i * 31,
                 i * 43
             );
-            let stored = memory::store(&db, store_request(&content, user_id))
+            memory::store(&db, store_request(&content, user_id))
                 .await
                 .expect("store memory for warm search");
-            if stored.created {
-                created += 1;
-            }
         }
+
+        // Pre-compute pagerank since ensure_pagerank_for_user is non-blocking
+        let scores = compute_pagerank_for_user(&db, user_id).await.expect("compute");
+        persist_pagerank(&db, &scores).await.expect("persist");
 
         let warmup = hybrid_search(&db, search_request("warm cache token", user_id, 10))
             .await
             .expect("warmup search succeeds");
         assert!(!warmup.is_empty());
-        assert_eq!(pagerank_count(&db, user_id).await, created);
 
         let started = Instant::now();
         let results = hybrid_search(&db, search_request("warm cache token", user_id, 10))
