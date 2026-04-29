@@ -511,6 +511,10 @@ const MIGRATION_READD_USER_ID_PROJECTS: i64 = 44;
 const MIGRATION_READD_USER_ID_BROCA: i64 = 45;
 const MIGRATION_IDENTITY_TABLES: i64 = 46;
 const MIGRATION_AUDIT_IDENTITY_COLUMNS: i64 = 47;
+const MIGRATION_DROP_API_KEYS_AGENT_FK: i64 = 48;
+const MIGRATION_SUPERVISOR_INJECTIONS: i64 = 49;
+const MIGRATION_GATE_REQUESTS_SESSION_ID: i64 = 50;
+const MIGRATION_MEMORY_CHUNKS: i64 = 51;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -877,6 +881,30 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 47: audit_log_identity_columns");
         run_migration_audit_identity_columns(conn)?;
         record_migration(conn, MIGRATION_AUDIT_IDENTITY_COLUMNS, "audit_log_identity_columns")?;
+    }
+
+    if current_version < MIGRATION_DROP_API_KEYS_AGENT_FK {
+        info!("Running migration 48: drop_api_keys_agent_fk");
+        run_migration_drop_api_keys_agent_fk(conn)?;
+        record_migration(conn, MIGRATION_DROP_API_KEYS_AGENT_FK, "drop_api_keys_agent_fk")?;
+    }
+
+    if current_version < MIGRATION_SUPERVISOR_INJECTIONS {
+        info!("Running migration 49: supervisor_injections");
+        run_migration_supervisor_injections(conn)?;
+        record_migration(conn, MIGRATION_SUPERVISOR_INJECTIONS, "supervisor_injections")?;
+    }
+
+    if current_version < MIGRATION_GATE_REQUESTS_SESSION_ID {
+        info!("Running migration 50: gate_requests_session_id");
+        run_migration_gate_requests_session_id(conn)?;
+        record_migration(conn, MIGRATION_GATE_REQUESTS_SESSION_ID, "gate_requests_session_id")?;
+    }
+
+    if current_version < MIGRATION_MEMORY_CHUNKS {
+        info!("Running migration 51: memory_chunks");
+        run_migration_memory_chunks(conn)?;
+        record_migration(conn, MIGRATION_MEMORY_CHUNKS, "memory_chunks")?;
     }
 
     Ok(())
@@ -3286,9 +3314,19 @@ fn down_migration_supervisor_injections(conn: &rusqlite::Connection) -> Result<(
 }
 
 fn run_migration_gate_requests_session_id(conn: &rusqlite::Connection) -> Result<()> {
+    let has_col: bool = conn
+        .prepare("PRAGMA table_info(gate_requests)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == "session_id");
+
+    if !has_col {
+        conn.execute_batch("ALTER TABLE gate_requests ADD COLUMN session_id TEXT;")
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    }
+
     conn.execute_batch(
-        "ALTER TABLE gate_requests ADD COLUMN session_id TEXT;
-         CREATE INDEX IF NOT EXISTS idx_gate_requests_session_open
+        "CREATE INDEX IF NOT EXISTS idx_gate_requests_session_open
             ON gate_requests(user_id, session_id, status)
             WHERE output IS NULL;",
     )

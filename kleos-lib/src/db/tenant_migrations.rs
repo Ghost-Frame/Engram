@@ -257,6 +257,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "monolith_schema_parity",
         up: apply_schema_v44_parity,
     },
+    TenantMigration {
+        version: 45,
+        description: "memory_chunks",
+        up: apply_schema_v45_memory_chunks,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -479,6 +484,22 @@ fn apply_schema_v43_handoffs(conn: &Connection) -> Result<()> {
 fn apply_schema_v44_parity(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v44_parity.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v44 failed: {e}")))
+}
+
+fn apply_schema_v45_memory_chunks(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS memory_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            chunk_idx INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            embedding_vec_1024 BLOB,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(memory_id, chunk_idx)
+        );
+        CREATE INDEX IF NOT EXISTS idx_chunks_memory ON memory_chunks(memory_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v45 failed: {e}")))
 }
 
 /// Run all pending tenant migrations against `conn`.

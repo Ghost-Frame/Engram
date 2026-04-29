@@ -31,6 +31,22 @@ fn requires_write_scope(method: &Method) -> bool {
     )
 }
 
+fn is_read_only_post(path: &str) -> bool {
+    matches!(
+        path,
+        "/search"
+            | "/memories/search"
+            | "/search/explain"
+            | "/search/faceted"
+            | "/recall"
+            | "/recall-due"
+            | "/tags/search"
+            | "/graph/search"
+            | "/skills/search"
+            | "/messages/search"
+    )
+}
+
 fn forbid(msg: &str) -> Response {
     let body = serde_json::json!({ "error": msg });
     axum::response::Response::builder()
@@ -660,7 +676,7 @@ pub async fn auth_middleware(
     // No auth method succeeded
     // ---------------------------------------------------------------
     if open_access_allowed() {
-        if requires_write_scope(&method) {
+        if requires_write_scope(&method) && !is_read_only_post(&path) {
             return forbid("KLEOS_OPEN_ACCESS is read-only; writes require an API key");
         }
         tracing::warn!(path = %path, "KLEOS_OPEN_ACCESS bypassing authentication");
