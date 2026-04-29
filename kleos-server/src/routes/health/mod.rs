@@ -35,37 +35,57 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn get_health(State(state): State<AppState>) -> Json<Value> {
-    // Single query to get all dashboard counts. Avoids 6 serial DB round-trips.
-    let counts = state
-        .db
-        .read(|conn| {
-            conn.query_row(
-                "SELECT
-                    SUM(CASE WHEN is_forgotten = 0 AND is_archived = 0 THEN 1 ELSE 0 END),
-                    (SELECT COUNT(*) FROM entities),
-                    (SELECT COUNT(*) FROM episodes),
-                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN is_static = 1 AND is_forgotten = 0 THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN version > 1 AND is_forgotten = 0 THEN 1 ELSE 0 END)
-                 FROM memories",
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, i64>(5)?,
-                    ))
-                },
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
-        })
-        .await
-        .unwrap_or((0, 0, 0, 0, 0, 0));
+    let (mut memories, mut entities, mut episodes, mut pending, mut static_count, mut versioned) =
+        (0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
 
-    let (memories, entities, episodes, pending, static_count, versioned) = counts;
+    if let Some(ref registry) = state.tenant_registry {
+        if let Ok(tenants) = registry.list() {
+            for row in &tenants {
+                if row.status != kleos_lib::tenant::TenantStatus::Active {
+                    continue;
+                }
+                let handle = match registry.get(&row.user_id).await {
+                    Ok(Some(h)) => h,
+                    _ => continue,
+                };
+                let db = handle.database();
+                let counts = db
+                    .read(|conn| {
+                        conn.query_row(
+                            "SELECT
+                                SUM(CASE WHEN is_forgotten = 0 AND is_archived = 0 THEN 1 ELSE 0 END),
+                                (SELECT COUNT(*) FROM entities),
+                                (SELECT COUNT(*) FROM episodes),
+                                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
+                                SUM(CASE WHEN is_static = 1 AND is_forgotten = 0 THEN 1 ELSE 0 END),
+                                SUM(CASE WHEN version > 1 AND is_forgotten = 0 THEN 1 ELSE 0 END)
+                             FROM memories",
+                            [],
+                            |row| {
+                                Ok((
+                                    row.get::<_, i64>(0)?,
+                                    row.get::<_, i64>(1)?,
+                                    row.get::<_, i64>(2)?,
+                                    row.get::<_, i64>(3)?,
+                                    row.get::<_, i64>(4)?,
+                                    row.get::<_, i64>(5)?,
+                                ))
+                            },
+                        )
+                        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                    })
+                    .await
+                    .unwrap_or((0, 0, 0, 0, 0, 0));
+
+                memories += counts.0;
+                entities += counts.1;
+                episodes += counts.2;
+                pending += counts.3;
+                static_count += counts.4;
+                versioned += counts.5;
+            }
+        }
+    }
 
     let llm_configured = state.brain.is_some();
     let embedding_model = state

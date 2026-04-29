@@ -308,6 +308,7 @@ async fn init_backfill(
 async fn recall_due(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Query(params): Query<RecallDueQuery>,
 ) -> Result<Json<Value>, AppError> {
     let embedding = if let Some(embedder) = state.current_embedder().await {
@@ -344,7 +345,7 @@ async fn recall_due(
         source_filter: None,
     };
 
-    let arc_results = hybrid_search(&state.db, req).await?;
+    let arc_results = hybrid_search(&db, req).await?;
     let entries = fsrs::recall::rerank_by_retrievability(&arc_results, None);
 
     let items: Vec<Value> = entries

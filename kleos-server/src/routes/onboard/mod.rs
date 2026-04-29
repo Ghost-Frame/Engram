@@ -8,7 +8,7 @@ use kleos_lib::webhooks::resolve_and_validate_url;
 use rusqlite::params;
 use serde_json::{json, Value};
 
-use crate::{error::AppError, extractors::Auth, state::AppState};
+use crate::{error::AppError, extractors::{Auth, ResolvedDb}, state::AppState};
 
 mod types;
 use types::FetchBody;
@@ -34,12 +34,12 @@ pub fn router() -> Router<AppState> {
         .route("/fetch", post(fetch_url))
 }
 
-async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
+async fn onboard(State(state): State<AppState>, Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
     let mut checks: Vec<(&str, bool, String)> = Vec::new();
 
     // Test store
     let store_result = memory::store(
-        &state.db,
+        &db,
         StoreRequest {
             content: "Kleos onboarding test memory -- safe to delete".into(),
             category: "system".into(),
@@ -82,7 +82,7 @@ async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json
             }
         };
         let search_result = hybrid_search(
-            &state.db,
+            &db,
             SearchRequest {
                 query: "onboarding test".into(),
                 embedding,
@@ -119,7 +119,7 @@ async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json
 
     // Cleanup test memory
     if let Some(id) = test_id {
-        match memory::delete(&state.db, id, auth.user_id).await {
+        match memory::delete(&db, id, auth.user_id).await {
             Ok(()) => checks.push(("cleanup", true, "Test memory deleted".into())),
             Err(e) => checks.push(("cleanup", false, e.to_string())),
         }
@@ -140,8 +140,7 @@ async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json
 
     // Check spaces
     let uid = auth.user_id;
-    let space_count: i64 = state
-        .db
+    let space_count: i64 = db
         .read(move |conn| {
             let count = conn
                 .query_row(
@@ -192,6 +191,7 @@ async fn onboard(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json
 async fn fetch_url(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<FetchBody>,
 ) -> Result<Json<Value>, AppError> {
     if body.url.trim().is_empty() {
@@ -312,7 +312,7 @@ async fn fetch_url(
             }
         }
 
-        if let Ok(result) = memory::store(&state.db, req).await {
+        if let Ok(result) = memory::store(&db, req).await {
             cached_id = Some(result.id);
         }
     }

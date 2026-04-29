@@ -1,8 +1,8 @@
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{routing::post, Json, Router};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::Auth;
+use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 
 mod types;
@@ -14,7 +14,7 @@ pub fn router() -> Router<AppState> {
 
 async fn pack_memories(
     Auth(auth): Auth,
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<PackBody>,
 ) -> Result<Json<Value>, AppError> {
     let context = body.context.as_deref().unwrap_or("");
@@ -25,7 +25,7 @@ async fn pack_memories(
         _ => kleos_lib::pack::PackFormat::Text,
     };
     let result =
-        kleos_lib::pack::pack_memories(&state.db, context, budget, format, auth.user_id).await?;
+        kleos_lib::pack::pack_memories(&db, context, budget, format, auth.user_id).await?;
     Ok(Json(json!({
         "packed": result.packed,
         "memories_included": result.memories_included,

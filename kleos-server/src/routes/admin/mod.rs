@@ -1103,56 +1103,102 @@ async fn admin_vector_health(
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
 
-    let lance_row_count: Option<usize> = if let Some(ref idx) = state.db.vector_index {
-        idx.count().await.ok()
-    } else {
-        None
-    };
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::Internal(
+            "tenant sharding disabled; vector health requires tenant registry".into(),
+        ))
+    })?;
 
-    let chunk_lance_row_count: Option<usize> = if let Some(ref idx) = state.db.chunk_vector_index {
-        idx.count().await.ok()
-    } else {
-        None
-    };
+    let tenants = registry.list().map_err(AppError)?;
 
-    let lance_index_built: Option<bool> = if let Some(ref idx) = state.db.vector_index {
-        Some(idx.rebuild_index(false).await.unwrap_or(false))
-    } else {
-        None
-    };
+    let mut total_lance: usize = 0;
+    let mut total_chunk_lance: usize = 0;
+    let mut total_active: i64 = 0;
+    let mut total_chunks: i64 = 0;
+    let mut total_pending: i64 = 0;
+    let mut any_lance_index_built = false;
+    let mut per_tenant = Vec::new();
 
-    let (memories_active_count, chunk_row_count, sync_pending_count): (i64, i64, i64) = state
-        .db
-        .read(|conn| {
-            let active: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0 AND is_latest = 1",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-            let chunks: i64 = conn
-                .query_row("SELECT COUNT(*) FROM memory_chunks", [], |row| row.get(0))
-                .unwrap_or(0);
-            let pending: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM vector_sync_pending",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-            Ok((active, chunks, pending))
-        })
-        .await
-        .unwrap_or((0, 0, 0));
+    for row in &tenants {
+        if row.status != kleos_lib::tenant::TenantStatus::Active {
+            continue;
+        }
+
+        let handle = match registry.get(&row.user_id).await {
+            Ok(Some(h)) => h,
+            _ => continue,
+        };
+
+        let db = handle.database();
+
+        let lance_count = if let Some(ref idx) = db.vector_index {
+            idx.count().await.ok().unwrap_or(0)
+        } else {
+            0
+        };
+
+        let chunk_lance_count = if let Some(ref idx) = db.chunk_vector_index {
+            idx.count().await.ok().unwrap_or(0)
+        } else {
+            0
+        };
+
+        if let Some(ref idx) = db.vector_index {
+            if idx.rebuild_index(false).await.unwrap_or(false) {
+                any_lance_index_built = true;
+            }
+        }
+
+        let (active, chunks, pending) = db
+            .read(|conn| {
+                let active: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0 AND is_latest = 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                let chunks: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM memory_chunks", [], |row| row.get(0))
+                    .unwrap_or(0);
+                let pending: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM vector_sync_pending",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                Ok((active, chunks, pending))
+            })
+            .await
+            .unwrap_or((0, 0, 0));
+
+        if active > 0 || chunks > 0 || lance_count > 0 {
+            per_tenant.push(json!({
+                "tenant_id": row.tenant_id,
+                "lance_row_count": lance_count,
+                "chunk_lance_row_count": chunk_lance_count,
+                "memories_active_count": active,
+                "chunk_row_count": chunks,
+                "vector_sync_pending_count": pending,
+            }));
+        }
+
+        total_lance += lance_count;
+        total_chunk_lance += chunk_lance_count;
+        total_active += active;
+        total_chunks += chunks;
+        total_pending += pending;
+    }
 
     Ok(Json(json!({
-        "lance_row_count": lance_row_count,
-        "chunk_lance_row_count": chunk_lance_row_count,
-        "memories_active_count": memories_active_count,
-        "chunk_row_count": chunk_row_count,
-        "lance_index_built": lance_index_built,
-        "vector_sync_pending_count": sync_pending_count,
+        "lance_row_count": total_lance,
+        "chunk_lance_row_count": total_chunk_lance,
+        "memories_active_count": total_active,
+        "chunk_row_count": total_chunks,
+        "lance_index_built": any_lance_index_built,
+        "vector_sync_pending_count": total_pending,
+        "per_tenant": per_tenant,
     })))
 }
 
@@ -1175,15 +1221,68 @@ async fn admin_backfill_chunks(
             ))
         })?;
 
-    let report = kleos_lib::memory::backfill_missing_embeddings(&state.db, embedder.as_ref())
-        .await
-        .map_err(AppError)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::Internal(
+            "tenant sharding disabled; backfill requires tenant registry".into(),
+        ))
+    })?;
+
+    let tenants = registry.list().map_err(AppError)?;
+
+    let mut total_scanned = 0usize;
+    let mut total_primary = 0usize;
+    let mut total_chunks = 0usize;
+    let mut total_failures = 0usize;
+    let mut tenants_processed = 0usize;
+    let mut per_tenant = Vec::new();
+
+    for row in &tenants {
+        if row.status != kleos_lib::tenant::TenantStatus::Active {
+            continue;
+        }
+
+        let handle = match registry.get(&row.user_id).await {
+            Ok(Some(h)) => h,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(tenant = %row.tenant_id, error = %e, "backfill: failed to load tenant");
+                total_failures += 1;
+                continue;
+            }
+        };
+
+        let db = handle.database();
+        match kleos_lib::memory::backfill_missing_embeddings(&db, embedder.as_ref()).await {
+            Ok(report) => {
+                if report.scanned > 0 {
+                    per_tenant.push(json!({
+                        "tenant_id": row.tenant_id,
+                        "scanned": report.scanned,
+                        "primary_embeddings_filled": report.primary_embeddings_filled,
+                        "chunk_rows_written": report.chunk_rows_written,
+                        "failures": report.failures,
+                    }));
+                }
+                total_scanned += report.scanned;
+                total_primary += report.primary_embeddings_filled;
+                total_chunks += report.chunk_rows_written;
+                total_failures += report.failures;
+            }
+            Err(e) => {
+                tracing::warn!(tenant = %row.tenant_id, error = %e, "backfill: tenant backfill failed");
+                total_failures += 1;
+            }
+        }
+        tenants_processed += 1;
+    }
 
     Ok(Json(json!({
-        "scanned": report.scanned,
-        "primary_embeddings_filled": report.primary_embeddings_filled,
-        "chunk_rows_written": report.chunk_rows_written,
-        "failures": report.failures,
+        "tenants_processed": tenants_processed,
+        "scanned": total_scanned,
+        "primary_embeddings_filled": total_primary,
+        "chunk_rows_written": total_chunks,
+        "failures": total_failures,
+        "per_tenant": per_tenant,
     })))
 }
 
