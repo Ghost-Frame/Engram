@@ -28,16 +28,25 @@ pub struct TenantLoader {
 
     /// Dimension of embedding vectors.
     vector_dimensions: usize,
+
+    /// Whether to enable chunk-level vector search on tenant databases.
+    use_chunk_vector_search: bool,
 }
 
 impl TenantLoader {
     /// Create a new tenant loader.
-    pub fn new(data_root: PathBuf, config: TenantConfig, vector_dimensions: usize) -> Self {
+    pub fn new(
+        data_root: PathBuf,
+        config: TenantConfig,
+        vector_dimensions: usize,
+        use_chunk_vector_search: bool,
+    ) -> Self {
         Self {
             data_root,
             config,
             handles: RwLock::new(HashMap::new()),
             vector_dimensions,
+            use_chunk_vector_search,
         }
     }
 
@@ -93,11 +102,36 @@ impl TenantLoader {
             .map_err(|e| EngError::Internal(format!("failed to open vector index: {}", e)))?,
         );
 
+        let chunk_vector_index: Option<Arc<dyn crate::vector::VectorIndex>> =
+            if self.use_chunk_vector_search {
+                match LanceIndex::open_with_table(
+                    lance_path.to_string_lossy().as_ref(),
+                    self.vector_dimensions,
+                    crate::vector::lance::CHUNK_TABLE_NAME,
+                )
+                .await
+                {
+                    Ok(idx) => Some(Arc::new(idx)),
+                    Err(e) => {
+                        debug!(
+                            "chunk vector index unavailable for tenant {}: {} (falling back to centroid)",
+                            tenant_id, e
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
         // Open the tenant's SQLite pool. The existing deployment path is
         // `tenants/<id>/kleos.db`; migration (tenant chain v1+) runs inside
         // `Database::open_tenant`.
         let db_path = tenant_dir.join("kleos.db").to_string_lossy().into_owned();
-        let db = Arc::new(Database::open_tenant(&db_path, Some(Arc::clone(&vector_index))).await?);
+        let mut db = Database::open_tenant(&db_path, Some(Arc::clone(&vector_index))).await?;
+        db.use_chunk_vector_search = self.use_chunk_vector_search;
+        db.chunk_vector_index = chunk_vector_index;
+        let db = Arc::new(db);
 
         let handle = Arc::new(TenantHandle {
             tenant_id: tenant_id.to_string(),
@@ -231,7 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resident_count() {
-        let loader = TenantLoader::new(PathBuf::from("/tmp/test"), test_config(), 1024);
+        let loader = TenantLoader::new(PathBuf::from("/tmp/test"), test_config(), 1024, false);
 
         assert_eq!(loader.resident_count().await, 0);
         assert!(!loader.is_loaded("tenant_1").await);

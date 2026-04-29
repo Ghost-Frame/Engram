@@ -49,6 +49,7 @@ async fn test_app_with_sharding() -> (axum::Router, AppState, TempDir) {
         tmp.path().to_path_buf(),
         TenantConfig::default(),
         config.vector_dimensions,
+        false,
     )
     .expect("tenant registry");
 
