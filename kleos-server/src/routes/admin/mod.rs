@@ -110,6 +110,9 @@ pub fn router() -> Router<AppState> {
         // Migrations
         .route("/admin/migrations", get(admin_migration_status))
         .route("/admin/migrations/down", post(admin_migrate_down))
+        // Monolith drain (move data from system DB to tenant shards)
+        .route("/admin/monolith/status", get(admin_monolith_status))
+        .route("/admin/monolith/drain", post(admin_monolith_drain))
         // Brain instincts
         .route(
             "/admin/brain/instincts/reapply",
@@ -1373,6 +1376,316 @@ async fn admin_reapply_instincts(
     Ok(Json(json!({
         "ok": resp.ok,
         "data": resp.data,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Monolith drain -- move data from system DB to tenant shards
+// ---------------------------------------------------------------------------
+
+async fn admin_monolith_status(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+
+    let has_table: bool = state
+        .db
+        .read(|conn| {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memories'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                > 0;
+            Ok(exists)
+        })
+        .await
+        .unwrap_or(false);
+
+    if !has_table {
+        return Ok(Json(json!({
+            "monolith_has_memories_table": false,
+            "users": [],
+        })));
+    }
+
+    let user_counts: Vec<(i64, i64, i64)> = state
+        .db
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT user_id, \
+                            COUNT(*) AS total, \
+                            SUM(CASE WHEN is_forgotten = 0 THEN 1 ELSE 0 END) AS active \
+                     FROM memories GROUP BY user_id ORDER BY user_id",
+                )
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            let rows: Vec<_> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+        .await
+        .unwrap_or_default();
+
+    let users: Vec<Value> = user_counts
+        .iter()
+        .map(|(uid, total, active)| {
+            json!({
+                "user_id": uid,
+                "total": total,
+                "active": active,
+                "forgotten": total - active,
+            })
+        })
+        .collect();
+
+    let grand_total: i64 = user_counts.iter().map(|(_, t, _)| t).sum();
+    let grand_active: i64 = user_counts.iter().map(|(_, _, a)| a).sum();
+
+    Ok(Json(json!({
+        "monolith_has_memories_table": true,
+        "grand_total": grand_total,
+        "grand_active": grand_active,
+        "users": users,
+    })))
+}
+
+const MONOLITH_DRAIN_COLUMNS: &str = "\
+    content, category, source, session_id, importance, \
+    embedding, embedding_vec_1024, version, is_latest, \
+    parent_memory_id, root_memory_id, source_count, is_static, \
+    is_forgotten, is_archived, is_fact, is_decomposed, \
+    forget_after, forget_reason, model, recall_hits, recall_misses, \
+    adaptive_score, pagerank_score, last_accessed_at, access_count, \
+    tags, episode_id, decay_score, confidence, sync_id, status, \
+    space_id, fsrs_stability, fsrs_difficulty, fsrs_storage_strength, \
+    fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, \
+    fsrs_last_review_at, is_superseded, is_consolidated, \
+    valence, arousal, dominant_emotion, created_at, updated_at";
+
+async fn admin_monolith_drain(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+
+    if state.tenant_registry.is_none() {
+        return Err(AppError(kleos_lib::EngError::Internal(
+            "tenant sharding disabled; drain requires tenant registry".into(),
+        )));
+    }
+
+    let user_ids: Vec<i64> = state
+        .db
+        .read(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT DISTINCT user_id FROM memories WHERE is_forgotten = 0")
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            let rows: Vec<i64> = stmt
+                .query_map([], |row| row.get(0))
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+        .await
+        .map_err(AppError)?;
+
+    if user_ids.is_empty() {
+        return Ok(Json(json!({
+            "status": "nothing_to_drain",
+            "message": "no active memories in monolith",
+        })));
+    }
+
+    let col_select = format!(
+        "SELECT {} FROM memories WHERE user_id = ?1 AND is_forgotten = 0",
+        MONOLITH_DRAIN_COLUMNS
+    );
+    let col_count = MONOLITH_DRAIN_COLUMNS.split(',').count();
+    let placeholders: String = (1..=col_count)
+        .map(|i| format!("?{}", i))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let col_insert = format!(
+        "INSERT OR IGNORE INTO memories ({}) VALUES ({})",
+        MONOLITH_DRAIN_COLUMNS, placeholders
+    );
+
+    let mut per_user = Vec::new();
+    let mut total_drained = 0usize;
+    let mut total_skipped = 0usize;
+    let mut total_errors = 0usize;
+
+    for uid in &user_ids {
+        let uid_val = *uid;
+
+        let tenant_db = match crate::extractors::resolve_db_for_user(&state, uid_val).await {
+            Ok(db) => db,
+            Err(e) => {
+                tracing::warn!(user_id = uid_val, error = %e, "drain: failed to resolve tenant");
+                total_errors += 1;
+                per_user.push(json!({
+                    "user_id": uid_val,
+                    "error": e.to_string(),
+                }));
+                continue;
+            }
+        };
+
+        let existing_keys: std::collections::HashSet<(String, String)> = tenant_db
+            .read(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT content, created_at FROM memories \
+                         WHERE is_forgotten = 0 AND is_latest = 1",
+                    )
+                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                let keys: std::collections::HashSet<_> = stmt
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                        ))
+                    })
+                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                Ok(keys)
+            })
+            .await
+            .unwrap_or_default();
+
+        let col_select_owned = col_select.clone();
+        let rows: Vec<Vec<rusqlite::types::Value>> = state
+            .db
+            .read(move |conn| {
+                let mut stmt = conn
+                    .prepare(&col_select_owned)
+                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                let rows: Vec<Vec<rusqlite::types::Value>> = stmt
+                    .query_map(rusqlite::params![uid_val], |row| {
+                        let mut vals = Vec::with_capacity(col_count);
+                        for i in 0..col_count {
+                            vals.push(row.get_ref(i)?.into());
+                        }
+                        Ok(vals)
+                    })
+                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                Ok(rows)
+            })
+            .await
+            .map_err(AppError)?;
+
+        let row_count = rows.len();
+        let mut inserted = 0usize;
+        let mut skipped = 0usize;
+
+        let col_insert_owned = col_insert.clone();
+        let insert_result = tenant_db
+            .write(move |conn| {
+                let tx = conn.savepoint().map_err(|e| {
+                    kleos_lib::EngError::DatabaseMessage(e.to_string())
+                })?;
+                for row_vals in &rows {
+                    let content = match &row_vals[0] {
+                        rusqlite::types::Value::Text(s) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let created_at = match &row_vals[col_count - 2] {
+                        rusqlite::types::Value::Text(s) => s.clone(),
+                        _ => String::new(),
+                    };
+
+                    if existing_keys.contains(&(content, created_at)) {
+                        skipped += 1;
+                        continue;
+                    }
+
+                    let params: Vec<&dyn rusqlite::types::ToSql> =
+                        row_vals.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                    match tx.execute(&col_insert_owned, params.as_slice()) {
+                        Ok(_) => inserted += 1,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "drain: insert failed");
+                            skipped += 1;
+                        }
+                    }
+                }
+                tx.commit().map_err(|e| {
+                    kleos_lib::EngError::DatabaseMessage(e.to_string())
+                })?;
+                Ok((inserted, skipped))
+            })
+            .await;
+
+        match insert_result {
+            Ok((ins, skip)) => {
+                inserted = ins;
+                skipped = skip;
+            }
+            Err(e) => {
+                tracing::error!(user_id = uid_val, error = %e, "drain: batch insert failed");
+                total_errors += 1;
+                per_user.push(json!({
+                    "user_id": uid_val,
+                    "error": e.to_string(),
+                }));
+                continue;
+            }
+        }
+
+        if inserted > 0 {
+            let mark_result = state
+                .db
+                .write(move |conn| {
+                    conn.execute(
+                        "UPDATE memories SET is_forgotten = 1, \
+                         forget_reason = 'drained to tenant shard' \
+                         WHERE user_id = ?1 AND is_forgotten = 0",
+                        rusqlite::params![uid_val],
+                    )
+                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    Ok(())
+                })
+                .await;
+
+            if let Err(e) = mark_result {
+                tracing::error!(user_id = uid_val, error = %e, "drain: failed to mark monolith rows forgotten");
+            }
+        }
+
+        per_user.push(json!({
+            "user_id": uid_val,
+            "monolith_rows": row_count,
+            "inserted": inserted,
+            "skipped_duplicate": skipped,
+        }));
+
+        total_drained += inserted;
+        total_skipped += skipped;
+    }
+
+    Ok(Json(json!({
+        "status": "drained",
+        "total_inserted": total_drained,
+        "total_skipped_duplicate": total_skipped,
+        "total_errors": total_errors,
+        "per_user": per_user,
     })))
 }
 
