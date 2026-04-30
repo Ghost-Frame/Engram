@@ -375,11 +375,14 @@ pub async fn post_bootstrap_kleos_bearer_ecdh(
         .into());
     }
 
-    // 9A pubkey must be loaded for signature verification.
-    let v9a = state.piv_9a_pubkey.as_ref().ok_or_else(|| {
-        warn!("ECDH bootstrap rejected: piv-9a-pubkey.pem not loaded");
-        CredError::PermissionDenied("ECDH unavailable: PIV 9A pubkey not configured".into())
-    })?;
+    // At least one 9A pubkey must be enrolled.
+    if state.piv_9a_pubkeys.is_empty() {
+        warn!("ECDH bootstrap rejected: no 9A pubkeys loaded");
+        return Err(
+            CredError::PermissionDenied("ECDH unavailable: no PIV 9A pubkeys configured".into())
+                .into(),
+        );
+    }
 
     // Decode the wire signature (raw r||s, 64 bytes for P-256).
     let sig_bytes = hex::decode(&req.signature)
@@ -389,11 +392,14 @@ pub async fn post_bootstrap_kleos_bearer_ecdh(
 
     // Reconstruct what the client signed: agent || ephemeral_pubkey hex.
     let signed_payload = format!("{}|{}", req.agent, req.ephemeral_pubkey);
-    v9a.verify(signed_payload.as_bytes(), &signature)
-        .map_err(|_| {
-            warn!(agent = %req.agent, "ECDH bootstrap: 9A signature verify failed");
-            CredError::PermissionDenied("invalid 9A signature".into())
-        })?;
+    let verified = state
+        .piv_9a_pubkeys
+        .iter()
+        .any(|k| k.verify(signed_payload.as_bytes(), &signature).is_ok());
+    if !verified {
+        warn!(agent = %req.agent, keys = state.piv_9a_pubkeys.len(), "ECDH bootstrap: 9A signature verify failed against all enrolled keys");
+        return Err(CredError::PermissionDenied("invalid 9A signature".into()).into());
+    }
 
     // Reassemble peer public key as PEM for the Python ECDH subprocess.
     let peer_der = hex::decode(&req.ephemeral_pubkey)

@@ -110,22 +110,21 @@ const CHALLENGE_FILE: &str = "challenge";
 
 /// Send a challenge to the YubiKey and get the HMAC-SHA1 response.
 ///
-/// Platform dispatch: Windows uses `ykchallenge.exe` because `ykman`
-/// subprocesses fail on Windows due to HID exclusive access restrictions.
-/// Unix uses `ykman otp calculate 2 <hex>`, with a Python fallback for
-/// distros where the ykman wrapper script refuses to take the HID.
+/// Uses `ykman otp calculate 2 <hex>` on all platforms, with a Python
+/// fallback on Unix for distros where the ykman wrapper script refuses
+/// to take the HID.
 pub fn challenge_response(challenge: &[u8]) -> Result<[u8; RESPONSE_SIZE]> {
     check_rate_limit()?;
 
     let challenge_hex = hex::encode(challenge);
 
-    #[cfg(windows)]
-    let output = try_ykchallenge(&challenge_hex).inspect_err(|_| record_failure())?;
-
     #[cfg(not(windows))]
     let output = try_ykman_calculate(&challenge_hex)
         .or_else(|first| try_python_ykman_calculate(&challenge_hex).map_err(|_| first))
         .inspect_err(|_| record_failure())?;
+
+    #[cfg(windows)]
+    let output = try_ykman_calculate_win(&challenge_hex).inspect_err(|_| record_failure())?;
 
     let decoded = hex::decode(output.trim()).map_err(|e| {
         record_failure();
@@ -151,24 +150,13 @@ pub fn challenge_response(challenge: &[u8]) -> Result<[u8; RESPONSE_SIZE]> {
 /// Check whether a YubiKey is plugged in and responsive.
 ///
 /// This does not verify that slot 2 is programmed, only that `ykman info`
-/// (or `ykchallenge.exe --info` on Windows) returns successfully.
+/// returns successfully.
 pub fn is_available() -> bool {
-    #[cfg(windows)]
-    {
-        Command::new("ykchallenge")
-            .arg("--info")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
-    #[cfg(not(windows))]
-    {
-        Command::new("ykman")
-            .arg("info")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
+    Command::new("ykman")
+        .arg("info")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Program slot 2 with an HMAC-SHA1 secret.
@@ -359,13 +347,13 @@ fn config_dir() -> PathBuf {
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
-fn try_ykchallenge(challenge_hex: &str) -> Result<String> {
-    let out = Command::new("ykchallenge")
-        .arg(challenge_hex)
+fn try_ykman_calculate_win(challenge_hex: &str) -> Result<String> {
+    let out = Command::new("ykman")
+        .args(["otp", "calculate", &SLOT.to_string(), challenge_hex])
         .output()
         .map_err(|e| {
             CredError::YubiKey(format!(
-                "ykchallenge.exe not found on PATH (expected at ~/.local/bin/ykchallenge.exe): {}",
+                "ykman not found on PATH (install YubiKey Manager): {}",
                 e
             ))
         })?;
@@ -373,7 +361,7 @@ fn try_ykchallenge(challenge_hex: &str) -> Result<String> {
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(CredError::YubiKey(format!(
-            "ykchallenge failed: {}",
+            "ykman otp calculate failed: {}",
             stderr.trim()
         )));
     }
@@ -417,7 +405,12 @@ main()
 "#;
 
     let out = Command::new("sudo")
-        .args(["python3", "-c", SCRIPT])
+        .args([
+            "--preserve-env=YKMAN_ARG_1,YKMAN_ARG_2",
+            "python3",
+            "-c",
+            SCRIPT,
+        ])
         .env("YKMAN_ARG_1", SLOT.to_string())
         .env("YKMAN_ARG_2", challenge_hex)
         .output()
@@ -465,7 +458,12 @@ main()
 "#;
 
     let out = Command::new("sudo")
-        .args(["python3", "-c", SCRIPT])
+        .args([
+            "--preserve-env=YKMAN_ARG_1,YKMAN_ARG_2",
+            "python3",
+            "-c",
+            SCRIPT,
+        ])
         .env("YKMAN_ARG_1", SLOT.to_string())
         .env("YKMAN_ARG_2", secret_hex)
         .output()
@@ -512,7 +510,7 @@ main()
 "#;
 
     let out = Command::new("sudo")
-        .args(["python3", "-c", SCRIPT])
+        .args(["--preserve-env=YKMAN_ARG_1", "python3", "-c", SCRIPT])
         .env("YKMAN_ARG_1", SLOT.to_string())
         .output()
         .map_err(|e| CredError::YubiKey(format!("sudo python3 ykman failed: {}", e)))?;

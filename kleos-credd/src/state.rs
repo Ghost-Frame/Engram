@@ -31,11 +31,11 @@ pub struct AppState {
     /// three-tier resolve handlers; lives at `~/.config/cred/agent-keys.json`
     /// so a fresh shell can read it before the cred DB is unlocked.
     pub file_agent_keys: Arc<Mutex<FileAgentKeyStore>>,
-    /// PIV slot 9A (AUTHENTICATION) public key, loaded from
-    /// `~/.config/cred/piv-9a-pubkey.pem` at startup. Used by the ECDH
-    /// bootstrap handler to verify client signatures. `None` if the file
-    /// is absent (POST /bootstrap/kleos-bearer returns 503 then).
-    pub piv_9a_pubkey: Option<Arc<VerifyingKey>>,
+    /// PIV slot 9A (AUTHENTICATION) public keys, loaded from
+    /// `~/.config/cred/piv-9a-pubkeys/*.pem` (multi-key) or the legacy
+    /// `~/.config/cred/piv-9a-pubkey.pem` (single-key) at startup. The
+    /// ECDH bootstrap handler tries each key until one verifies.
+    pub piv_9a_pubkeys: Arc<Vec<VerifyingKey>>,
     /// PIV slot 9D (KEY_MANAGEMENT) public key, loaded from
     /// `~/.config/cred/piv-9d-pubkey.pem` at startup. Informational only
     /// for the server (the YubiKey holds the corresponding private key
@@ -45,14 +45,14 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(db: Database, master_key: [u8; KEY_SIZE]) -> Self {
-        let (piv_9a_pubkey, piv_9d_pubkey) = load_piv_pubkeys();
+        let (piv_9a_pubkeys, piv_9d_pubkey) = load_piv_pubkeys();
         Self {
             db: Arc::new(db),
             master_key: Arc::new(master_key),
             rate_limiter: Arc::new(RateLimiter::new()),
             bootstrap_master: None,
             file_agent_keys: Arc::new(Mutex::new(FileAgentKeyStore::default())),
-            piv_9a_pubkey,
+            piv_9a_pubkeys,
             piv_9d_pubkey,
         }
     }
@@ -66,14 +66,14 @@ impl AppState {
         bootstrap_master: Option<Zeroizing<String>>,
         file_agent_keys: FileAgentKeyStore,
     ) -> Self {
-        let (piv_9a_pubkey, piv_9d_pubkey) = load_piv_pubkeys();
+        let (piv_9a_pubkeys, piv_9d_pubkey) = load_piv_pubkeys();
         Self {
             db: Arc::new(db),
             master_key: Arc::new(master_key),
             rate_limiter: Arc::new(RateLimiter::new()),
             bootstrap_master: bootstrap_master.map(Arc::new),
             file_agent_keys: Arc::new(Mutex::new(file_agent_keys)),
-            piv_9a_pubkey,
+            piv_9a_pubkeys,
             piv_9d_pubkey,
         }
     }
@@ -92,52 +92,80 @@ fn cred_config_dir() -> PathBuf {
     base.join("cred")
 }
 
-/// Load the PIV 9A and 9D public keys from `~/.config/cred/piv-*.pem`.
-/// Both are optional. If a file exists but fails to parse, log a warning
-/// and treat that slot as absent so the ECDH endpoint returns 503 cleanly
-/// rather than a 500.
-fn load_piv_pubkeys() -> (Option<Arc<VerifyingKey>>, Option<Arc<PublicKey>>) {
+/// Load PIV 9A pubkeys from `~/.config/cred/piv-9a-pubkeys/*.pem` (multi-key
+/// directory) with fallback to the legacy `~/.config/cred/piv-9a-pubkey.pem`
+/// (single file). Also loads 9D from `piv-9d-pubkey.pem` as before.
+fn load_piv_pubkeys() -> (Arc<Vec<VerifyingKey>>, Option<Arc<PublicKey>>) {
     let dir = cred_config_dir();
-    let pa = dir.join("piv-9a-pubkey.pem");
-    let pd = dir.join("piv-9d-pubkey.pem");
+    let mut keys_9a = Vec::new();
 
-    let key_9a = if pa.exists() {
-        match std::fs::read_to_string(&pa) {
-            Ok(pem) => match VerifyingKey::from_public_key_pem(&pem) {
-                Ok(k) => Some(Arc::new(k)),
-                Err(e) => {
-                    warn!(path = %pa.display(), error = %e, "piv-9a pubkey unparseable; ECDH disabled");
-                    None
+    // Multi-key directory (preferred)
+    let keys_dir = dir.join("piv-9a-pubkeys");
+    if keys_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&keys_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "pem") {
+                    match std::fs::read_to_string(&path) {
+                        Ok(pem) => match VerifyingKey::from_public_key_pem(&pem) {
+                            Ok(k) => {
+                                tracing::info!(path = %path.display(), "loaded 9A pubkey");
+                                keys_9a.push(k);
+                            }
+                            Err(e) => warn!(path = %path.display(), error = %e, "9A pubkey unparseable"),
+                        },
+                        Err(e) => warn!(path = %path.display(), error = %e, "9A pubkey read failed"),
+                    }
                 }
-            },
-            Err(e) => {
-                warn!(path = %pa.display(), error = %e, "piv-9a pubkey read failed");
-                None
             }
         }
-    } else {
-        None
-    };
+    }
 
-    let key_9d = if pd.exists() {
-        match std::fs::read_to_string(&pd) {
-            Ok(pem) => match PublicKey::from_public_key_pem(&pem) {
-                Ok(k) => Some(Arc::new(k)),
-                Err(e) => {
-                    warn!(path = %pd.display(), error = %e, "piv-9d pubkey unparseable");
-                    None
-                }
-            },
-            Err(e) => {
-                warn!(path = %pd.display(), error = %e, "piv-9d pubkey read failed");
-                None
+    // Legacy single-file fallback
+    if keys_9a.is_empty() {
+        let pa = dir.join("piv-9a-pubkey.pem");
+        if pa.exists() {
+            match std::fs::read_to_string(&pa) {
+                Ok(pem) => match VerifyingKey::from_public_key_pem(&pem) {
+                    Ok(k) => {
+                        tracing::info!(path = %pa.display(), "loaded legacy 9A pubkey");
+                        keys_9a.push(k);
+                    }
+                    Err(e) => warn!(path = %pa.display(), error = %e, "piv-9a pubkey unparseable; ECDH disabled"),
+                },
+                Err(e) => warn!(path = %pa.display(), error = %e, "piv-9a pubkey read failed"),
             }
         }
+    }
+
+    if keys_9a.is_empty() {
+        warn!("no PIV 9A pubkeys found; ECDH bootstrap will be unavailable");
     } else {
-        None
+        tracing::info!(count = keys_9a.len(), "PIV 9A pubkeys loaded");
+    }
+
+    let key_9d = {
+        let pd = dir.join("piv-9d-pubkey.pem");
+        if pd.exists() {
+            match std::fs::read_to_string(&pd) {
+                Ok(pem) => match PublicKey::from_public_key_pem(&pem) {
+                    Ok(k) => Some(Arc::new(k)),
+                    Err(e) => {
+                        warn!(path = %pd.display(), error = %e, "piv-9d pubkey unparseable");
+                        None
+                    }
+                },
+                Err(e) => {
+                    warn!(path = %pd.display(), error = %e, "piv-9d pubkey read failed");
+                    None
+                }
+            }
+        } else {
+            None
+        }
     };
 
-    (key_9a, key_9d)
+    (Arc::new(keys_9a), key_9d)
 }
 
 impl Deref for AppState {
