@@ -112,9 +112,13 @@ fn load_piv_pubkeys() -> (Arc<Vec<VerifyingKey>>, Option<Arc<PublicKey>>) {
                                 tracing::info!(path = %path.display(), "loaded 9A pubkey");
                                 keys_9a.push(k);
                             }
-                            Err(e) => warn!(path = %path.display(), error = %e, "9A pubkey unparseable"),
+                            Err(e) => {
+                                warn!(path = %path.display(), error = %e, "9A pubkey unparseable")
+                            }
                         },
-                        Err(e) => warn!(path = %path.display(), error = %e, "9A pubkey read failed"),
+                        Err(e) => {
+                            warn!(path = %path.display(), error = %e, "9A pubkey read failed")
+                        }
                     }
                 }
             }
@@ -131,7 +135,9 @@ fn load_piv_pubkeys() -> (Arc<Vec<VerifyingKey>>, Option<Arc<PublicKey>>) {
                         tracing::info!(path = %pa.display(), "loaded legacy 9A pubkey");
                         keys_9a.push(k);
                     }
-                    Err(e) => warn!(path = %pa.display(), error = %e, "piv-9a pubkey unparseable; ECDH disabled"),
+                    Err(e) => {
+                        warn!(path = %pa.display(), error = %e, "piv-9a pubkey unparseable; ECDH disabled")
+                    }
                 },
                 Err(e) => warn!(path = %pa.display(), error = %e, "piv-9a pubkey read failed"),
             }

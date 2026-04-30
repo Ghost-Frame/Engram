@@ -3,13 +3,13 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{bootstrap_admin_key, delete, get, post, test_app};
+use common::{bootstrap_admin_key, delete, get, post, test_app_with_sharding};
 use serde_json::json;
 
 // POST /store happy-path: returns stored=true with a numeric id
 #[tokio::test]
 async fn store_memory_happy_path() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (status, body) = post(
         &app,
@@ -26,7 +26,7 @@ async fn store_memory_happy_path() {
 // POST /store without auth returns 401
 #[tokio::test]
 async fn store_memory_without_auth_returns_401() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     // Bootstrap creates DB but we do NOT use the admin key
     let _ = bootstrap_admin_key(&app).await;
 
@@ -48,7 +48,7 @@ async fn store_memory_without_auth_returns_401() {
 // POST /store with empty content returns 400
 #[tokio::test]
 async fn store_memory_empty_content_returns_400() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (status, _body) = post(
         &app,
@@ -63,7 +63,7 @@ async fn store_memory_empty_content_returns_400() {
 // POST /store with whitespace-only content returns 400
 #[tokio::test]
 async fn store_memory_whitespace_content_returns_400() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (status, _body) = post(
         &app,
@@ -78,7 +78,7 @@ async fn store_memory_whitespace_content_returns_400() {
 // GET /memory/{id} -- fetch memory stored in previous call
 #[tokio::test]
 async fn get_memory_by_id_returns_correct_content() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (_s, stored) = post(
         &app,
@@ -98,7 +98,7 @@ async fn get_memory_by_id_returns_correct_content() {
 // GET /memory/{id} for nonexistent id returns 404
 #[tokio::test]
 async fn get_nonexistent_memory_returns_404() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (status, _body) = get(&app, "/memory/999999", &key).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -107,7 +107,7 @@ async fn get_nonexistent_memory_returns_404() {
 // DELETE /memory/{id} returns deleted=true
 #[tokio::test]
 async fn delete_memory_returns_deleted_true() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (_s, stored) = post(
         &app,
@@ -126,7 +126,7 @@ async fn delete_memory_returns_deleted_true() {
 // DELETE /memory/{id} for nonexistent id returns 404
 #[tokio::test]
 async fn delete_nonexistent_memory_returns_404() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (status, _body) = delete(&app, "/memory/999999", &key).await;
     assert_eq!(status, StatusCode::NOT_FOUND);

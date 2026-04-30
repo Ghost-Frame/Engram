@@ -14,11 +14,11 @@ mod common;
 use axum::http::StatusCode;
 use serde_json::json;
 
-use common::{bootstrap_admin_key, post, test_app};
+use common::{bootstrap_admin_key, post, test_app_with_sharding};
 
 #[tokio::test]
 async fn import_bulk_with_url_returns_400() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
 
     let (status, body) = post(
@@ -46,7 +46,7 @@ async fn import_bulk_with_url_returns_400() {
 
 #[tokio::test]
 async fn ingest_with_url_returns_400() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
 
     let (status, body) = post(
@@ -74,7 +74,7 @@ async fn ingest_with_url_returns_400() {
 
 #[tokio::test]
 async fn ingest_stream_with_url_returns_400() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
 
     let (status, body) = post(
@@ -105,7 +105,7 @@ async fn ingest_stream_with_url_returns_400() {
 /// eat valid requests.
 #[tokio::test]
 async fn ingest_inline_text_still_succeeds() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
 
     let (status, body) = post(
@@ -127,7 +127,7 @@ async fn ingest_inline_text_still_succeeds() {
 /// always pass `url: ""` alongside `text`).
 #[tokio::test]
 async fn ingest_empty_url_with_text_succeeds() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
 
     let (status, _body) = post(
@@ -148,7 +148,7 @@ async fn ingest_empty_url_with_text_succeeds() {
 /// error (replacing the old "Provide url or text parameter").
 #[tokio::test]
 async fn ingest_with_no_fields_returns_400() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
 
     let (status, body) = post(&app, "/ingest", &key, json!({})).await;

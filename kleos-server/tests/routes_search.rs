@@ -8,13 +8,13 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{bootstrap_admin_key, post, test_app};
+use common::{bootstrap_admin_key, post, test_app_with_sharding};
 use serde_json::json;
 
 // POST /search happy-path: returns { results: [...], abstained, top_score }
 #[tokio::test]
 async fn search_returns_results_array() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     post(
         &app,
@@ -46,7 +46,7 @@ async fn search_returns_results_array() {
 // POST /search without auth returns 401
 #[tokio::test]
 async fn search_without_auth_returns_401() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let _ = bootstrap_admin_key(&app).await;
 
     use axum::body::Body;
@@ -65,7 +65,7 @@ async fn search_without_auth_returns_401() {
 // POST /memories/search is an alias for POST /search and also works
 #[tokio::test]
 async fn memories_search_alias_works() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (status, body) = post(
         &app,
@@ -84,7 +84,7 @@ async fn memories_search_alias_works() {
 // POST /search with no stored memories returns empty results (not an error)
 #[tokio::test]
 async fn search_with_no_memories_returns_empty_results() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (status, body) = post(
         &app,
@@ -105,7 +105,7 @@ async fn search_with_no_memories_returns_empty_results() {
 // POST /search with limit capped at 100 (server enforces cap)
 #[tokio::test]
 async fn search_with_large_limit_is_accepted() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     // limit=500 -- server should cap internally and not return an error
     let (status, body) = post(
@@ -124,7 +124,7 @@ async fn search_with_large_limit_is_accepted() {
 // POST /search with invalid JSON body returns 422 (deserialization failure)
 #[tokio::test]
 async fn search_with_bad_json_returns_error() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
 
     use axum::body::Body;

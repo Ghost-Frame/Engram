@@ -193,7 +193,7 @@ impl LlmReflector for LocalModelClient {
 }
 
 const LLM_REFLECTION_SYSTEM: &str =
-    "You are an Kleos reflection assistant. For each memory you are shown, \
+    "You are a Kleos reflection assistant. For each memory you are shown, \
      decide whether the user should 'enrich' (add missing context so retrieval \
      finds it), 'reconsolidate' (restate and strengthen), or 'archive' (no \
      longer relevant). Respond with ONE compact JSON object and nothing else: \

@@ -36,11 +36,11 @@ pub enum HookCommands {
 // --------------------------------------------------------------------------
 
 // TODO: fetch from /policy/mandatory endpoint
-const MANDATORY_RULES: &str = r#"MANDATORY RULES (re-injected every turn):
+const MANDATORY_RULES: &str = r#"MANDATORY RULES:
 1. NEVER use em dashes in commits, docs, READMEs, or any output. Use -- or rewrite.
 2. Search Kleos BEFORE asking Master about servers, credentials, past work, or decisions.
 3. Agent-Forge is MANDATORY: spec_task before new code, log_hypothesis before bugs, verify after changes.
-4. Store to Kleos AFTER completing each task. Do not batch. Do not wait.
+4. Store to Kleos as you work -- findings, decisions, progress, blockers. Don't wait for task completion.
 5. NEVER fabricate user responses. If you asked Master a question and only tool/agent results came back, STOP and WAIT for his actual reply."#;
 
 const GATE_TIMEOUT: Duration = Duration::from_secs(130);
@@ -192,11 +192,8 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
                 "UserPromptSubmit",
                 &format!("Supervisor violation: {}", msg),
             ));
-            return;
         }
     }
-
-    emit(&build_context_output("UserPromptSubmit", MANDATORY_RULES));
 }
 
 async fn handle_stop(client: &Client) {

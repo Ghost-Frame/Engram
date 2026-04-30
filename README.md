@@ -96,7 +96,7 @@ Operational command reference:
 ## Features
 
 - **FSRS-6 Spaced Repetition.** Memories strengthen with use and decay when ignored. Power-law forgetting with trained parameters.
-- **4-Channel Hybrid Search.** Vector similarity, FTS5 full-text, personality signals, and graph traversal fused via Reciprocal Rank Fusion.
+- **3-Channel Hybrid Search.** Vector similarity, FTS5 full-text, and graph traversal fused via Reciprocal Rank Fusion, with personality scoring as a boost signal.
 - **Knowledge Graph.** Auto-linking, Louvain community detection, weighted PageRank, cooccurrence, structural analysis.
 - **Personality Engine.** Preferences, values, motivations, identity. Recall is shaped by the agent's current personality context.
 - **Self-Hosted.** One Rust binary. One SQLite database. Local ONNX embeddings. No cloud keys.
@@ -105,7 +105,7 @@ Operational command reference:
 - **Contradiction Detection.** When agents learn conflicting information, Kleos surfaces the conflict.
 - **Guardrails.** The gate system checks commands before agents act. Stored rules return allow/warn/block on proposed actions, with optional human-in-the-loop approval.
 - **Episodic Memory.** Conversation episodes stored as searchable narratives.
-- **Bulk Ingestion.** 11 parsers: Markdown, PDF, HTML, DOCX, CSV, JSONL, ZIP archives, ChatGPT exports, Claude exports, and raw message formats through the async ingestion pipeline.
+- **Bulk Ingestion.** 10 parsers: Markdown, PDF, HTML, DOCX, CSV, JSONL, ZIP archives, ChatGPT exports, Claude exports, and raw message formats through the async ingestion pipeline.
 - **LanceDB Vector Index.** Optional ANN backend for large corpora. Small tenants fall back to in-memory scan.
 - **Claude Code Hooks.** Ready-to-use hooks for session memory, context injection, and tool tracking. See [`hooks/README.md`](hooks/README.md).
 
@@ -139,7 +139,7 @@ Thirteen Cargo crates:
 | Crate                | Role                                                                                                                                                                                                                                                                      |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `kleos-lib`          | Core library. Memory, search, embeddings, graph, intelligence, services, auth, jobs, 50+ modules. Previously published as `kleos-lib` (last: 0.3.1).                                                                                                                     |
-| `kleos-server`       | Axum HTTP server. 46 route modules, middleware (auth, rate limiting, safe mode, JSON depth, metrics), GUI.                                                                                                                                                                |
+| `kleos-server`       | Axum HTTP server. 52 route modules, middleware (auth, rate limiting, safe mode, JSON depth, metrics), GUI.                                                                                                                                                                |
 | `kleos-cli`          | Command-line client over the HTTP API. Memory ops and credential management via credd.                                                                                                                                                                                    |
 | `kleos-sidecar`      | Session-scoped memory proxy with file watcher, batched observation flushing, and persistent session store.                                                                                                                                                                |
 | `kleos-mcp`          | MCP (Model Context Protocol) server. 57+ tools across memory, context, graph, intelligence, services, structural, skills, and admin. Stdio transport; HTTP behind feature flag.                                                                                           |

@@ -3,13 +3,13 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{bootstrap_admin_key, get, post, test_app};
+use common::{bootstrap_admin_key, get, post, test_app_with_sharding};
 use serde_json::json;
 
 // POST /agents happy-path: returns agent_id and name
 #[tokio::test]
 async fn register_agent_happy_path() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (status, body) = post(
         &app,
@@ -29,7 +29,7 @@ async fn register_agent_happy_path() {
 // POST /agents with same name returns 400 (UNIQUE constraint mapped to InvalidInput)
 #[tokio::test]
 async fn register_agent_duplicate_name_returns_400() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     post(&app, "/agents", &key, json!({ "name": "duplicate-agent" })).await;
     // Second registration with same name
@@ -44,7 +44,7 @@ async fn register_agent_duplicate_name_returns_400() {
 // GET /agents returns { agents: [...] }
 #[tokio::test]
 async fn list_agents_returns_agents_array() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     post(&app, "/agents", &key, json!({ "name": "list-agent-one" })).await;
     post(&app, "/agents", &key, json!({ "name": "list-agent-two" })).await;
@@ -58,7 +58,7 @@ async fn list_agents_returns_agents_array() {
 // GET /agents/{id} returns agent detail
 #[tokio::test]
 async fn get_agent_by_id_returns_agent() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (_s, created) = post(
         &app,
@@ -78,7 +78,7 @@ async fn get_agent_by_id_returns_agent() {
 // GET /agents/{id} for nonexistent id returns 404
 #[tokio::test]
 async fn get_nonexistent_agent_returns_404() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (status, _body) = get(&app, "/agents/999999", &key).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -87,7 +87,7 @@ async fn get_nonexistent_agent_returns_404() {
 // POST /agents without auth returns 401
 #[tokio::test]
 async fn register_agent_without_auth_returns_401() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let _ = bootstrap_admin_key(&app).await;
 
     use axum::body::Body;
@@ -106,7 +106,7 @@ async fn register_agent_without_auth_returns_401() {
 // POST /agents with empty name returns 400
 #[tokio::test]
 async fn register_agent_empty_name_returns_400() {
-    let (app, _state) = test_app().await;
+    let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     let (status, _body) = post(&app, "/agents", &key, json!({ "name": "" })).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);

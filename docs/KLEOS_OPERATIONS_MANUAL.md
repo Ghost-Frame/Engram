@@ -298,7 +298,7 @@ Use for:
 
 ### Handoffs
 
-#### `kleos-cli handoff dump [--project P] [--branch B] [--agent A] [--type T] [--session S] [--model M] [--host H] [--content TEXT] [--dir PATH]`
+#### `kleos-cli handoff dump [--project P] [--branch B] [--agent A] [--handoff-type T] [--session S] [--model M] [--host H] [--content TEXT] [--dir PATH]`
 
 - Stores a handoff via `POST /handoffs`.
 - If `--content` is omitted, reads stdin.
@@ -325,7 +325,7 @@ Use for:
 
 - Mechanical state capture at session boundaries.
 
-#### `kleos-cli handoff list [--limit N] [--project P] [--agent A] [--type T]`
+#### `kleos-cli handoff list [--limit N] [--project P] [--agent A] [--handoff-type T]`
 
 - Calls `GET /handoffs`.
 - Prints a summary table.
@@ -354,7 +354,7 @@ Use for:
 
 - Reads Claude hook JSON from stdin.
 - Checks supervisor pending injections through `/supervisor/pending`.
-- Re-injects mandatory rules.
+- Emits deny if a supervisor violation is pending; otherwise no output.
 
 #### `kleos-cli hook stop`
 

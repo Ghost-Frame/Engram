@@ -27,7 +27,9 @@ use axum::Router;
 use kleos_lib::auth_piv::{ReplayGuard, SessionManager};
 use kleos_lib::config::Config;
 use kleos_lib::db::Database;
+use kleos_lib::tenant::{TenantConfig, TenantRegistry};
 use serde_json::Value;
+use tempfile::TempDir;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -82,6 +84,61 @@ pub async fn test_app() -> (Router, AppState) {
     };
     let router = build_router(state.clone());
     (router, state)
+}
+
+/// Build a test router with tenant sharding enabled.
+///
+/// Tenant-scoped routes (`/ingest`, `/memory`, `/search`, `/agents`, etc.)
+/// require `tenant_registry` to be `Some`. The returned `TempDir` must
+/// outlive the test so the on-disk tenant shards remain valid.
+pub async fn test_app_with_sharding() -> (Router, AppState, TempDir) {
+    std::env::set_var("KLEOS_OPEN_ACCESS", "0");
+    std::env::set_var("KLEOS_BOOTSTRAP_SECRET", "test-bootstrap-secret");
+    std::env::set_var("CREDD_AGENT_KEY", "test-agent-key");
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = Config::default();
+    std::env::set_var("CREDD_URL", &config.eidolon.credd.url);
+
+    let db = Arc::new(Database::connect_memory().await.expect("in-memory db"));
+
+    let registry = TenantRegistry::new(
+        tmp.path().to_path_buf(),
+        TenantConfig::default(),
+        config.vector_dimensions,
+        false,
+    )
+    .expect("tenant registry");
+
+    let credd = Arc::new(CreddClient::from_config(&config));
+    let state = AppState {
+        db,
+        config: Arc::new(config),
+        credd,
+        embedder: Arc::new(RwLock::new(None)),
+        reranker: Arc::new(RwLock::new(None)),
+        brain: None,
+        llm: None,
+        sessions: Arc::new(RwLock::new(HashMap::new())),
+        eidolon_config: None,
+        approval_notify: None,
+        pending_approvals: Arc::new(Mutex::new(HashMap::new())),
+        safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        dreamer_stats: kleos_server::dreamer::new_stats_handle(),
+        last_request_time: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        tenant_registry: Some(Arc::new(registry)),
+        handoffs_gc_sem: Arc::new(tokio::sync::Semaphore::new(8)),
+        shutdown_token: CancellationToken::new(),
+        background_tasks: Arc::new(Mutex::new(JoinSet::new())),
+        fact_extract_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        brain_absorb_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        audit_log_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        replay_guard: Arc::new(ReplayGuard::new()),
+        session_manager: Arc::new(SessionManager::new([0u8; 32])),
+    };
+    let router = build_router(state.clone());
+    (router, state, tmp)
 }
 
 /// POST /bootstrap with the test secret and return the admin API key.

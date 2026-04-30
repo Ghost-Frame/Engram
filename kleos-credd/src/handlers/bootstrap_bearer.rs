@@ -378,10 +378,10 @@ pub async fn post_bootstrap_kleos_bearer_ecdh(
     // At least one 9A pubkey must be enrolled.
     if state.piv_9a_pubkeys.is_empty() {
         warn!("ECDH bootstrap rejected: no 9A pubkeys loaded");
-        return Err(
-            CredError::PermissionDenied("ECDH unavailable: no PIV 9A pubkeys configured".into())
-                .into(),
-        );
+        return Err(CredError::PermissionDenied(
+            "ECDH unavailable: no PIV 9A pubkeys configured".into(),
+        )
+        .into());
     }
 
     // Decode the wire signature (raw r||s, 64 bytes for P-256).
