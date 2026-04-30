@@ -69,6 +69,10 @@ MCP stdio entrypoint:
 KLEOS_MCP_BEARER_TOKEN=eg_... cargo run -p kleos-mcp
 ```
 
+Operational command reference:
+
+- [docs/KLEOS_OPERATIONS_MANUAL.md](docs/KLEOS_OPERATIONS_MANUAL.md)
+
 ---
 
 ![Kleos CLI demo](tools/cli-demo.gif)
@@ -130,7 +134,7 @@ _For full implementation details, algorithm specs, and API docs, see the [Projec
 
 ## Workspace
 
-Ten Cargo crates:
+Thirteen Cargo crates:
 
 | Crate                | Role                                                                                                                                                                                                                                                                      |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -143,12 +147,15 @@ Ten Cargo crates:
 | `kleos-credd`        | Credential management daemon. HTTP server with master key + agent key two-tier auth, ChaCha20-Poly1305 encryption.                                                                                                                                                        |
 | `kleos-approval-tui` | Terminal UI for human approval workflow. Ratatui-based interactive review queue. (WIP)                                                                                                                                                                                    |
 | `kleos-migrate`      | ETL tool for migrating from libsql to rusqlite + LanceDB. One-shot utility.                                                                                                                                                                                               |
+| `kleos-sh`           | Shell command gate wrapper. Checks commands through Kleos before execution.                                                                                                                                                                                               |
+| `kleos-fs`           | Filesystem helper binaries for guarded read/write operations.                                                                                                                                                                                                             |
+| `eidolon-supervisor` | Local supervisor for Eidolon/Kleos agent-host process coordination.                                                                                                                                                                                                       |
 | `agent-forge`        | Structured reasoning CLI: spec-task, consider-approaches, log-hypothesis, log-outcome, recall-errors, verify, challenge-code, checkpoint, rollback, session-learn, session-recall, session-diff, think, declare-unknowns, repo-map, search-code. Tree-sitter AST parsing. |
 
 ```bash
-cargo build --release --workspace   # build everything
-cargo test --workspace               # run the test suite
-cargo clippy --workspace             # lint
+cargo build --release --workspace                           # build everything
+cargo test --workspace --exclude kleos-migrate              # run the CI test suite
+cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings
 ```
 
 ---

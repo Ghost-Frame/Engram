@@ -37,7 +37,6 @@ use tempfile::TempDir;
 struct TestApp {
     router: Router,
     api_key: String,
-    db: Arc<Database>,
     tenant_registry: Arc<TenantRegistry>,
     _tmp: TempDir,
 }
@@ -129,7 +128,6 @@ impl TestApp {
         TestApp {
             router,
             api_key,
-            db,
             tenant_registry: registry,
             _tmp: tmp,
         }

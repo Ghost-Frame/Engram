@@ -2108,7 +2108,10 @@ async fn cmd_piv(cmd: PivCmd) -> Result<()> {
                 );
                 generate_p256_key(slot, PinPolicy::Never, touch, &out)?;
             }
-            eprintln!("  generating self-signed cert for slot {}...", slot.as_hex());
+            eprintln!(
+                "  generating self-signed cert for slot {}...",
+                slot.as_hex()
+            );
             generate_self_signed_cert(slot, subject, &out)?;
             eprintln!("  pubkey PEM -> {}", out.display());
 
@@ -2130,11 +2133,18 @@ async fn cmd_piv(cmd: PivCmd) -> Result<()> {
             std::fs::write(&ssh_ca_pub, &convert.stdout)
                 .with_context(|| format!("write SSH CA pubkey to {}", ssh_ca_pub.display()))?;
             eprintln!("  ssh pubkey -> {}", ssh_ca_pub.display());
-            eprintln!("SSH CA setup complete. Deploy {} to servers as TrustedUserCAKeys.", ssh_ca_pub.display());
+            eprintln!(
+                "SSH CA setup complete. Deploy {} to servers as TrustedUserCAKeys.",
+                ssh_ca_pub.display()
+            );
             Ok(())
         }
         PivCmd::Status => {
-            for slot in [PivSlot::KeyManagement, PivSlot::Authentication, PivSlot::Signature] {
+            for slot in [
+                PivSlot::KeyManagement,
+                PivSlot::Authentication,
+                PivSlot::Signature,
+            ] {
                 let path = pubkey_path(slot);
                 if !slot_has_key(slot) {
                     println!("slot {}: empty", slot.as_hex());
@@ -2193,9 +2203,7 @@ fn find_pkcs11_lib() -> Result<PathBuf> {
             return Ok(path);
         }
     }
-    anyhow::bail!(
-        "libykcs11.so not found. Install yubico-piv-tool or set PKCS11_PROVIDER env var."
-    )
+    anyhow::bail!("libykcs11.so not found. Install yubico-piv-tool or set PKCS11_PROVIDER env var.")
 }
 
 fn ssh_ca_pubkey_path() -> PathBuf {
@@ -2205,12 +2213,7 @@ fn ssh_ca_pubkey_path() -> PathBuf {
         .join("ssh-ca.pub")
 }
 
-fn ssh_ca_sign_impl(
-    identity: &str,
-    principal: &str,
-    ttl: &str,
-    pubkey: &Path,
-) -> Result<PathBuf> {
+fn ssh_ca_sign_impl(identity: &str, principal: &str, ttl: &str, pubkey: &Path) -> Result<PathBuf> {
     let pkcs11 = find_pkcs11_lib()?;
     let ca_pub = ssh_ca_pubkey_path();
     anyhow::ensure!(

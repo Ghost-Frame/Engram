@@ -102,27 +102,28 @@ impl TenantLoader {
             .map_err(|e| EngError::Internal(format!("failed to open vector index: {}", e)))?,
         );
 
-        let chunk_vector_index: Option<Arc<dyn crate::vector::VectorIndex>> =
-            if self.use_chunk_vector_search {
-                match LanceIndex::open_with_table(
-                    lance_path.to_string_lossy().as_ref(),
-                    self.vector_dimensions,
-                    crate::vector::lance::CHUNK_TABLE_NAME,
-                )
-                .await
-                {
-                    Ok(idx) => Some(Arc::new(idx)),
-                    Err(e) => {
-                        debug!(
+        let chunk_vector_index: Option<Arc<dyn crate::vector::VectorIndex>> = if self
+            .use_chunk_vector_search
+        {
+            match LanceIndex::open_with_table(
+                lance_path.to_string_lossy().as_ref(),
+                self.vector_dimensions,
+                crate::vector::lance::CHUNK_TABLE_NAME,
+            )
+            .await
+            {
+                Ok(idx) => Some(Arc::new(idx)),
+                Err(e) => {
+                    debug!(
                             "chunk vector index unavailable for tenant {}: {} (falling back to centroid)",
                             tenant_id, e
                         );
-                        None
-                    }
+                    None
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
 
         // Open the tenant's SQLite pool. The existing deployment path is
         // `tenants/<id>/kleos.db`; migration (tenant chain v1+) runs inside

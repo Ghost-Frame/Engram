@@ -630,7 +630,11 @@ impl Client {
         }
     }
 
-    pub(crate) async fn get_with_timeout(&self, path: &str, timeout: Duration) -> Result<Value, String> {
+    pub(crate) async fn get_with_timeout(
+        &self,
+        path: &str,
+        timeout: Duration,
+    ) -> Result<Value, String> {
         let url = format!("{}{}", self.base_url, path);
         let http = reqwest::Client::builder()
             .timeout(timeout)
@@ -649,14 +653,20 @@ impl Client {
         }
     }
 
-    pub(crate) async fn post_with_timeout(&self, path: &str, body: Value, timeout: Duration) -> Result<Value, String> {
+    pub(crate) async fn post_with_timeout(
+        &self,
+        path: &str,
+        body: Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
         let url = format!("{}{}", self.base_url, path);
         let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
         let http = reqwest::Client::builder()
             .timeout(timeout)
             .build()
             .unwrap_or_default();
-        let req = http.post(&url)
+        let req = http
+            .post(&url)
             .header("Content-Type", "application/json")
             .body(body_bytes.clone());
         let req = self.apply_auth(req, "POST", path, &body_bytes);
@@ -725,6 +735,17 @@ fn value_as_string(value: Option<&Value>) -> Option<String> {
     })
 }
 
+fn direct_env_api_key() -> Option<String> {
+    std::env::var("KLEOS_API_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| {
+            std::env::var("KLEOS_API_KEY")
+                .ok()
+                .filter(|k| !k.trim().is_empty())
+        })
+}
+
 #[tokio::main]
 async fn main() {
     kleos_lib::config::migrate_env_prefix();
@@ -739,26 +760,27 @@ async fn main() {
     let host_label = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".into());
-    let agent_label = std::env::var("KLEOS_AGENT_LABEL")
-        .unwrap_or_else(|_| "kleos-cli".into());
-    let model_label = std::env::var("KLEOS_MODEL_LABEL")
-        .unwrap_or_else(|_| "none".into());
+    let agent_label = std::env::var("KLEOS_AGENT_LABEL").unwrap_or_else(|_| "kleos-cli".into());
+    let model_label = std::env::var("KLEOS_MODEL_LABEL").unwrap_or_else(|_| "none".into());
 
-    let signer =
-        match kleos_lib::auth_piv::RequestSigner::from_env_or_file(
-            &host_label, &agent_label, &model_label,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("warning: identity key error: {e}");
-                None
-            }
-        };
+    let signer = match kleos_lib::auth_piv::RequestSigner::from_env_or_file(
+        &host_label,
+        &agent_label,
+        &model_label,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("warning: identity key error: {e}");
+            None
+        }
+    };
 
     // Always resolve the API key. The signer takes precedence for normal
     // request auth, but enrollment and other bootstrap paths need the key.
     let api_key = if let Some(k) = cli.key.clone() {
         Some(k)
+    } else if matches!(cli.command, Commands::Hook(_)) {
+        direct_env_api_key()
     } else {
         let slot = kleos_lib::cred::bootstrap::current_agent_slot();
         match kleos_lib::cred::bootstrap::resolve_api_key(&slot).await {
@@ -902,7 +924,12 @@ async fn main() {
                             rule.get("importance").and_then(|x| x.as_i64()).unwrap_or(0);
                         let rule_content =
                             rule.get("content").and_then(|x| x.as_str()).unwrap_or("");
-                        println!("  rule #{} [imp={}] {}", id, importance, truncate(rule_content, 100));
+                        println!(
+                            "  rule #{} [imp={}] {}",
+                            id,
+                            importance,
+                            truncate(rule_content, 100)
+                        );
                     }
                     if signal == "warn" || signal == "block" {
                         std::process::exit(2);
@@ -1037,8 +1064,7 @@ async fn main() {
                 .or_else(|| {
                     let path = std::env::var("HOME")
                         .map(|h| {
-                            std::path::PathBuf::from(h)
-                                .join(".config/cred/credd-agent-key.token")
+                            std::path::PathBuf::from(h).join(".config/cred/credd-agent-key.token")
                         })
                         .ok()?;
                     std::fs::read_to_string(path)
@@ -1060,64 +1086,88 @@ async fn main() {
         }
 
         Commands::Identity(id_cmd) => match id_cmd {
-            IdentityCommands::Status => {
-                match &client.signer {
-                    Some(signer) => {
-                        println!("Signing identity active:");
-                        println!("  Fingerprint: {}", signer.fingerprint());
-                        println!("  Algorithm:   {}", signer.algo().as_str());
-                        println!("  Host:        {}", signer.host_label());
-                        println!("  Agent:       {}", signer.agent_label());
-                        println!("  Identity:    {}", signer.identity_hash());
-                    }
-                    None => {
-                        eprintln!("No signing identity available.");
-                        eprintln!("Run `kleos-cli identity init` to set one up.");
-                        std::process::exit(1);
-                    }
+            IdentityCommands::Status => match &client.signer {
+                Some(signer) => {
+                    println!("Signing identity active:");
+                    println!("  Fingerprint: {}", signer.fingerprint());
+                    println!("  Algorithm:   {}", signer.algo().as_str());
+                    println!("  Host:        {}", signer.host_label());
+                    println!("  Agent:       {}", signer.agent_label());
+                    println!("  Identity:    {}", signer.identity_hash());
                 }
-            }
+                None => {
+                    eprintln!("No signing identity available.");
+                    eprintln!("Run `kleos-cli identity init` to set one up.");
+                    std::process::exit(1);
+                }
+            },
 
             IdentityCommands::Init { label, software } => {
-                handle_identity_init(&client, &host_label, &agent_label, &model_label, label.as_deref(), *software).await;
+                handle_identity_init(
+                    &client,
+                    &host_label,
+                    &agent_label,
+                    &model_label,
+                    label.as_deref(),
+                    *software,
+                )
+                .await;
             }
 
-            IdentityCommands::List => {
-                match client.get("/identity-keys/mine").await {
-                    Ok(v) => {
-                        let keys = v.get("keys").and_then(|k| k.as_array());
-                        match keys {
-                            Some(keys) if !keys.is_empty() => {
-                                for k in keys {
-                                    let id = k.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
-                                    let tier = k.get("tier").and_then(|s| s.as_str()).unwrap_or("?");
-                                    let algo = k.get("algo").and_then(|s| s.as_str()).unwrap_or("?");
-                                    let fpr = k.get("pubkey_fingerprint").and_then(|s| s.as_str()).unwrap_or("?");
-                                    let host = k.get("host_label").and_then(|s| s.as_str()).unwrap_or("?");
-                                    let active = k.get("is_active").and_then(|b| b.as_bool()).unwrap_or(false);
-                                    let enrolled = k.get("enrolled_at").and_then(|s| s.as_str()).unwrap_or("?");
-                                    let status = if active { "active" } else { "revoked" };
-                                    println!(
-                                        "#{:<4} {} {} {} {} [{}] {}",
-                                        id, tier, algo, &fpr[..16.min(fpr.len())], host, status, enrolled
-                                    );
-                                }
+            IdentityCommands::List => match client.get("/identity-keys/mine").await {
+                Ok(v) => {
+                    let keys = v.get("keys").and_then(|k| k.as_array());
+                    match keys {
+                        Some(keys) if !keys.is_empty() => {
+                            for k in keys {
+                                let id = k.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
+                                let tier = k.get("tier").and_then(|s| s.as_str()).unwrap_or("?");
+                                let algo = k.get("algo").and_then(|s| s.as_str()).unwrap_or("?");
+                                let fpr = k
+                                    .get("pubkey_fingerprint")
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or("?");
+                                let host =
+                                    k.get("host_label").and_then(|s| s.as_str()).unwrap_or("?");
+                                let active = k
+                                    .get("is_active")
+                                    .and_then(|b| b.as_bool())
+                                    .unwrap_or(false);
+                                let enrolled =
+                                    k.get("enrolled_at").and_then(|s| s.as_str()).unwrap_or("?");
+                                let status = if active { "active" } else { "revoked" };
+                                println!(
+                                    "#{:<4} {} {} {} {} [{}] {}",
+                                    id,
+                                    tier,
+                                    algo,
+                                    &fpr[..16.min(fpr.len())],
+                                    host,
+                                    status,
+                                    enrolled
+                                );
                             }
-                            _ => println!("No identity keys enrolled."),
                         }
+                        _ => println!("No identity keys enrolled."),
                     }
-                    Err(e) => eprintln!("Error: {}", e),
                 }
-            }
+                Err(e) => eprintln!("Error: {}", e),
+            },
 
             IdentityCommands::Revoke { id, reason } => {
                 let body = json!({ "reason": reason });
-                match client.post(&format!("/identity-keys/{}/revoke", id), body).await {
+                match client
+                    .post(&format!("/identity-keys/{}/revoke", id), body)
+                    .await
+                {
                     Ok(v) => {
                         if v.get("revoked").and_then(|b| b.as_bool()).unwrap_or(false) {
                             println!("Key #{} revoked.", id);
                         } else {
-                            eprintln!("Unexpected response: {}", serde_json::to_string_pretty(&v).unwrap());
+                            eprintln!(
+                                "Unexpected response: {}",
+                                serde_json::to_string_pretty(&v).unwrap()
+                            );
                         }
                     }
                     Err(e) => eprintln!("Error: {}", e),
@@ -1198,19 +1248,13 @@ async fn handle_identity_init(
         "sig_hex": sig_hex,
     });
 
-    // Enrollment uses proof-of-possession as auth, not signing headers.
-    // If the key is already enrolled, signing auth works. For bootstrap
-    // (first key), send without signing headers so the middleware's
-    // enrollment path handles it.
     let url = format!("{}/identity-keys/enroll", client.base_url);
     let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
-    let mut req = client
+    let req = client
         .http
         .post(&url)
         .header("content-type", "application/json");
-    if let Some(key) = &client.api_key {
-        req = req.bearer_auth(key);
-    }
+    let req = client.apply_auth(req, "POST", "/identity-keys/enroll", &body_bytes);
     let result = match req.body(body_bytes).send().await {
         Ok(r) => client.handle_response("POST", &url, r).await,
         Err(e) => Err(format!("enrollment request failed: {}", e)),
@@ -1218,7 +1262,10 @@ async fn handle_identity_init(
     match result {
         Ok(v) => {
             let id = v.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
-            let fpr = v.get("pubkey_fingerprint").and_then(|s| s.as_str()).unwrap_or("?");
+            let fpr = v
+                .get("pubkey_fingerprint")
+                .and_then(|s| s.as_str())
+                .unwrap_or("?");
             println!("Enrolled identity key #{}", id);
             println!("  Fingerprint: {}", fpr);
             println!("  Tier:        {}", signer.tier());

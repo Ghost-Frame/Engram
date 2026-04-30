@@ -37,8 +37,8 @@ use types::{
 pub use types::VectorSyncReplayReport;
 pub use vector_sync::{
     backfill_missing_embeddings, build_lance_chunk_index_from_existing,
-    build_lance_index_from_existing, BackfillReport, replay_vector_sync_pending,
-    replay_vector_sync_pending_for_user, vector_sync_pending_users,
+    build_lance_index_from_existing, replay_vector_sync_pending,
+    replay_vector_sync_pending_for_user, vector_sync_pending_users, BackfillReport,
 };
 
 // -- Constants ---
@@ -965,14 +965,12 @@ pub async fn update(
                             "LanceDB vector delete failed for superseded memory {}: {}",
                             id, e
                         );
-                        record_vector_sync_failure(db, id, user_id, "delete", &e.to_string())
-                            .await;
+                        record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
                     }
                 }
                 Err(e) => {
                     warn!("LanceDB vector insert failed for memory {}: {}", new_id, e);
-                    record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string())
-                        .await;
+                    record_vector_sync_failure(db, new_id, user_id, "insert", &e.to_string()).await;
                     // Insert failed -- intentionally do NOT delete the old
                     // row so the memory stays searchable via the previous
                     // version's vector entry until the sync replay catches up.

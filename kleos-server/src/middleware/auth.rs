@@ -164,21 +164,17 @@ fn parse_signed_headers(
     let sig_hex = header_str(req, "x-kleos-sig")?;
 
     Some((|| {
-        let algo_str =
-            header_str(req, "x-kleos-algo").ok_or("missing X-Kleos-Algo header")?;
-        let algo = SignatureAlgo::from_header(algo_str)
-            .map_err(|_| "unsupported X-Kleos-Algo value")?;
-        let identity_hash = header_str(req, "x-kleos-identity")
-            .ok_or("missing X-Kleos-Identity header")?;
-        let ts_str =
-            header_str(req, "x-kleos-ts").ok_or("missing X-Kleos-Ts header")?;
+        let algo_str = header_str(req, "x-kleos-algo").ok_or("missing X-Kleos-Algo header")?;
+        let algo =
+            SignatureAlgo::from_header(algo_str).map_err(|_| "unsupported X-Kleos-Algo value")?;
+        let identity_hash =
+            header_str(req, "x-kleos-identity").ok_or("missing X-Kleos-Identity header")?;
+        let ts_str = header_str(req, "x-kleos-ts").ok_or("missing X-Kleos-Ts header")?;
         let ts_ms: u64 = ts_str
             .parse()
             .map_err(|_| "X-Kleos-Ts must be a u64 (unix milliseconds)")?;
-        let nonce =
-            header_str(req, "x-kleos-nonce").ok_or("missing X-Kleos-Nonce header")?;
-        let key_fp = header_str(req, "x-kleos-key-fp")
-            .ok_or("missing X-Kleos-Key-Fp header")?;
+        let nonce = header_str(req, "x-kleos-nonce").ok_or("missing X-Kleos-Nonce header")?;
+        let key_fp = header_str(req, "x-kleos-key-fp").ok_or("missing X-Kleos-Key-Fp header")?;
 
         Ok(SignedHeaders {
             sig_hex: sig_hex.to_string(),
@@ -209,8 +205,8 @@ pub async fn auth_middleware(
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_string();
-    let req_client_ip = client_ip(&request, &state.config.trusted_proxies)
-        .unwrap_or_else(|| "unknown".to_string());
+    let req_client_ip =
+        client_ip(&request, &state.config.trusted_proxies).unwrap_or_else(|| "unknown".to_string());
 
     if OPEN_PATHS
         .iter()
@@ -228,25 +224,23 @@ pub async fn auth_middleware(
     if let Some(session_token) = header_str(&request, "x-kleos-session") {
         let session_token = session_token.to_string();
         match state.session_manager.verify(&session_token) {
-            Ok(identity_id) => {
-                match resolve_identity_by_id(&state, identity_id).await {
-                    Ok(auth_ctx) => {
-                        let user_id = auth_ctx.user_id;
-                        let mut request = request;
-                        request.extensions_mut().insert(auth_ctx);
-                        let span = tracing::info_span!("request",
+            Ok(identity_id) => match resolve_identity_by_id(&state, identity_id).await {
+                Ok(auth_ctx) => {
+                    let user_id = auth_ctx.user_id;
+                    let mut request = request;
+                    request.extensions_mut().insert(auth_ctx);
+                    let span = tracing::info_span!("request",
                             user_id = user_id, method = %method, path = %path, tier = "session");
-                        return next.run(request).instrument(span).await;
-                    }
-                    Err(msg) => {
-                        tracing::warn!(
-                            client_ip = %req_client_ip, path = %path,
-                            "session identity lookup failed: {msg}"
-                        );
-                        return unauthorized("invalid session");
-                    }
+                    return next.run(request).instrument(span).await;
                 }
-            }
+                Err(msg) => {
+                    tracing::warn!(
+                        client_ip = %req_client_ip, path = %path,
+                        "session identity lookup failed: {msg}"
+                    );
+                    return unauthorized("invalid session");
+                }
+            },
             Err(e) => {
                 tracing::debug!("session verification failed: {e}");
             }
@@ -270,9 +264,7 @@ pub async fn auth_middleware(
         let body_bytes = match to_bytes(body, MAX_AUTH_BODY_BUFFER).await {
             Ok(b) => b,
             Err(_) => {
-                return unauthorized(
-                    "failed to read request body for signature verification",
-                )
+                return unauthorized("failed to read request body for signature verification")
             }
         };
 
@@ -342,11 +334,11 @@ pub async fn auth_middleware(
             return unauthorized("signature verification failed");
         }
 
-        if let Err(e) = state.replay_guard.check(
-            &headers.identity_hash,
-            &headers.nonce,
-            headers.ts_ms,
-        ) {
+        if let Err(e) =
+            state
+                .replay_guard
+                .check(&headers.identity_hash, &headers.nonce, headers.ts_ms)
+        {
             tracing::warn!(client_ip = %req_client_ip, path = %path,
                 "replay check failed: {e}");
             return unauthorized("replay detected or timestamp out of range");
@@ -426,8 +418,7 @@ pub async fn auth_middleware(
 
                 // Verify claimed identity_hash matches HKDF derivation
                 if let Some(der) = decode_pem_der(&ik_row.pubkey_pem) {
-                    let expected =
-                        auth_piv::identity_hash_hex(&der, &host, &agent, &model);
+                    let expected = auth_piv::identity_hash_hex(&der, &host, &agent, &model);
                     if expected != headers.identity_hash {
                         tracing::warn!(client_ip = %req_client_ip,
                             expected = %expected, got = %headers.identity_hash,
@@ -534,9 +525,7 @@ pub async fn auth_middleware(
 
         if let Some(token) = session_token {
             if let Ok(val) = axum::http::HeaderValue::from_str(&token) {
-                response
-                    .headers_mut()
-                    .insert("x-kleos-session-issued", val);
+                response.headers_mut().insert("x-kleos-session-issued", val);
             }
         }
 
@@ -561,14 +550,10 @@ pub async fn auth_middleware(
                     return unauthorized("signature required for this user");
                 }
 
-                if requires_write_scope(&method)
-                    && !auth_ctx.has_scope(&Scope::Write)
-                {
+                if requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Write) {
                     return forbid("write scope required for this method");
                 }
-                if !requires_write_scope(&method)
-                    && !auth_ctx.has_scope(&Scope::Read)
-                {
+                if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
                     return forbid("read scope required for this method");
                 }
                 let user_id = auth_ctx.user_id;

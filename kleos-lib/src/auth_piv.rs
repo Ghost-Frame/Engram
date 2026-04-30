@@ -220,12 +220,7 @@ fn decode_pem_der(pem: &str, expected_label: &str) -> Result<Vec<u8>> {
 // HKDF identity derivation
 // ---------------------------------------------------------------------------
 
-pub fn derive_identity_hash(
-    pubkey_der: &[u8],
-    host: &str,
-    agent: &str,
-    model: &str,
-) -> [u8; 16] {
+pub fn derive_identity_hash(pubkey_der: &[u8], host: &str, agent: &str, model: &str) -> [u8; 16] {
     use hkdf::Hkdf;
     let hk = Hkdf::<Sha256>::new(Some(b"kleos-identity-v1"), pubkey_der);
     let info = format!("{host}|{agent}|{model}");
@@ -270,11 +265,7 @@ impl ReplayGuard {
             .unwrap()
             .as_millis() as u64;
 
-        let drift = if now_ms > ts_ms {
-            now_ms - ts_ms
-        } else {
-            ts_ms - now_ms
-        };
+        let drift = now_ms.abs_diff(ts_ms);
         if drift > REPLAY_WINDOW_MS {
             return Err(EngError::Auth(format!(
                 "request timestamp outside {REPLAY_WINDOW_MS}ms window (drift={drift}ms)"
@@ -289,7 +280,12 @@ impl ReplayGuard {
         if nonces.contains_key(&key) {
             return Err(EngError::Auth("duplicate nonce (replay)".into()));
         }
-        nonces.insert(key, NonceEntry { inserted: Instant::now() });
+        nonces.insert(
+            key,
+            NonceEntry {
+                inserted: Instant::now(),
+            },
+        );
         Ok(())
     }
 
@@ -416,11 +412,7 @@ pub fn check_timestamp(ts_ms: u64) -> Result<()> {
         .unwrap()
         .as_millis() as u64;
 
-    let drift = if now_ms > ts_ms {
-        now_ms - ts_ms
-    } else {
-        ts_ms - now_ms
-    };
+    let drift = now_ms.abs_diff(ts_ms);
     if drift > REPLAY_WINDOW_MS {
         return Err(EngError::Auth(format!(
             "request timestamp outside {REPLAY_WINDOW_MS}ms window (drift={drift}ms)"
@@ -468,12 +460,7 @@ const ED25519_SPKI_PREFIX_CONST: [u8; 12] = [
 ];
 
 impl RequestSigner {
-    pub fn from_key_bytes(
-        secret: [u8; 32],
-        host: &str,
-        agent: &str,
-        model: &str,
-    ) -> Self {
+    pub fn from_key_bytes(secret: [u8; 32], host: &str, agent: &str, model: &str) -> Self {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret);
         let vk = signing_key.verifying_key();
 
@@ -510,9 +497,7 @@ impl RequestSigner {
             .map_err(|e| EngError::Internal(format!("cannot open YubiKey: {e}")))?;
 
         let cert = yubikey::certificate::Certificate::read(&mut yk, SlotId::Authentication)
-            .map_err(|e| EngError::Internal(format!(
-                "cannot read PIV slot 9a certificate: {e}"
-            )))?;
+            .map_err(|e| EngError::Internal(format!("cannot read PIV slot 9a certificate: {e}")))?;
 
         // Extract SPKI DER bytes from the certificate
         let spki = cert.subject_pki();
@@ -525,10 +510,15 @@ impl RequestSigner {
         let pubkey_pem = {
             use base64::Engine;
             let b64 = base64::engine::general_purpose::STANDARD.encode(&pubkey_der);
-            let wrapped: Vec<&str> = b64.as_bytes().chunks(64)
+            let wrapped: Vec<&str> = b64
+                .as_bytes()
+                .chunks(64)
                 .map(|c| std::str::from_utf8(c).unwrap())
                 .collect();
-            format!("-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----", wrapped.join("\n"))
+            format!(
+                "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
+                wrapped.join("\n")
+            )
         };
 
         let fingerprint = hex::encode(Sha256::digest(&pubkey_der));
@@ -555,12 +545,7 @@ impl RequestSigner {
         })
     }
 
-    pub fn from_file(
-        path: &std::path::Path,
-        host: &str,
-        agent: &str,
-        model: &str,
-    ) -> Result<Self> {
+    pub fn from_file(path: &std::path::Path, host: &str, agent: &str, model: &str) -> Result<Self> {
         let raw = std::fs::read(path).map_err(|e| {
             EngError::Internal(format!("cannot read identity key {}: {e}", path.display()))
         })?;
@@ -617,9 +602,8 @@ impl RequestSigner {
 
         // T2: Software Ed25519 key from env var or file
         if let Ok(hex_key) = std::env::var("KLEOS_IDENTITY_KEY") {
-            let bytes = hex::decode(hex_key.trim()).map_err(|e| {
-                EngError::InvalidInput(format!("KLEOS_IDENTITY_KEY bad hex: {e}"))
-            })?;
+            let bytes = hex::decode(hex_key.trim())
+                .map_err(|e| EngError::InvalidInput(format!("KLEOS_IDENTITY_KEY bad hex: {e}")))?;
             if bytes.len() != 32 {
                 return Err(EngError::InvalidInput(format!(
                     "KLEOS_IDENTITY_KEY must be 32 bytes, got {}",
@@ -646,13 +630,16 @@ impl RequestSigner {
         }
     }
 
-    pub fn generate_software_key(host: &str, agent: &str, model: &str) -> Result<(Self, std::path::PathBuf)> {
+    pub fn generate_software_key(
+        host: &str,
+        agent: &str,
+        model: &str,
+    ) -> Result<(Self, std::path::PathBuf)> {
         let home = dirs_for_key_path()
             .ok_or_else(|| EngError::Internal("cannot determine home directory".into()))?;
         let kleos_dir = home.join(".kleos");
-        std::fs::create_dir_all(&kleos_dir).map_err(|e| {
-            EngError::Internal(format!("cannot create ~/.kleos: {e}"))
-        })?;
+        std::fs::create_dir_all(&kleos_dir)
+            .map_err(|e| EngError::Internal(format!("cannot create ~/.kleos: {e}")))?;
         let key_path = kleos_dir.join("identity.key");
         if key_path.exists() {
             return Err(EngError::InvalidInput(format!(
@@ -665,9 +652,8 @@ impl RequestSigner {
         use rand::Rng;
         rand::rng().fill(&mut secret);
 
-        std::fs::write(&key_path, hex::encode(secret)).map_err(|e| {
-            EngError::Internal(format!("cannot write key file: {e}"))
-        })?;
+        std::fs::write(&key_path, hex::encode(secret))
+            .map_err(|e| EngError::Internal(format!("cannot write key file: {e}")))?;
 
         #[cfg(unix)]
         {
@@ -707,21 +693,27 @@ impl RequestSigner {
                     Ok(d) => d,
                     Err(_) => {
                         drop(yk);
-                        let mut fresh = yubikey::YubiKey::open()
-                            .map_err(|e| EngError::Internal(format!("YubiKey reconnect failed: {e}")))?;
+                        let mut fresh = yubikey::YubiKey::open().map_err(|e| {
+                            EngError::Internal(format!("YubiKey reconnect failed: {e}"))
+                        })?;
                         let d = yubikey::piv::sign_data(
                             &mut fresh,
                             &digest,
                             yubikey::piv::AlgorithmId::EccP256,
                             yubikey::piv::SlotId::Authentication,
                         )
-                        .map_err(|e| EngError::Internal(format!("YubiKey PIV signing failed after reconnect: {e}")))?;
+                        .map_err(|e| {
+                            EngError::Internal(format!(
+                                "YubiKey PIV signing failed after reconnect: {e}"
+                            ))
+                        })?;
                         *yk_mutex.lock().unwrap() = fresh;
                         d
                     }
                 };
-                let sig = p256::ecdsa::Signature::from_der(&sig_der)
-                    .map_err(|e| EngError::Internal(format!("invalid ECDSA DER from YubiKey: {e}")))?;
+                let sig = p256::ecdsa::Signature::from_der(&sig_der).map_err(|e| {
+                    EngError::Internal(format!("invalid ECDSA DER from YubiKey: {e}"))
+                })?;
                 Ok(hex::encode(sig.to_bytes()))
             }
         }
@@ -804,7 +796,13 @@ impl RequestSigner {
         let nonce = generate_nonce();
 
         let envelope = CanonicalEnvelope::new(
-            method, path, query, body, ts_ms, &nonce, &self.identity_hash,
+            method,
+            path,
+            query,
+            body,
+            ts_ms,
+            &nonce,
+            &self.identity_hash,
         );
         let msg = envelope.build();
 
@@ -828,21 +826,27 @@ impl RequestSigner {
                     Ok(d) => d,
                     Err(_) => {
                         drop(yk);
-                        let mut fresh = yubikey::YubiKey::open()
-                            .map_err(|e| EngError::Internal(format!("YubiKey reconnect failed: {e}")))?;
+                        let mut fresh = yubikey::YubiKey::open().map_err(|e| {
+                            EngError::Internal(format!("YubiKey reconnect failed: {e}"))
+                        })?;
                         let d = yubikey::piv::sign_data(
                             &mut fresh,
                             &digest,
                             yubikey::piv::AlgorithmId::EccP256,
                             yubikey::piv::SlotId::Authentication,
                         )
-                        .map_err(|e| EngError::Internal(format!("YubiKey PIV signing failed after reconnect: {e}")))?;
+                        .map_err(|e| {
+                            EngError::Internal(format!(
+                                "YubiKey PIV signing failed after reconnect: {e}"
+                            ))
+                        })?;
                         *yk_mutex.lock().unwrap() = fresh;
                         d
                     }
                 };
-                let sig = p256::ecdsa::Signature::from_der(&sig_der)
-                    .map_err(|e| EngError::Internal(format!("invalid ECDSA DER from YubiKey: {e}")))?;
+                let sig = p256::ecdsa::Signature::from_der(&sig_der).map_err(|e| {
+                    EngError::Internal(format!("invalid ECDSA DER from YubiKey: {e}"))
+                })?;
                 hex::encode(sig.to_bytes())
             }
         };
@@ -990,7 +994,7 @@ mod tests {
 
     #[test]
     fn p256_sign_verify_roundtrip() {
-        use p256::ecdsa::{SigningKey, Signature, signature::Signer};
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
         use p256::elliptic_curve::rand_core::OsRng;
         use p256::pkcs8::{EncodePublicKey, LineEnding};
 
@@ -999,7 +1003,13 @@ mod tests {
         let pubkey_pem = vk.to_public_key_pem(LineEnding::LF).unwrap();
 
         let envelope = CanonicalEnvelope::new(
-            "POST", "/store", "", b"{\"content\":\"test\"}", now_ms(), "aabbccdd", "1122334455",
+            "POST",
+            "/store",
+            "",
+            b"{\"content\":\"test\"}",
+            now_ms(),
+            "aabbccdd",
+            "1122334455",
         );
         let msg = envelope.build();
         let sig: Signature = sk.sign(&msg);
@@ -1027,7 +1037,7 @@ mod tests {
 
     #[test]
     fn p256_manual_pem_wrapping_roundtrip() {
-        use p256::ecdsa::{SigningKey, Signature, signature::Signer};
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
         use p256::elliptic_curve::rand_core::OsRng;
         use p256::pkcs8::EncodePublicKey;
 
@@ -1039,12 +1049,20 @@ mod tests {
             use base64::Engine;
             base64::engine::general_purpose::STANDARD.encode(pubkey_der.as_ref())
         };
-        assert!(b64.len() > 64, "P-256 SPKI base64 must exceed 64 chars to test wrapping");
+        assert!(
+            b64.len() > 64,
+            "P-256 SPKI base64 must exceed 64 chars to test wrapping"
+        );
 
-        let wrapped: Vec<&str> = b64.as_bytes().chunks(64)
+        let wrapped: Vec<&str> = b64
+            .as_bytes()
+            .chunks(64)
             .map(|c| std::str::from_utf8(c).unwrap())
             .collect();
-        let pem = format!("-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----", wrapped.join("\n"));
+        let pem = format!(
+            "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
+            wrapped.join("\n")
+        );
 
         let msg = b"KLEOS-ENROLL:ecdsa-p256:piv:testhost:fakepem";
         let sig: Signature = sk.sign(msg.as_ref());
@@ -1057,7 +1075,7 @@ mod tests {
 
     #[test]
     fn ed25519_sign_verify_roundtrip() {
-        use ed25519_dalek::{SigningKey, Signer};
+        use ed25519_dalek::{Signer, SigningKey};
 
         let mut secret = [0u8; 32];
         rand::Rng::fill(&mut rand::rng(), &mut secret);
@@ -1067,9 +1085,8 @@ mod tests {
         // Build PEM from the 32-byte pubkey
         let pubkey_pem = ed25519_pubkey_to_pem(vk.as_bytes());
 
-        let envelope = CanonicalEnvelope::new(
-            "GET", "/search", "q=test", b"", now_ms(), "aabb", "ccdd",
-        );
+        let envelope =
+            CanonicalEnvelope::new("GET", "/search", "q=test", b"", now_ms(), "aabb", "ccdd");
         let msg = envelope.build();
         let sig = sk.sign(&msg);
         let sig_hex = hex::encode(sig.to_bytes());

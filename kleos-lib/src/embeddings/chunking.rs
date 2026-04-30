@@ -1,5 +1,5 @@
-use crate::Result;
 use crate::embeddings::EmbeddingProvider;
+use crate::Result;
 use regex::Regex;
 use std::sync::LazyLock;
 

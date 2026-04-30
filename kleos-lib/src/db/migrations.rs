@@ -874,31 +874,51 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
     if current_version < MIGRATION_IDENTITY_TABLES {
         info!("Running migration 46: identity_keys_and_identities");
         run_migration_identity_tables(conn)?;
-        record_migration(conn, MIGRATION_IDENTITY_TABLES, "identity_keys_and_identities")?;
+        record_migration(
+            conn,
+            MIGRATION_IDENTITY_TABLES,
+            "identity_keys_and_identities",
+        )?;
     }
 
     if current_version < MIGRATION_AUDIT_IDENTITY_COLUMNS {
         info!("Running migration 47: audit_log_identity_columns");
         run_migration_audit_identity_columns(conn)?;
-        record_migration(conn, MIGRATION_AUDIT_IDENTITY_COLUMNS, "audit_log_identity_columns")?;
+        record_migration(
+            conn,
+            MIGRATION_AUDIT_IDENTITY_COLUMNS,
+            "audit_log_identity_columns",
+        )?;
     }
 
     if current_version < MIGRATION_DROP_API_KEYS_AGENT_FK {
         info!("Running migration 48: drop_api_keys_agent_fk");
         run_migration_drop_api_keys_agent_fk(conn)?;
-        record_migration(conn, MIGRATION_DROP_API_KEYS_AGENT_FK, "drop_api_keys_agent_fk")?;
+        record_migration(
+            conn,
+            MIGRATION_DROP_API_KEYS_AGENT_FK,
+            "drop_api_keys_agent_fk",
+        )?;
     }
 
     if current_version < MIGRATION_SUPERVISOR_INJECTIONS {
         info!("Running migration 49: supervisor_injections");
         run_migration_supervisor_injections(conn)?;
-        record_migration(conn, MIGRATION_SUPERVISOR_INJECTIONS, "supervisor_injections")?;
+        record_migration(
+            conn,
+            MIGRATION_SUPERVISOR_INJECTIONS,
+            "supervisor_injections",
+        )?;
     }
 
     if current_version < MIGRATION_GATE_REQUESTS_SESSION_ID {
         info!("Running migration 50: gate_requests_session_id");
         run_migration_gate_requests_session_id(conn)?;
-        record_migration(conn, MIGRATION_GATE_REQUESTS_SESSION_ID, "gate_requests_session_id")?;
+        record_migration(
+            conn,
+            MIGRATION_GATE_REQUESTS_SESSION_ID,
+            "gate_requests_session_id",
+        )?;
     }
 
     if current_version < MIGRATION_MEMORY_CHUNKS {
@@ -3192,7 +3212,9 @@ fn run_migration_drop_api_keys_agent_fk(conn: &rusqlite::Connection) -> Result<(
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    info!("Migration 48 complete: dropped FK on api_keys.agent_id (agents now live in tenant shards)");
+    info!(
+        "Migration 48 complete: dropped FK on api_keys.agent_id (agents now live in tenant shards)"
+    );
     Ok(())
 }
 
@@ -3337,10 +3359,8 @@ fn run_migration_gate_requests_session_id(conn: &rusqlite::Connection) -> Result
 }
 
 fn down_migration_gate_requests_session_id(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch(
-        "DROP INDEX IF EXISTS idx_gate_requests_session_open;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_gate_requests_session_open;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
 }
 
@@ -3517,10 +3537,12 @@ mod tests {
                      RETURNING id",
                 )
                 .unwrap();
-            stmt.query_map(rusqlite::params![1i64, "sess-a"], |row| row.get::<_, i64>(0))
-                .unwrap()
-                .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
-                .unwrap()
+            stmt.query_map(rusqlite::params![1i64, "sess-a"], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+            .unwrap()
         };
         assert_eq!(claimed_first.len(), 2);
 
@@ -3534,10 +3556,12 @@ mod tests {
                      RETURNING id",
                 )
                 .unwrap();
-            stmt.query_map(rusqlite::params![1i64, "sess-a"], |row| row.get::<_, i64>(0))
-                .unwrap()
-                .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
-                .unwrap()
+            stmt.query_map(rusqlite::params![1i64, "sess-a"], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
+            .unwrap()
         };
         assert!(claimed_second.is_empty());
 

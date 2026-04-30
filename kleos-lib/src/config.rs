@@ -821,8 +821,7 @@ impl Config {
             config.use_lance_index = v != "0" && !v.eq_ignore_ascii_case("false");
         }
         if let Ok(v) = std::env::var("KLEOS_USE_CHUNK_VECTOR_SEARCH") {
-            config.use_chunk_vector_search =
-                v == "1" || v.eq_ignore_ascii_case("true");
+            config.use_chunk_vector_search = v == "1" || v.eq_ignore_ascii_case("true");
         }
         if let Ok(v) = std::env::var("KLEOS_GUI_PASSWORD") {
             config.gui_enabled = !v.is_empty();

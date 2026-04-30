@@ -3,6 +3,7 @@
 //! Network failures are logged (eprintln) but never block -- fail open, exit 0.
 
 use clap::Subcommand;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
 use std::io::Read;
 use std::time::Duration;
@@ -25,6 +26,9 @@ pub enum HookCommands {
     PreTool,
     /// PostToolUse hook -- reports activity, completes gate
     PostTool,
+    /// Back-compat alias for older packaged settings.
+    #[command(name = "post-bash", hide = true)]
+    PostBash,
 }
 
 // --------------------------------------------------------------------------
@@ -57,9 +61,7 @@ fn extract_session_id(input: &Value) -> String {
         .get("session_id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            std::env::var("PPID").unwrap_or_else(|_| "unknown".to_string())
-        })
+        .unwrap_or_else(|| std::env::var("PPID").unwrap_or_else(|_| "unknown".to_string()))
 }
 
 fn emit(v: &Value) {
@@ -112,7 +114,11 @@ fn derive_command(tool_name: &str, tool_input: &Value) -> String {
             .and_then(|q| q.as_str())
             .unwrap_or("WebSearch")
             .to_string(),
-        _ => format!("{}: {}", tool_name, serde_json::to_string(tool_input).unwrap_or_default()),
+        _ => format!(
+            "{}: {}",
+            tool_name,
+            serde_json::to_string(tool_input).unwrap_or_default()
+        ),
     }
 }
 
@@ -166,8 +172,12 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
     let session_id = extract_session_id(input);
 
     // Drain supervisor for pending violations
-    let pending_path = format!("/supervisor/pending?session_id={}", session_id);
-    if let Ok(v) = client.get_with_timeout(&pending_path, DEFAULT_TIMEOUT).await {
+    let encoded_session = utf8_percent_encode(&session_id, NON_ALPHANUMERIC).to_string();
+    let pending_path = format!("/supervisor/pending?session_id={}", encoded_session);
+    if let Ok(v) = client
+        .get_with_timeout(&pending_path, DEFAULT_TIMEOUT)
+        .await
+    {
         let injections = v
             .get("injections")
             .and_then(|x| x.as_array())
@@ -186,7 +196,6 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
         }
     }
 
-    // Build context with mandatory rules
     emit(&build_context_output("UserPromptSubmit", MANDATORY_RULES));
 }
 
@@ -224,10 +233,12 @@ async fn handle_pre_tool(client: &Client, input: &Value) {
         "tool_name": tool_name,
         "session_id": session_id,
         "context": format!("tool_input: {}", serde_json::to_string(&tool_input).unwrap_or_default()),
-        "skip_approval": true,
     });
 
-    let result = match client.post_with_timeout("/gate/check", gate_body, GATE_TIMEOUT).await {
+    let result = match client
+        .post_with_timeout("/gate/check", gate_body, GATE_TIMEOUT)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             eprintln!("kleos hook pre-tool: gate unreachable ({}), allowing", e);
@@ -235,7 +246,10 @@ async fn handle_pre_tool(client: &Client, input: &Value) {
         }
     };
 
-    let allowed = result.get("allowed").and_then(|a| a.as_bool()).unwrap_or(true);
+    let allowed = result
+        .get("allowed")
+        .and_then(|a| a.as_bool())
+        .unwrap_or(true);
     let reason = result
         .get("reason")
         .and_then(|r| r.as_str())
@@ -305,7 +319,7 @@ pub async fn run_hook(cmd: &HookCommands, client: &Client) {
             let input = read_stdin_json();
             handle_pre_tool(client, &input).await;
         }
-        HookCommands::PostTool => {
+        HookCommands::PostTool | HookCommands::PostBash => {
             let input = read_stdin_json();
             handle_post_tool(client, &input).await;
         }

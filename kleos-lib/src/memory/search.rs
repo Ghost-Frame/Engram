@@ -651,36 +651,35 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                 for hit in &hits {
                     vector_ranked.push((hit.memory_id, hit.rank as f64));
                     let semantic = hit.distance.map(|d| 1.0 - d as f64);
-                    let entry =
-                        results.entry(hit.memory_id).or_insert_with(|| Candidate {
-                            id: hit.memory_id,
-                            content: String::new(),
-                            category: String::new(),
-                            source: None,
-                            model: None,
-                            importance: 5,
-                            created_at: String::new(),
-                            version: None,
-                            is_latest: None,
-                            is_static: false,
-                            source_count: 1,
-                            root_memory_id: None,
-                            access_count: 0,
-                            pagerank_score: 0.0,
-                            fsrs_stability: None,
-                            semantic_score: semantic,
-                            personality_signal_score: None,
-                            score: 0.0,
-                            combined_score: 0.0,
-                            decay_score: None,
-                            temporal_boost: None,
-                            rrf_pre_boost: None,
-                            verbose_decay_factor: None,
-                            verbose_pr_boost: None,
-                            verbose_src_boost: None,
-                            verbose_stat_boost: None,
-                            verbose_contradiction: None,
-                        });
+                    let entry = results.entry(hit.memory_id).or_insert_with(|| Candidate {
+                        id: hit.memory_id,
+                        content: String::new(),
+                        category: String::new(),
+                        source: None,
+                        model: None,
+                        importance: 5,
+                        created_at: String::new(),
+                        version: None,
+                        is_latest: None,
+                        is_static: false,
+                        source_count: 1,
+                        root_memory_id: None,
+                        access_count: 0,
+                        pagerank_score: 0.0,
+                        fsrs_stability: None,
+                        semantic_score: semantic,
+                        personality_signal_score: None,
+                        score: 0.0,
+                        combined_score: 0.0,
+                        decay_score: None,
+                        temporal_boost: None,
+                        rrf_pre_boost: None,
+                        verbose_decay_factor: None,
+                        verbose_pr_boost: None,
+                        verbose_src_boost: None,
+                        verbose_stat_boost: None,
+                        verbose_contradiction: None,
+                    });
                     // If the candidate already existed (e.g. from FTS), prefer
                     // the most recent semantic_score we have. LanceDB hits only
                     // arrive here, so this is the only place semantic_score
@@ -1196,7 +1195,10 @@ pub async fn hybrid_search_reranked(
         return Ok(arc_results);
     };
     let mut results = (*arc_results).clone();
-    if let Err(e) = reranker.rerank_results(query_for_rerank, &mut results).await {
+    if let Err(e) = reranker
+        .rerank_results(query_for_rerank, &mut results)
+        .await
+    {
         tracing::warn!("reranker failed in hybrid_search_reranked: {}", e);
         return Ok(arc_results);
     }

@@ -52,10 +52,12 @@ pub fn router() -> Router<AppState> {
         .route("/memory/{id}/unarchive", post(unarchive_memory))
         .route("/memory/{id}/restore", post(restore_memory))
         .route("/memory/trash", get(list_trashed))
-        // S7-26: search/recall is DB + embedding lookup; 10s is generous.
+        // First use of a tenant shard may run migrations before the handler
+        // body executes. Keep this high enough that cold shards do not return
+        // 408 while hot search/recall paths still have a hard cap.
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(10),
+            Duration::from_secs(60),
         ))
         // S7-27: memory payloads are small JSON; 256 KB covers any realistic content.
         .layer(DefaultBodyLimit::max(256 * 1024))

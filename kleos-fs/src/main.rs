@@ -61,19 +61,10 @@ fn canonicalize_within_roots(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> 
     }
 }
 
-fn main() -> ExitCode {
-    let binary_name = env::args()
-        .next()
-        .and_then(|a| {
-            Path::new(&a)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-        })
-        .unwrap_or_else(|| "kr".to_string());
-
+pub fn run(binary_name: &str) -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    match binary_name.as_str() {
+    match binary_name {
         "kr" => cmd_kr(&args),
         "kw" => cmd_kw(&args),
         "ke" => cmd_ke(&args),

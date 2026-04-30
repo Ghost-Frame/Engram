@@ -225,6 +225,49 @@
     return getLinkColor(link);
   }
 
+  function withAlpha(color: string, alpha: number): string {
+    const clamped = Math.max(0, Math.min(1, alpha));
+    const hex = color.startsWith('#') ? color.slice(1) : color;
+    if (hex.length !== 6) return color;
+
+    const value = Number.parseInt(hex, 16);
+    if (Number.isNaN(value)) return color;
+
+    const r = (value >> 16) & 255;
+    const g = (value >> 8) & 255;
+    const b = value & 255;
+    return `rgba(${r},${g},${b},${clamped})`;
+  }
+
+  function getLinkAlpha(link: GLink): number {
+    if (highlightLinks.has(link)) return Math.max(0.3, (link.weight ?? 0.5) * 0.8);
+    if (hoverNode && !highlightLinks.has(link)) return 0.04;
+    if ((link.weight ?? 0) >= weightThreshold) return 0.05 + (link.weight ?? 0) * 0.12;
+    return 0;
+  }
+
+  function getVisibleLinkColor(link: GLink): string {
+    const alpha = getLinkAlpha(link);
+    if (alpha <= 0) return 'rgba(0,0,0,0)';
+    return withAlpha(getLinkColor(link), alpha);
+  }
+
+  function refreshLinkVisuals() {
+    if (!graphInstance) return;
+    graphInstance
+      .linkOpacity(1)
+      .linkWidth((link: any) => {
+        if (highlightLinks.has(link)) return Math.max(0.5, (link.weight ?? 0.5) * 2);
+        if ((link.weight ?? 0) >= weightThreshold) return 0.15;
+        return 0;
+      })
+      .linkColor((link: any) => getVisibleLinkColor(link as GLink))
+      .linkVisibility((link: any) => {
+        if (highlightLinks.has(link)) return true;
+        return (link.weight ?? 0) >= weightThreshold;
+      });
+  }
+
   // ── Cluster Force ──────────────────────────────────────
 
   function makeClusterForce(centroids: Record<string, { x: number; y: number; z: number }>, dim: 'x' | 'y' | 'z', strength: number) {
@@ -305,6 +348,7 @@
 
     hoverNode = node;
     updateNodeVisuals();
+    refreshLinkVisuals();
   }
 
   // ── Click Handler ──────────────────────────────────────
@@ -375,6 +419,7 @@
     highlightLinks.clear();
     searchHighlights.clear();
     updateNodeVisuals();
+    refreshLinkVisuals();
   }
 
   // ── Reactive Effects ───────────────────────────────────
@@ -387,29 +432,8 @@
 
   // Weight threshold: re-set link accessors so graph re-evaluates visibility
   $effect(() => {
-    if (!graphInstance) return;
-    const wt = weightThreshold;
-    graphInstance
-      .linkWidth((link: any) => {
-        if (highlightLinks.has(link)) return Math.max(0.5, (link.weight ?? 0.5) * 2);
-        if ((link.weight ?? 0) >= wt) return 0.15;
-        return 0;
-      })
-      .linkOpacity((link: any) => {
-        if (highlightLinks.has(link)) return Math.max(0.3, (link.weight ?? 0.5) * 0.8);
-        if (hoverNode && !highlightLinks.has(link)) return 0.04;
-        if ((link.weight ?? 0) >= wt) return 0.05 + (link.weight ?? 0) * 0.12;
-        return 0;
-      })
-      .linkColor((link: any) => {
-        if (highlightLinks.has(link)) return getLinkColor(link);
-        if ((link.weight ?? 0) >= wt) return getLinkColor(link);
-        return 'rgba(0,0,0,0)';
-      })
-      .linkVisibility((link: any) => {
-        if (highlightLinks.has(link)) return true;
-        return (link.weight ?? 0) >= wt;
-      });
+    weightThreshold;
+    refreshLinkVisuals();
   });
 
   // Clusters: toggle community clustering forces
@@ -514,7 +538,7 @@
 
       // ── Initialize Force Graph ────────────────────────
 
-      const graph = ForceGraph3D()(container)
+      const graph = new ForceGraph3D(container)
         .graphData({ nodes: graphData.nodes, links: graphData.edges })
         .backgroundColor('#0a0a0a')
         .showNavInfo(false)
@@ -602,17 +626,8 @@
           if ((link.weight ?? 0) >= weightThreshold) return 0.15;
           return 0;
         })
-        .linkOpacity((link: any) => {
-          if (highlightLinks.has(link)) return Math.max(0.3, (link.weight ?? 0.5) * 0.8);
-          if (hoverNode && !highlightLinks.has(link)) return 0.04;
-          if ((link.weight ?? 0) >= weightThreshold) return 0.05 + (link.weight ?? 0) * 0.12;
-          return 0;
-        })
-        .linkColor((link: any) => {
-          if (highlightLinks.has(link)) return getLinkColor(link);
-          if ((link.weight ?? 0) >= weightThreshold) return getLinkColor(link);
-          return 'rgba(0,0,0,0)';
-        })
+        .linkOpacity(1)
+        .linkColor((link: any) => getVisibleLinkColor(link as GLink))
 
         // Flow trail particles (Layer 2 + Layer 3 doubling)
         .linkDirectionalParticles((link: any) => {

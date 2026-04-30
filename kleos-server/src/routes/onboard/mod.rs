@@ -8,7 +8,11 @@ use kleos_lib::webhooks::resolve_and_validate_url;
 use rusqlite::params;
 use serde_json::{json, Value};
 
-use crate::{error::AppError, extractors::{Auth, ResolvedDb}, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
 
 mod types;
 use types::FetchBody;
@@ -34,7 +38,11 @@ pub fn router() -> Router<AppState> {
         .route("/fetch", post(fetch_url))
 }
 
-async fn onboard(State(state): State<AppState>, Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
+async fn onboard(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+) -> Result<Json<Value>, AppError> {
     let mut checks: Vec<(&str, bool, String)> = Vec::new();
 
     // Test store

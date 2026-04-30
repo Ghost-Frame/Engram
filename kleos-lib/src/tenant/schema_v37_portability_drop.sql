@@ -18,8 +18,6 @@
 -- Shape A applies: drop idx_conversations_user, then DROP COLUMN user_id.
 -- messages.conversation_id FK to conversations(id) is unaffected.
 
-INSERT OR IGNORE INTO schema_migrations (version) VALUES (37);
-
 PRAGMA foreign_keys = OFF;
 PRAGMA legacy_alter_table = 1;
 
@@ -70,8 +68,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_up_domain_pref ON user_preferences(domain,
 -- 2a. drop the user index on conversations before dropping the column
 DROP INDEX IF EXISTS idx_conversations_user;
 
--- 2b. drop user_id from conversations
-ALTER TABLE conversations DROP COLUMN user_id;
+-- 2b. Rust migration wrapper drops conversations.user_id only when the column
+-- exists. A cancelled first tenant load can leave this migration partially
+-- applied, so the DROP COLUMN must be retry-safe.
 
 PRAGMA legacy_alter_table = 0;
 PRAGMA foreign_keys = ON;

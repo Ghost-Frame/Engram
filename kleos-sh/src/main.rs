@@ -153,9 +153,7 @@ fn resolve_key_via_credd() -> Option<String> {
     );
 
     let mut stream = UnixStream::connect(&socket_path).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     stream.write_all(request.as_bytes()).ok()?;
 
     let mut response = String::new();

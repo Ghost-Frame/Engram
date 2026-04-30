@@ -1165,11 +1165,9 @@ async fn admin_vector_health(
                     .query_row("SELECT COUNT(*) FROM memory_chunks", [], |row| row.get(0))
                     .unwrap_or(0);
                 let pending: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM vector_sync_pending",
-                        [],
-                        |row| row.get(0),
-                    )
+                    .query_row("SELECT COUNT(*) FROM vector_sync_pending", [], |row| {
+                        row.get(0)
+                    })
                     .unwrap_or(0);
                 Ok((active, chunks, pending))
             })
@@ -1215,14 +1213,11 @@ async fn admin_backfill_chunks(
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
 
-    let embedder = state
-        .current_embedder()
-        .await
-        .ok_or_else(|| {
-            AppError(kleos_lib::EngError::Internal(
-                "no embedder configured; backfill requires an active embedding provider".into(),
-            ))
-        })?;
+    let embedder = state.current_embedder().await.ok_or_else(|| {
+        AppError(kleos_lib::EngError::Internal(
+            "no embedder configured; backfill requires an active embedding provider".into(),
+        ))
+    })?;
 
     let registry = state.tenant_registry.as_ref().ok_or_else(|| {
         AppError(kleos_lib::EngError::Internal(
@@ -1555,10 +1550,7 @@ async fn admin_monolith_drain(
                     .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
                 let keys: std::collections::HashSet<_> = stmt
                     .query_map([], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                        ))
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                     })
                     .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
                     .filter_map(|r| r.ok())
@@ -1598,9 +1590,9 @@ async fn admin_monolith_drain(
         let col_insert_owned = col_insert.clone();
         let insert_result = tenant_db
             .write(move |conn| {
-                let tx = conn.savepoint().map_err(|e| {
-                    kleos_lib::EngError::DatabaseMessage(e.to_string())
-                })?;
+                let tx = conn
+                    .savepoint()
+                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
                 for row_vals in &rows {
                     let content = match &row_vals[0] {
                         rusqlite::types::Value::Text(s) => s.clone(),
@@ -1616,8 +1608,10 @@ async fn admin_monolith_drain(
                         continue;
                     }
 
-                    let params: Vec<&dyn rusqlite::types::ToSql> =
-                        row_vals.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+                    let params: Vec<&dyn rusqlite::types::ToSql> = row_vals
+                        .iter()
+                        .map(|v| v as &dyn rusqlite::types::ToSql)
+                        .collect();
                     match tx.execute(&col_insert_owned, params.as_slice()) {
                         Ok(_) => inserted += 1,
                         Err(e) => {
@@ -1626,9 +1620,8 @@ async fn admin_monolith_drain(
                         }
                     }
                 }
-                tx.commit().map_err(|e| {
-                    kleos_lib::EngError::DatabaseMessage(e.to_string())
-                })?;
+                tx.commit()
+                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
                 Ok((inserted, skipped))
             })
             .await;

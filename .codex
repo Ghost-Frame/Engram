@@ -1,0 +1,7 @@
+Kleos command usage in this repository is defined by docs/KLEOS_OPERATIONS_MANUAL.md.
+
+Before using kleos-cli, kleos-sh, kr, kw, ke, agent-forge, cred, credd, kleos-sidecar, kleos-server, kleos-mcp, or eidolon-supervisor:
+
+- Read docs/KLEOS_OPERATIONS_MANUAL.md.
+- Do not invent flags, auth flows, or side effects from memory.
+- Follow the manual's preferred workflow order: search or context, spec-task, read or edit, verify, then store or hand off.

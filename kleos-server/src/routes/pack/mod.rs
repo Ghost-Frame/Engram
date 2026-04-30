@@ -24,8 +24,7 @@ async fn pack_memories(
         Some("xml") => kleos_lib::pack::PackFormat::Xml,
         _ => kleos_lib::pack::PackFormat::Text,
     };
-    let result =
-        kleos_lib::pack::pack_memories(&db, context, budget, format, auth.user_id).await?;
+    let result = kleos_lib::pack::pack_memories(&db, context, budget, format, auth.user_id).await?;
     Ok(Json(json!({
         "packed": result.packed,
         "memories_included": result.memories_included,

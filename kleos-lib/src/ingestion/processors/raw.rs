@@ -54,9 +54,7 @@ pub async fn process(
         };
 
         let store_outcome = match &ctx.embedder {
-            Some(embedder) => {
-                memory::store_with_chunks(db.as_ref(), embedder.as_ref(), req).await
-            }
+            Some(embedder) => memory::store_with_chunks(db.as_ref(), embedder.as_ref(), req).await,
             None => memory::store(db.as_ref(), req).await,
         };
 

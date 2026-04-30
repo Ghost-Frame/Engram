@@ -36,7 +36,8 @@ async fn list_handler(
     let model = params.model;
     let key_id = params.key_id;
 
-    let rows = state.db
+    let rows = state
+        .db
         .read(move |conn| {
             let mut conditions = vec!["1=1".to_string()];
             let mut bind_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -127,7 +128,8 @@ async fn audit_handler(
     let limit = params.limit.unwrap_or(50).min(500);
     let since = params.since.unwrap_or_else(|| "1970-01-01".to_string());
 
-    let rows = state.db
+    let rows = state
+        .db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(

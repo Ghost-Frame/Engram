@@ -1097,7 +1097,9 @@ mod tests {
         // ensure_pagerank_for_user is now non-blocking: it signals the
         // background job instead of computing synchronously. In tests (no
         // background job), manually compute to verify ranking.
-        let scores = compute_pagerank_for_user(&db, user_id).await.expect("compute");
+        let scores = compute_pagerank_for_user(&db, user_id)
+            .await
+            .expect("compute");
         persist_pagerank(&db, &scores).await.expect("persist");
 
         let results = hybrid_search(&db, search_request("alpha common signal", user_id, 3))
@@ -1127,7 +1129,9 @@ mod tests {
         }
 
         // Pre-compute pagerank since ensure_pagerank_for_user is non-blocking
-        let scores = compute_pagerank_for_user(&db, user_id).await.expect("compute");
+        let scores = compute_pagerank_for_user(&db, user_id)
+            .await
+            .expect("compute");
         persist_pagerank(&db, &scores).await.expect("persist");
 
         let warmup = hybrid_search(&db, search_request("warm cache token", user_id, 10))

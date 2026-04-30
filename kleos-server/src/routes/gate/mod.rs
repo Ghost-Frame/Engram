@@ -8,8 +8,8 @@ use crate::state::AppState;
 use kleos_lib::gate::{
     check_command_with_context, check_ssh_dns_rebind, cleanup_expired_approvals, complete_gate,
     complete_latest_gate, mark_gate_timed_out, parse_ssh_target, read_gate_decision,
-    respond_to_gate, store_gate_request, GateCheckRequest, GateCheckResult, PendingApproval,
-    APPROVAL_TIMEOUT_SECS, TOOLS_REQUIRING_APPROVAL,
+    respond_to_gate, store_gate_request, GateCheckRequest, GateCheckResult, GateRequestInsert,
+    PendingApproval, APPROVAL_TIMEOUT_SECS, TOOLS_REQUIRING_APPROVAL,
 };
 
 mod types;
@@ -99,13 +99,15 @@ async fn check_handler(
         if let Some(reason) = brain_grounded_check(&state, auth.user_id, &resolved_command).await {
             let gate_id = store_gate_request(
                 &db,
-                auth.user_id,
-                &body.agent,
-                &body.command,
-                body.context.as_deref(),
-                "blocked",
-                Some(&reason),
-                body.session_id.as_deref(),
+                GateRequestInsert {
+                    user_id: auth.user_id,
+                    agent: &body.agent,
+                    command: &body.command,
+                    context: body.context.as_deref(),
+                    status: "blocked",
+                    reason: Some(&reason),
+                    session_id: body.session_id.as_deref(),
+                },
             )
             .await?;
             let denied = GateCheckResult {
@@ -141,13 +143,15 @@ async fn check_handler(
             if let Some(block_reason) = check_ssh_dns_rebind(&target.host, port).await {
                 let gate_id = store_gate_request(
                     &db,
-                    auth.user_id,
-                    &body.agent,
-                    &body.command,
-                    body.context.as_deref(),
-                    "blocked",
-                    Some(&block_reason),
-                    body.session_id.as_deref(),
+                    GateRequestInsert {
+                        user_id: auth.user_id,
+                        agent: &body.agent,
+                        command: &body.command,
+                        context: body.context.as_deref(),
+                        status: "blocked",
+                        reason: Some(&block_reason),
+                        session_id: body.session_id.as_deref(),
+                    },
                 )
                 .await?;
                 result = GateCheckResult {
@@ -580,7 +584,10 @@ async fn agent_model_enrichment(db: &kleos_lib::db::Database) -> Option<String> 
     if rules.is_empty() {
         return None;
     }
-    Some(format!("AGENT MODEL PREFERENCE:\n{}", rules.join("\n---\n")))
+    Some(format!(
+        "AGENT MODEL PREFERENCE:\n{}",
+        rules.join("\n---\n")
+    ))
 }
 
 fn truncate(s: &str, max: usize) -> String {

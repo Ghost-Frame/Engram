@@ -28,8 +28,7 @@ async fn enroll_handler(
     State(state): State<AppState>,
     Json(body): Json<EnrollBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let algo =
-        auth_piv::SignatureAlgo::from_header(&body.algo).map_err(|e| AppError(e))?;
+    let algo = auth_piv::SignatureAlgo::from_header(&body.algo).map_err(AppError)?;
 
     if !["piv", "soft"].contains(&body.tier.as_str()) {
         return Err(AppError(kleos_lib::EngError::InvalidInput(
@@ -228,9 +227,5 @@ fn pem_to_der(pem: &str) -> Result<Vec<u8>, AppError> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
         .decode(&b64)
-        .map_err(|e| {
-            AppError(kleos_lib::EngError::InvalidInput(format!(
-                "bad PEM: {e}"
-            )))
-        })
+        .map_err(|e| AppError(kleos_lib::EngError::InvalidInput(format!("bad PEM: {e}"))))
 }

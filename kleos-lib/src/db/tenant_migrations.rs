@@ -262,6 +262,16 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "memory_chunks",
         up: apply_schema_v45_memory_chunks,
     },
+    TenantMigration {
+        version: 46,
+        description: "supervisor_injections",
+        up: apply_schema_v46_supervisor_injections,
+    },
+    TenantMigration {
+        version: 47,
+        description: "gate_requests_session_id",
+        up: apply_schema_v47_gate_requests_session_id,
+    },
 ];
 
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -448,7 +458,8 @@ fn apply_schema_v36_thymus_drop(conn: &Connection) -> Result<()> {
 
 fn apply_schema_v37_portability_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v37_portability_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v37 failed: {e}")))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v37 failed: {e}")))?;
+    drop_column_if_exists(conn, "conversations", "user_id", 37)
 }
 
 fn apply_schema_v38_intelligence_drop(conn: &Connection) -> Result<()> {
@@ -472,8 +483,18 @@ fn apply_schema_v41_projects_readd(conn: &Connection) -> Result<()> {
 }
 
 fn apply_schema_v42_broca_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v42_broca_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v42 failed: {e}")))
+    if !table_has_column(conn, "broca_actions", "user_id")? {
+        conn.execute_batch(
+            "ALTER TABLE broca_actions ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1;",
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v42 failed: {e}")))?;
+    }
+
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_broca_actions_user
+            ON broca_actions(user_id, created_at DESC);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v42 failed: {e}")))
 }
 
 fn apply_schema_v43_handoffs(conn: &Connection) -> Result<()> {
@@ -500,6 +521,59 @@ fn apply_schema_v45_memory_chunks(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_chunks_memory ON memory_chunks(memory_id);",
     )
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v45 failed: {e}")))
+}
+
+fn apply_schema_v46_supervisor_injections(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS supervisor_injections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            session_id TEXT NOT NULL,
+            message TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'warning',
+            consumed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_supervisor_injections_pending
+            ON supervisor_injections(user_id, session_id)
+            WHERE consumed = 0;
+        CREATE INDEX IF NOT EXISTS idx_supervisor_injections_created
+            ON supervisor_injections(user_id, created_at DESC);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v46 failed: {e}")))
+}
+
+fn apply_schema_v47_gate_requests_session_id(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "gate_requests", "session_id")? {
+        conn.execute_batch("ALTER TABLE gate_requests ADD COLUMN session_id TEXT;")
+            .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v47 failed: {e}")))?;
+    }
+
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_gate_requests_session_open
+            ON gate_requests(user_id, session_id, status)
+            WHERE output IS NULL;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v47 index failed: {e}")))
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let table = table.replace('\'', "''");
+    let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1");
+    let count: i64 = conn
+        .query_row(&sql, [column], |row| row.get(0))
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(count > 0)
+}
+
+fn drop_column_if_exists(conn: &Connection, table: &str, column: &str, version: i64) -> Result<()> {
+    if table_has_column(conn, table, column)? {
+        conn.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column};"))
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("tenant schema v{version} failed: {e}"))
+            })?;
+    }
+    Ok(())
 }
 
 /// Run all pending tenant migrations against `conn`.

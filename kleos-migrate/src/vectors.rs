@@ -448,9 +448,11 @@ pub async fn dry_run_source_lance_count(
     } else {
         let allowed = match source_db {
             Some(sdb) => collect_user_memory_ids(sdb, filter_user_id)?,
-            None => return Err(anyhow!(
-                "source LanceDB has no user_id column; --source is required for filtered count"
-            )),
+            None => {
+                return Err(anyhow!(
+                    "source LanceDB has no user_id column; --source is required for filtered count"
+                ))
+            }
         };
         let mut stream = src_table.query().execute().await?;
         let mut count = 0usize;

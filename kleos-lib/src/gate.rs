@@ -80,7 +80,16 @@ pub async fn check_command(
     req: &GateCheckRequest,
     user_id: i64,
 ) -> Result<GateCheckResult> {
-    check_command_with_context(db, req, user_id, None, &[], &Config::default(), req.session_id.as_deref()).await
+    check_command_with_context(
+        db,
+        req,
+        user_id,
+        None,
+        &[],
+        &Config::default(),
+        req.session_id.as_deref(),
+    )
+    .await
 }
 
 /// Check a command against blocked patterns using a resolved copy while storing
@@ -100,13 +109,15 @@ pub async fn check_command_with_context(
         if READ_ONLY_TOOLS.contains(&tool.as_str()) {
             let gate_id = store_gate_request(
                 db,
-                user_id,
-                &req.agent,
-                &req.command,
-                req.context.as_deref(),
-                "allowed",
-                None,
-                session_id,
+                GateRequestInsert {
+                    user_id,
+                    agent: &req.agent,
+                    command: &req.command,
+                    context: req.context.as_deref(),
+                    status: "allowed",
+                    reason: None,
+                    session_id,
+                },
             )
             .await?;
             return Ok(GateCheckResult {
@@ -129,13 +140,15 @@ pub async fn check_command_with_context(
         // Store blocked request
         let gate_id = store_gate_request(
             db,
-            user_id,
-            &req.agent,
-            &req.command,
-            req.context.as_deref(),
-            "blocked",
-            Some(&reason),
-            session_id,
+            GateRequestInsert {
+                user_id,
+                agent: &req.agent,
+                command: &req.command,
+                context: req.context.as_deref(),
+                status: "blocked",
+                reason: Some(&reason),
+                session_id,
+            },
         )
         .await?;
         return Ok(GateCheckResult {
@@ -153,13 +166,15 @@ pub async fn check_command_with_context(
         if let Some(block_reason) = check_ssh_command(command_for_checks, config) {
             let gate_id = store_gate_request(
                 db,
-                user_id,
-                &req.agent,
-                &req.command,
-                req.context.as_deref(),
-                "blocked",
-                Some(&block_reason),
-                session_id,
+                GateRequestInsert {
+                    user_id,
+                    agent: &req.agent,
+                    command: &req.command,
+                    context: req.context.as_deref(),
+                    status: "blocked",
+                    reason: Some(&block_reason),
+                    session_id,
+                },
             )
             .await?;
             return Ok(GateCheckResult {
@@ -196,13 +211,15 @@ pub async fn check_command_with_context(
     };
     let gate_id = store_gate_request(
         db,
-        user_id,
-        &req.agent,
-        &req.command,
-        req.context.as_deref(),
-        status,
-        reason,
-        session_id,
+        GateRequestInsert {
+            user_id,
+            agent: &req.agent,
+            command: &req.command,
+            context: req.context.as_deref(),
+            status,
+            reason,
+            session_id,
+        },
     )
     .await?;
 
@@ -456,16 +473,28 @@ pub async fn complete_latest_gate(
 
 // -- Internal helpers --
 
-pub async fn store_gate_request(
-    db: &Database,
-    user_id: i64,
-    agent: &str,
-    command: &str,
-    context: Option<&str>,
-    status: &str,
-    reason: Option<&str>,
-    session_id: Option<&str>,
-) -> Result<i64> {
+#[derive(Debug, Clone, Copy)]
+pub struct GateRequestInsert<'a> {
+    pub user_id: i64,
+    pub agent: &'a str,
+    pub command: &'a str,
+    pub context: Option<&'a str>,
+    pub status: &'a str,
+    pub reason: Option<&'a str>,
+    pub session_id: Option<&'a str>,
+}
+
+pub async fn store_gate_request(db: &Database, request: GateRequestInsert<'_>) -> Result<i64> {
+    let GateRequestInsert {
+        user_id,
+        agent,
+        command,
+        context,
+        status,
+        reason,
+        session_id,
+    } = request;
+
     let agent = agent.to_string();
     let command = command.to_string();
     let context = context.map(|s| s.to_string());

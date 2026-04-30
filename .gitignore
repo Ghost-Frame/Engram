@@ -11,8 +11,6 @@
 # Agent/IDE config (private)
 .claude/
 .worktrees/
-.codex
-CLAUDE.md
 WORKTREE-SPEC.md
 PLAN.md
 

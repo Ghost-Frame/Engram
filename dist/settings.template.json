@@ -11,7 +11,7 @@
           {
             "type": "command",
             "command": "kleos-cli hook session-start",
-            "timeout": 15
+            "timeout": 20
           }
         ]
       }
@@ -22,7 +22,7 @@
           {
             "type": "command",
             "command": "kleos-cli hook user-prompt",
-            "timeout": 8
+            "timeout": 10
           }
         ]
       }
@@ -40,34 +40,24 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "kleos-sh --claude-hook --gate-only",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "agent-forge enforce --hook",
-            "timeout": 10
+            "command": "kleos-cli hook pre-tool",
+            "timeout": 130
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "kleos-cli hook post-bash",
-            "timeout": 5
+            "command": "kleos-cli hook post-tool",
+            "timeout": 8
           }
         ]
       }
