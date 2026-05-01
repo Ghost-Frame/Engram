@@ -1068,6 +1068,24 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         CREATE INDEX IF NOT EXISTS idx_brain_edges_source ON brain_edges(source_id);
         CREATE INDEX IF NOT EXISTS idx_brain_edges_target ON brain_edges(target_id);
         CREATE INDEX IF NOT EXISTS idx_brain_edges_user ON brain_edges(user_id);
+
+        -- Activity log (separated from memories to avoid search pollution)
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent TEXT NOT NULL,
+            action TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'activity',
+            importance INTEGER NOT NULL DEFAULT 4,
+            session_id TEXT,
+            project TEXT,
+            host TEXT,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_activity_log_session ON activity_log(session_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_activity_log_agent ON activity_log(agent);
+        CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id);
 "#;
 
 pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[

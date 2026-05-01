@@ -15,6 +15,7 @@
 //! SELECT shape and row-to-struct mapping in sync -- see the guard tests at
 //! the bottom of this file.
 
+pub mod auto_tag;
 pub mod fts;
 pub mod scoring;
 pub mod search;
@@ -461,10 +462,38 @@ pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> 
         });
     }
 
-    let tags_json = normalize_tags(&req.tags);
+    // Auto-tag if tags empty
+    let tags_json = {
+        let has_tags = req
+            .tags
+            .as_ref()
+            .map(|t| !t.is_empty())
+            .unwrap_or(false);
+        if has_tags {
+            normalize_tags(&req.tags)
+        } else {
+            let inferred = auto_tag::infer_tags(&content);
+            if inferred.is_empty() {
+                None
+            } else {
+                normalize_tags(&Some(inferred))
+            }
+        }
+    };
+
+    // Auto-categorize if general
+    let category = if req.category == "general" {
+        auto_tag::infer_category(&content)
+            .unwrap_or("general")
+            .to_string()
+    } else {
+        req.category.clone()
+    };
+
     let content_for_tx = content.clone();
     let req_for_tx = req.clone();
     let tags_json_for_tx = tags_json.clone();
+    let category_for_tx = category.clone();
 
     let new_id = db
         .transaction(move |tx| {
@@ -475,6 +504,7 @@ pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> 
                 user_id,
                 importance,
                 tags_json_for_tx,
+                &category_for_tx,
             )
         })
         .await?;
@@ -518,6 +548,7 @@ fn store_transactional_rusqlite(
     _user_id: i64,
     importance: i32,
     tags_json: Option<String>,
+    category: &str,
 ) -> Result<i64> {
     let (version, root_memory_id) = if let Some(parent_id) = req.parent_memory_id {
         let mut stmt = tx
@@ -566,7 +597,7 @@ fn store_transactional_rusqlite(
         )",
         rusqlite::params![
             content,
-            req.category.clone(),
+            category,
             req.source.clone(),
             req.session_id.clone(),
             importance,

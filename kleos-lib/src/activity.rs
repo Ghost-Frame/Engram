@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
-use crate::memory::{self, types::StoreRequest};
 use crate::services::axon::{publish_event, PublishEventRequest};
 use crate::services::broca::{log_action, LogActionRequest};
 use crate::services::chiasm::{
@@ -362,37 +361,24 @@ async fn fanout_skills(db: &Database, report: &ActivityReport, user_id: i64) {
 pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i64) -> Result<i64> {
     validate_activity_report(report)?;
 
-    // Build memory content -- include project if provided
-    let content = if let Some(ref project) = report.project {
-        format!(
-            "[{}] [{}] [{}] {}",
-            report.agent, project, report.action, report.summary
-        )
-    } else {
-        format!("[{}] [{}] {}", report.agent, report.action, report.summary)
-    };
-
     let category = action_to_category(&report.action).to_string();
     let importance = action_to_importance(&report.action);
+    let agent = report.agent.clone();
+    let action = report.action.clone();
+    let summary = report.summary.clone();
+    let project = report.project.clone();
 
-    let store_result = memory::store(
-        db,
-        StoreRequest {
-            content,
-            category,
-            source: report.agent.clone(),
-            importance,
-            user_id: Some(user_id),
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: None,
-            space_id: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-        },
-    )
-    .await?;
+    let store_result = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO activity_log (agent, action, summary, category, importance, project, user_id, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
+                rusqlite::params![agent, action, summary, category, importance, project, user_id],
+            )
+            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await?;
 
     // Upsert agent in soma then heartbeat
     let agent_id = match get_agent_by_name(db, user_id, &report.agent).await {
@@ -455,7 +441,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
         fanout_skills(db, report, user_id),
     );
 
-    Ok(store_result.id)
+    Ok(store_result)
 }
 
 // -- Tests --

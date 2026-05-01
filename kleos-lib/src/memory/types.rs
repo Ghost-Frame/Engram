@@ -315,6 +315,8 @@ pub struct SearchRequest {
     #[serde(default = "default_true")]
     pub latest_only: bool,
     pub source_filter: Option<String>,
+    pub include_archived: Option<bool>,
+    pub include_noise: Option<bool>,
 }
 fn default_true() -> bool {
     true

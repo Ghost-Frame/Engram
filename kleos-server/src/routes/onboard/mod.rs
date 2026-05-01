@@ -108,6 +108,8 @@ async fn onboard(
                 expand_relationships: false,
                 include_links: false,
                 source_filter: None,
+                include_archived: None,
+                include_noise: None,
             },
         )
         .await;

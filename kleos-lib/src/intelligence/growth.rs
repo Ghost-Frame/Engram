@@ -256,6 +256,32 @@ pub async fn reflect(
 
     let trimmed = resolve_growth_observation(db, &req.service, &trimmed, user_id).await?;
 
+    // Dedup: skip if a growth memory with same 200-char prefix exists in last 24h
+    let prefix: String = trimmed.chars().take(200).collect();
+    let prefix_clone = prefix.clone();
+    let is_dup: bool = db
+        .read(move |conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memories WHERE category = 'growth' \
+                     AND substr(content, 1, 200) = ?1 \
+                     AND created_at > datetime('now', '-24 hours')",
+                    rusqlite::params![prefix_clone],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            Ok(count > 0)
+        })
+        .await?;
+    if is_dup {
+        info!(service = %req.service, "growth_duplicate_skipped");
+        return Ok(GrowthReflectResult {
+            observation: None,
+            stored_memory_id: None,
+            reflection_id: None,
+        });
+    }
+
     // Store as growth memory
     let source = format!("{}-growth", req.service);
 
@@ -266,9 +292,9 @@ pub async fn reflect(
             let trimmed_refl = trimmed_for_closure.clone();
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-                 source_count, is_static, is_forgotten, confidence, status, \
+                 source_count, is_static, is_forgotten, is_archived, confidence, status, \
                  created_at, updated_at) \
-                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1.0, 'approved', \
+                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1, 1.0, 'approved', \
                  datetime('now'), datetime('now'))",
                 rusqlite::params![trimmed_for_closure, source_c],
             )

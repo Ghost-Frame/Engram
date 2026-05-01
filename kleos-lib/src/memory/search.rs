@@ -164,6 +164,7 @@ struct Candidate {
     verbose_src_boost: Option<f64>,
     verbose_stat_boost: Option<f64>,
     verbose_contradiction: Option<f64>,
+    is_archived: bool,
 }
 
 struct HydratedCandidateRow {
@@ -181,6 +182,7 @@ struct HydratedCandidateRow {
     fsrs_stability: Option<f64>,
     content: String,
     category: String,
+    is_archived: bool,
 }
 
 struct GraphExpansionRow {
@@ -212,7 +214,7 @@ async fn hydrate_candidates(
     let sql = format!(
         "SELECT id, created_at, importance, is_static, source_count, \
          version, is_latest, source, model, access_count, pagerank_score, \
-         fsrs_stability, content, category \
+         fsrs_stability, content, category, is_archived \
          FROM memories WHERE id IN ({})",
         placeholders
     );
@@ -252,6 +254,7 @@ async fn hydrate_candidates(
                 fsrs_stability: row.get(11).map_err(rusqlite_to_eng_error)?,
                 content: row.get(12).map_err(rusqlite_to_eng_error)?,
                 category: row.get(13).map_err(rusqlite_to_eng_error)?,
+                is_archived: row.get::<_, i32>(14).map_err(rusqlite_to_eng_error)? != 0,
             });
         }
         Ok(hydrated)
@@ -679,6 +682,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                         verbose_src_boost: None,
                         verbose_stat_boost: None,
                         verbose_contradiction: None,
+                        is_archived: false,
                     });
                     // If the candidate already existed (e.g. from FTS), prefer
                     // the most recent semantic_score we have. LanceDB hits only
@@ -727,6 +731,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                     verbose_src_boost: None,
                     verbose_stat_boost: None,
                     verbose_contradiction: None,
+                    is_archived: false,
                 });
                 // FTS provides content we can use
                 let _ = entry;
@@ -802,10 +807,27 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                         if c.category.is_empty() {
                             c.category = row.category;
                         }
+                        c.is_archived = row.is_archived;
                     }
                 }
             }
         }
+    }
+
+    // Exclude noise categories and archived rows unless explicitly requested
+    let include_noise = req.include_noise.unwrap_or(false);
+    let include_archived = req.include_archived.unwrap_or(false);
+    results.retain(|_id, c| {
+        if !include_noise && (c.category == "activity" || c.category == "growth") {
+            return false;
+        }
+        if !include_archived && c.is_archived {
+            return false;
+        }
+        true
+    });
+    if results.is_empty() {
+        return Ok(Arc::new(Vec::new()));
     }
 
     // Apply RRF + decay + boosts to each candidate
@@ -867,7 +889,10 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
         let pr_boost = scoring::pagerank_boost(c.pagerank_score);
         let contr = scoring::contradiction_penalty(&c.content, c.is_latest.unwrap_or(true));
 
-        c.score = rrf * decay_factor * src_boost * stat_boost * temp_boost * pr_boost * contr;
+        let recency = scoring::recency_score(&c.created_at);
+        let recency_boost = 1.0 + recency * scoring::RECENCY_WEIGHT;
+
+        c.score = rrf * decay_factor * src_boost * stat_boost * temp_boost * pr_boost * contr * recency_boost;
         c.combined_score = c.score;
 
         let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
@@ -942,6 +967,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                             verbose_src_boost: None,
                             verbose_stat_boost: None,
                             verbose_contradiction: None,
+                            is_archived: false,
                         });
                         added += 1;
                     }
@@ -1355,6 +1381,8 @@ pub async fn faceted_search(
             include_links: false,
             latest_only: true,
             source_filter: None,
+            include_archived: None,
+            include_noise: None,
         };
         let arc = hybrid_search(db, search_req).await?;
         let mut candidates = (*arc).clone();

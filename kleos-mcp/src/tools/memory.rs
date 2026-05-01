@@ -145,6 +145,8 @@ pub async fn search(app: &App, args: Value) -> Result<Value> {
             .get("source_filter")
             .and_then(Value::as_str)
             .map(str::to_string),
+        include_archived: None,
+        include_noise: None,
     };
     Ok(json!({"results": hybrid_search(&app.db, req).await?}))
 }

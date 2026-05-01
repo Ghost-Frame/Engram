@@ -20,6 +20,7 @@ pub const DECAY_FLOOR: f64 = 0.1;
 pub const PAGERANK_WEIGHT: f64 = 0.15;
 pub const DEFAULT_VECTOR_FLOOR: f64 = 0.15;
 pub const RRF_K: f64 = 60.0;
+pub const RECENCY_WEIGHT: f64 = 0.15;
 
 pub fn question_strategy(qt: QuestionType) -> SearchStrategy {
     match qt {
@@ -626,6 +627,17 @@ pub fn static_boost(is_static: bool) -> f64 {
 
 pub fn pagerank_boost(pagerank_score: f64) -> f64 {
     1.0 + pagerank_score * PAGERANK_WEIGHT
+}
+
+pub fn recency_score(created_at: &str) -> f64 {
+    let age_days = match parse_date_ms(created_at) {
+        Some(ms) => {
+            let now_ms = Utc::now().timestamp_millis();
+            ((now_ms - ms) as f64 / 86_400_000.0).max(0.0)
+        }
+        None => 30.0,
+    };
+    (-age_days / 30.0_f64).exp()
 }
 
 /// Map a per-category preference score (see
