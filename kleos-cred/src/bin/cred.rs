@@ -43,6 +43,16 @@ const CRED_USER_ID: i64 = 1;
 #[derive(Parser)]
 #[command(name = "cred", version, about)]
 struct Cli {
+    /// How cred derives its master key. `yubikey` (default) does an HMAC-SHA1
+    /// challenge against slot 2. `password` reads --master-password / stdin
+    /// and derives via the same Argon2id KDF -- for servers without a YubiKey.
+    #[arg(long, default_value = "yubikey", env = "CRED_AUTH_MODE", global = true)]
+    auth_mode: String,
+
+    /// Master password (only used when --auth-mode=password).
+    #[arg(long, env = "CRED_MASTER_PASSWORD", global = true)]
+    master_password: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -298,13 +308,32 @@ fn shellexpand(path: &str) -> String {
 }
 
 /// Derive master key from YubiKey using legacy (private cred compatible) KDF.
-fn derive_master_key() -> Result<[u8; KEY_SIZE]> {
+fn derive_master_key_yubikey() -> Result<[u8; KEY_SIZE]> {
     let challenge = yubikey::get_or_create_challenge().context("failed to get challenge file")?;
 
     let response = yubikey::challenge_response(&challenge)
         .context("failed to get YubiKey challenge-response -- is the YubiKey plugged in?")?;
 
     Ok(derive_key_legacy(&response))
+}
+
+fn derive_master_key(auth_mode: &str, master_password: Option<&str>) -> Result<[u8; KEY_SIZE]> {
+    match auth_mode {
+        "yubikey" => derive_master_key_yubikey(),
+        "password" => {
+            let password = match master_password {
+                Some(pw) => pw.to_string(),
+                None => {
+                    eprintln!("Enter master password: ");
+                    rpassword::read_password()?
+                }
+            };
+            Ok(kleos_cred::crypto::derive_key(1, password.as_bytes(), None))
+        }
+        other => {
+            anyhow::bail!("unknown CRED_AUTH_MODE `{other}`; expected `yubikey` or `password`");
+        }
+    }
 }
 
 #[tokio::main]
@@ -316,10 +345,10 @@ async fn main() -> Result<()> {
         Commands::Recover { from } => cmd_recover(&from).await,
         Commands::Piv { cmd } => cmd_piv(cmd).await,
         Commands::SshCa { cmd } => cmd_ssh_ca(cmd).await,
-        // All other commands need YubiKey
         cmd => {
-            eprintln!("unlocking with YubiKey...");
-            let key = derive_master_key()?;
+            let mode_label = if cli.auth_mode == "yubikey" { "YubiKey" } else { "password" };
+            eprintln!("unlocking with {}...", mode_label);
+            let key = derive_master_key(&cli.auth_mode, cli.master_password.as_deref())?;
             eprintln!("unlocked.");
 
             let db = Database::connect(&db_path().to_string_lossy())

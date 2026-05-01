@@ -31,7 +31,7 @@ required-features = ["gui"]
 
 [dependencies]
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 rpassword = "7"
 anyhow = "1"
 shellexpand = "3"
