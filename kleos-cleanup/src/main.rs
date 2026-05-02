@@ -178,8 +178,14 @@ fn main() -> Result<()> {
 
     let conn = Connection::open(&args.db)?;
 
-    if let Some(key) = &args.key {
-        conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", key))?;
+    if let Some(ref key) = args.key {
+        let pragma_val = format!("x'{}'", key);
+        conn.pragma_update(None, "key", &pragma_val)?;
+        conn.pragma_query_value(None, "schema_version", |_| Ok(()))
+            .map_err(|_| rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(26),
+                Some("PRAGMA key failed -- wrong key or not a SQLCipher database".into()),
+            ))?;
     }
 
     let activity_count = step_a_move_activity(&conn, args.execute)?;
