@@ -1,18 +1,12 @@
 [workspace]
 resolver = "2"
 members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate", "kleos-sh", "kleos-fs", "eidolon-supervisor", "kleos-cleanup", "kleos-ingest"]
-exclude = ["kleos-migrate-libsql-legacy"]
+exclude = []
 
 [workspace.package]
 rust-version = "1.94"
 
 [workspace.dependencies]
-# libsql is used only by kleos-migrate for local-file -> rusqlite ETL.
-# We turn off default features (replication/remote/sync/tls) to drop the
-# transitive hyper-rustls 0.25 + rustls 0.22 + rustls-webpki 0.102.8 chain
-# (RUSTSEC-2026-0049/0098/0099). kleos-migrate opens files via
-# Builder::new_local only; no TLS path needed.
-libsql = { version = "0.9", default-features = false, features = ["core"] }
 rusqlite = "0.31"
 tokio-rusqlite = "0.5"
 deadpool-sqlite = "0.8"
@@ -69,9 +63,6 @@ metrics-exporter-prometheus = { version = "0.16", default-features = false, feat
 # Dev/bench shared deps.
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
-# Note: Can't use bundled sqlite with libsql in same binary - they conflict.
-# kleos-lib gates bundled-sqlcipher behind the "sqlcipher" feature so
-# kleos-migrate (which still uses libsql) compiles without collision.
 
 [profile.release]
 lto = "fat"
