@@ -45,13 +45,19 @@ const CRED_USER_ID: i64 = 1;
 struct Cli {
     /// How cred derives its master key. `yubikey` (default) does an HMAC-SHA1
     /// challenge against slot 2. `password` reads --master-password / stdin
-    /// and derives via the same Argon2id KDF -- for servers without a YubiKey.
+    /// and derives via the same Argon2id KDF. `keyfile` reads the pre-derived
+    /// 32-byte key (hex-encoded) from a file -- for unattended servers.
     #[arg(long, default_value = "yubikey", env = "CRED_AUTH_MODE", global = true)]
     auth_mode: String,
 
     /// Master password (only used when --auth-mode=password).
     #[arg(long, env = "CRED_MASTER_PASSWORD", global = true)]
     master_password: Option<String>,
+
+    /// Path to keyfile containing hex-encoded 32-byte master key
+    /// (only used when --auth-mode=keyfile).
+    #[arg(long, env = "CRED_KEYFILE", global = true)]
+    keyfile: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -147,6 +153,15 @@ enum Commands {
     },
     /// Interactive TUI for browsing and managing secrets
     Tui,
+    /// Export the derived master key to a keyfile for unattended use.
+    /// Run this once interactively (yubikey or password mode), then use
+    /// CRED_AUTH_MODE=keyfile on the server. The keyfile is 64 hex chars
+    /// (32 bytes), saved mode 0600.
+    ExportKey {
+        /// Output path (default: ~/.config/cred/master.key)
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Manage the YubiKey-encrypted bootstrap blob (credd's master Kleos key)
     Bootstrap {
         #[command(subcommand)]
@@ -317,7 +332,11 @@ fn derive_master_key_yubikey() -> Result<[u8; KEY_SIZE]> {
     Ok(derive_key_legacy(&response))
 }
 
-fn derive_master_key(auth_mode: &str, master_password: Option<&str>) -> Result<[u8; KEY_SIZE]> {
+fn derive_master_key(
+    auth_mode: &str,
+    master_password: Option<&str>,
+    keyfile: Option<&Path>,
+) -> Result<[u8; KEY_SIZE]> {
     match auth_mode {
         "yubikey" => derive_master_key_yubikey(),
         "password" => {
@@ -330,8 +349,30 @@ fn derive_master_key(auth_mode: &str, master_password: Option<&str>) -> Result<[
             };
             Ok(kleos_cred::crypto::derive_key(1, password.as_bytes(), None))
         }
+        "keyfile" => {
+            let path = keyfile
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| config_dir().join("master.key"));
+            let hex_str = std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read keyfile {}", path.display()))?;
+            let bytes = hex::decode(hex_str.trim())
+                .with_context(|| format!("keyfile {} is not valid hex", path.display()))?;
+            if bytes.len() != KEY_SIZE {
+                anyhow::bail!(
+                    "keyfile {} contains {} bytes, expected {}",
+                    path.display(),
+                    bytes.len(),
+                    KEY_SIZE
+                );
+            }
+            let mut key = [0u8; KEY_SIZE];
+            key.copy_from_slice(&bytes);
+            Ok(key)
+        }
         other => {
-            anyhow::bail!("unknown CRED_AUTH_MODE `{other}`; expected `yubikey` or `password`");
+            anyhow::bail!(
+                "unknown CRED_AUTH_MODE `{other}`; expected `yubikey`, `password`, or `keyfile`"
+            );
         }
     }
 }
@@ -346,9 +387,18 @@ async fn main() -> Result<()> {
         Commands::Piv { cmd } => cmd_piv(cmd).await,
         Commands::SshCa { cmd } => cmd_ssh_ca(cmd).await,
         cmd => {
-            let mode_label = if cli.auth_mode == "yubikey" { "YubiKey" } else { "password" };
+            let mode_label = match cli.auth_mode.as_str() {
+                "yubikey" => "YubiKey",
+                "password" => "password",
+                "keyfile" => "keyfile",
+                other => other,
+            };
             eprintln!("unlocking with {}...", mode_label);
-            let key = derive_master_key(&cli.auth_mode, cli.master_password.as_deref())?;
+            let key = derive_master_key(
+                &cli.auth_mode,
+                cli.master_password.as_deref(),
+                cli.keyfile.as_deref(),
+            )?;
             eprintln!("unlocked.");
 
             let db = Database::connect(&db_path().to_string_lossy())
@@ -415,6 +465,7 @@ async fn main() -> Result<()> {
                     .await
                 }
                 Commands::Tui => cmd_tui(&db, &key).await,
+                Commands::ExportKey { out } => cmd_export_key(&key, out).await,
                 Commands::Bootstrap { cmd: bcmd } => match bcmd {
                     BootstrapCmd::Wrap {
                         service,
@@ -432,6 +483,29 @@ async fn main() -> Result<()> {
             }
         }
     }
+}
+
+async fn cmd_export_key(master_key: &[u8; KEY_SIZE], out: Option<PathBuf>) -> Result<()> {
+    let path = out.unwrap_or_else(|| config_dir().join("master.key"));
+    let dir = path
+        .parent()
+        .context("keyfile path has no parent directory")?;
+    std::fs::create_dir_all(dir)?;
+
+    let hex_key = hex::encode(master_key);
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, format!("{}\n", hex_key))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    std::fs::rename(&tmp, &path)?;
+    eprintln!("master key exported to {} (mode 0600)", path.display());
+    eprintln!("use CRED_AUTH_MODE=keyfile CRED_KEYFILE={} for unattended access", path.display());
+    Ok(())
 }
 
 async fn cmd_init() -> Result<()> {

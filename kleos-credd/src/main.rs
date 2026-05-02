@@ -29,10 +29,15 @@ struct Args {
     /// How credd derives its master key. `yubikey` (default) does an HMAC-SHA1
     /// challenge against slot 2 and Argon2id-derives a 32-byte key, requiring
     /// no on-disk secrets. `password` reads --master-password / stdin and
-    /// derives via the same Argon2id KDF -- documented escape hatch for
-    /// installations without a YubiKey.
+    /// derives via the same Argon2id KDF. `keyfile` reads a pre-derived
+    /// 32-byte hex key from a file -- for unattended servers.
     #[arg(long, default_value = "yubikey", env = "CREDD_AUTH_MODE")]
     auth_mode: String,
+
+    /// Path to keyfile containing hex-encoded 32-byte master key
+    /// (only used when --auth-mode=keyfile).
+    #[arg(long, env = "CREDD_KEYFILE")]
+    keyfile: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -65,8 +70,35 @@ async fn main() -> anyhow::Result<()> {
             info!("credd: deriving master key from password (CREDD_AUTH_MODE=password)");
             derive_key(1, password.as_bytes(), None)
         }
+        "keyfile" => {
+            let path = args.keyfile.unwrap_or_else(|| {
+                let base = std::env::var("XDG_CONFIG_HOME")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| {
+                        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                            .join(".config")
+                    });
+                base.join("cred").join("master.key")
+            });
+            let hex_str = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("failed to read keyfile {}: {e}", path.display()))?;
+            let bytes = hex::decode(hex_str.trim())
+                .map_err(|e| anyhow::anyhow!("keyfile {} is not valid hex: {e}", path.display()))?;
+            if bytes.len() != KEY_SIZE {
+                anyhow::bail!(
+                    "keyfile {} contains {} bytes, expected {}",
+                    path.display(),
+                    bytes.len(),
+                    KEY_SIZE
+                );
+            }
+            info!("credd: master key loaded from keyfile {}", path.display());
+            let mut key = [0u8; KEY_SIZE];
+            key.copy_from_slice(&bytes);
+            key
+        }
         other => {
-            anyhow::bail!("unknown CREDD_AUTH_MODE `{other}`; expected `yubikey` or `password`");
+            anyhow::bail!("unknown CREDD_AUTH_MODE `{other}`; expected `yubikey`, `password`, or `keyfile`");
         }
     };
 
