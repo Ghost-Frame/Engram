@@ -64,7 +64,7 @@ crossterm = "0.28"
 
 # GUI
 eframe = { version = "0.31", optional = true }
-reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
+reqwest = { version = "0.12", features = ["json"] }
 
 # Utils
 chrono.workspace = true
@@ -76,7 +76,7 @@ subtle = { workspace = true }
 
 [features]
 default = []
-gui = ["eframe", "reqwest"]
+gui = ["eframe"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

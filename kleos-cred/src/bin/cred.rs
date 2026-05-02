@@ -718,9 +718,15 @@ async fn cmd_exec(
         anyhow::bail!("no command specified after `--`");
     }
 
-    let (_row, data) = storage::get_secret(db, CRED_USER_ID, service, key, master_key)
-        .await
-        .context("secret not found")?;
+    let (_row, data) = match storage::get_secret(db, CRED_USER_ID, service, key, master_key).await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            resolve_via_credd(master_key, service, key)
+                .await
+                .context("secret not found in local DB or credd")?
+        }
+    };
 
     let mut value = if let Some(field_name) = field {
         data.get_field(field_name).ok_or_else(|| {
@@ -1973,6 +1979,57 @@ fn draw_detail_modal(f: &mut Frame, secret: &TuiSecret, show_value: bool) {
             .title(" detail "),
     );
     f.render_widget(detail, modal_area);
+}
+
+// ---------------------------------------------------------------------------
+// credd fallback for secret resolution
+// ---------------------------------------------------------------------------
+
+async fn resolve_via_credd(
+    master_key: &[u8; KEY_SIZE],
+    service: &str,
+    key: &str,
+) -> Result<(storage::SecretRow, kleos_cred::types::SecretData)> {
+    let credd_url = std::env::var("CREDD_URL").unwrap_or_else(|_| "http://127.0.0.1:4400".into());
+    let auth_token = hex::encode(master_key);
+
+    let resp = reqwest::Client::new()
+        .get(format!(
+            "{}/secret/{}/{}",
+            credd_url.trim_end_matches('/'),
+            service,
+            key
+        ))
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .context("credd unreachable")?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("credd returned {}", resp.status());
+    }
+
+    let body: serde_json::Value = resp.json().await.context("invalid credd response")?;
+
+    let data: kleos_cred::types::SecretData =
+        serde_json::from_value(body["value"].clone()).context("failed to parse secret data")?;
+
+    let secret_type_str = body["type"].as_str().unwrap_or("api_key");
+    let secret_type =
+        kleos_cred::types::SecretType::parse(secret_type_str).unwrap_or(kleos_cred::types::SecretType::ApiKey);
+
+    let row = storage::SecretRow {
+        id: 0,
+        user_id: CRED_USER_ID,
+        name: key.to_string(),
+        category: service.to_string(),
+        secret_type,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+
+    Ok((row, data))
 }
 
 // ---------------------------------------------------------------------------

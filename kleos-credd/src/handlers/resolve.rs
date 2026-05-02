@@ -12,7 +12,6 @@ use axum::{extract::State, Json};
 use serde_json::{json, Value};
 
 use kleos_cred::audit::{log_audit, AccessTier, AuditAction};
-use kleos_cred::storage::get_secret;
 use kleos_cred::CredError;
 
 use crate::auth::Auth;
@@ -87,12 +86,11 @@ pub async fn resolve_text_handler(
             continue;
         }
 
-        let secret_result = get_secret(
-            &state.db,
+        let secret_result = super::get_secret_with_fallback(
+            &state,
             auth.user_id(),
             &category,
             &name,
-            state.master_key.as_ref(),
         )
         .await;
 
@@ -182,12 +180,11 @@ pub async fn proxy_handler(
         .into());
     }
 
-    let (_row, data) = get_secret(
-        &state.db,
+    let (_row, data) = super::get_secret_with_fallback(
+        &state,
         auth.user_id(),
         &req.secret_category,
         &req.secret_name,
-        state.master_key.as_ref(),
     )
     .await?;
 
@@ -331,12 +328,11 @@ pub async fn raw_handler(
         .into());
     }
 
-    let (_row, data) = get_secret(
-        &state.db,
+    let (_row, data) = super::get_secret_with_fallback(
+        &state,
         auth.user_id(),
         &req.category,
         &req.name,
-        state.master_key.as_ref(),
     )
     .await?;
 

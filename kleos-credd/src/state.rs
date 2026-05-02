@@ -14,6 +14,7 @@ use tracing::warn;
 use zeroize::Zeroizing;
 
 use kleos_cred::agent_keys_file::FileAgentKeyStore;
+use kleos_lib::auth_piv::RequestSigner;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -41,6 +42,9 @@ pub struct AppState {
     /// for the server (the YubiKey holds the corresponding private key
     /// and the ECDH op happens via `kleos_cred::piv::ecdh_agree`).
     pub piv_9d_pubkey: Option<Arc<PublicKey>>,
+    /// PIV request signer for authenticating to Kleos API when resolving
+    /// [CRED:v3] entries. Initialized at startup via from_env_or_file.
+    pub kleos_signer: Option<Arc<RequestSigner>>,
 }
 
 impl AppState {
@@ -54,6 +58,7 @@ impl AppState {
             file_agent_keys: Arc::new(Mutex::new(FileAgentKeyStore::default())),
             piv_9a_pubkeys,
             piv_9d_pubkey,
+            kleos_signer: None,
         }
     }
 
@@ -67,6 +72,7 @@ impl AppState {
         file_agent_keys: FileAgentKeyStore,
     ) -> Self {
         let (piv_9a_pubkeys, piv_9d_pubkey) = load_piv_pubkeys();
+        let kleos_signer = init_kleos_signer();
         Self {
             db: Arc::new(db),
             master_key: Arc::new(master_key),
@@ -75,6 +81,7 @@ impl AppState {
             file_agent_keys: Arc::new(Mutex::new(file_agent_keys)),
             piv_9a_pubkeys,
             piv_9d_pubkey,
+            kleos_signer,
         }
     }
 }
@@ -172,6 +179,31 @@ fn load_piv_pubkeys() -> (Arc<Vec<VerifyingKey>>, Option<Arc<PublicKey>>) {
     };
 
     (Arc::new(keys_9a), key_9d)
+}
+
+fn init_kleos_signer() -> Option<Arc<RequestSigner>> {
+    let host = std::env::var("KLEOS_URL")
+        .or_else(|_| std::env::var("KLEOS_URL"))
+        .unwrap_or_else(|_| "http://localhost:4200".into());
+
+    match RequestSigner::from_env_or_file(&host, "credd", "daemon") {
+        Ok(Some(signer)) => {
+            tracing::info!(
+                tier = %signer.tier(),
+                fingerprint = %signer.fingerprint(),
+                "Kleos request signer initialized for vault fallback"
+            );
+            Some(Arc::new(signer))
+        }
+        Ok(None) => {
+            tracing::warn!("no PIV/software key found; Kleos vault fallback will use bootstrap bearer");
+            None
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to initialize Kleos request signer");
+            None
+        }
+    }
 }
 
 impl Deref for AppState {

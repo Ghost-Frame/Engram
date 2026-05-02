@@ -11,7 +11,12 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
+use kleos_cred::crypto::decrypt;
+use kleos_cred::storage::SecretRow;
+use kleos_cred::types::SecretData;
 use kleos_cred::CredError;
+
+use crate::state::AppState;
 
 /// Convert CredError to HTTP response.
 pub struct AppError(CredError);
@@ -68,5 +73,142 @@ impl IntoResponse for AppError {
         }));
 
         (status, body).into_response()
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct KleosListResponse {
+    results: Vec<KleosMemoryRow>,
+}
+
+#[derive(serde::Deserialize)]
+struct KleosMemoryRow {
+    content: String,
+}
+
+/// Resolve a secret from Kleos [CRED:v3] entries.
+/// Fallback for when the local SQLCipher database does not have the entry.
+pub(crate) async fn resolve_from_kleos(
+    state: &AppState,
+    category: &str,
+    name: &str,
+) -> Result<(SecretRow, SecretData), AppError> {
+    let kleos_url = std::env::var("KLEOS_URL")
+        .or_else(|_| std::env::var("KLEOS_URL"))
+        .map_err(|_| {
+            tracing::error!("KLEOS_URL not set; cannot resolve {}/{} from Kleos", category, name);
+            CredError::InvalidInput("KLEOS_URL not set".into())
+        })?;
+
+    let http = reqwest::Client::new();
+    let list_url = format!("{}/list", kleos_url.trim_end_matches('/'));
+    let mut req = http
+        .get(&list_url)
+        .query(&[("category", "credential"), ("limit", "500")]);
+
+    // PIV signing first, bootstrap bearer fallback
+    if let Some(signer) = &state.kleos_signer {
+        if let Some(session) = signer.cached_session() {
+            req = req.header("X-Kleos-Session", session);
+        } else {
+            match signer.sign_request("GET", "/list", "category=credential&limit=500", &[]) {
+                Ok(signed) => req = signed.apply_headers(req),
+                Err(e) => {
+                    tracing::warn!(error = %e, "PIV signing failed, trying bootstrap bearer");
+                    if let Some(bm) = &state.bootstrap_master {
+                        req = req.header("Authorization", format!("Bearer {}", bm.as_str()));
+                    }
+                }
+            }
+        }
+    } else if let Some(bm) = &state.bootstrap_master {
+        req = req.header("Authorization", format!("Bearer {}", bm.as_str()));
+    } else {
+        return Err(CredError::NotFound("no auth available for Kleos vault".into()).into());
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("Kleos /list failed for {}/{}: {}", category, name, e);
+            CredError::InvalidInput(format!("kleos unreachable: {}", e))
+        })?;
+
+    // Capture session token if issued
+    if let Some(signer) = &state.kleos_signer {
+        if let Some(session_val) = resp.headers().get("X-Kleos-Session-Issued") {
+            if let Ok(s) = session_val.to_str() {
+                signer.set_session(s.to_string());
+            }
+        }
+    }
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        tracing::error!("Kleos /list returned {} for {}/{}", status, category, name);
+        return Err(CredError::InvalidInput(format!("kleos /list error: {}", status)).into());
+    }
+
+    let list: KleosListResponse = resp.json().await.map_err(|e| {
+        tracing::error!("Kleos /list parse error for {}/{}: {}", category, name, e);
+        CredError::InvalidInput(format!("kleos response parse error: {}", e))
+    })?;
+
+    let target_prefix = format!("[CRED:v3] {}/{} = ", category, name);
+    let entry = list
+        .results
+        .iter()
+        .find(|m| m.content.starts_with(&target_prefix))
+        .ok_or_else(|| {
+            tracing::warn!("no [CRED:v3] entry for {}/{}", category, name);
+            CredError::NotFound(format!("{}/{}", category, name))
+        })?;
+
+    let hex_data = entry.content[target_prefix.len()..].trim();
+    let ciphertext = hex::decode(hex_data).map_err(|e| {
+        tracing::error!("hex decode failed for {}/{}: {}", category, name, e);
+        CredError::Decryption("corrupt cred entry: hex decode failed".into())
+    })?;
+
+    let plaintext = decrypt(state.master_key.as_ref(), &ciphertext).map_err(|e| {
+        tracing::error!("decrypt failed for {}/{}: {}", category, name, e);
+        CredError::Decryption("corrupt cred entry: decrypt failed".into())
+    })?;
+
+    let data: SecretData = serde_json::from_slice(&plaintext).map_err(|e| {
+        tracing::error!("JSON parse failed for {}/{}: {}", category, name, e);
+        CredError::InvalidInput("corrupt cred entry: JSON parse failed".into())
+    })?;
+
+    let row = SecretRow {
+        id: 0,
+        user_id: 1,
+        name: name.to_string(),
+        category: category.to_string(),
+        secret_type: data.secret_type(),
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+
+    Ok((row, data))
+}
+
+/// Get a secret, trying local DB first, then falling back to Kleos [CRED:v3].
+pub(crate) async fn get_secret_with_fallback(
+    state: &AppState,
+    user_id: i64,
+    category: &str,
+    name: &str,
+) -> Result<(SecretRow, SecretData), AppError> {
+    use kleos_cred::storage::get_secret;
+
+    match get_secret(&state.db, user_id, category, name, state.master_key.as_ref()).await {
+        Ok(result) => Ok(result),
+        Err(CredError::NotFound(_)) => {
+            tracing::debug!("{}/{} not in local DB, trying Kleos vault", category, name);
+            resolve_from_kleos(state, category, name).await
+        }
+        Err(e) => Err(e.into()),
     }
 }

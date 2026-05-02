@@ -9,7 +9,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use kleos_cred::audit::{log_audit, AccessTier, AuditAction};
-use kleos_cred::storage::{delete_secret, get_secret, list_secrets, store_secret, update_secret};
+use kleos_cred::storage::{delete_secret, list_secrets, store_secret, update_secret};
 use kleos_cred::CredError;
 
 use crate::auth::Auth;
@@ -105,12 +105,11 @@ pub async fn get_handler(
         );
     }
 
-    let (row, data) = get_secret(
-        &state.db,
+    let (row, data) = super::get_secret_with_fallback(
+        &state,
         auth.user_id(),
         &category,
         &name,
-        state.master_key.as_ref(),
     )
     .await?;
 
