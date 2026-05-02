@@ -1,4 +1,6 @@
 /target
+.target-check/
+.target-check2/
 *.db
 *.db-shm
 *.db-wal

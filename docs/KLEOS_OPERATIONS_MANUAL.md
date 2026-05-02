@@ -7,7 +7,7 @@ what side effects it has, and when an agent should use it.
 ## Scope
 
 This manual covers the operator-facing binaries installed by the `agent-host`
-and `full` profiles in [dist/install.sh](~/projects/Kleos/dist/install.sh):
+and `full` profiles in [dist/install.sh](../dist/install.sh):
 
 - `kleos-cli`
 - `kleos-sh`
@@ -807,7 +807,7 @@ How it works:
 
 Deep reference:
 
-- [kleos-cred/MANUAL.md](~/projects/Kleos/kleos-cred/MANUAL.md)
+- [kleos-cred/MANUAL.md](../kleos-cred/MANUAL.md)
 
 ## `credd`
 
@@ -839,7 +839,7 @@ Important surfaces:
 
 Deep reference:
 
-- [kleos-credd/MANUAL.md](~/projects/Kleos/kleos-credd/MANUAL.md)
+- [kleos-credd/MANUAL.md](../kleos-credd/MANUAL.md)
 
 ## `kleos-sidecar`
 

@@ -1314,12 +1314,12 @@ mod tests {
         use crate::config::ServerEntry;
         let mut c = cfg();
         c.eidolon.gate.servers.push(ServerEntry {
-            name: "ovh-vault".to_string(),
+            name: "vault-server".to_string(),
             no_reboot: true,
-            notes: "LUKS vault will lock permanently".to_string(),
+            notes: "encrypted volume will lock permanently".to_string(),
             ..Default::default()
         });
-        assert!(check_dangerous_patterns("reboot ovh-vault", &c).is_some());
+        assert!(check_dangerous_patterns("reboot vault-server", &c).is_some());
         // Server not in inventory is not caught
         assert!(check_dangerous_patterns("reboot other-server", &c).is_none());
     }
