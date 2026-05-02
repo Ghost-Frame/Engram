@@ -973,9 +973,9 @@ mod tests {
     #[test]
     fn hkdf_different_labels_different_hash() {
         let pk = b"same-key";
-        let h1 = derive_identity_hash(pk, "wsl", "claude-code", "opus");
-        let h2 = derive_identity_hash(pk, "rocky", "claude-code", "opus");
-        let h3 = derive_identity_hash(pk, "wsl", "opencode", "opus");
+        let h1 = derive_identity_hash(pk, "host-a", "claude-code", "opus");
+        let h2 = derive_identity_hash(pk, "host-b", "claude-code", "opus");
+        let h3 = derive_identity_hash(pk, "host-a", "opencode", "opus");
         assert_ne!(h1, h2);
         assert_ne!(h1, h3);
         assert_ne!(h2, h3);

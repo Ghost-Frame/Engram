@@ -69,9 +69,9 @@ enum Commands {
     Init,
     /// Store a secret (prompts interactively)
     Store {
-        /// Service name (e.g., authentik, grafana)
+        /// Service name (e.g., grafana, postgres)
         service: String,
-        /// Key name (e.g., zan, api-key)
+        /// Key name (e.g., admin, api-key)
         key: String,
         /// Secret type: api-key, login, oauth-app, ssh-key, note, environment
         #[arg(short = 't', long, default_value = "api-key")]
@@ -216,7 +216,7 @@ enum SshCaCmd {
         #[arg(short = 'I', long)]
         identity: String,
         /// Valid principal(s), comma-separated.
-        #[arg(short = 'n', long, default_value = "zan")]
+        #[arg(short = 'n', long, default_value = "operator")]
         principal: String,
         /// Validity period (e.g. +1h, +30m, +5m).
         #[arg(short = 'V', long, default_value = "+1h")]
@@ -231,7 +231,7 @@ enum SshCaCmd {
         #[arg(long)]
         agent: String,
         /// Valid principal(s), comma-separated.
-        #[arg(short = 'n', long, default_value = "zan")]
+        #[arg(short = 'n', long, default_value = "operator")]
         principal: String,
         /// Validity period (e.g. +1h, +30m, +5m).
         #[arg(long, default_value = "+1h")]
@@ -2524,7 +2524,7 @@ mod user_id_migration_tests {
     #[tokio::test]
     async fn migration_promotes_uid0_rows_when_no_collision() {
         let db = fresh_cred_db().await;
-        insert_row(&db, 0, "authentik", "zan").await;
+        insert_row(&db, 0, "myservice", "admin").await;
         insert_row(&db, 0, "grafana", "admin").await;
         insert_row(&db, 1, "kleos", "claude-code-host").await; // unrelated row
 
@@ -2538,7 +2538,7 @@ mod user_id_migration_tests {
     #[tokio::test]
     async fn migration_is_idempotent() {
         let db = fresh_cred_db().await;
-        insert_row(&db, 0, "authentik", "zan").await;
+        insert_row(&db, 0, "myservice", "admin").await;
 
         let first = migrate_legacy_user_id_zero_rows(&db).await.unwrap();
         let second = migrate_legacy_user_id_zero_rows(&db).await.unwrap();
@@ -2552,8 +2552,8 @@ mod user_id_migration_tests {
     async fn migration_skips_collisions() {
         let db = fresh_cred_db().await;
         // Pre-existing uid=1 row that conflicts with the legacy uid=0 row
-        insert_row(&db, 1, "authentik", "zan").await;
-        insert_row(&db, 0, "authentik", "zan").await;
+        insert_row(&db, 1, "myservice", "admin").await;
+        insert_row(&db, 0, "myservice", "admin").await;
         // Non-colliding legacy row
         insert_row(&db, 0, "grafana", "admin").await;
 

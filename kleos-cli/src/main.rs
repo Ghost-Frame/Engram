@@ -2097,9 +2097,6 @@ fn detect_host() -> String {
     if cfg!(target_os = "windows") {
         return "windows".to_string();
     }
-    if std::path::Path::new("/etc/cachyos-release").exists() {
-        return "cachyos".to_string();
-    }
     std::process::Command::new("hostname")
         .output()
         .ok()

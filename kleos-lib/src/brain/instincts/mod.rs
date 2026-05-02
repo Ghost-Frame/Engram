@@ -626,26 +626,26 @@ pub fn generate_instincts() -> InstinctsCorpus {
 
     // -- Category 3: Reference / discovery notes (20) --
     let references: &[(&str, &str, i64, i32)] = &[
-        ("server-specs", "app-server-1: 8 vCPU, 32GB RAM, 500GB NVMe SSD, Ubuntu 22.04. Role: application services backend.", 700, 8),
-        ("server-specs", "edge-server-1: 4 vCPU, 16GB RAM, 200GB SSD, Rocky Linux 9. Role: CDN edge node and static assets.", 702, 7),
-        ("server-specs", "dev-workstation: Xeon W-2125 4.0GHz 8-core, 30GB RAM, 2TB HDD. Role: primary development and build machine.", 704, 9),
+        ("server-specs", "app-server-1: 8 vCPU, 32GB RAM, 500GB NVMe SSD. Role: application services backend.", 700, 8),
+        ("server-specs", "edge-server-1: 4 vCPU, 16GB RAM, 200GB SSD. Role: CDN edge node and static assets.", 702, 7),
+        ("server-specs", "dev-workstation: 8-core, 32GB RAM, 2TB storage. Role: primary development and build machine.", 704, 9),
         ("endpoint", "Kleos memory API: POST /store to persist memories, POST /search to query, GET /recall for recent. Auth via Bearer token.", 710, 8),
         ("endpoint", "Eidolon brain API: JSON over stdio. Commands: init, query, absorb, decay_tick, dream_cycle, get_stats, shutdown.", 712, 9),
-        ("filepath", "Brain database location: /brain.db - SQLite, contains memories, edges, pca_state tables.", 714, 8),
-        ("filepath", "Instincts binary: /instincts.bin - gzip-compressed JSON corpus, applied on first init when brain.db is empty.", 716, 7),
-        ("filepath", "Eidolon Rust source: src/ directory of eidolon-lib crate - substrate.rs, graph.rs, dreaming.rs, instincts.rs, main.rs.", 718, 6),
+        ("filepath", "Brain database location: /brain.db -- SQLite, contains memories, edges, pca_state tables.", 714, 8),
+        ("filepath", "Instincts binary: /instincts.bin -- gzip-compressed JSON corpus, applied on first init when brain.db is empty.", 716, 7),
+        ("filepath", "Eidolon Rust source: src/ directory of eidolon-lib crate.", 718, 6),
         ("credential", "SSH key for all servers: operator-configured SSH key. Custom ports may apply for specific servers.", 720, 9),
-        ("network", "VPN mesh subnet: configured in operator's mesh network. All nodes reachable by mesh IP. Use internal IPs for inter-service traffic.", 722, 8),
+        ("network", "Internal subnet: all nodes reachable by internal IP. Use internal IPs for inter-service traffic.", 722, 8),
         ("config", "Nginx config directory: /etc/nginx/sites-enabled/. Reload: nginx -t && systemctl reload nginx. Never restart without testing.", 730, 7),
         ("config", "PostgreSQL data directory: /var/lib/postgresql/16/main/. Config: /etc/postgresql/16/main/postgresql.conf.", 732, 7),
         ("config", "Redis config: /etc/redis/redis.conf. Bind 127.0.0.1 only. requirepass enabled. maxmemory-policy allkeys-lru.", 734, 6),
         ("pattern", "Service restart pattern: check state -> back up config -> stop service -> apply change -> start service -> verify health -> monitor logs.", 740, 9),
         ("pattern", "File deployment pattern: write locally -> SCP to /tmp/ -> SSH mv to destination -> set permissions -> verify.", 742, 8),
-        ("pattern", "Never use heredoc over SSH for file content - truncates to 0 bytes. Always use SCP for file transfers to remote hosts.", 744, 9),
-        ("pattern", "CrowdSec is the intrusion detection system on all nodes. Never install fail2ban. CrowdSec bouncer handles blocking.", 746, 8),
-        ("error", "podman cp truncates heredoc content - root cause: shell expansion in subprocess. Fix: scp local file then podman cp from host.", 750, 8),
+        ("pattern", "Never use heredoc over SSH for file content -- it can truncate. Always use SCP for file transfers to remote hosts.", 744, 9),
+        ("pattern", "Choose an IDS/IPS early and standardize across all nodes. Mixing solutions creates blind spots.", 746, 8),
+        ("error", "Container file copy can truncate heredoc content. Fix: write to a local file first, then copy into the container.", 750, 8),
         ("error", "Unix socket stale fd: when upstream restarts, downstream holds old fd. Both must restart in order: upstream first, then downstream.", 752, 7),
-        ("error", "SELinux blocks unexpected service access - check ausearch -m avc -ts recent. Fix: restorecon -Rv /path or semanage.", 754, 6),
+        ("error", "SELinux blocks unexpected service access -- check ausearch -m avc -ts recent. Fix: restorecon -Rv /path or semanage.", 754, 6),
     ];
 
     for (category, content, base_hours, importance) in references {
@@ -668,7 +668,7 @@ pub fn generate_instincts() -> InstinctsCorpus {
         ("Fix memory leak in Eidolon decay module. Root cause: Vec not cleared after prune. Fix: add memory.retain() after dead_set removal. Leak eliminated.", 820, 9),
         ("Set up Traefik TLS termination for all subdomains. Let Encrypt wildcard cert via DNS challenge. All subdomains now HTTPS.", 830, 8),
         ("Configure Prometheus scrape targets for all nodes. Added: node_exporter, postgres_exporter, redis_exporter, nginx_exporter.", 840, 7),
-        ("Deploy CrowdSec on application and edge servers. Installed bouncer for nginx. Community blocklist active. First 24h: 1,247 IPs blocked.", 850, 8),
+        ("Deploy IDS/IPS on application and edge servers. Installed bouncer for nginx. Community blocklist active. First 24h: 1,247 IPs blocked.", 850, 8),
         ("Upgrade PostgreSQL 13 to 16 on db-primary. pg_upgrade used for in-place upgrade. Backup taken before: pg_dump 18GB. Zero data loss.", 860, 9),
         ("Implement JWT refresh token rotation in API server. Old refresh tokens invalidated on use. 7-day token expiry. Redis TTL set.", 870, 7),
         ("Set up automated restic backups on all nodes. Daily snapshots at 02:00 UTC. Retention: 7 daily, 4 weekly, 12 monthly.", 880, 8),
@@ -717,7 +717,7 @@ pub fn generate_instincts() -> InstinctsCorpus {
         ),
         (
             "fail2ban is installed on all nodes for SSH protection.",
-            "CORRECTION: CrowdSec is used, NOT fail2ban. fail2ban was removed in 2025-10. CrowdSec bouncer handles all blocking.",
+            "CORRECTION: a centralized IDS replaced fail2ban in 2025-10. The IDS bouncer handles all blocking.",
             1160, 1172, 4, 9
         ),
         (

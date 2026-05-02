@@ -117,11 +117,5 @@ fn infer_service_tags(lower: &str, tags: &mut Vec<String>) {
     }
 }
 
-fn infer_host_tags(lower: &str, tags: &mut Vec<String>) {
-    let hosts = ["hetzner", "ovh", "rocky", "workstation-2", "cachyos"];
-    for host in hosts {
-        if lower.contains(host) {
-            tags.push(host.to_string());
-        }
-    }
+fn infer_host_tags(_lower: &str, _tags: &mut Vec<String>) {
 }

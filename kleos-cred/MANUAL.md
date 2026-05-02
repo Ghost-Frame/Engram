@@ -175,8 +175,8 @@ cred agent-key generate shell-$(hostname) --scope "bootstrap/claude-code-${USER}
 ### Day-to-day
 
 ```bash
-cred get authentik akadmin --field username
-cred get forgejo rocky-push --raw         # taps YubiKey
+cred get myservice admin --field username
+cred get gitea deploy-key --raw           # taps YubiKey
 cred list
 ```
 

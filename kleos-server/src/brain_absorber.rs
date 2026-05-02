@@ -79,7 +79,7 @@ pub async fn absorb_activity_to_brain(
 /// - `outcome`: One of "succeeded", "failed", "killed", "timed_out", "unknown"
 /// - `agent`: Agent name
 /// - `corrections`: Number of corrections applied during session
-/// - `user_label`: Optional user label for category namespacing (e.g. "zan")
+/// - `user_label`: Optional user label for category namespacing (e.g. "operator")
 /// - `issue_lines`: Lines from output that represent blocked/gate issues (max 5 used)
 /// - `discovery_lines`: Lines from output matching discovery keywords (max 10 used)
 #[allow(clippy::too_many_arguments)]
