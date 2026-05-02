@@ -1,7 +1,6 @@
 //! C-R3-004 cross-tenant isolation regression tests.
 //!
-//! These tests anchor the audit fix from
-//! `~/Documents/specs/2026-04-27-kleos-audit-round3.md` (C-R3-004):
+//! These tests anchor the audit fix for C-R3-004:
 //!
 //! - With tenant sharding ENABLED (the new default), two non-system users
 //!   each get their own shard. Their projects, webhooks, and sync streams
@@ -263,7 +262,7 @@ async fn system_user_503s_for_tenant_routes_when_sharding_disabled() {
     );
 }
 
-/// With sharding ENABLED, user_id=1 (Master) and user_id=2 see fully
+/// With sharding ENABLED, user_id=1 (admin) and user_id=2 see fully
 /// isolated projects. Anchors the post-migration contract: the operator
 /// is just another tenant.
 #[tokio::test]
@@ -275,7 +274,7 @@ async fn user_one_isolated_from_user_two_with_sharding_on() {
     let (uid_two, user_two_key) = seed_user(&app, &admin_key, "tenant-two").await;
     assert_ne!(uid_two, 1, "seeded user must not be the system user");
 
-    // Master creates a project.
+    // Admin creates a project.
     let (status, _) = post(
         &app,
         "/projects",
@@ -295,7 +294,7 @@ async fn user_one_isolated_from_user_two_with_sharding_on() {
     .await;
     assert!(status.is_success(), "tenant 2 project create");
 
-    // Master lists -- should see only their own.
+    // Admin lists -- should see only their own.
     let (_, body) = get(&app, "/projects", &admin_key).await;
     let names: Vec<String> = body["projects"]
         .as_array()

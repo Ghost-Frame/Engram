@@ -118,6 +118,6 @@ echo "  - agent-forge log-hypothesis (for bug fixes)" >&2
 echo "" >&2
 echo "Target file: $FILE_PATH" >&2
 echo "" >&2
-echo "If this is truly a trivial edit, tell Master and create bypass:" >&2
+echo "If this is truly a trivial edit, tell the operator and create bypass:" >&2
 echo "  touch /tmp/claude-forge-bypass" >&2
 exit 2

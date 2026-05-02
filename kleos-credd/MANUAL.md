@@ -172,9 +172,9 @@ script can't take the HID).
 
 The flow that bootstraps an agent host with zero plaintext on disk:
 
-1. Master taps YubiKey, runs `cred init`, `cred store kleos credd-<host>`,
+1. The operator taps YubiKey, runs `cred init`, `cred store kleos credd-<host>`,
    `cred bootstrap wrap kleos credd-<host>`. This produces `bootstrap.enc`.
-2. Master runs `cred agent-key generate shell-<host> --scope
+2. The operator runs `cred agent-key generate shell-<host> --scope
    bootstrap/<slot>` and writes the printed token to
    `~/.config/cred/credd-agent-key.token`.
 3. Shell rc exports `CREDD_SOCKET` (or `CREDD_URL` on Windows),
@@ -190,10 +190,9 @@ The flow that bootstraps an agent host with zero plaintext on disk:
 
 The pre-shared `credd-agent-key.token` file is the current weak link in
 this flow. Replacement design (P-256 ECDH via YubiKey PIV applet, slots 9D
-+ 9A) is at `~/projects/plans/2026-04-26-ecdh-bootstrap-auth-piv.md`.
++ 9A) is implemented in `kleos-cred/src/piv.rs`.
 
 ## See also
 
 - [cred(1)](../kleos-cred/MANUAL.md) -- the CLI that talks to this daemon
-- `~/projects/plans/2026-04-26-ecdh-bootstrap-auth-piv.md` -- ECDH PIV
-  replacement spec
+- See `kleos-cred/src/piv.rs` for the ECDH PIV implementation

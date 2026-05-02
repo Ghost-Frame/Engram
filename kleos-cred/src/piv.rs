@@ -1,7 +1,6 @@
 //! YubiKey PIV applet operations for ECDH bootstrap auth.
 //!
-//! See `~/projects/plans/2026-04-26-ecdh-bootstrap-auth-piv.md` for the
-//! full design. This module wraps `ykman` (CLI) for key generation /
+//! This module wraps `ykman` (CLI) for key generation /
 //! certificate creation / pubkey export, and Python `yubikit` (subprocess)
 //! for the ECDH key agreement and ECDSA signing operations that the
 //! `ykman` CLI does not expose.

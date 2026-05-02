@@ -2,7 +2,7 @@
 --
 -- The standalone data_dir/handoffs.db is replaced by a per-shard handoffs
 -- table set. The reserved tenant id "handoffs" is intended to hold all
--- session-handoff rows for every authenticated user (Master's agents and
+-- session-handoff rows for every authenticated user (the operator's agents and
 -- the bot all POST to /handoffs/* on the same backing shard), so the
 -- table KEEPS its user_id column. Other tenants get the table too, which
 -- is harmless: only the "handoffs" tenant is wired through /handoffs/*.

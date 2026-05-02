@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version.workspace = true
 license = "Elastic-2.0"
-description = "Async drift supervisor for AI agents -- watches session logs, detects violations, alerts Master"
+description = "Async drift supervisor for AI agents -- watches session logs, detects violations, alerts the operator"
 
 [[bin]]
 name = "eidolon-supervisor"

@@ -64,7 +64,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Auth {
 /// Every authenticated user, including user_id=1 (the operator), routes
 /// through their per-tenant shard via `tenant_registry`. The previous
 /// user_id==1 -> monolith carve-out was removed during the monolith
-/// migration: Master is tenant_1 like every other user, and the monolith
+/// migration: the admin is tenant_1 like every other user, and the monolith
 /// only retains system-scoped tables (users, api_keys, audit_log, agents,
 /// app_state) accessed directly via `state.db`.
 ///

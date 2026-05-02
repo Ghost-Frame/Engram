@@ -150,8 +150,7 @@ layout applies).
   YubiKey). Print the passphrase, lock it in a safe.
 - Bootstrap-agent tokens in `agent-keys.json` are the current weak link:
   plaintext on disk, scoped per agent slot, no rotation. Replacement
-  design: see `~/projects/plans/2026-04-26-ecdh-bootstrap-auth-piv.md`
-  (P-256 ECDH via YubiKey PIV slots 9D + 9A, eliminates the token file).
+  design: P-256 ECDH via YubiKey PIV slots 9D + 9A, eliminates the token file.
 
 ## Examples
 
@@ -189,5 +188,4 @@ cred recover                              # prompts for passphrase, taps new Yub
 ## See also
 
 - [credd(8)](../kleos-credd/MANUAL.md) -- the daemon backing this CLI
-- `~/projects/plans/2026-04-26-ecdh-bootstrap-auth-piv.md` -- ECDH PIV
-  replacement spec
+- See `kleos-cred/src/piv.rs` for the ECDH PIV implementation

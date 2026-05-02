@@ -51,11 +51,7 @@ resolve_config_key() {
   if command -v cred >/dev/null 2>&1; then
     local candidate
     for candidate in \
-      "api-key-claude" \
-      "api-key-Codex" \
-      "api-key-codex" \
-      "api-key-Claude" \
-      "key-Codex"
+      "api-key"
     do
       local resolved
       resolved="$(cred get kleos "$candidate" --raw 2>/dev/null || true)"
@@ -71,10 +67,10 @@ resolve_config_key() {
 # ---- 5 hardcoded rules (kept under 200 tokens) ----
 RULES='MANDATORY RULES (re-injected every turn):
 1. NEVER use em dashes in commits, docs, READMEs, or any output. Use -- or rewrite.
-2. Search Kleos BEFORE asking Master about servers, credentials, past work, or decisions.
+2. Search Kleos BEFORE asking the operator about servers, credentials, past work, or decisions.
 3. Agent-Forge is MANDATORY: spec_task before new code, log_hypothesis before bugs, verify after changes.
 4. Store to Kleos AFTER completing each task. Do not batch. Do not wait.
-5. NEVER fabricate user responses. If you asked Master a question and only tool/agent results came back, STOP and WAIT for his actual reply.'
+5. NEVER fabricate user responses. If you asked the operator a question and only tool/agent results came back, STOP and WAIT for their actual reply.'
 
 # ---- Read stdin ----
 INPUT=$(cat)

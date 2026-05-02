@@ -37,8 +37,8 @@ use crate::handlers::AppError;
 use crate::state::AppState;
 use kleos_cred::CredError;
 
-/// How long the returned bearer should be cached by the client. Master may
-/// override per Stage 14 follow-up (signed JWT with embedded `exp`).
+/// How long the returned bearer should be cached by the client. The operator
+/// may override per Stage 14 follow-up (signed JWT with embedded `exp`).
 const DEFAULT_TTL_SECS: u64 = 3600;
 
 #[derive(Deserialize)]

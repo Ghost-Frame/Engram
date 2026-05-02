@@ -835,7 +835,7 @@ mod tests {
         conn.execute(
             "INSERT INTO scratchpad (user_id, session, agent, model, entry_key, value, expires_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', '+5 minutes'))",
-            rusqlite::params![1_i64, "sess-pre", "gir", "gpt", "mission", "items"],
+            rusqlite::params![1_i64, "sess-pre", "test-agent", "gpt", "mission", "test-value"],
         )
         .unwrap();
         let pre_id: i64 = conn
@@ -855,10 +855,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(session, "sess-pre");
-        assert_eq!(agent, "gir");
+        assert_eq!(agent, "test-agent");
         assert_eq!(model, "gpt");
         assert_eq!(entry_key, "mission");
-        assert_eq!(value, "items");
+        assert_eq!(value, "test-value");
 
         // user_id column is gone.
         let col_count: i64 = conn
@@ -1027,7 +1027,7 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO session_output (session_id, line) VALUES (?1, ?2)",
-            rusqlite::params!["sess-v24", "items"],
+            rusqlite::params!["sess-v24", "test-value"],
         )
         .unwrap();
 
@@ -1048,7 +1048,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(line, "items");
+        assert_eq!(line, "test-value");
 
         // idx_sessions_user is gone.
         let idx: i64 = conn
@@ -1091,7 +1091,7 @@ mod tests {
         conn.execute(
             "INSERT INTO sessions (id, agent, user_id, status) \
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["sess-pre", "gir", 1_i64, "running"],
+            rusqlite::params!["sess-pre", "test-agent", 1_i64, "running"],
         )
         .unwrap();
         conn.execute(
@@ -1112,7 +1112,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(id, "sess-pre");
-        assert_eq!(agent, "gir");
+        assert_eq!(agent, "test-agent");
         assert_eq!(status, "running");
 
         // session_output row survived.
@@ -1267,7 +1267,7 @@ mod tests {
         conn.execute(
             "INSERT INTO chiasm_tasks (agent, project, title, status, summary) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["gir", "kleos", "t1", "active", None::<String>],
+            rusqlite::params!["test-agent", "kleos", "t1", "active", None::<String>],
         )
         .unwrap();
         let task_id = conn.last_insert_rowid();
@@ -1275,7 +1275,7 @@ mod tests {
         conn.execute(
             "INSERT INTO chiasm_task_updates (task_id, agent, status, summary) \
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![task_id, "gir", "active", "started"],
+            rusqlite::params![task_id, "test-agent", "active", "started"],
         )
         .unwrap();
 
@@ -1286,7 +1286,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(agent, "gir");
+        assert_eq!(agent, "test-agent");
         assert_eq!(project, "kleos");
 
         let update_count: i64 = conn
@@ -1341,7 +1341,7 @@ mod tests {
             "INSERT INTO chiasm_tasks (agent, project, title, status, summary, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
-                "gir",
+                "test-agent",
                 "kleos",
                 "phase 5.4",
                 "active",
@@ -1354,7 +1354,7 @@ mod tests {
         conn.execute(
             "INSERT INTO chiasm_task_updates (task_id, agent, status, summary, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![task_id, "gir", "active", "first update", 1_i64],
+            rusqlite::params![task_id, "test-agent", "active", "first update", 1_i64],
         )
         .unwrap();
 
@@ -1374,7 +1374,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .unwrap();
-        assert_eq!(agent, "gir");
+        assert_eq!(agent, "test-agent");
         assert_eq!(project, "kleos");
         assert_eq!(title, "phase 5.4");
         assert_eq!(status, "active");
@@ -1387,7 +1387,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
-        assert_eq!(upd_agent, "gir");
+        assert_eq!(upd_agent, "test-agent");
         assert_eq!(upd_status, "active");
         assert_eq!(upd_summary.as_deref(), Some("first update"));
 
@@ -1565,9 +1565,9 @@ mod tests {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 "appr-v26",
-                "run items",
+                "run task",
                 None::<String>,
-                "gir",
+                "test-agent",
                 "pending",
                 "2026-04-22T00:00:00Z",
                 "2026-04-22T00:02:00Z",
@@ -1632,7 +1632,7 @@ mod tests {
                 "appr-pre",
                 "ship 5.5",
                 Some("{\"ctx\": true}"),
-                "gir",
+                "test-agent",
                 "pending",
                 "2026-04-22T00:00:00Z",
                 "2026-04-22T00:05:00Z",
@@ -1659,7 +1659,7 @@ mod tests {
         assert_eq!(id, "appr-pre");
         assert_eq!(action, "ship 5.5");
         assert_eq!(context.as_deref(), Some("{\"ctx\": true}"));
-        assert_eq!(requester, "gir");
+        assert_eq!(requester, "test-agent");
         assert_eq!(status, "pending");
 
         let col_count: i64 = conn
@@ -1815,8 +1815,8 @@ mod tests {
             "INSERT INTO broca_actions (agent, service, action, payload, narrative, axon_event_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
-                "gir",
-                "items",
+                "test-agent",
+                "test-value",
                 "bake",
                 r#"{"temp":"molten"}"#,
                 None::<String>,
@@ -1832,14 +1832,14 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(agent, "gir");
-        assert_eq!(service, "items");
+        assert_eq!(agent, "test-agent");
+        assert_eq!(service, "test-value");
 
         // Per-agent index still covers the ordered query.
         let agent_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM broca_actions WHERE agent = ?1",
-                rusqlite::params!["gir"],
+                rusqlite::params!["test-agent"],
                 |r| r.get(0),
             )
             .unwrap();
@@ -1874,11 +1874,11 @@ mod tests {
             "INSERT INTO broca_actions (agent, service, action, payload, narrative, axon_event_id, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
-                "gir",
+                "test-agent",
                 "kleos",
                 "ship-5.6",
                 "{\"batch\":\"5.3-5.6\"}",
-                Some("items"),
+                Some("test-value"),
                 None::<i64>,
                 1_i64,
             ],
@@ -1901,11 +1901,11 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .unwrap();
-        assert_eq!(agent, "gir");
+        assert_eq!(agent, "test-agent");
         assert_eq!(service, "kleos");
         assert_eq!(action, "ship-5.6");
         assert_eq!(payload, "{\"batch\":\"5.3-5.6\"}");
-        assert_eq!(narrative.as_deref(), Some("items"));
+        assert_eq!(narrative.as_deref(), Some("test-value"));
 
         let col_count: i64 = conn
             .query_row(
@@ -3436,7 +3436,7 @@ mod tests {
         conn.execute(
             "INSERT INTO user_preferences (user_id, key, value) VALUES (?1, ?2, ?3) \
              ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![4_i64, "persona", "gir"],
+            rusqlite::params![4_i64, "persona", "test-agent"],
         )
         .unwrap();
         // Upsert collapses to one row.
@@ -3823,7 +3823,7 @@ mod tests {
 
         conn.execute(
             "INSERT INTO skill_judgments (skill_id, judge_agent, score) VALUES (?1, ?2, ?3)",
-            rusqlite::params![sid, "gir", 0.8_f64],
+            rusqlite::params![sid, "test-agent", 0.8_f64],
         )
         .unwrap();
 
@@ -4211,7 +4211,7 @@ mod tests {
         conn.execute(
             "INSERT INTO axon_events (channel, source, type, payload, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["sys", "gir", "taco.baked", "{}", 1_i64],
+            rusqlite::params!["sys", "test-agent", "task.completed", "{}", 1_i64],
         )
         .unwrap();
         let event_id = conn.last_insert_rowid();
@@ -4234,7 +4234,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(channel, "sys");
-        assert_eq!(type_, "taco.baked");
+        assert_eq!(type_, "task.completed");
 
         let (name, type2): (String, String) = conn
             .query_row(
@@ -4506,13 +4506,13 @@ mod tests {
 
         conn.execute(
             "INSERT INTO axon_subscriptions (agent, channel) VALUES (?1, ?2)",
-            rusqlite::params!["gir", "taco.channel"],
+            rusqlite::params!["test-agent", "test.channel"],
         )
         .unwrap();
 
         conn.execute(
             "INSERT INTO axon_cursors (agent, channel, last_event_id) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["gir", "taco.channel", 42_i64],
+            rusqlite::params!["test-agent", "test.channel", 42_i64],
         )
         .unwrap();
 
@@ -4523,13 +4523,13 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(agent, "gir");
-        assert_eq!(channel, "taco.channel");
+        assert_eq!(agent, "test-agent");
+        assert_eq!(channel, "test.channel");
 
         let last_id: i64 = conn
             .query_row(
                 "SELECT last_event_id FROM axon_cursors WHERE agent = ?1 AND channel = ?2",
-                rusqlite::params!["gir", "taco.channel"],
+                rusqlite::params!["test-agent", "test.channel"],
                 |r| r.get(0),
             )
             .unwrap();
@@ -4563,7 +4563,7 @@ mod tests {
         conn.execute(
             "INSERT INTO axon_subscriptions (agent, channel, filter_type, webhook_url, user_id) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["gir", "ship.channel", None::<String>, None::<String>, 1_i64],
+            rusqlite::params!["test-agent", "ship.channel", None::<String>, None::<String>, 1_i64],
         )
         .unwrap();
         let sub_id = conn.last_insert_rowid();
@@ -4571,7 +4571,7 @@ mod tests {
         conn.execute(
             "INSERT INTO axon_cursors (agent, channel, last_event_id, user_id) \
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["gir", "ship.channel", 99_i64, 1_i64],
+            rusqlite::params!["test-agent", "ship.channel", 99_i64, 1_i64],
         )
         .unwrap();
 
@@ -4584,13 +4584,13 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(agent, "gir");
+        assert_eq!(agent, "test-agent");
         assert_eq!(channel, "ship.channel");
 
         let last_id: i64 = conn
             .query_row(
                 "SELECT last_event_id FROM axon_cursors WHERE agent = ?1 AND channel = ?2",
-                rusqlite::params!["gir", "ship.channel"],
+                rusqlite::params!["test-agent", "ship.channel"],
                 |r| r.get(0),
             )
             .unwrap();
@@ -4662,7 +4662,7 @@ mod tests {
         conn.execute(
             "INSERT INTO reflections (content, reflection_type, source_memory_ids, confidence) \
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["taco observation", "insight", "[1,2]", 0.9_f64],
+            rusqlite::params!["test observation", "insight", "[1,2]", 0.9_f64],
         )
         .unwrap();
 
@@ -4673,7 +4673,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(content, "taco observation");
+        assert_eq!(content, "test observation");
         assert_eq!(rtype, "insight");
     }
 
@@ -5330,14 +5330,14 @@ mod tests {
         conn.execute(
             "INSERT INTO evaluations (rubric_id, agent, subject, input, output, scores, overall_score, evaluator) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![rubric_id, "gir", "subj", "{}", "{}", "{}", 0.9_f64, "tester"],
+            rusqlite::params![rubric_id, "test-agent", "subj", "{}", "{}", "{}", 0.9_f64, "tester"],
         )
         .expect("insert evaluation");
 
         // quality_metrics: insert without user_id
         conn.execute(
             "INSERT INTO quality_metrics (agent, metric, value, tags) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["gir", "accuracy", 0.95_f64, "{}"],
+            rusqlite::params!["test-agent", "accuracy", 0.95_f64, "{}"],
         )
         .expect("insert quality_metric");
 
@@ -5345,7 +5345,7 @@ mod tests {
         conn.execute(
             "INSERT INTO session_quality (session_id, agent, turn_count, rules_followed, rules_drifted) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["sess-1", "gir", 5_i32, "[]", "[]"],
+            rusqlite::params!["sess-1", "test-agent", 5_i32, "[]", "[]"],
         )
         .expect("insert session_quality");
 
@@ -5353,7 +5353,7 @@ mod tests {
         conn.execute(
             "INSERT INTO behavioral_drift_events (agent, drift_type, severity, signal) \
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["gir", "priority", "low", "test signal"],
+            rusqlite::params!["test-agent", "priority", "low", "test signal"],
         )
         .expect("insert behavioral_drift_event");
 
@@ -5612,7 +5612,7 @@ mod tests {
         // user_preferences: insert without user_id
         conn.execute(
             "INSERT INTO user_preferences (key, value, domain, preference) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["persona", "gir", "identity", "name"],
+            rusqlite::params!["persona", "test-agent", "identity", "name"],
         )
         .expect("insert preference");
 
@@ -5895,7 +5895,7 @@ mod tests {
         conn.execute(
             "INSERT INTO current_state (agent, key, value) VALUES (?1, ?2, ?3) \
              ON CONFLICT(agent, key) DO UPDATE SET value = excluded.value",
-            rusqlite::params!["gir", "location", "dumpster"],
+            rusqlite::params!["test-agent", "location", "dumpster"],
         )
         .unwrap();
 
@@ -6018,7 +6018,7 @@ mod tests {
         conn.execute(
             "INSERT INTO current_state (agent, key, value, user_id) VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(agent, key, user_id) DO UPDATE SET value = excluded.value",
-            rusqlite::params!["gir", "mission", "collect items", 1_i64],
+            rusqlite::params!["test-agent", "mission", "run tests", 1_i64],
         )
         .unwrap();
         let cs_id: i64 = conn
@@ -6057,9 +6057,9 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .expect("current_state row lost after v38");
-        assert_eq!(agent, "gir");
+        assert_eq!(agent, "test-agent");
         assert_eq!(key, "mission");
-        assert_eq!(value, "collect items");
+        assert_eq!(value, "run tests");
 
         // causal_chain row preserved; link FK intact.
         let desc: String = conn
@@ -6182,7 +6182,7 @@ mod tests {
         // Insert a skill without user_id -- must succeed.
         conn.execute(
             "INSERT INTO skill_records (name, agent, code) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["items-skill", "gir", "# find items"],
+            rusqlite::params!["sample-skill", "test-agent", "# sample skill"],
         )
         .unwrap();
         let sid = conn.last_insert_rowid();
@@ -6190,7 +6190,7 @@ mod tests {
         // Second insert with the same (name, agent, version=1) must be rejected.
         let dup_result = conn.execute(
             "INSERT INTO skill_records (name, agent, code) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["items-skill", "gir", "# duplicate"],
+            rusqlite::params!["sample-skill", "test-agent", "# duplicate"],
         );
         assert!(
             dup_result.is_err(),
@@ -6236,7 +6236,7 @@ mod tests {
              VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![
                 "brew-waffles",
-                "gir",
+                "test-agent",
                 "# waffle logic",
                 "makes waffles fast"
             ],
@@ -6322,7 +6322,7 @@ mod tests {
         conn.execute(
             "INSERT INTO episodes (title, session_id, agent, summary) \
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["items", "sess-gir", "gir", "found items near Dib"],
+            rusqlite::params!["test-value", "sess-test", "test-agent", "found relevant data in logs"],
         )
         .unwrap();
         let eid = conn.last_insert_rowid();
@@ -6335,7 +6335,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(title, "items");
+        assert_eq!(title, "test-value");
     }
 
     /// v40: episodes_fts triggers reference (id, title, summary, agent) and
@@ -6348,7 +6348,7 @@ mod tests {
 
         conn.execute(
             "INSERT INTO episodes (title, agent, summary) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["waffles", "gir", "mission to acquire waffles"],
+            rusqlite::params!["waffles", "test-agent", "mission to acquire waffles"],
         )
         .unwrap();
 

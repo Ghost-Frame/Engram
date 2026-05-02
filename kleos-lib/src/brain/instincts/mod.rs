@@ -777,7 +777,7 @@ pub fn generate_instincts() -> InstinctsCorpus {
         ),
         (
             "Heredoc over SSH is a reliable way to write files on remote servers.",
-            "CORRECTION: Heredoc over SSH truncates files to 0 bytes in practice. Always use SCP. This is a documented gotcha in AGENTS.md.",
+            "CORRECTION: Heredoc over SSH truncates files to 0 bytes in practice. Always use SCP.",
             1400, 1412, 4, 9
         ),
         (

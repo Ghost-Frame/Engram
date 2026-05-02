@@ -188,10 +188,10 @@ CONTEXT_BLOCK+="
 === MANDATORY RULES ===
 Use the Kleos skill and local kleos-cli via Git Bash (Bash tool) for ALL Kleos operations (search, store, list, context). Never use curl for Kleos. Do NOT use WSL.
 Use OpenSpace MCP tools for all OpenSpace operations.
-Search Kleos BEFORE asking Master any question about servers, credentials, or past decisions.
+Search Kleos BEFORE asking the operator any question about servers, credentials, or past decisions.
 Store outcomes to Kleos AFTER completing any task. Do not batch. Do not wait.
 If Chiasm task ID exists at /tmp/chiasm-claude-task-id, update task status on changes.
-EIDOLON: Before ANY destructive/irreversible action, the pre-bash-guardrail hook handles gate checks automatically. If gate returns deny, STOP and ask Master. No exceptions."
+EIDOLON: Before ANY destructive/irreversible action, the pre-bash-guardrail hook handles gate checks automatically. If gate returns deny, STOP and ask the operator. No exceptions."
 
 # ── Growth materialization ─────────────────────────────────────────────
 GROWTH_MD=""

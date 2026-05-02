@@ -168,7 +168,7 @@ enum Commands {
         cmd: BootstrapCmd,
     },
     /// Manage YubiKey PIV slots for ECDH bootstrap auth.
-    /// See ~/projects/plans/2026-04-26-ecdh-bootstrap-auth-piv.md.
+    /// See kleos-cred/src/piv.rs for the implementation.
     Piv {
         #[command(subcommand)]
         cmd: PivCmd,
