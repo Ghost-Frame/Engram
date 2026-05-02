@@ -38,19 +38,30 @@ async fn main() {
         return;
     }
 
-    let mut config = config;
-    if config.api_key.is_none() {
-        let slot = kleos_lib::cred::bootstrap::current_agent_slot();
-        match kleos_lib::cred::bootstrap::resolve_api_key(&slot).await {
-            Ok(key) => {
-                tracing::info!(slot = %slot, "resolved kleos API key from credd");
-                config.api_key = Some(key);
-            }
-            Err(e) => {
-                tracing::error!(slot = %slot, error = %e, "failed to resolve kleos API key -- stores will fail");
-            }
+    // Initialize PIV/software key request signer.
+    // Falls back to KLEOS_API_KEY env / config.api_key when no key is available.
+    let signer = match kleos_lib::auth_piv::RequestSigner::from_env_or_file(
+        &config.host,
+        "kleos-ingest",
+        "daemon",
+    ) {
+        Ok(Some(s)) => {
+            tracing::info!(tier = %s.tier(), fingerprint = %s.fingerprint(), "PIV/software key auth initialized");
+            Some(s)
         }
-    }
+        Ok(None) => {
+            if config.api_key.is_some() {
+                tracing::info!("no PIV/software key found, using KLEOS_API_KEY");
+            } else {
+                tracing::warn!("no PIV/software key and no API key -- stores will fail");
+            }
+            None
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to initialize PIV/software key signer, falling back to API key");
+            None
+        }
+    };
 
     tracing::info!(
         watch_dir = %config.watch_dir.display(),
@@ -60,7 +71,7 @@ async fn main() {
 
     let ledger = ledger::Ledger::open(&config.ledger_path)
         .expect("failed to open ledger database");
-    let writer = writer::KleosWriter::new(&config);
+    let writer = writer::KleosWriter::new(&config, signer);
 
     watcher::run(config, ledger, writer).await;
 }
