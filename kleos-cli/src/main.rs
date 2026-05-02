@@ -346,6 +346,23 @@ enum SkillCommands {
         #[arg(short, long, default_value = "claude-code")]
         agent: String,
     },
+    /// Create a skill directly with code from a file
+    Create {
+        /// Skill name (snake_case)
+        name: String,
+        /// Description
+        #[arg(short, long)]
+        description: String,
+        /// Path to file containing skill code (markdown)
+        #[arg(short, long)]
+        file: String,
+        /// Agent name
+        #[arg(short, long, default_value = "claude-code")]
+        agent: String,
+        /// Language
+        #[arg(short, long, default_value = "markdown")]
+        language: String,
+    },
     /// Fix / refine an existing skill
     Fix {
         /// Skill ID
@@ -1616,6 +1633,34 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
             });
             match client.post(&format!("/skills/{}/execute", id), body).await {
                 Ok(_) => println!("Recorded execution for skill #{}", id),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        SkillCommands::Create {
+            name,
+            description,
+            file,
+            agent,
+            language,
+        } => {
+            let code = std::fs::read_to_string(&file)
+                .unwrap_or_else(|e| {
+                    eprintln!("Error reading {}: {}", file, e);
+                    std::process::exit(1);
+                });
+            let body = json!({
+                "name": name,
+                "agent": agent,
+                "description": description,
+                "code": code,
+                "language": language,
+            });
+            match client.post("/skills", body).await {
+                Ok(v) => {
+                    let id = v.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+                    println!("Created skill #{}: {}", id, name);
+                }
                 Err(e) => eprintln!("Error: {}", e),
             }
         }
