@@ -145,13 +145,10 @@ pub async fn resolve_api_key(agent_slot: &str) -> Result<String, CredError> {
                 // through to token path.
             }
             Err(e) => {
-                // PIV is configured but bootstrap failed (sig, ECDH,
-                // decrypt, etc). Surface the error rather than silently
-                // falling back: a failure here is meaningful.
-                return Err(CredError::BadResponse(format!(
-                    "ECDH bootstrap failed: {}",
-                    e
-                )));
+                tracing::warn!(
+                    error = %e,
+                    "ECDH bootstrap failed, falling through to token path"
+                );
             }
         }
     }

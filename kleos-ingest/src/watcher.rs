@@ -1,5 +1,6 @@
 use notify::{Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
+use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -57,8 +58,9 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter) {
     // Track last activity per file for idle detection
     let mut last_activity: HashMap<PathBuf, Instant> = HashMap::new();
 
-    // Idle check ticker
-    let mut idle_interval = tokio::time::interval(Duration::from_secs(60));
+    // Idle check ticker (also sends systemd watchdog ping)
+    let mut idle_interval = tokio::time::interval(Duration::from_secs(30));
+    let notify_socket = std::env::var("NOTIFY_SOCKET").ok();
 
     // Signal handler
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -76,6 +78,11 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter) {
                 });
             }
             _ = idle_interval.tick() => {
+                if let Some(ref sock_path) = notify_socket {
+                    if let Ok(sock) = UnixDatagram::unbound() {
+                        let _ = sock.send_to(b"WATCHDOG=1", sock_path);
+                    }
+                }
                 let idle_threshold = Duration::from_secs(config.summary_idle_secs);
                 let now = Instant::now();
                 let mut to_summarize = Vec::new();

@@ -38,6 +38,20 @@ async fn main() {
         return;
     }
 
+    let mut config = config;
+    if config.api_key.is_none() {
+        let slot = kleos_lib::cred::bootstrap::current_agent_slot();
+        match kleos_lib::cred::bootstrap::resolve_api_key(&slot).await {
+            Ok(key) => {
+                tracing::info!(slot = %slot, "resolved kleos API key from credd");
+                config.api_key = Some(key);
+            }
+            Err(e) => {
+                tracing::error!(slot = %slot, error = %e, "failed to resolve kleos API key -- stores will fail");
+            }
+        }
+    }
+
     tracing::info!(
         watch_dir = %config.watch_dir.display(),
         kleos_url = %config.kleos_url,

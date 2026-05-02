@@ -21,3 +21,4 @@ clap = { workspace = true }
 dirs = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
+kleos-lib = { path = "../kleos-lib" }
