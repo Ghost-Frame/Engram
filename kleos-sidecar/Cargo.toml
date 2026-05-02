@@ -1,0 +1,36 @@
+[package]
+name = "kleos-sidecar"
+version = "0.3.2"
+edition = "2021"
+rust-version.workspace = true
+license = "Elastic-2.0"
+description = "Outbound sidecar that batches and ships audit/metrics posts with retry"
+
+[[bin]]
+name = "kleos-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+kleos-lib = { path = "../kleos-lib", version = "0.3.2" }
+tokio = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+subtle = { workspace = true }
+rand = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+dirs = { workspace = true }
+arc-swap = "1"
+toml = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

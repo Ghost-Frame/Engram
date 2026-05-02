@@ -1,0 +1,52 @@
+# Build artifacts -- these are large and must not be sent to the daemon.
+target/
+
+# Version control
+.git/
+.gitignore
+
+# Editor and tool state
+.claude/
+.vscode/
+.idea/
+*.iml
+
+# Migration data and legacy database files
+migration-data/
+*.db
+*.db-shm
+*.db-wal
+
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
+
+# Credentials helper
+cred/
+credd/
+
+# Node / SDK build artifacts
+node_modules/
+sdk/typescript/node_modules/
+sdk/typescript/dist/
+sdk/typescript/build/
+
+# Python scratch files
+__pycache__/
+*.pyc
+*.pyo
+_gen_memory.py
+_parts/
+write_files.py
+test.py
+
+# Spec and design documents (never live in the repo but guard against accidents)
+specs/
+*.spec.md
+
+# Misc
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

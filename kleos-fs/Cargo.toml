@@ -1,0 +1,25 @@
+[package]
+name = "kleos-fs"
+version = "0.1.0"
+edition = "2021"
+autobins = false
+rust-version.workspace = true
+license = "Elastic-2.0"
+description = "AST-aware filesystem CLIs for AI agents -- kr (read), kw (write), ke (edit)"
+
+[[bin]]
+name = "kr"
+path = "src/bin/kr.rs"
+
+[[bin]]
+name = "kw"
+path = "src/bin/kw.rs"
+
+[[bin]]
+name = "ke"
+path = "src/bin/ke.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

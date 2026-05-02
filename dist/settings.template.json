@@ -1,0 +1,66 @@
+{
+  "env": {
+    "KLEOS_URL": "http://127.0.0.1:4200",
+    "EIDOLON_URL": "http://127.0.0.1:4200",
+    "KLEOS_SIDECAR_URL": "http://127.0.0.1:4201"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kleos-cli hook session-start",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kleos-cli hook user-prompt",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kleos-cli hook stop",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kleos-cli hook pre-tool",
+            "timeout": 130
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kleos-cli hook post-tool",
+            "timeout": 8
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,87 @@
+[package]
+name = "kleos-cred"
+version = "0.3.2"
+edition = "2021"
+rust-version.workspace = true
+description = "Credential management CLI with encrypted vault and YubiKey support"
+license = "Elastic-2.0"
+repository = "https://github.com/Ghost-Frame/Kleos"
+homepage = "https://engram.syntheos.dev"
+
+[lib]
+name = "kleos_cred"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cred"
+path = "src/bin/cred.rs"
+
+[[bin]]
+name = "derive-db-key"
+path = "src/bin/derive-db-key.rs"
+
+[[bin]]
+name = "migrate-cred"
+path = "src/bin/migrate-cred.rs"
+
+[[bin]]
+name = "cred-gui"
+path = "src/bin/cred-gui.rs"
+required-features = ["gui"]
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+rpassword = "7"
+anyhow = "1"
+shellexpand = "3"
+directories = "6"
+kleos-lib = { path = "../kleos-lib", version = "0.3.2" }
+
+# Crypto
+aes-gcm = "0.10"
+argon2 = "0.5"
+sha1 = "0.10"
+sha2.workspace = true
+hmac.workspace = true
+rand.workspace = true
+zeroize = { workspace = true }
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Async
+tokio.workspace = true
+async-trait.workspace = true
+
+# Database
+rusqlite.workspace = true
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# GUI
+eframe = { version = "0.31", optional = true }
+reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
+
+# Utils
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+hex = "0.4"
+base64 = "0.22"
+subtle = { workspace = true }
+
+[features]
+default = []
+gui = ["eframe", "reqwest"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = { workspace = true }
+
+# Windows needs bundled SQLCipher since there's no system sqlite3.lib
+[target.'cfg(windows)'.dependencies]
+kleos-lib = { path = "../kleos-lib", version = "0.3.2", features = ["sqlcipher"] }

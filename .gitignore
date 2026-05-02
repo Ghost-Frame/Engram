@@ -1,0 +1,43 @@
+/target
+.target-check/
+.target-check2/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.local
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Agent/IDE config (private)
+.claude/
+.worktrees/
+WORKTREE-SPEC.md
+PLAN.md
+
+# Internal docs
+docs/plans/
+docs/specs/
+docs/benchmarks/
+
+# Node
+node_modules/
+gui/build/
+gui/.svelte-kit/
+
+# Temp/test files
+clippy_output.txt
+migration-data/
+data/
+kleos-lib/data/lance/
+migration-test/
+
+# Local cargo config (per-machine target-dir overrides, etc.)
+.cargo/config.toml
+
+# Dev utility stubs
+test.py
+write_files.py
+_gen_memory.py
+__pycache__/

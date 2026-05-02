@@ -1,0 +1,88 @@
+[workspace]
+resolver = "2"
+members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate", "kleos-sh", "kleos-fs", "eidolon-supervisor", "kleos-cleanup", "kleos-ingest"]
+exclude = []
+
+[workspace.package]
+rust-version = "1.94"
+
+[workspace.dependencies]
+rusqlite = "0.31"
+tokio-rusqlite = "0.5"
+deadpool-sqlite = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
+tracing-opentelemetry = "0.28"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "signal", "fs", "net", "process"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+axum = { version = "0.8", features = ["multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "timeout", "set-header", "compression-gzip", "compression-br", "compression-zstd"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "brotli"] }
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.8"
+ed25519-dalek = { version = "2", features = ["std"] }
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2.5"
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+tokenizers = "0.22"
+ndarray = "0.16"
+dirs = "6"
+regex = "1"
+url = "2"
+zip = "2"
+pdf-extract = "0.7"
+rand = "0.9"
+async-trait = "0.1"
+arrow-array = "57"
+arrow-schema = "57"
+futures = "0.3"
+notify = "8"
+notify-debouncer-mini = "0.6"
+lancedb = { version = "0.27", default-features = false }
+protoc-bin-vendored-linux-x86_64 = "3"
+flate2 = "1"
+hex = "0.4.3"
+base64 = "0.22"
+secrecy = { version = "0.8", features = ["serde"] }
+zeroize = { version = "1", features = ["zeroize_derive"] }
+mimalloc = { version = "0.1", default-features = false }
+lru = "0.16"
+metrics = "0.24"
+rust_decimal = { version = "1", features = ["serde-str"] }
+metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
+# Dev/bench shared deps.
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+
+# Faster build for production deploys where pull-on-prod rebuilds the world.
+# Thin LTO + parallel codegen cuts build time ~3-4x and target size materially,
+# at a small runtime cost that is invisible for the memory server's workload.
+[profile.release-prod]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
+# Criterion bench builds only need representative optimization, not full
+# fat LTO. Thin LTO keeps hot loops inlined across crates while cutting
+# the bench compile loop from ~5 min to ~1 min on WSL. Runtime numbers
+# are still within a few percent of fat-LTO.
+[profile.bench]
+lto = "thin"
+codegen-units = 16
+debug = false
+strip = "symbols"

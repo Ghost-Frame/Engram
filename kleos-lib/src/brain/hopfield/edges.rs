@@ -1,0 +1,218 @@
+pub use super::types::{BrainEdge, EdgeType};
+
+use crate::db::Database;
+use crate::{EngError, Result};
+
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Database CRUD
+// ---------------------------------------------------------------------------
+
+/// Insert a new edge. If the (source, target, type) triple already exists,
+/// update the weight to the max of old and new.
+#[tracing::instrument(skip(db), fields(source_id, target_id, weight, edge_type = ?edge_type, user_id))]
+pub async fn store_edge(
+    db: &Database,
+    source_id: i64,
+    target_id: i64,
+    weight: f32,
+    edge_type: EdgeType,
+    _user_id: i64,
+) -> Result<()> {
+    let edge_type_str = edge_type.to_string();
+    db.write(move |conn| {
+        conn.execute(
+            "INSERT INTO brain_edges (source_id, target_id, weight, edge_type) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(source_id, target_id, edge_type) \
+             DO UPDATE SET weight = MAX(weight, excluded.weight)",
+            rusqlite::params![source_id, target_id, weight as f64, edge_type_str],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Get all edges originating from a given pattern.
+#[tracing::instrument(skip(db), fields(source_id))]
+pub async fn get_edges_from(
+    db: &Database,
+    source_id: i64,
+    _user_id: i64,
+) -> Result<Vec<BrainEdge>> {
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, source_id, target_id, weight, edge_type, created_at \
+                 FROM brain_edges WHERE source_id = ?1",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        let edges = stmt
+            .query_map(rusqlite::params![source_id], |row| Ok(row_to_edge_raw(row)))
+            .map_err(rusqlite_to_eng_error)?
+            .map(|r| r.map_err(rusqlite_to_eng_error).and_then(|inner| inner))
+            .collect::<Result<Vec<BrainEdge>>>()?;
+
+        Ok(edges)
+    })
+    .await
+}
+
+/// Get all edges connected to a pattern (either direction).
+#[tracing::instrument(skip(db), fields(pattern_id))]
+pub async fn get_edges_for(
+    db: &Database,
+    pattern_id: i64,
+    _user_id: i64,
+) -> Result<Vec<BrainEdge>> {
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, source_id, target_id, weight, edge_type, created_at \
+                 FROM brain_edges \
+                 WHERE (source_id = ?1 OR target_id = ?1)",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        let edges = stmt
+            .query_map(rusqlite::params![pattern_id], |row| {
+                Ok(row_to_edge_raw(row))
+            })
+            .map_err(rusqlite_to_eng_error)?
+            .map(|r| r.map_err(rusqlite_to_eng_error).and_then(|inner| inner))
+            .collect::<Result<Vec<BrainEdge>>>()?;
+
+        Ok(edges)
+    })
+    .await
+}
+
+/// Strengthen an edge by adding a Hebbian boost. The weight is clamped
+/// to [0, 1].
+#[tracing::instrument(skip(db), fields(source_id, target_id, edge_type = ?edge_type, boost, user_id))]
+pub async fn strengthen_edge(
+    db: &Database,
+    source_id: i64,
+    target_id: i64,
+    edge_type: EdgeType,
+    boost: f32,
+    user_id: i64,
+) -> Result<()> {
+    let edge_type_str = edge_type.to_string();
+    let affected = db
+        .write(move |conn| {
+            let n = conn
+                .execute(
+                    "UPDATE brain_edges \
+                     SET weight = MIN(1.0, weight + ?1) \
+                     WHERE source_id = ?2 AND target_id = ?3 \
+                       AND edge_type = ?4",
+                    rusqlite::params![boost as f64, source_id, target_id, edge_type_str],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            Ok(n)
+        })
+        .await?;
+
+    if affected == 0 {
+        // Edge doesn't exist yet -- create it with the boost as initial weight
+        store_edge(db, source_id, target_id, boost, edge_type, user_id).await?;
+    }
+    Ok(())
+}
+
+/// Decay all edge weights by multiplying with the given rate.
+/// Returns the number of affected edges.
+#[tracing::instrument(skip(db), fields(rate))]
+pub async fn decay_edges(db: &Database, _user_id: i64, rate: f32) -> Result<usize> {
+    db.write(move |conn| {
+        let n = conn
+            .execute(
+                "UPDATE brain_edges SET weight = weight * ?1",
+                rusqlite::params![rate as f64],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(n)
+    })
+    .await
+}
+
+/// Remove edges whose weight has fallen below the threshold.
+/// Returns the number of pruned edges.
+#[tracing::instrument(skip(db), fields(threshold))]
+pub async fn prune_edges(db: &Database, _user_id: i64, threshold: f32) -> Result<usize> {
+    db.write(move |conn| {
+        let n = conn
+            .execute(
+                "DELETE FROM brain_edges WHERE weight < ?1",
+                rusqlite::params![threshold as f64],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(n)
+    })
+    .await
+}
+
+/// Count edges.
+#[tracing::instrument(skip(db))]
+pub async fn count_edges(db: &Database, _user_id: i64) -> Result<i64> {
+    db.read(move |conn| {
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM brain_edges", [], |row| row.get(0))
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(count)
+    })
+    .await
+}
+
+/// Delete a specific edge.
+#[allow(dead_code)]
+#[tracing::instrument(skip(db), fields(source_id, target_id, edge_type = ?edge_type))]
+pub async fn delete_edge(
+    db: &Database,
+    source_id: i64,
+    target_id: i64,
+    edge_type: EdgeType,
+    _user_id: i64,
+) -> Result<()> {
+    let edge_type_str = edge_type.to_string();
+    db.write(move |conn| {
+        conn.execute(
+            "DELETE FROM brain_edges \
+             WHERE source_id = ?1 AND target_id = ?2 \
+               AND edge_type = ?3",
+            rusqlite::params![source_id, target_id, edge_type_str],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn row_to_edge_raw(row: &rusqlite::Row<'_>) -> Result<BrainEdge> {
+    let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+    let source_id: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
+    let target_id: i64 = row.get(2).map_err(rusqlite_to_eng_error)?;
+    let weight: f64 = row.get(3).map_err(rusqlite_to_eng_error)?;
+    let edge_type_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
+    let created_at: String = row.get(5).map_err(rusqlite_to_eng_error)?;
+
+    Ok(BrainEdge {
+        id,
+        source_id,
+        target_id,
+        weight: weight as f32,
+        edge_type: EdgeType::from_str_loose(&edge_type_str),
+        user_id: 0,
+        created_at,
+    })
+}

@@ -1,0 +1,127 @@
+use axum::{
+    extract::{Path, Query},
+    routing::{get, post},
+    Json, Router,
+};
+use serde_json::{json, Value};
+
+use crate::error::AppError;
+use crate::extractors::{Auth, ResolvedDb};
+use crate::state::AppState;
+
+mod types;
+use types::{BulkBody, EditBody, PagingQuery, RejectBody};
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/inbox", get(list_inbox))
+        .route("/inbox/{id}/approve", post(approve))
+        .route("/inbox/{id}/reject", post(reject))
+        .route("/inbox/{id}/edit", post(edit))
+        .route("/inbox/bulk", post(bulk_action))
+        .route("/pending", get(list_pending_legacy))
+}
+
+async fn list_inbox(
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Query(q): Query<PagingQuery>,
+) -> Result<Json<Value>, AppError> {
+    let limit = q.limit.unwrap_or(50).min(200);
+    let offset = q.offset.unwrap_or(0);
+    let pending = kleos_lib::inbox::list_pending(&db, limit, offset).await?;
+    let total = kleos_lib::inbox::count_pending(&db, auth.user_id).await?;
+    Ok(Json(
+        json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),
+    ))
+}
+
+async fn approve(
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    kleos_lib::inbox::approve_memory(&db, id, auth.user_id).await?;
+    Ok(Json(json!({ "approved": true, "id": id })))
+}
+
+async fn reject(
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Path(id): Path<i64>,
+    Json(body): Json<RejectBody>,
+) -> Result<Json<Value>, AppError> {
+    kleos_lib::inbox::reject_memory(&db, id).await?;
+    if let Some(reason) = &body.reason {
+        if let Err(e) = kleos_lib::inbox::set_forget_reason(&db, id, reason).await {
+            tracing::warn!(
+                memory_id = id,
+                user_id = auth.user_id,
+                error = %e,
+                "failed to record forget reason after inbox reject",
+            );
+        }
+    }
+    Ok(Json(json!({ "rejected": true, "id": id })))
+}
+
+// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
+async fn edit(
+    Auth(_auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Path(id): Path<i64>,
+    Json(body): Json<EditBody>,
+) -> Result<Json<Value>, AppError> {
+    kleos_lib::inbox::edit_and_approve(
+        &db,
+        id,
+        body.content.as_deref(),
+        body.category.as_deref(),
+        body.importance,
+        body.tags.as_deref(),
+    )
+    .await?;
+    Ok(Json(json!({ "approved": true, "edited": true, "id": id })))
+}
+
+async fn bulk_action(
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Json(body): Json<BulkBody>,
+) -> Result<Json<Value>, AppError> {
+    let mut count = 0;
+    for id in &body.ids {
+        match body.action.as_str() {
+            "approve" => {
+                kleos_lib::inbox::approve_memory(&db, *id, auth.user_id).await?;
+                count += 1;
+            }
+            "reject" => {
+                kleos_lib::inbox::reject_memory(&db, *id).await?;
+                count += 1;
+            }
+            _ => {
+                return Err(AppError(kleos_lib::EngError::InvalidInput(
+                    "action must be approve or reject".into(),
+                )))
+            }
+        }
+    }
+    Ok(Json(
+        json!({ "action": body.action, "count": count, "ids": body.ids }),
+    ))
+}
+
+async fn list_pending_legacy(
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Query(q): Query<PagingQuery>,
+) -> Result<Json<Value>, AppError> {
+    let limit = q.limit.unwrap_or(50).min(200);
+    let offset = q.offset.unwrap_or(0);
+    let pending = kleos_lib::inbox::list_pending(&db, limit, offset).await?;
+    let total = kleos_lib::inbox::count_pending(&db, auth.user_id).await?;
+    Ok(Json(
+        json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),
+    ))
+}

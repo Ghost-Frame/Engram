@@ -1,0 +1,273 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # ─── Build binaries for each platform ─────────────────────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            suffix: linux-x64
+            ext: ""
+          - os: ubuntu-24.04-arm
+            suffix: linux-arm64
+            ext: ""
+          - os: macos-13
+            suffix: darwin-x64
+            ext: ""
+          - os: macos-14
+            suffix: darwin-arm64
+            ext: ""
+          - os: windows-latest
+            suffix: windows-x64
+            ext: ".exe"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc -y
+
+      - name: Cache cargo registry and target dir
+        uses: Swatinem/rust-cache@v2
+
+      # Serialized builds: GitHub Actions runners have limited RAM (7 GiB
+      # on Linux/Windows, 14 GiB on macOS). Splitting into staged builds
+      # keeps peak memory under the limit while sharing incremental cache.
+      - name: Build kleos-server
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: cargo build --release -p kleos-server
+
+      - name: Build kleos-cli and kleos-sidecar
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: cargo build --release -p kleos-cli -p kleos-sidecar
+
+      - name: Build kleos-credd, kleos-cred, kleos-mcp
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: cargo build --release -p kleos-credd -p kleos-cred -p kleos-mcp
+
+      - name: Build kleos-sh, kleos-fs, agent-forge, eidolon-supervisor
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: cargo build --release -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
+
+      - name: Collect binaries
+        shell: bash
+        run: |
+          mkdir -p release-artifacts
+          for bin in kleos-server kleos-cli kleos-sidecar kleos-credd kleos-cred kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
+            src="target/release/${bin}${{ matrix.ext }}"
+            if [ -f "$src" ]; then
+              cp "$src" "release-artifacts/${bin}-${{ matrix.suffix }}${{ matrix.ext }}"
+            fi
+          done
+          ls -lh release-artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.suffix }}
+          path: release-artifacts/*
+          retention-days: 1
+
+  # ─── Collect all artifacts and create GitHub release ──────────────────────
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: all-artifacts
+        run: |
+          sha256sum * > checksums-sha256.txt
+          cat checksums-sha256.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: all-artifacts/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─── Docker image ─────────────────────────────────────────────────────────
+  docker:
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Extract tag name
+        id: tag
+        run: echo "TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image (ghostframe/kleos)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghostframe/kleos:latest
+            ghostframe/kleos:${{ steps.tag.outputs.TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Transition release: also push ghostframe/engram for one release so
+      # existing deployments pinned to ghostframe/engram continue to work.
+      # Remove this step after the transition period.
+      - name: Tag and push legacy ghostframe/engram image
+        run: |
+          VERSION="${{ steps.tag.outputs.TAG }}"
+          docker pull ghostframe/kleos:${VERSION}
+          docker tag ghostframe/kleos:${VERSION} ghostframe/engram:${VERSION}
+          docker tag ghostframe/kleos:${VERSION} ghostframe/engram:latest
+          docker push ghostframe/engram:${VERSION}
+          docker push ghostframe/engram:latest
+
+  # ─── Publish to crates.io ─────────────────────────────────────────────────
+  publish-crates:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target dir
+        uses: Swatinem/rust-cache@v2
+
+      - name: Publish to crates.io (dependency order)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # publish() swallows only the specific "already uploaded"
+        # response so we keep the job idempotent across re-runs while
+        # still surfacing genuine publish failures (auth, size limit,
+        # unresolved deps, manifest errors).
+        run: |
+          set -euo pipefail
+          publish() {
+            local crate="$1"
+            local out
+            if out=$(cargo publish -p "$crate" --no-verify 2>&1); then
+              echo "$out"
+            else
+              echo "$out"
+              if echo "$out" | grep -qE 'already (uploaded|exists)|crate version .* is already uploaded'; then
+                echo "::warning::$crate already published, skipping"
+                return 0
+              fi
+              return 1
+            fi
+          }
+          # Publishing kleos-lib and kleos-cred to crates.io.
+          # The legacy engram-lib and engram-cred crates remain at 0.3.1
+          # as the last published versions under those names. New consumers
+          # should use kleos-lib and kleos-cred going forward.
+          publish kleos-lib
+          sleep 30
+          publish kleos-cred
+
+  # ─── Publish TypeScript SDK to npm ────────────────────────────────────────
+  publish-npm:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Build and publish TypeScript SDK (@ghost_frame/kleos)
+        working-directory: sdk/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm ci
+          npm run build
+          npm publish --access public
+
+  # ─── Publish Python SDK to PyPI ───────────────────────────────────────────
+  publish-pypi:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build and publish Python SDK (kleos-client)
+        working-directory: sdk/python
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          python -m build
+          twine upload dist/* --skip-existing

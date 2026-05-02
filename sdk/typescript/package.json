@@ -1,0 +1,42 @@
+{
+  "name": "@ghost_frame/kleos",
+  "version": "0.3.2",
+  "description": "TypeScript SDK for Kleos memory server (formerly Engram)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "kleos",
+    "engram",
+    "memory",
+    "ai",
+    "context",
+    "embeddings"
+  ],
+  "author": "Syntheos",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.4"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  }
+}

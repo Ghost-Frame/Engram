@@ -1,0 +1,272 @@
+use axum::{
+    extract::ws::{Message, WebSocket},
+    extract::{Path, Query, State, WebSocketUpgrade},
+    http::StatusCode,
+    routing::{get, post},
+    Json, Router,
+};
+use serde_json::{json, Value};
+use std::sync::Arc;
+
+use crate::error::AppError;
+use crate::extractors::{Auth, ResolvedDb};
+use crate::state::{AppState, SessionBroadcast};
+use kleos_lib::db::Database;
+use kleos_lib::sessions::{
+    append_output, create_session, get_session, get_session_output, list_sessions,
+    SessionCreateRequest,
+};
+
+mod types;
+use types::{AppendBody, ListSessionsParams};
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/sessions",
+            get(list_sessions_handler).post(create_session_handler),
+        )
+        .route("/sessions/{id}", get(get_session_handler))
+        .route("/sessions/{id}/append", post(append_handler))
+        .route("/sessions/{id}/stream", get(stream_handler))
+}
+
+async fn create_session_handler(
+    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Json(body): Json<SessionCreateRequest>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let session = create_session(&db, &body, auth.user_id).await?;
+
+    // SECURITY (SEC-H4): enforce per-tenant session count limit to prevent
+    // unbounded HashMap growth from a single API key creating sessions in a loop.
+    const MAX_SESSIONS_PER_USER: usize = 64;
+    {
+        let mut sessions = state.sessions.write().await;
+        let count = sessions
+            .keys()
+            .filter(|(uid, _)| *uid == auth.user_id)
+            .count();
+        if count >= MAX_SESSIONS_PER_USER {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+                "session limit reached ({} max)",
+                MAX_SESSIONS_PER_USER
+            ))));
+        }
+        sessions.insert(
+            (auth.user_id, session.id.clone()),
+            Arc::new(tokio::sync::Mutex::new(SessionBroadcast::new())),
+        );
+    }
+
+    Ok((StatusCode::CREATED, Json(json!(session))))
+}
+
+async fn list_sessions_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Query(params): Query<ListSessionsParams>,
+) -> Result<Json<Value>, AppError> {
+    let sessions: Vec<kleos_lib::sessions::SessionInfo> =
+        list_sessions(&db, auth.user_id, params.limit, params.offset).await?;
+    Ok(Json(
+        json!({ "sessions": sessions, "count": sessions.len() }),
+    ))
+}
+
+async fn get_session_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let session = get_session(&db, &id, auth.user_id).await?;
+    let output = get_session_output(&db, &id).await?;
+    Ok(Json(json!({ "session": session, "output": output })))
+}
+
+async fn append_handler(
+    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Path(id): Path<String>,
+    Json(body): Json<AppendBody>,
+) -> Result<Json<Value>, AppError> {
+    // SECURITY (SEC-H3): cap individual line length to prevent a single tenant
+    // from filling the 10k-entry buffer with 2 MiB lines (~20 GiB total).
+    const MAX_LINE_LEN: usize = 65536;
+    if body.line.len() > MAX_LINE_LEN {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+            "line exceeds max length ({} bytes)",
+            MAX_LINE_LEN
+        ))));
+    }
+
+    append_output(&db, &id, &body.line).await?;
+
+    // Broadcast to any WebSocket subscribers (scoped to this tenant only).
+    {
+        let sessions = state.sessions.read().await;
+        if let Some(broadcast) = sessions.get(&(auth.user_id, id.clone())) {
+            let mut b = broadcast.lock().await;
+            const MAX_BUFFER: usize = 10_000;
+            if b.buffer.len() >= MAX_BUFFER {
+                // SECURITY (SEC-M8): O(1) removal instead of Vec::remove(0) which is O(n).
+                b.buffer.pop_front();
+            }
+            b.buffer.push_back(body.line.clone());
+            let _ = b.tx.send(body.line);
+            b.last_activity.store(
+                crate::dreamer::monotonic_millis(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+    }
+
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn stream_handler(
+    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Path(id): Path<String>,
+    ws: WebSocketUpgrade,
+) -> axum::response::Response {
+    ws.on_upgrade(move |socket| handle_ws(socket, state, db, id, auth.user_id))
+}
+
+async fn handle_ws(
+    mut socket: WebSocket,
+    state: AppState,
+    db: Arc<Database>,
+    session_id: String,
+    user_id: i64,
+) {
+    // Verify the caller actually owns this session before attaching a
+    // broadcast subscriber. Without this check a tenant with a valid API
+    // key could stream another tenant's session by guessing the id
+    // (MT-F10). We hit the DB here because the in-memory map might miss
+    // and we still want DB fallback to run.
+    if get_session(&db, &session_id, user_id).await.is_err() {
+        let _ = socket
+            .send(Message::Text(
+                json!({"type": "session_end", "status": "not_found"})
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+        return;
+    }
+
+    // Verify session exists and get buffered output
+    let (buffered, rx) = {
+        let sessions = state.sessions.read().await;
+        match sessions.get(&(user_id, session_id.clone())) {
+            Some(broadcast) => {
+                let b = broadcast.lock().await;
+                (b.buffer.clone(), b.tx.subscribe())
+            }
+            None => {
+                // Session not in memory -- send buffered from DB and close
+                drop(sessions);
+                if let Ok(lines) = get_session_output(&db, &session_id).await {
+                    for line in lines {
+                        let msg = json!({"type": "output", "data": line});
+                        if socket
+                            .send(Message::Text(msg.to_string().into()))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                let _ = socket
+                    .send(Message::Text(
+                        json!({"type": "session_end", "status": "closed"})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await;
+                return;
+            }
+        }
+    };
+
+    // Send buffered output first
+    for line in buffered {
+        let msg = json!({"type": "output", "data": line});
+        if socket
+            .send(Message::Text(msg.to_string().into()))
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+
+    // Stream new output
+    // DOS-L3: ping every 30s, close after 10min idle, hard cap at 1h total.
+    let session_start = tokio::time::Instant::now();
+    const MAX_SESSION: std::time::Duration = std::time::Duration::from_secs(3600);
+    const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+    const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+    let mut rx = rx;
+    let mut last_activity = tokio::time::Instant::now();
+    let mut ping_tick = tokio::time::interval(PING_INTERVAL);
+    // Skip the immediate first tick so we don't ping before the session starts.
+    ping_tick.tick().await;
+
+    loop {
+        tokio::select! {
+            msg = rx.recv() => {
+                match msg {
+                    Ok(line) => {
+                        last_activity = tokio::time::Instant::now();
+                        let out = json!({"type": "output", "data": line});
+                        if socket
+                            .send(Message::Text(out.to_string().into()))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        let _ = socket
+                            .send(Message::Text(
+                                json!({"type": "session_end"}).to_string().into(),
+                            ))
+                            .await;
+                        return;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        let _ = socket.send(Message::Text(
+                            json!({"type": "warning", "message": format!("lagged: missed {} messages", n)}).to_string().into()
+                        )).await;
+                    }
+                }
+            }
+            _ = ping_tick.tick() => {
+                let now = tokio::time::Instant::now();
+                if now.duration_since(session_start) >= MAX_SESSION {
+                    let _ = socket.send(Message::Text(
+                        json!({"type": "session_end", "status": "max_duration_reached"}).to_string().into()
+                    )).await;
+                    return;
+                }
+                if now.duration_since(last_activity) >= IDLE_TIMEOUT {
+                    let _ = socket.send(Message::Text(
+                        json!({"type": "session_end", "status": "idle_timeout"}).to_string().into()
+                    )).await;
+                    return;
+                }
+                // Send keepalive ping; ignore error (client may have closed).
+                // Empty ping frame -- just a keepalive; tokio_util re-exports Bytes.
+                let _ = socket.send(Message::Ping(axum::body::Bytes::new())).await;
+            }
+        }
+    }
+}
