@@ -8,6 +8,10 @@ struct Args {
     #[arg(long)]
     db: String,
 
+    /// SQLCipher encryption key (hex string). Read from KLEOS_DB_KEY env if not passed.
+    #[arg(long, env = "KLEOS_DB_KEY")]
+    key: Option<String>,
+
     /// Actually perform mutations (default is dry-run)
     #[arg(long, default_value_t = false)]
     execute: bool,
@@ -173,6 +177,10 @@ fn main() -> Result<()> {
     println!();
 
     let conn = Connection::open(&args.db)?;
+
+    if let Some(key) = &args.key {
+        conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", key))?;
+    }
 
     let activity_count = step_a_move_activity(&conn, args.execute)?;
     println!();
