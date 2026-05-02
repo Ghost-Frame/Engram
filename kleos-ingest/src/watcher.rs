@@ -40,6 +40,9 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter) {
             NotifyConfig::default(),
         ).expect("failed to create file watcher");
 
+        if !watch_dir.exists() {
+            std::fs::create_dir_all(&watch_dir).expect("failed to create watch directory");
+        }
         watcher.watch(&watch_dir, RecursiveMode::Recursive)
             .expect("failed to watch directory");
 
