@@ -171,7 +171,11 @@ async fn health(State(state): State<SidecarState>) -> Json<Value> {
     metrics::set_active_sessions(active_sessions as f64);
     metrics::set_pending_depth(pending_depth as f64);
 
-    let llm_available = state.llm.is_available();
+    let llm_available = state
+        .llm
+        .as_ref()
+        .map(|llm| llm.is_available())
+        .unwrap_or(false);
     Json(json!({
         "status": "ok",
         "upstream_reachable": upstream_reachable,
@@ -179,6 +183,8 @@ async fn health(State(state): State<SidecarState>) -> Json<Value> {
         "dead_letter_depth": 0,
         "retry_in_flight": false,
         "active_sessions": active_sessions,
+        "compress_enabled": state.compress_enabled,
+        "compress_model": state.compress_model,
         "llm_available": llm_available,
         "kleos_url": state.kleos_url,
     }))
@@ -557,6 +563,15 @@ async fn compress(
     State(state): State<SidecarState>,
     Json(body): Json<CompressBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !state.compress_enabled {
+        metrics::inc_compress("disabled");
+        return Ok(Json(json!({
+            "compressed_output": null,
+            "passthrough": true,
+            "reason": "disabled",
+        })));
+    }
+
     let output = &body.tool_output;
     let file_path = body
         .tool_input
@@ -601,9 +616,19 @@ async fn compress(
         })));
     }
 
-    if !state.llm.is_available() {
+    let Some(llm) = state.llm.as_ref() else {
+        metrics::inc_compress("disabled");
+        metrics::record_compress_latency(t0.elapsed().as_secs_f64());
+        return Ok(Json(json!({
+            "compressed_output": null,
+            "passthrough": true,
+            "reason": "disabled",
+        })));
+    };
+
+    if !llm.is_available() {
         tracing::debug!(file = %file_path, "compress: LLM not available, re-probing");
-        if !state.llm.probe().await {
+        if !llm.probe().await {
             tracing::debug!(
                 file = %file_path,
                 "compress: LLM still unavailable after re-probe, fail-open"
@@ -627,6 +652,7 @@ async fn compress(
     );
 
     let opts = CallOptions {
+        model: state.compress_model.clone(),
         max_tokens: Some(800),
         temperature: Some(0.1),
         priority: Priority::Hot,
@@ -634,8 +660,7 @@ async fn compress(
         ..Default::default()
     };
 
-    match state
-        .llm
+    match llm
         .call(COMPRESS_SYSTEM_PROMPT, &user_prompt, Some(opts))
         .await
     {

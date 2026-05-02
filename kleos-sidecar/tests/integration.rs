@@ -172,6 +172,23 @@ async fn spawn_sidecar(
     (url, state, handle)
 }
 
+async fn spawn_sidecar_with_state(
+    state: SidecarState,
+) -> (String, SidecarState, tokio::task::JoinHandle<()>) {
+    std::env::set_var("KLEOS_NET_ALLOW_PRIVATE", "1");
+    let app =
+        routes::router(state.clone()).layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
+    let cloned_state = state.clone();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (url, cloned_state, handle)
+}
+
 fn client(token: Option<&str>) -> Client {
     let mut builder = Client::builder().timeout(Duration::from_secs(5));
     if let Some(t) = token {
@@ -518,6 +535,31 @@ async fn test_compress_too_large_returns_413() {
         StatusCode::PAYLOAD_TOO_LARGE,
         "expected 413 for payload over compress_max_input_bytes"
     );
+}
+
+#[tokio::test]
+async fn test_compress_disabled_returns_passthrough() {
+    let (upstream_url, _ms, _upstream) = spawn_mock_upstream().await;
+    let token = "test-token-compress-disabled";
+    let mut state = build_test_state(upstream_url, Some(token.to_string()));
+    state.compress_enabled = false;
+    state.llm = None;
+    let (sidecar_url, _state, _sidecar) = spawn_sidecar_with_state(state).await;
+    let c = client(Some(token));
+
+    let r = c
+        .post(format!("{}/compress", sidecar_url))
+        .json(&serde_json::json!({
+            "tool_name": "Read",
+            "tool_output": "z".repeat(500),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["passthrough"], true);
+    assert_eq!(body["reason"], "disabled");
 }
 
 // ---------------------------------------------------------------------------

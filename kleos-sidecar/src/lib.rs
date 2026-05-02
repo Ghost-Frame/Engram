@@ -24,7 +24,7 @@ pub fn build_test_state(kleos_url: String, token: Option<String>) -> SidecarStat
         .build()
         .expect("test http client");
 
-    let llm = Arc::new(LocalModelClient::new(OllamaConfig::default()));
+    let llm = Some(Arc::new(LocalModelClient::new(OllamaConfig::default())));
     let manager = session::SessionManager::new("test-default".to_string());
     let kleos = Arc::new(kleos::KleosServiceClient::new_from_env(
         client.clone(),
@@ -41,6 +41,8 @@ pub fn build_test_state(kleos_url: String, token: Option<String>) -> SidecarStat
         source: "test".to_string(),
         user_id: 1,
         token,
+        compress_enabled: true,
+        compress_model: None,
         batch_size: 5,
         batch_interval_ms: 0, // disable time-based flush in tests
         max_pending_per_session: 100,

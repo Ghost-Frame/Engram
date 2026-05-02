@@ -41,6 +41,8 @@ struct ConfigFile {
     batch_size: Option<usize>,
     batch_interval_ms: Option<u64>,
     max_pending_per_session: Option<usize>,
+    compress_enabled: Option<bool>,
+    compress_model: Option<String>,
     compress_passthrough_bytes: Option<usize>,
     compress_max_input_bytes: Option<usize>,
     compress_timeout_ms: Option<u64>,
@@ -134,6 +136,15 @@ struct Cli {
     #[arg(long, env = "KLEOS_SIDECAR_MAX_PENDING")]
     max_pending_per_session: Option<usize>,
 
+    /// Enable /compress LLM summarization. Disable to make /compress always
+    /// pass content through without probing or calling a local model.
+    #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_ENABLED")]
+    compress_enabled: Option<bool>,
+
+    /// Optional model override used only for /compress calls.
+    #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_MODEL")]
+    compress_model: Option<String>,
+
     /// Byte threshold below which /compress passes content through without LLM.
     #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_PASSTHROUGH_BYTES")]
     compress_passthrough_bytes: Option<usize>,
@@ -175,6 +186,8 @@ struct ResolvedConfig {
     batch_size: usize,
     batch_interval_ms: u64,
     max_pending_per_session: usize,
+    compress_enabled: bool,
+    compress_model: Option<String>,
     compress_passthrough_bytes: usize,
     compress_max_input_bytes: usize,
     compress_timeout_ms: u64,
@@ -218,6 +231,8 @@ fn resolve_config(cli: Cli, cfg: ConfigFile) -> ResolvedConfig {
             cfg.max_pending_per_session,
             5000_usize
         ),
+        compress_enabled: pick!(cli.compress_enabled, cfg.compress_enabled, true),
+        compress_model: cli.compress_model.or(cfg.compress_model),
         compress_passthrough_bytes: pick!(
             cli.compress_passthrough_bytes,
             cfg.compress_passthrough_bytes,
@@ -299,17 +314,24 @@ async fn main() {
         .build()
         .expect("failed to create HTTP client");
 
-    let llm: Arc<LocalModelClient> = {
+    let llm: Option<Arc<LocalModelClient>> = if rc.compress_enabled {
         let llm_config = OllamaConfig::from_env();
         let client = LocalModelClient::new(llm_config);
         if client.probe().await {
-            tracing::info!("local LLM client ready for sidecar");
+            tracing::info!(
+                compress_model = rc.compress_model.as_deref().unwrap_or("<ollama default>"),
+                "local LLM client ready for sidecar compression"
+            );
         } else {
             tracing::warn!(
+                compress_model = rc.compress_model.as_deref().unwrap_or("<ollama default>"),
                 "local LLM unavailable at startup -- will re-probe on first compress request"
             );
         }
-        Arc::new(client)
+        Some(Arc::new(client))
+    } else {
+        tracing::info!("sidecar compression disabled");
+        None
     };
 
     let session_id = rc
@@ -362,6 +384,8 @@ async fn main() {
         source: rc.source,
         user_id: rc.user_id,
         token,
+        compress_enabled: rc.compress_enabled,
+        compress_model: rc.compress_model,
         batch_size: rc.batch_size.max(1),
         batch_interval_ms: rc.batch_interval_ms,
         max_pending_per_session: rc.max_pending_per_session.max(1),
@@ -375,6 +399,11 @@ async fn main() {
         batch_size = state.batch_size,
         batch_interval_ms = state.batch_interval_ms,
         max_pending_per_session = state.max_pending_per_session,
+        compress_enabled = state.compress_enabled,
+        compress_model = state
+            .compress_model
+            .as_deref()
+            .unwrap_or("<ollama default>"),
         "observation batching configured"
     );
 
@@ -487,6 +516,7 @@ async fn main() {
         let hb_kleos = state.kleos.clone();
         let hb_sessions = state.sessions.clone();
         let hb_llm = state.llm.clone();
+        let hb_compress_enabled = state.compress_enabled;
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
             ticker.tick().await;
@@ -498,12 +528,16 @@ async fn main() {
                     let pending: usize = guard.list().iter().map(|s| s.pending_count).sum();
                     (active, pending)
                 };
-                let llm_available = hb_llm.is_available();
+                let llm_available = hb_llm
+                    .as_ref()
+                    .map(|llm| llm.is_available())
+                    .unwrap_or(false);
                 hb_kleos.soma_heartbeat(
                     "kleos-sidecar",
                     serde_json::json!({
                         "active_sessions": active_sessions,
                         "pending_depth": pending_depth,
+                        "compress_enabled": hb_compress_enabled,
                         "llm_available": llm_available,
                     }),
                 );
