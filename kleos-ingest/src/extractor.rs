@@ -107,8 +107,8 @@ fn has_infra_info(lower: &str) -> bool {
 
 fn infer_service_tags(lower: &str, tags: &mut Vec<String>) {
     let services = [
-        "kleos", "kleos", "chat-proxy", "library", "credd",
-        "agent-config", "eidolon", "kleos-ingest",
+        "kleos", "kleos", "credd",
+        "eidolon", "kleos-ingest",
     ];
     for svc in services {
         if lower.contains(svc) {

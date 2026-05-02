@@ -1330,9 +1330,9 @@ mod tests {
         c.eidolon
             .gate
             .protected_services
-            .push("chat-proxy".to_string());
-        assert!(check_dangerous_patterns("systemctl stop chat-proxy", &c).is_some());
-        assert!(check_dangerous_patterns("docker stop chat-proxy", &c).is_some());
+            .push("my-service".to_string());
+        assert!(check_dangerous_patterns("systemctl stop my-service", &c).is_some());
+        assert!(check_dangerous_patterns("docker stop my-service", &c).is_some());
         assert!(check_dangerous_patterns("systemctl stop nginx", &c).is_none());
     }
 
