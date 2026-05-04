@@ -185,6 +185,11 @@ fi
 if [ "$STAMP_FILE" != "$STATE_DIR/kleos-ready-global" ]; then
   rm -f "$STAMP_FILE" 2>/dev/null || true
 fi
+if [ -f "$STATE_DIR/cred-get-session.env" ]; then
+  . "$STATE_DIR/cred-get-session.env" 2>/dev/null || true
+  cred session end >/dev/null 2>&1 || true
+  rm -f "$STATE_DIR/cred-get-session.env" 2>/dev/null || true
+fi
 find "$STATE_DIR" -name 'kleos-ready-*' ! -name 'kleos-ready-global' -mmin +1440 -delete 2>/dev/null || true
 rm -f "$STATE_DIR/agent-forge-active" "$STATE_DIR/agent-forge-verified" \
       "$STATE_DIR/agent-forge-challenged" "$STATE_DIR/agent-forge-diffed" \

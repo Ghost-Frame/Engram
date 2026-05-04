@@ -23,6 +23,7 @@ LOG_DIR="$HOME_DIR/.claude/logs"
 STATE_DIR="$HOME_DIR/.claude/session-env"
 SESSION_KEY="${PPID:-$$}"
 STAMP_FILE="$STATE_DIR/kleos-ready-${SESSION_KEY}"
+CRED_SESSION_ENV="$STATE_DIR/cred-get-session.env"
 mkdir -p "$LOG_DIR" "$STATE_DIR" 2>/dev/null || true
 
 # --- Write bootstrap stamps IMMEDIATELY (before any fallible call). ---
@@ -42,6 +43,19 @@ log() {
 }
 
 log "Wrote early bootstrap stamps (PPID=${PPID:-$$})"
+
+if command -v cred >/dev/null 2>&1; then
+  CRED_SESSION_TMP="${CRED_SESSION_ENV}.tmp.$$"
+  if cred session start --shell > "$CRED_SESSION_TMP" 2>/dev/null; then
+    mv "$CRED_SESSION_TMP" "$CRED_SESSION_ENV"
+    chmod 600 "$CRED_SESSION_ENV" 2>/dev/null || true
+    . "$CRED_SESSION_ENV" 2>/dev/null || true
+    log "Minted cred get session grant"
+  else
+    rm -f "$CRED_SESSION_TMP" 2>/dev/null || true
+    log "cred session start failed"
+  fi
+fi
 
 # Source shared Eidolon helper
 . "$HOME_DIR/.claude/hooks/lib-eidolon.sh"

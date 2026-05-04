@@ -42,6 +42,12 @@ ssh-key, note, environment (default: api-key).
 Retrieve a secret. With `-f` pulls a single field (e.g. password, username).
 With `-r` prints the raw value, no JSON wrapping. Triggers a YubiKey unlock.
 
+`cred get` is intentionally blocked in agent-marked shells. Set `AI_AGENT=1`
+or `CRED_AGENT_CONTEXT=1` in the agent runtime and `cred get` will refuse
+outright; use `cred exec` or `cred list` instead. In managed Claude/Kleos
+session hooks (`CLAUDE_*` / `KLEOS_SESSION_ID` contexts), `cred get` also
+requires a short-lived session grant via `cred session start`.
+
 #### `cred list`
 List all stored secrets with values redacted.
 
@@ -54,6 +60,18 @@ dry-run.
 
 #### `cred export`
 Dump all secrets as JSON for backup or migration.
+
+#### `cred session start [--ttl-secs N] [--shell]`
+Mint a short-lived session grant for `cred get`. This is intended for
+SessionStart hooks and other non-agent automation that runs inside a managed
+Claude/Kleos session. By default it prints the token; `--shell` prints an
+`export CRED_GET_SESSION_TOKEN=...` line you can source from a hook script.
+
+Agent-marked shells cannot mint grants.
+
+#### `cred session end [--token TOKEN]`
+Revoke a `cred get` session grant. If `--token` is omitted, cred uses the
+current `CRED_GET_SESSION_TOKEN` environment variable.
 
 #### `cred recover [-f FILE]`
 Decrypt `recovery.enc` (default `~/.config/cred/recovery.enc`) and program a
@@ -132,6 +150,10 @@ layout applies).
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `CRED_ALLOW_INIT` | unset | Required to be `1` for `cred init` to proceed. |
+| `AI_AGENT` | unset | When truthy, `cred get` and `cred session` refuse. Use this in agent shells. |
+| `CRED_AGENT_CONTEXT` | unset | Alias for `AI_AGENT`; another truthy agent-context marker. |
+| `CRED_GET_SESSION_TOKEN` | unset | Short-lived grant required for `cred get` in managed Claude/Kleos session contexts. |
+| `CRED_GET_SESSION_TTL_SECS` | `28800` | Default TTL for `cred session start` when `--ttl-secs` is omitted. |
 | `KLEOS_URL` (or `KLEOS_URL`) | unset | Kleos API endpoint. |
 | `KLEOS_API_KEY` (or `KLEOS_API_KEY`) | unset | Bearer for Kleos. If unset, cred asks credd for the per-host bearer. |
 | `CREDD_SOCKET` | `/run/user/$UID/credd.sock` (Linux) | Unix socket path that credd listens on. Unused on Windows; cred uses TCP via `CREDD_URL` instead. |

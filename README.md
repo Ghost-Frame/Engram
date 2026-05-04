@@ -90,6 +90,7 @@ Operational command reference:
 | **Kleos-MCP**     | The Interface  | 57+ tools for LLM integration via Model Context Protocol.         |
 | **Kleos-Credd**   | The Shield     | Hardware-backed vault with YubiKey HMAC-SHA1 challenge-response.  |
 | **Kleos-Sidecar** | The Guardian   | Session persistence with batched observation flushing.            |
+| **Kleos-Ingest**  | The Collector  | Transcript ingest daemon with PIV/Software key request signing.   |
 
 ---
 
@@ -106,6 +107,7 @@ Operational command reference:
 - **Guardrails.** The gate system checks commands before agents act. Stored rules return allow/warn/block on proposed actions, with optional human-in-the-loop approval.
 - **Episodic Memory.** Conversation episodes stored as searchable narratives.
 - **Bulk Ingestion.** 10 parsers: Markdown, PDF, HTML, DOCX, CSV, JSONL, ZIP archives, ChatGPT exports, Claude exports, and raw message formats through the async ingestion pipeline.
+- **Transcript Ingest.** Dedicated `kleos-ingest` daemon for real-time observation streaming with PIV-backed signing.
 - **LanceDB Vector Index.** Optional ANN backend for large corpora. Small tenants fall back to in-memory scan.
 - **Claude Code Hooks.** Ready-to-use hooks for session memory, context injection, and tool tracking. See [`hooks/README.md`](hooks/README.md).
 
@@ -134,22 +136,24 @@ _For full implementation details, algorithm specs, and API docs, see the [Projec
 
 ## Workspace
 
-Thirteen Cargo crates:
+Fifteen Cargo crates:
 
 | Crate                | Role                                                                                                                                                                                                                                                                      |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `kleos-lib`          | Core library. Memory, search, embeddings, graph, intelligence, services, auth, jobs, 50+ modules. Previously published as `kleos-lib` (last: 0.3.1).                                                                                                                     |
 | `kleos-server`       | Axum HTTP server. 52 route modules, middleware (auth, rate limiting, safe mode, JSON depth, metrics), GUI.                                                                                                                                                                |
-| `kleos-cli`          | Command-line client over the HTTP API. Memory ops and credential management via credd.                                                                                                                                                                                    |
-| `kleos-sidecar`      | Session-scoped memory proxy with file watcher, batched observation flushing, and persistent session store.                                                                                                                                                                |
+| `kleos-cli`          | Command-line client over the HTTP API. Memory ops, skill management, and credential management via credd.                                                                                                                                                                 |
+| `kleos-sidecar`      | Session-scoped memory proxy with file watcher, batched observation flushing, compression, and persistent session store.                                                                                                                                                   |
 | `kleos-mcp`          | MCP (Model Context Protocol) server. 57+ tools across memory, context, graph, intelligence, services, structural, skills, and admin. Stdio transport; HTTP behind feature flag.                                                                                           |
-| `kleos-cred`         | Credential management library. Crypto primitives, YubiKey challenge-response, key derivation. Previously published as `kleos-cred` (last: 0.3.1).                                                                                                                        |
+| `kleos-cred`         | Credential management library. Crypto primitives, YubiKey challenge-response, key derivation, and CRED:v3 vault resolution.                                                                                                                                               |
 | `kleos-credd`        | Credential management daemon. HTTP server with master key + agent key two-tier auth, ChaCha20-Poly1305 encryption.                                                                                                                                                        |
 | `kleos-approval-tui` | Terminal UI for human approval workflow. Ratatui-based interactive review queue. (WIP)                                                                                                                                                                                    |
 | `kleos-migrate`      | ETL tool for migrating from libsql to rusqlite + LanceDB. One-shot utility.                                                                                                                                                                                               |
 | `kleos-sh`           | Shell command gate wrapper. Checks commands through Kleos before execution.                                                                                                                                                                                               |
 | `kleos-fs`           | Filesystem helper binaries for guarded read/write operations.                                                                                                                                                                                                             |
 | `eidolon-supervisor` | Local supervisor for Eidolon/Kleos agent-host process coordination.                                                                                                                                                                                                       |
+| `kleos-ingest`       | Transcript ingest daemon with PIV/software key request signing and real-time observation streaming.                                                                                                                                                                       |
+| `kleos-cleanup`      | One-shot cleanup utility for deduplicating growth rows and moving activity logs from the main memory table.                                                                                                                                                               |
 | `agent-forge`        | Structured reasoning CLI: spec-task, consider-approaches, log-hypothesis, log-outcome, recall-errors, verify, challenge-code, checkpoint, rollback, session-learn, session-recall, session-diff, think, declare-unknowns, repo-map, search-code. Tree-sitter AST parsing. |
 
 ```bash

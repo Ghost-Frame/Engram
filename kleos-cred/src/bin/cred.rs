@@ -6,7 +6,10 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use argon2::{password_hash::SaltString, Argon2, Params, PasswordHasher};
 use clap::{Parser, Subcommand};
+use rand::RngCore;
+use sha2::{Digest, Sha256};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
@@ -38,6 +41,11 @@ use zeroize::{Zeroize, Zeroizing};
 /// [`migrate_legacy_user_id_zero_rows`] lifts any pre-existing user_id=0
 /// rows to user_id=1 the first time a fixed binary runs.
 const CRED_USER_ID: i64 = 1;
+const CRED_GET_SESSION_TOKEN_ENV: &str = "CRED_GET_SESSION_TOKEN";
+const CRED_GET_SESSION_TTL_SECS_ENV: &str = "CRED_GET_SESSION_TTL_SECS";
+const CRED_AGENT_CONTEXT_ENV: &str = "CRED_AGENT_CONTEXT";
+const AI_AGENT_ENV: &str = "AI_AGENT";
+const DEFAULT_CRED_GET_SESSION_TTL_SECS: i64 = 8 * 60 * 60;
 
 /// YubiKey-encrypted credential manager.
 #[derive(Parser)]
@@ -89,6 +97,9 @@ enum Commands {
         /// Print raw value only (for piping)
         #[arg(short, long)]
         raw: bool,
+        /// Hash the output value (e.g., argon2)
+        #[arg(long)]
+        hash: Option<String>,
     },
     /// List all stored secrets (values redacted)
     List {
@@ -147,9 +158,17 @@ enum Commands {
         /// Pipe secret to child stdin instead of an env var
         #[arg(long)]
         stdin: bool,
+        /// Hash the value before injection (e.g., argon2)
+        #[arg(long)]
+        hash: Option<String>,
         /// Command and args to run. Use `--` to separate from cred's flags.
         #[arg(last = true, required = true)]
         command: Vec<String>,
+    },
+    /// Mint or revoke short-lived session grants for `cred get`.
+    Session {
+        #[command(subcommand)]
+        cmd: SessionCmd,
     },
     /// Interactive TUI for browsing and managing secrets
     Tui,
@@ -243,6 +262,25 @@ enum SshCaCmd {
 }
 
 #[derive(Subcommand)]
+enum SessionCmd {
+    /// Mint a short-lived token that allows `cred get` in managed session hooks.
+    Start {
+        /// Token lifetime in seconds.
+        #[arg(long)]
+        ttl_secs: Option<i64>,
+        /// Print as `export CRED_GET_SESSION_TOKEN=...` for shell scripts.
+        #[arg(long)]
+        shell: bool,
+    },
+    /// Revoke the current or provided `cred get` session token.
+    End {
+        /// Token to revoke. Defaults to `$CRED_GET_SESSION_TOKEN`.
+        #[arg(long)]
+        token: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum BootstrapCmd {
     /// Wrap an existing cred store entry into bootstrap.enc.
     /// Used once per host to seal credd's privileged Kleos key. Default
@@ -304,6 +342,25 @@ enum AgentKeyAction {
     },
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct GetSessionGrant {
+    token_hash: String,
+    issued_at: i64,
+    expires_at: i64,
+}
+
+#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
+struct GetSessionGrantStore {
+    grants: Vec<GetSessionGrant>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GetAccessContext {
+    Interactive,
+    ManagedSession,
+    Agent,
+}
+
 fn config_dir() -> PathBuf {
     directories::ProjectDirs::from("", "", "cred")
         .map(|d| d.config_dir().to_path_buf())
@@ -316,6 +373,10 @@ fn config_dir() -> PathBuf {
 
 fn db_path() -> PathBuf {
     config_dir().join("cred.db")
+}
+
+fn get_session_grants_path() -> PathBuf {
+    config_dir().join("get-session-grants.json")
 }
 
 fn shellexpand(path: &str) -> String {
@@ -377,6 +438,195 @@ fn derive_master_key(
     }
 }
 
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn detect_get_access_context() -> GetAccessContext {
+    if env_truthy(AI_AGENT_ENV) || env_truthy(CRED_AGENT_CONTEXT_ENV) {
+        return GetAccessContext::Agent;
+    }
+
+    if std::env::var("CLAUDE_CODE_ENTRYPOINT").is_ok()
+        || std::env::var("CLAUDE_SESSION_ID").is_ok()
+        || std::env::var("KLEOS_SESSION_ID").is_ok()
+    {
+        return GetAccessContext::ManagedSession;
+    }
+
+    GetAccessContext::Interactive
+}
+
+fn default_get_session_ttl_secs() -> i64 {
+    std::env::var(CRED_GET_SESSION_TTL_SECS_ENV)
+        .ok()
+        .and_then(|raw| raw.parse::<i64>().ok())
+        .filter(|ttl| *ttl > 0)
+        .unwrap_or(DEFAULT_CRED_GET_SESSION_TTL_SECS)
+}
+
+fn hash_get_session_token(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn load_get_session_grants(path: &Path) -> Result<GetSessionGrantStore> {
+    if !path.exists() {
+        return Ok(GetSessionGrantStore::default());
+    }
+
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn save_get_session_grants(path: &Path, store: &GetSessionGrantStore) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let body = serde_json::to_vec_pretty(store)?;
+    std::fs::write(&tmp, body)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+fn prune_expired_get_session_grants(store: &mut GetSessionGrantStore, now: i64) -> bool {
+    let before = store.grants.len();
+    store.grants.retain(|grant| grant.expires_at > now);
+    before != store.grants.len()
+}
+
+fn mint_get_session_grant(path: &Path, ttl_secs: i64) -> Result<String> {
+    anyhow::ensure!(ttl_secs > 0, "--ttl-secs must be greater than zero");
+
+    let now = chrono::Utc::now().timestamp();
+    let mut token_bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut token_bytes);
+    let token = hex::encode(token_bytes);
+    token_bytes.zeroize();
+
+    let mut store = load_get_session_grants(path)?;
+    prune_expired_get_session_grants(&mut store, now);
+    store.grants.push(GetSessionGrant {
+        token_hash: hash_get_session_token(&token),
+        issued_at: now,
+        expires_at: now + ttl_secs,
+    });
+    save_get_session_grants(path, &store)?;
+
+    Ok(token)
+}
+
+fn revoke_get_session_grant(path: &Path, token: &str) -> Result<bool> {
+    let now = chrono::Utc::now().timestamp();
+    let mut store = load_get_session_grants(path)?;
+    let token_hash = hash_get_session_token(token);
+    let before = store.grants.len();
+    store
+        .grants
+        .retain(|grant| grant.expires_at > now && grant.token_hash != token_hash);
+    let changed = before != store.grants.len();
+    save_get_session_grants(path, &store)?;
+    Ok(changed)
+}
+
+fn has_valid_get_session_grant(path: &Path, token: &str) -> Result<bool> {
+    let now = chrono::Utc::now().timestamp();
+    let mut store = load_get_session_grants(path)?;
+    let token_hash = hash_get_session_token(token);
+    let pruned = prune_expired_get_session_grants(&mut store, now);
+    let valid = store
+        .grants
+        .iter()
+        .any(|grant| grant.token_hash == token_hash && grant.expires_at > now);
+    if pruned {
+        save_get_session_grants(path, &store)?;
+    }
+    Ok(valid)
+}
+
+fn enforce_get_access_policy(
+    context: GetAccessContext,
+    has_valid_session_grant: bool,
+) -> Result<()> {
+    match context {
+        GetAccessContext::Agent => anyhow::bail!(
+            "cred get is disabled in agent contexts; use `cred exec` or `cred list` instead"
+        ),
+        GetAccessContext::ManagedSession if !has_valid_session_grant => anyhow::bail!(
+            "cred get requires a valid session grant in managed sessions; run `cred session start --shell` during SessionStart and export {}",
+            CRED_GET_SESSION_TOKEN_ENV
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn require_get_session_grant_if_needed() -> Result<()> {
+    let context = detect_get_access_context();
+    let has_valid_session_grant = match context {
+        GetAccessContext::ManagedSession => match std::env::var(CRED_GET_SESSION_TOKEN_ENV) {
+            Ok(token) => has_valid_get_session_grant(&get_session_grants_path(), &token)?,
+            Err(_) => false,
+        },
+        _ => false,
+    };
+
+    enforce_get_access_policy(context, has_valid_session_grant)
+}
+
+async fn cmd_session(cmd: SessionCmd) -> Result<()> {
+    if detect_get_access_context() == GetAccessContext::Agent {
+        anyhow::bail!("cred session is unavailable in agent contexts");
+    }
+
+    match cmd {
+        SessionCmd::Start { ttl_secs, shell } => {
+            let ttl_secs = ttl_secs.unwrap_or_else(default_get_session_ttl_secs);
+            let token = mint_get_session_grant(&get_session_grants_path(), ttl_secs)?;
+            if shell {
+                println!("export {}='{}'", CRED_GET_SESSION_TOKEN_ENV, token);
+            } else {
+                println!("{}", token);
+            }
+            Ok(())
+        }
+        SessionCmd::End { token } => {
+            let token = match token.or_else(|| std::env::var(CRED_GET_SESSION_TOKEN_ENV).ok()) {
+                Some(token) => token,
+                None => anyhow::bail!(
+                    "no session token provided; pass --token or export {}",
+                    CRED_GET_SESSION_TOKEN_ENV
+                ),
+            };
+            let revoked = revoke_get_session_grant(&get_session_grants_path(), &token)?;
+            if revoked {
+                eprintln!("revoked cred get session token");
+            } else {
+                eprintln!("cred get session token was already absent or expired");
+            }
+            Ok(())
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -384,6 +634,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Init => cmd_init().await,
         Commands::Recover { from } => cmd_recover(&from).await,
+        Commands::Session { cmd } => cmd_session(cmd).await,
         Commands::Piv { cmd } => cmd_piv(cmd).await,
         Commands::SshCa { cmd } => cmd_ssh_ca(cmd).await,
         cmd => {
@@ -434,7 +685,8 @@ async fn main() -> Result<()> {
                     key: secret_key,
                     field,
                     raw,
-                } => cmd_get(&db, &key, &service, &secret_key, field.as_deref(), raw).await,
+                    hash,
+                } => cmd_get(&db, &key, &service, &secret_key, field.as_deref(), raw, hash.as_deref()).await,
                 Commands::List { service } => cmd_list(&db, &key, service.as_deref()).await,
                 Commands::Delete {
                     service,
@@ -450,6 +702,7 @@ async fn main() -> Result<()> {
                     field,
                     env,
                     stdin,
+                    hash,
                     command,
                 } => {
                     cmd_exec(
@@ -460,6 +713,7 @@ async fn main() -> Result<()> {
                         field.as_deref(),
                         env.as_deref(),
                         stdin,
+                        hash.as_deref(),
                         command,
                     )
                     .await
@@ -478,6 +732,7 @@ async fn main() -> Result<()> {
                 },
                 Commands::Init
                 | Commands::Recover { .. }
+                | Commands::Session { .. }
                 | Commands::Piv { .. }
                 | Commands::SshCa { .. } => unreachable!(),
             }
@@ -504,7 +759,10 @@ async fn cmd_export_key(master_key: &[u8; KEY_SIZE], out: Option<PathBuf>) -> Re
 
     std::fs::rename(&tmp, &path)?;
     eprintln!("master key exported to {} (mode 0600)", path.display());
-    eprintln!("use CRED_AUTH_MODE=keyfile CRED_KEYFILE={} for unattended access", path.display());
+    eprintln!(
+        "use CRED_AUTH_MODE=keyfile CRED_KEYFILE={} for unattended access",
+        path.display()
+    );
     Ok(())
 }
 
@@ -668,6 +926,17 @@ async fn cmd_store(
     Ok(())
 }
 
+fn hash_value_argon2(plain: &str) -> Result<String> {
+    let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
+    let params = Params::new(65536, 3, 4, None)
+        .map_err(|e| anyhow::anyhow!("argon2 params error: {}", e))?;
+    let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+    let hash = argon2
+        .hash_password(plain.as_bytes(), &salt)
+        .map_err(|e| anyhow::anyhow!("argon2 hash failed: {}", e))?;
+    Ok(hash.to_string())
+}
+
 async fn cmd_get(
     db: &Database,
     master_key: &[u8; KEY_SIZE],
@@ -675,10 +944,29 @@ async fn cmd_get(
     key: &str,
     field: Option<&str>,
     raw: bool,
+    hash: Option<&str>,
 ) -> Result<()> {
+    require_get_session_grant_if_needed()?;
+
     let (_row, data) = storage::get_secret(db, CRED_USER_ID, service, key, master_key)
         .await
         .context("secret not found")?;
+
+    if let Some(algo) = hash {
+        let plain = if let Some(field_name) = field {
+            data.get_field(field_name)
+                .ok_or_else(|| anyhow::anyhow!("field `{}` not found", field_name))?
+        } else {
+            data.bare_value()
+                .ok_or_else(|| anyhow::anyhow!("secret has no bare value -- use --field"))?
+        };
+        let hashed = match algo {
+            "argon2" => hash_value_argon2(&plain)?,
+            _ => anyhow::bail!("unsupported hash algorithm: {}", algo),
+        };
+        print!("{}", hashed);
+        return Ok(());
+    }
 
     if raw {
         // Print raw value for piping
@@ -712,20 +1000,18 @@ async fn cmd_exec(
     field: Option<&str>,
     env_name: Option<&str>,
     use_stdin: bool,
+    hash: Option<&str>,
     command: Vec<String>,
 ) -> Result<()> {
     if command.is_empty() {
         anyhow::bail!("no command specified after `--`");
     }
 
-    let (_row, data) = match storage::get_secret(db, CRED_USER_ID, service, key, master_key).await
-    {
+    let (_row, data) = match storage::get_secret(db, CRED_USER_ID, service, key, master_key).await {
         Ok(result) => result,
-        Err(_) => {
-            resolve_via_credd(master_key, service, key)
-                .await
-                .context("secret not found in local DB or credd")?
-        }
+        Err(_) => resolve_via_credd(master_key, service, key)
+            .await
+            .context("secret not found in local DB or credd")?,
     };
 
     let mut value = if let Some(field_name) = field {
@@ -744,6 +1030,13 @@ async fn cmd_exec(
             )
         })?
     };
+
+    if let Some(algo) = hash {
+        value = match algo {
+            "argon2" => hash_value_argon2(&value)?,
+            _ => anyhow::bail!("unsupported hash algorithm: {}", algo),
+        };
+    }
 
     let program = command[0].clone();
     let args: Vec<String> = command[1..].to_vec();
@@ -1214,11 +1507,14 @@ fn program_yubikey_slot2(secret_hex: &str) -> Result<()> {
 /// Idempotent: re-running on a migrated DB is a no-op (no rows match).
 /// Conflict-safe: when a `(user_id=0, category, name)` row would collide
 /// with an existing `(user_id=1, category, name)` row (UNIQUE constraint),
-/// the legacy row is left in place and a warning is printed so the human
-/// operator can reconcile. Returns the count of rows that were promoted.
+/// or when multiple legacy `user_id=0` rows share the same `(category,name)`,
+/// only one canonical row is promoted and the others are left in place with
+/// a warning so the human operator can reconcile. Returns the count of rows
+/// that were promoted.
 async fn migrate_legacy_user_id_zero_rows(db: &Database) -> Result<usize> {
     db.write(|conn| {
-        // Collect collisions first so the UPDATE doesn't fight UNIQUE.
+        // Collect collisions with existing uid=1 rows first so the UPDATE
+        // doesn't fight UNIQUE.
         let mut stmt = conn.prepare(
             "SELECT a.id, a.category, a.name FROM cred_secrets a
              WHERE a.user_id = 0
@@ -1244,9 +1540,60 @@ async fn migrate_legacy_user_id_zero_rows(db: &Database) -> Result<usize> {
             );
         }
 
+        // Legacy binaries could also create duplicate uid=0 rows for the same
+        // key. Promoting all of them in one UPDATE would violate the UNIQUE
+        // constraint on (user_id, category, name), so we promote only the
+        // lowest-id row in each duplicate set and leave the rest parked at
+        // uid=0 for manual cleanup.
+        let mut dup_stmt = conn.prepare(
+            "SELECT a.id, a.category, a.name FROM cred_secrets a
+             WHERE a.user_id = 0
+               AND EXISTS (
+                   SELECT 1 FROM cred_secrets d
+                   WHERE d.user_id = 0
+                     AND d.category = a.category
+                     AND d.name = a.name
+                     AND d.id < a.id
+               )",
+        )?;
+        let duplicate_uid0_rows: Vec<(i64, String, String)> = dup_stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(dup_stmt);
+
+        for (id, cat, name) in &duplicate_uid0_rows {
+            eprintln!(
+                "warning: legacy cred row id={} ({}/{}) is a duplicate uid=0 entry; \
+                 leaving it in place and promoting only the oldest row for this key. \
+                 Resolve manually with sqlite3 cred.db once access is restored.",
+                id, cat, name
+            );
+        }
+
         let rows_promoted = conn.execute(
-            "UPDATE cred_secrets SET user_id = 1
-             WHERE user_id = 0
+            "UPDATE cred_secrets
+             SET user_id = 1
+             WHERE id IN (
+                 SELECT a.id
+                 FROM cred_secrets a
+                 WHERE a.user_id = 0
+                   AND a.id = (
+                       SELECT MIN(d.id)
+                       FROM cred_secrets d
+                       WHERE d.user_id = 0
+                         AND d.category = a.category
+                         AND d.name = a.name
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM cred_secrets b
+                       WHERE b.user_id = 1
+                         AND b.category = a.category
+                         AND b.name = a.name
+                   )
+             )
+             AND user_id = 0
                AND NOT EXISTS (
                    SELECT 1 FROM cred_secrets b
                    WHERE b.user_id = 1 AND b.category = cred_secrets.category AND b.name = cred_secrets.name
@@ -2016,8 +2363,8 @@ async fn resolve_via_credd(
         serde_json::from_value(body["value"].clone()).context("failed to parse secret data")?;
 
     let secret_type_str = body["type"].as_str().unwrap_or("api_key");
-    let secret_type =
-        kleos_cred::types::SecretType::parse(secret_type_str).unwrap_or(kleos_cred::types::SecretType::ApiKey);
+    let secret_type = kleos_cred::types::SecretType::parse(secret_type_str)
+        .unwrap_or(kleos_cred::types::SecretType::ApiKey);
 
     let row = storage::SecretRow {
         id: 0,
@@ -2387,6 +2734,18 @@ fn ssh_ca_sign_impl(identity: &str, principal: &str, ttl: &str, pubkey: &Path) -
         pubkey.display()
     );
 
+    let pin =
+        std::env::var("YKMAN_PIN").unwrap_or_else(|_| kleos_cred::piv::DEFAULT_PIN.to_string());
+    let askpass = std::env::temp_dir().join("cred-ssh-ca-askpass.sh");
+    std::fs::write(&askpass, format!("#!/bin/sh\necho '{}'\n", pin))
+        .context("write askpass helper")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&askpass, std::fs::Permissions::from_mode(0o700))
+            .context("chmod askpass")?;
+    }
+
     let out = std::process::Command::new("ssh-keygen")
         .args(["-s"])
         .arg(&ca_pub)
@@ -2394,8 +2753,13 @@ fn ssh_ca_sign_impl(identity: &str, principal: &str, ttl: &str, pubkey: &Path) -
         .arg(&pkcs11)
         .args(["-I", identity, "-n", principal, "-V", ttl])
         .arg(pubkey)
+        .env("SSH_ASKPASS", &askpass)
+        .env("SSH_ASKPASS_REQUIRE", "force")
+        .env("DISPLAY", ":0")
         .output()
         .context("ssh-keygen not found")?;
+
+    let _ = std::fs::remove_file(&askpass);
 
     if !out.status.success() {
         anyhow::bail!(
@@ -2550,6 +2914,30 @@ mod user_id_migration_tests {
         db
     }
 
+    async fn fresh_legacy_cred_db_without_unique() -> Database {
+        let db = Database::connect_memory().await.expect("in-memory db");
+        db.write(|conn| {
+            conn.execute("DROP TABLE IF EXISTS cred_secrets", [])?;
+            conn.execute_batch(
+                "CREATE TABLE cred_secrets (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL DEFAULT 1,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    secret_type TEXT NOT NULL,
+                    encrypted_data BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        db
+    }
+
     async fn insert_row(db: &Database, user_id: i64, category: &str, name: &str) {
         let category = category.to_string();
         let name = name.to_string();
@@ -2623,6 +3011,31 @@ mod user_id_migration_tests {
     }
 
     #[tokio::test]
+    async fn migration_promotes_only_one_duplicate_uid0_row_per_key() {
+        let db = fresh_legacy_cred_db_without_unique().await;
+        insert_row(&db, 0, "myservice", "admin").await;
+        insert_row(&db, 0, "myservice", "admin").await;
+        insert_row(&db, 0, "grafana", "admin").await;
+
+        let promoted = migrate_legacy_user_id_zero_rows(&db).await.unwrap();
+        assert_eq!(
+            promoted, 2,
+            "one canonical row per legacy key should be promoted"
+        );
+
+        assert_eq!(
+            count_rows(&db, 1).await,
+            2,
+            "myservice/admin and grafana/admin should be visible"
+        );
+        assert_eq!(
+            count_rows(&db, 0).await,
+            1,
+            "the extra duplicate stays parked at uid=0"
+        );
+    }
+
+    #[tokio::test]
     async fn migration_on_missing_table_errors_but_does_not_panic() {
         // Database::connect_memory() runs the full Kleos migration chain,
         // which already creates `cred_secrets`. Drop it explicitly so we
@@ -2648,5 +3061,56 @@ mod user_id_migration_tests {
         // Pin the chosen canonical id so future refactors don't silently
         // drift back to 0.
         assert_eq!(CRED_USER_ID, 1);
+    }
+}
+
+#[cfg(test)]
+mod get_session_guard_tests {
+    use super::*;
+
+    #[test]
+    fn agent_context_is_always_denied() {
+        let err = enforce_get_access_policy(GetAccessContext::Agent, true).unwrap_err();
+        assert!(err.to_string().contains("disabled in agent contexts"));
+    }
+
+    #[test]
+    fn managed_session_requires_grant() {
+        let err = enforce_get_access_policy(GetAccessContext::ManagedSession, false).unwrap_err();
+        assert!(err.to_string().contains("requires a valid session grant"));
+        assert!(enforce_get_access_policy(GetAccessContext::ManagedSession, true).is_ok());
+    }
+
+    #[test]
+    fn session_grant_roundtrip_and_revocation() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("get-session-grants.json");
+
+        let token = mint_get_session_grant(&path, 60).unwrap();
+        assert!(has_valid_get_session_grant(&path, &token).unwrap());
+
+        let revoked = revoke_get_session_grant(&path, &token).unwrap();
+        assert!(revoked);
+        assert!(!has_valid_get_session_grant(&path, &token).unwrap());
+    }
+
+    #[test]
+    fn expired_grants_are_pruned() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("get-session-grants.json");
+        let token = "deadbeef";
+        let store = GetSessionGrantStore {
+            grants: vec![GetSessionGrant {
+                token_hash: hash_get_session_token(token),
+                issued_at: 1,
+                expires_at: 2,
+            }],
+        };
+        save_get_session_grants(&path, &store).unwrap();
+
+        assert!(!has_valid_get_session_grant(&path, token).unwrap());
+
+        let reloaded = load_get_session_grants(&path).unwrap();
+        assert!(reloaded.grants.is_empty());
     }
 }

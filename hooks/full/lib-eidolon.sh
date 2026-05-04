@@ -4,6 +4,14 @@
 
 _EIDOLON_URL="${EIDOLON_URL:-http://localhost:7700}"
 _EIDOLON_KEY=""
+_HOOK_HOME="${HOME:-${USERPROFILE:-.}}"
+_CRED_SESSION_ENV="$_HOOK_HOME/.claude/session-env/cred-get-session.env"
+
+if [ -f "$_CRED_SESSION_ENV" ]; then
+  # SessionStart writes an export line here so later hooks can use `cred get`
+  # without reopening that escape hatch for agent tool commands.
+  . "$_CRED_SESSION_ENV" 2>/dev/null || true
+fi
 
 # Lazy-resolve Eidolon key (only calls cred once per hook invocation)
 eidolon_key() {

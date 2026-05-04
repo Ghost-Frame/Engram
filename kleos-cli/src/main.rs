@@ -267,6 +267,8 @@ enum CredCommands {
         /// Agent name to revoke
         name: String,
     },
+    /// Sync: pull all Kleos v3 entries into local credd database
+    Sync,
     /// Fetch a secret from credd and exec a child command with the secret
     /// injected as an environment variable. The secret is set in the
     /// child's environment block directly and is never written to stdout,
@@ -1900,8 +1902,14 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
                         println!("No secrets.");
                     } else {
                         for s in &secrets {
-                            let cat = s.get("category").and_then(|x| x.as_str()).unwrap_or("?");
-                            let name = s.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                            let cat = s.get("service")
+                                .or_else(|| s.get("category"))
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("?");
+                            let name = s.get("key")
+                                .or_else(|| s.get("name"))
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("?");
                             let stype =
                                 s.get("secret_type").and_then(|x| x.as_str()).unwrap_or("?");
                             println!("{}/{} [{}]", cat, name, stype);
@@ -1985,6 +1993,20 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
                 Err(e) => eprintln!("Error: {}", e),
             }
         }
+
+        CredCommands::Sync => match client.post("/sync", json!({})).await {
+            Ok(v) => {
+                let synced = v.get("synced").and_then(|x| x.as_u64()).unwrap_or(0);
+                let skipped = v.get("skipped").and_then(|x| x.as_u64()).unwrap_or(0);
+                let errors = v.get("errors").and_then(|x| x.as_u64()).unwrap_or(0);
+                let total = v.get("total_v3").and_then(|x| x.as_u64()).unwrap_or(0);
+                println!(
+                    "Sync complete: {} synced, {} skipped (already local), {} errors, {} total v3 entries",
+                    synced, skipped, errors, total
+                );
+            }
+            Err(e) => eprintln!("Error: {}", e),
+        },
 
         CredCommands::Exec {
             category,

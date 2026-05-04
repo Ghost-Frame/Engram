@@ -43,7 +43,12 @@ pub async fn store_secret(
         .write(move |conn| {
             conn.execute(
                 "INSERT INTO cred_secrets (user_id, name, category, secret_type, encrypted_data, nonce, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(user_id, category, name) DO UPDATE SET
+                    secret_type = excluded.secret_type,
+                    encrypted_data = excluded.encrypted_data,
+                    nonce = excluded.nonce,
+                    updated_at = excluded.updated_at",
                 rusqlite::params![
                     user_id,
                     name,

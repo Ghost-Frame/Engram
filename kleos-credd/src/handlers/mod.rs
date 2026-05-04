@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod bootstrap_bearer;
+pub mod kleos_sync;
 pub mod resolve;
 pub mod secrets;
 pub mod types;

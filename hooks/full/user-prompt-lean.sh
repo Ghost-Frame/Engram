@@ -23,7 +23,12 @@ resolve_home() {
 
 HOME_DIR="$(resolve_home)"
 LOG_DIR="$HOME_DIR/.claude/logs"
+CRED_SESSION_ENV="$HOME_DIR/.claude/session-env/cred-get-session.env"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+if [ -f "$CRED_SESSION_ENV" ]; then
+  . "$CRED_SESSION_ENV" 2>/dev/null || true
+fi
 
 log() {
   echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*" >> "$LOG_DIR/user-prompt-lean.log" 2>/dev/null || true

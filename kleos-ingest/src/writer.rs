@@ -7,15 +7,12 @@ pub struct KleosWriter {
     base_url: String,
     api_key: Option<String>,
     signer: Option<kleos_lib::auth_piv::RequestSigner>,
-    host: String,
+    signer_host: String,
     retry_buffer: Vec<MemoryCandidate>,
 }
 
 impl KleosWriter {
-    pub fn new(
-        config: &Config,
-        signer: Option<kleos_lib::auth_piv::RequestSigner>,
-    ) -> Self {
+    pub fn new(config: &Config) -> Self {
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(10))
@@ -26,20 +23,40 @@ impl KleosWriter {
             client,
             base_url: config.kleos_url.clone(),
             api_key: config.api_key.clone(),
-            signer,
-            host: config.host.clone(),
+            signer: None,
+            signer_host: config.host.clone(),
             retry_buffer: Vec::new(),
         }
     }
 
+    fn ensure_signer(&mut self) -> Option<&kleos_lib::auth_piv::RequestSigner> {
+        if self.signer.is_none() {
+            match kleos_lib::auth_piv::RequestSigner::from_env_or_file(
+                &self.signer_host,
+                "kleos-ingest",
+                "daemon",
+            ) {
+                Ok(Some(s)) => {
+                    tracing::info!(tier = %s.tier(), fingerprint = %s.fingerprint(), "PIV/software key auth initialized (lazy)");
+                    self.signer = Some(s);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!(error = %e, "PIV/software key not yet available, will retry");
+                }
+            }
+        }
+        self.signer.as_ref()
+    }
+
     fn apply_auth(
-        &self,
+        &mut self,
         req: reqwest::RequestBuilder,
         method: &str,
         path: &str,
         body: &[u8],
     ) -> reqwest::RequestBuilder {
-        if let Some(signer) = &self.signer {
+        if let Some(signer) = self.ensure_signer() {
             if let Some(session) = signer.cached_session() {
                 return req.header("X-Kleos-Session", session);
             }

@@ -37,6 +37,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         // Secret management
         .route("/secrets", get(secrets::list_handler))
+        .route("/sync", post(secrets::sync_handler))
         .route(
             "/secret/{category}/{*name}",
             get(secrets::get_handler)

@@ -2,45 +2,82 @@
 
 pub use super::types::{ListQuery, SecretListItem, StoreRequest};
 
+use std::collections::HashSet;
+
 use axum::{
     extract::{Path, Query, State},
     Json,
 };
 use serde_json::{json, Value};
+use tracing::warn;
 
 use kleos_cred::audit::{log_audit, AccessTier, AuditAction};
 use kleos_cred::storage::{delete_secret, list_secrets, store_secret, update_secret};
 use kleos_cred::CredError;
 
+use super::kleos_sync;
 use crate::auth::Auth;
 use crate::handlers::AppError;
 use crate::state::AppState;
 
-/// List secrets.
+/// List secrets -- merges local DB with Kleos v3 vault.
 #[tracing::instrument(skip_all, fields(handler = "credd.secrets.list"))]
 pub async fn list_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let secrets = list_secrets(&state.db, auth.user_id(), query.category.as_deref()).await?;
+    let local_secrets = list_secrets(&state.db, auth.user_id(), query.category.as_deref()).await?;
 
-    let items: Vec<SecretListItem> = secrets
-        .into_iter()
+    let mut items: Vec<SecretListItem> = local_secrets
+        .iter()
         .filter(|s| auth.can_access_category(&s.category))
         .map(|s| SecretListItem {
-            service: s.category,
-            key: s.name,
+            service: s.category.clone(),
+            key: s.name.clone(),
             secret_type: s.secret_type.to_string(),
-            created_at: s.created_at,
-            updated_at: s.updated_at,
+            created_at: s.created_at.clone(),
+            updated_at: s.updated_at.clone(),
         })
         .collect();
+
+    let local_keys: HashSet<(String, String)> = local_secrets
+        .iter()
+        .map(|s| (s.category.clone(), s.name.clone()))
+        .collect();
+
+    // Merge v3 entries not already in local DB
+    match kleos_sync::fetch_v3_entries(&state).await {
+        Ok(entries) => {
+            for entry in entries {
+                if local_keys.contains(&(entry.category.clone(), entry.name.clone())) {
+                    continue;
+                }
+                if !auth.can_access_category(&entry.category) {
+                    continue;
+                }
+                let secret_type = match kleos_sync::decrypt_v3_entry(&entry.hex_data, state.master_key.as_ref()) {
+                    Ok(data) => data.secret_type().to_string(),
+                    Err(_) => "encrypted".to_string(),
+                };
+                items.push(SecretListItem {
+                    service: entry.category,
+                    key: entry.name,
+                    secret_type,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                });
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "could not fetch Kleos v3 entries for list; showing local only");
+        }
+    }
 
     Ok(Json(json!({ "secrets": items })))
 }
 
-/// Store a new secret.
+/// Store a new secret -- dual-writes to local DB and Kleos v3.
 #[tracing::instrument(skip_all, fields(handler = "credd.secrets.store"))]
 pub async fn store_handler(
     Auth(auth): Auth,
@@ -73,6 +110,9 @@ pub async fn store_handler(
         true,
     )
     .await?;
+
+    // Sync to Kleos v3 (non-fatal)
+    kleos_sync::store_to_kleos(&state, &category, &name, &body.data, state.master_key.as_ref()).await;
 
     Ok(Json(json!({
         "id": id,
@@ -133,7 +173,7 @@ pub async fn get_handler(
     })))
 }
 
-/// Update a secret.
+/// Update a secret -- dual-writes to local DB and Kleos v3.
 #[tracing::instrument(skip_all, fields(handler = "credd.secrets.update"))]
 pub async fn update_handler(
     Auth(auth): Auth,
@@ -169,6 +209,10 @@ pub async fn update_handler(
     )
     .await?;
 
+    // Sync to Kleos v3: delete old + store new (non-fatal)
+    kleos_sync::delete_from_kleos(&state, &category, &name).await;
+    kleos_sync::store_to_kleos(&state, &category, &name, &body.data, state.master_key.as_ref()).await;
+
     Ok(Json(json!({
         "category": category,
         "name": name,
@@ -176,7 +220,7 @@ pub async fn update_handler(
     })))
 }
 
-/// Delete a secret.
+/// Delete a secret -- dual-deletes from local DB and Kleos v3.
 #[tracing::instrument(skip_all, fields(handler = "credd.secrets.delete"))]
 pub async fn delete_handler(
     Auth(auth): Auth,
@@ -203,9 +247,86 @@ pub async fn delete_handler(
     )
     .await?;
 
+    // Sync delete to Kleos v3 (non-fatal)
+    kleos_sync::delete_from_kleos(&state, &category, &name).await;
+
     Ok(Json(json!({
         "category": category,
         "name": name,
         "deleted": true,
+    })))
+}
+
+/// Pull all v3 entries from Kleos into local DB. Idempotent.
+/// Any authenticated caller can trigger sync -- it doesn't expose secrets,
+/// just populates the local cache from what already exists in Kleos.
+#[tracing::instrument(skip_all, fields(handler = "credd.secrets.sync"))]
+pub async fn sync_handler(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
+
+    let entries = kleos_sync::fetch_v3_entries(&state)
+        .await
+        .map_err(|e| CredError::InvalidInput(e))?;
+
+    let mut synced = 0u32;
+    let mut skipped = 0u32;
+    let mut errors = 0u32;
+
+    for entry in &entries {
+        // Check if already local
+        match kleos_cred::storage::get_secret(
+            &state.db,
+            auth.user_id(),
+            &entry.category,
+            &entry.name,
+            state.master_key.as_ref(),
+        )
+        .await
+        {
+            Ok(_) => {
+                skipped += 1;
+                continue;
+            }
+            Err(CredError::NotFound(_)) => {}
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        }
+
+        let data = match kleos_sync::decrypt_v3_entry(&entry.hex_data, state.master_key.as_ref()) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(category = %entry.category, name = %entry.name, error = %e, "failed to decrypt v3 entry during sync");
+                errors += 1;
+                continue;
+            }
+        };
+
+        match store_secret(
+            &state.db,
+            auth.user_id(),
+            &entry.category,
+            &entry.name,
+            &data,
+            state.master_key.as_ref(),
+        )
+        .await
+        {
+            Ok(_) => synced += 1,
+            Err(e) => {
+                warn!(category = %entry.category, name = %entry.name, error = %e, "failed to store v3 entry locally during sync");
+                errors += 1;
+            }
+        }
+    }
+
+    Ok(Json(json!({
+        "synced": synced,
+        "skipped": skipped,
+        "errors": errors,
+        "total_v3": entries.len(),
     })))
 }
