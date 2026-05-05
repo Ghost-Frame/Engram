@@ -14,7 +14,7 @@
 
 <div align="center">
 
-[Why Rust?](#why-rust) · [Quick Start](#quick-start) · [Features](#features) · [Workspace](#workspace) · [Architecture](#architecture) · [API](#api-reference) · [CLI](#cli) · [Sidecar](#sidecar) · [Config](#configuration) · [Wiki](https://github.com/Ghost-Frame/Kleos/wiki)
+[Why Kleos?](#why-kleos) · [Quick Start](#quick-start) · [Features](#features) · [Workspace](#workspace) · [Wiki](https://github.com/Ghost-Frame/Kleos/wiki)
 
 </div>
 
@@ -97,7 +97,7 @@ Operational command reference:
 ## Features
 
 - **FSRS-6 Spaced Repetition.** Memories strengthen with use and decay when ignored. Power-law forgetting with trained parameters.
-- **3-Channel Hybrid Search.** Vector similarity, FTS5 full-text, and graph traversal fused via Reciprocal Rank Fusion, with personality scoring as a boost signal.
+- **4-Channel Hybrid Search.** Vector similarity, FTS5 full-text, graph traversal, and cross-encoder reranking fused via Reciprocal Rank Fusion, with personality scoring as a boost signal.
 - **Knowledge Graph.** Auto-linking, Louvain community detection, weighted PageRank, cooccurrence, structural analysis.
 - **Personality Engine.** Preferences, values, motivations, identity. Recall is shaped by the agent's current personality context.
 - **Self-Hosted.** One Rust binary. One SQLite database. Local ONNX embeddings. No cloud keys.
