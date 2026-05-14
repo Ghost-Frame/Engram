@@ -34,7 +34,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `kleos-mcp` HTTP transport drops front-door bearer auth -- reachability (bind address) is the access-control boundary, consistent with kleos-cli. Operators must bind to a private interface (loopback, LAN, mesh)
 - `kleos-mcp` hard-fails at startup if neither a PIV signer nor `KLEOS_API_KEY` is configured -- refuses to start unauthenticated
-- Private infrastructure references (internal IPs, mesh network IDs, personal hostnames, agent-config artifacts) scrubbed from tracked files in dedicated commits (b83a972, b5810f6, bdaadb3) prior to public release work
 
 ## [1.0.0] - 2026-05-10
 
