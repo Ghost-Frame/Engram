@@ -1,7 +1,7 @@
 //! agent-forge CLI entrypoint. Each subcommand reads a JSON input file, runs
 //! one tool from the `tools` module against the on-disk SQLite forge DB, and
-//! writes a JSON result back. Hooks in `~/.claude/` enforce that agents call
-//! these tools before/after editing code.
+//! writes a JSON result back. External hooks can enforce that agents call
+//! these tools before and after editing code.
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -36,8 +36,8 @@ struct Cli {
     db: String,
 }
 
-/// One enum variant per agent-forge tool. Names map 1:1 to the public tool
-/// reference in `~/.claude/reference/agent-forge-protocol.md`.
+/// One enum variant per agent-forge tool. Names map 1:1 to the agent-forge
+/// tool reference.
 #[derive(Subcommand, Debug)]
 enum Commands {
     SpecTask,
