@@ -110,11 +110,16 @@ pub async fn query_actions(
     action: Option<&str>,
     limit: usize,
     offset: usize,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Vec<ActionEntry>> {
-    let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE 1=1");
-    let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
-    let mut param_idx = 1usize;
+    // broca_actions retains user_id on both monolith (v45) and tenant
+    // shard (v42). Filter on it so a query scoped to user N never surfaces
+    // another user's rows. Tests `query_is_scoped_by_user` and
+    // `get_stats_is_scoped_by_user` guard the regression.
+    let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE user_id = ?1");
+    let mut params_vec: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Integer(user_id)];
+    let mut param_idx = 2usize;
 
     if let Some(a) = agent {
         sql.push_str(&format!(" AND agent = ?{}", param_idx));
@@ -153,13 +158,15 @@ pub async fn query_actions(
 }
 
 #[tracing::instrument(skip(db), fields(action_id = id, user_id))]
-pub async fn get_action(db: &Database, id: i64, _user_id: i64) -> Result<ActionEntry> {
-    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1");
+pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEntry> {
+    // Filter by user_id so a caller scoped to user N cannot fetch another
+    // user's action by id.
+    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id])
+            .query(rusqlite::params![id, user_id])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
             .next()
@@ -171,12 +178,15 @@ pub async fn get_action(db: &Database, id: i64, _user_id: i64) -> Result<ActionE
 }
 
 #[tracing::instrument(skip(db), fields(user_id))]
-pub async fn get_stats(db: &Database, _user_id: i64) -> Result<BrocaStats> {
+pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
+    // Scope counts to the caller's user_id. Without this every tenant sees
+    // an aggregate across all rows -- the regression that tripped
+    // `get_stats_is_scoped_by_user`.
     db.read(move |conn| {
         conn.query_row(
             "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
-             FROM broca_actions",
-            [],
+             FROM broca_actions WHERE user_id = ?1",
+            rusqlite::params![user_id],
             |row| {
                 Ok(BrocaStats {
                     total_actions: row.get(0)?,
@@ -228,9 +238,8 @@ mod tests {
         assert_eq!(fetched.id, entry.id);
     }
 
-    /// H-R3-006 regression test (un-ignored from Phase 5.6). After v45
-    /// re-added user_id, query_actions filters by user_id again so a row
-    /// owned by user 1 must not surface to a query scoped to user 2.
+    /// Regression test: query_actions filters by user_id so a row owned by
+    /// user 1 must not surface to a query scoped to user 2.
     #[tokio::test]
     async fn query_is_scoped_by_user() {
         let db = setup().await;
