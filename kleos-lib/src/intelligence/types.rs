@@ -509,13 +509,21 @@ pub enum IntelligenceTier {
     Template,
 }
 
+/// Construct and query `IntelligenceTier` from runtime environment.
 impl IntelligenceTier {
+    /// Read the intelligence-tier environment variable; default to `Auto`.
+    ///
+    /// Checks `KLEOS_INTELLIGENCE_TIER` first. Falls back to the legacy
+    /// `ENGRAM_INTELLIGENCE_TIER` for backwards compatibility with existing
+    /// deployments; this fallback may be removed in a future release.
+    ///
+    /// Accepted values (case-insensitive): `"llm"`, `"rules"`, `"template"`.
+    /// Any other value (including unset) resolves to `Auto`.
     pub fn from_env() -> Self {
-        match std::env::var("ENGRAM_INTELLIGENCE_TIER")
-            .unwrap_or_default()
-            .to_lowercase()
-            .as_str()
-        {
+        let raw = std::env::var("KLEOS_INTELLIGENCE_TIER")
+            .or_else(|_| std::env::var("ENGRAM_INTELLIGENCE_TIER"))
+            .unwrap_or_default();
+        match raw.to_lowercase().as_str() {
             "llm" => Self::Llm,
             "rules" => Self::Rules,
             "template" => Self::Template,
