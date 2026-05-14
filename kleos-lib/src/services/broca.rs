@@ -290,9 +290,10 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
 /// comparison; it is correct when both the stored `created_at` and the `since`
 /// value are normalized ISO-8601 strings (e.g. `"2026-05-14T00:00:00Z"`).
 ///
-/// `_user_id` is currently unused in the WHERE clause because the table is
-/// per-tenant (sharded by shard selection at call time), but is kept in the
-/// signature for future per-row scoping when needed.
+/// `user_id` is always applied as a WHERE filter so cross-tenant reads on
+/// the monolith path return no rows; on tenant-sharded paths the predicate
+/// is a no-op. Regression tests `query_is_scoped_by_user` and
+/// `get_stats_is_scoped_by_user` guard the behavior.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(db), fields(agent = ?agent, service = ?service, action = ?action, since = ?since, limit, offset, user_id))]
 pub async fn query_actions(
@@ -303,11 +304,12 @@ pub async fn query_actions(
     since: Option<&str>,
     limit: usize,
     offset: usize,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Vec<ActionEntry>> {
-    let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE 1=1");
-    let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
-    let mut param_idx = 1usize;
+    let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE user_id = ?1");
+    let mut params_vec: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Integer(user_id)];
+    let mut param_idx = 2usize;
 
     if let Some(a) = agent {
         sql.push_str(&format!(" AND agent = ?{}", param_idx));
@@ -350,17 +352,18 @@ pub async fn query_actions(
     .await
 }
 
-/// Fetch a single [`ActionEntry`] by primary key.
+/// Fetch a single [`ActionEntry`] by primary key, scoped to `user_id`.
 ///
-/// Returns [`EngError::NotFound`] when no row with the given `id` exists.
+/// Returns [`EngError::NotFound`] when no row with the given `id` exists or
+/// the row belongs to another tenant.
 #[tracing::instrument(skip(db), fields(action_id = id, user_id))]
-pub async fn get_action(db: &Database, id: i64, _user_id: i64) -> Result<ActionEntry> {
-    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1");
+pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEntry> {
+    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id])
+            .query(rusqlite::params![id, user_id])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
             .next()
@@ -371,18 +374,18 @@ pub async fn get_action(db: &Database, id: i64, _user_id: i64) -> Result<ActionE
     .await
 }
 
-/// Return aggregate [`BrocaStats`] for the given tenant shard.
+/// Return aggregate [`BrocaStats`] scoped to `user_id`.
 ///
-/// The `_user_id` argument is present for API symmetry with the other service
-/// functions but is not currently used in the query (the shard is already
-/// user-scoped).
+/// Filters by `user_id` so every tenant sees its own counts on both the
+/// monolith and sharded paths. Without the predicate the monolith path
+/// would return a workspace-wide aggregate.
 #[tracing::instrument(skip(db), fields(user_id))]
-pub async fn get_stats(db: &Database, _user_id: i64) -> Result<BrocaStats> {
+pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
     db.read(move |conn| {
         conn.query_row(
             "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
-             FROM broca_actions",
-            [],
+             FROM broca_actions WHERE user_id = ?1",
+            rusqlite::params![user_id],
             |row| {
                 Ok(BrocaStats {
                     total_actions: row.get(0)?,
@@ -896,7 +899,8 @@ async fn ask_plan_call(question: &str) -> AskPlan {
         return ask_keyword_heuristic(question);
     };
 
-    let system = "You translate a user question about an agent activity log into a JSON query plan. \
+    let system =
+        "You translate a user question about an agent activity log into a JSON query plan. \
         Return ONLY a JSON object with these optional fields and nothing else -- no explanation, \
         no markdown, no code fences:\n\
         {\"agent\":\"<agent-name>\",\"service\":\"<service-name>\",\
@@ -1000,9 +1004,7 @@ fn ask_keyword_heuristic(question: &str) -> AskPlan {
     let lower = question.to_lowercase();
 
     // Known service names to look for in the question.
-    let known_services = [
-        "kleos", "chiasm", "axon", "loom", "soma", "thymus", "broca",
-    ];
+    let known_services = ["kleos", "chiasm", "axon", "loom", "soma", "thymus", "broca"];
 
     let service = known_services
         .iter()
