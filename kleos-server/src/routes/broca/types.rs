@@ -54,6 +54,16 @@ pub(super) struct NarrateBatchBody {
     pub ids: Vec<i64>,
 }
 
+/// Request body for `POST /broca/ask` (natural-language query).
+///
+/// The `question` field is validated by the handler: it must be non-empty and
+/// at most 2 000 Unicode characters long.
+#[derive(Debug, Deserialize)]
+pub(super) struct AskBody {
+    /// Natural-language question to answer from the action log.
+    pub question: String,
+}
+
 /// Inbound Axon webhook payload for `POST /broca/ingest`.
 ///
 /// The endpoint that receives it is intentionally unauthenticated -- protect

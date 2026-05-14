@@ -17,12 +17,12 @@ use crate::error::AppError;
 use crate::extractors::{resolve_db_for_user, Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::broca::{
-    get_action, get_or_narrate_action, get_stats as get_broca_stats, log_action,
+    ask as broca_ask, get_action, get_or_narrate_action, get_stats as get_broca_stats, log_action,
     narrate_from_template, query_actions, LogActionRequest,
 };
 
 mod types;
-use types::{IngestBody, LogActionBody, NarrateBatchBody, QueryActionsParams};
+use types::{AskBody, IngestBody, LogActionBody, NarrateBatchBody, QueryActionsParams};
 
 /// Authenticated router: mounts broca routes inside the auth middleware stack.
 pub fn router() -> Router<AppState> {
@@ -36,6 +36,7 @@ pub fn router() -> Router<AppState> {
         .route("/broca/narrate", post(narrate_batch_handler))
         .route("/broca/feed", get(get_feed_handler))
         .route("/broca/stats", get(get_stats))
+        .route("/broca/ask", post(ask_handler))
 }
 
 /// Unauthenticated router: mounts `/broca/ingest` outside the auth middleware.
@@ -96,14 +97,10 @@ async fn list_actions_handler(
     let agent = params.agent.as_deref();
     let service = params.service.as_deref();
     let action = params.action.as_deref();
+    let since = params.since.as_deref();
 
-    let mut entries =
-        query_actions(&db, agent, service, action, limit, offset, auth.user_id).await?;
-
-    // Apply since filter in-memory if provided
-    if let Some(ref since) = params.since {
-        entries.retain(|e| e.created_at.as_str() >= since.as_str());
-    }
+    let entries =
+        query_actions(&db, agent, service, action, since, limit, offset, auth.user_id).await?;
 
     Ok(Json(json!({ "actions": entries, "count": entries.len() })))
 }
@@ -129,12 +126,9 @@ async fn get_feed_handler(
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
     let agent = params.agent.as_deref();
+    let since = params.since.as_deref();
 
-    let mut entries = query_actions(&db, agent, None, None, limit, offset, auth.user_id).await?;
-
-    if let Some(ref since) = params.since {
-        entries.retain(|e| e.created_at.as_str() >= since.as_str());
-    }
+    let entries = query_actions(&db, agent, None, None, since, limit, offset, auth.user_id).await?;
 
     Ok(Json(json!({ "items": entries, "count": entries.len() })))
 }
@@ -211,6 +205,44 @@ async fn narrate_batch_handler(
     }
 
     Ok(Json(Value::Array(results)))
+}
+
+/// Handler for `POST /broca/ask`. Accepts a natural-language question and
+/// returns a synthesized plain-English answer together with the query plan
+/// and the matched raw action rows.
+///
+/// The pipeline is:
+/// 1. LLM plan call -- translates the question into query parameters.
+/// 2. `query_actions` -- fetches matching action rows for the authenticated tenant.
+/// 3. LLM summarize call -- produces a 1-3 sentence answer with action-id citations.
+///
+/// Both LLM calls fall back gracefully (keyword heuristic / narrative
+/// concatenation) so this endpoint never returns 500 for LLM-related failures.
+///
+/// Validation:
+/// - `question` must be non-empty.
+/// - `question` must not exceed 2 000 Unicode characters.
+///
+/// Response shape: `{ "answer": "...", "plan": {...}, "raw": [...] }`.
+async fn ask_handler(
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Json(body): Json<AskBody>,
+) -> Result<Json<Value>, AppError> {
+    // Validate question length before any LLM calls.
+    if body.question.is_empty() {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(
+            "question must not be empty".into(),
+        )));
+    }
+    if body.question.chars().count() > 2000 {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(
+            "question must not exceed 2000 characters".into(),
+        )));
+    }
+
+    let result = broca_ask(&db, auth.user_id, &body.question).await?;
+    Ok(Json(json!(result)))
 }
 
 /// Handler for `POST /broca/ingest`. Intentionally unauthenticated; receives
