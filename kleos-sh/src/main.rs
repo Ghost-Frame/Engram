@@ -143,7 +143,7 @@ fn resolve_key_via_credd() -> Option<String> {
     }
 
     let slot = std::env::var("KLEOS_AGENT_SLOT")
-        .unwrap_or_else(|_| "claude-code-wsl".into())
+        .unwrap_or_else(|_| "claude-code".into())
         .replace(['\r', '\n'], "");
     let agent_key = agent_key.replace(['\r', '\n'], "");
     let request = format!(
