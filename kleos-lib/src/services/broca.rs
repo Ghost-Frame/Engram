@@ -1,7 +1,14 @@
+//! Broca service -- writes and queries to the `broca_actions` table.
+//!
+//! Every read is scoped to the caller's `user_id` so tenants cannot
+//! observe each other's action history on the monolith path. The
+//! tenant-shard path inherits the same predicate as a defense in depth.
+
 use crate::db::Database;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
+/// A single row from `broca_actions`, returned to callers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionEntry {
     pub id: i64,
@@ -15,6 +22,9 @@ pub struct ActionEntry {
     pub created_at: String,
 }
 
+/// Payload accepted by `log_action`. `user_id` is required by the
+/// service even though it is `Option` here so the type can deserialize
+/// from older API clients that omitted the field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogActionRequest {
     pub agent: String,
@@ -31,6 +41,7 @@ pub struct LogActionRequest {
     pub user_id: Option<i64>,
 }
 
+/// Aggregate counts returned by `get_stats`, scoped to a single tenant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrocaStats {
     pub total_actions: i64,
@@ -41,10 +52,14 @@ pub struct BrocaStats {
 const ACTION_COLUMNS: &str =
     "id, agent, service, action, payload, narrative, axon_event_id, user_id, created_at";
 
+/// Lift a rusqlite error into the crate-wide `EngError` without losing
+/// the underlying message.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
+/// Decode one `broca_actions` row into an `ActionEntry`, parsing the
+/// payload JSON column on the way out.
 fn row_to_action_entry(row: &rusqlite::Row<'_>) -> Result<ActionEntry> {
     let payload_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let payload: serde_json::Value = serde_json::from_str(&payload_str)?;
@@ -61,6 +76,9 @@ fn row_to_action_entry(row: &rusqlite::Row<'_>) -> Result<ActionEntry> {
     })
 }
 
+/// Insert a new action row and return the persisted entry. Requires
+/// `req.user_id` to be present; returns `EngError::InvalidInput` if
+/// omitted so callers can never write an unscoped action.
 #[tracing::instrument(skip(db, req), fields(agent = %req.agent, action = %req.action, service = ?req.service, user_id = ?req.user_id))]
 pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEntry> {
     let service = req.service.clone().unwrap_or_else(|| "engram".to_string());
@@ -101,6 +119,8 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
     get_action(db, id, user_id).await
 }
 
+/// Query broca_actions with optional agent/service/action filters,
+/// always scoped to the caller's `user_id`. Returns most recent first.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(db), fields(agent = ?agent, service = ?service, action = ?action, limit, offset, user_id))]
 pub async fn query_actions(
@@ -110,11 +130,16 @@ pub async fn query_actions(
     action: Option<&str>,
     limit: usize,
     offset: usize,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Vec<ActionEntry>> {
-    let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE 1=1");
-    let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
-    let mut param_idx = 1usize;
+    // broca_actions retains user_id on both monolith (v45) and tenant
+    // shard (v42). Filter on it so a query scoped to user N never surfaces
+    // another user's rows. Tests `query_is_scoped_by_user` and
+    // `get_stats_is_scoped_by_user` guard the regression.
+    let mut sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE user_id = ?1");
+    let mut params_vec: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Integer(user_id)];
+    let mut param_idx = 2usize;
 
     if let Some(a) = agent {
         sql.push_str(&format!(" AND agent = ?{}", param_idx));
@@ -152,14 +177,19 @@ pub async fn query_actions(
     .await
 }
 
+/// Fetch a single broca action by id, scoped to the caller's `user_id`.
+/// Returns `EngError::NotFound` when the row does not exist or belongs
+/// to a different tenant.
 #[tracing::instrument(skip(db), fields(action_id = id, user_id))]
-pub async fn get_action(db: &Database, id: i64, _user_id: i64) -> Result<ActionEntry> {
-    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1");
+pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEntry> {
+    // Filter by user_id so a caller scoped to user N cannot fetch another
+    // user's action by id.
+    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id])
+            .query(rusqlite::params![id, user_id])
             .map_err(rusqlite_to_eng_error)?;
         let row = rows
             .next()
@@ -170,13 +200,18 @@ pub async fn get_action(db: &Database, id: i64, _user_id: i64) -> Result<ActionE
     .await
 }
 
+/// Aggregate counts (total actions, distinct agents, distinct services)
+/// for the caller's `user_id`. Per-tenant view; never crosses users.
 #[tracing::instrument(skip(db), fields(user_id))]
-pub async fn get_stats(db: &Database, _user_id: i64) -> Result<BrocaStats> {
+pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
+    // Scope counts to the caller's user_id. Without this every tenant sees
+    // an aggregate across all rows -- the regression that tripped
+    // `get_stats_is_scoped_by_user`.
     db.read(move |conn| {
         conn.query_row(
             "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
-             FROM broca_actions",
-            [],
+             FROM broca_actions WHERE user_id = ?1",
+            rusqlite::params![user_id],
             |row| {
                 Ok(BrocaStats {
                     total_actions: row.get(0)?,
@@ -190,11 +225,16 @@ pub async fn get_stats(db: &Database, _user_id: i64) -> Result<BrocaStats> {
     .await
 }
 
+/// Unit tests for the broca service. Each test spins up an in-memory
+/// monolith database with v45 migrations applied (broca_actions has
+/// user_id) so tenant-scoping assertions are meaningful.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::Database;
 
+    /// Build a fresh in-memory database with all monolith migrations
+    /// applied. Each test gets its own isolated instance.
     async fn setup() -> Database {
         let db = Database::connect_memory().await.expect("db");
         // Apply monolith migrations so broca_actions exists with user_id (v45).
@@ -204,6 +244,8 @@ mod tests {
         db
     }
 
+    /// Round-trip: log an action, then fetch it by id and confirm the
+    /// fields survive the trip.
     #[tokio::test]
     async fn log_and_get_action() {
         let db = setup().await;
@@ -228,9 +270,8 @@ mod tests {
         assert_eq!(fetched.id, entry.id);
     }
 
-    /// H-R3-006 regression test (un-ignored from Phase 5.6). After v45
-    /// re-added user_id, query_actions filters by user_id again so a row
-    /// owned by user 1 must not surface to a query scoped to user 2.
+    /// Regression test: query_actions filters by user_id so a row owned by
+    /// user 1 must not surface to a query scoped to user 2.
     #[tokio::test]
     async fn query_is_scoped_by_user() {
         let db = setup().await;
@@ -259,6 +300,8 @@ mod tests {
         assert_eq!(mine[0].user_id, 1);
     }
 
+    /// Regression test: get_stats counts rows for the caller's user_id
+    /// only. Without WHERE user_id = ? every tenant sees the global count.
     #[tokio::test]
     async fn get_stats_is_scoped_by_user() {
         let db = setup().await;
