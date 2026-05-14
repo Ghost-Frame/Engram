@@ -71,17 +71,14 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                     )
                     .map_err(rusqlite_to_eng_error)?;
                 let rows = stmt
-                    .query_map(
-                        params![subject_c, predicate_c, memory_id, nfid],
-                        |row| {
-                            Ok((
-                                row.get::<_, i64>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, i64>(2)?,
-                                row.get::<_, f64>(3)?,
-                            ))
-                        },
-                    )
+                    .query_map(params![subject_c, predicate_c, memory_id, nfid], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, f64>(3)?,
+                        ))
+                    })
                     .map_err(rusqlite_to_eng_error)?
                     .collect::<std::result::Result<Vec<_>, _>>()
                     .map_err(rusqlite_to_eng_error)?;
