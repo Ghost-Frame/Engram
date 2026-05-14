@@ -7,7 +7,7 @@ analysis, and scheduled consolidation jobs that run against the `memories` table
 
 | Type | Purpose |
 |------|---------|
-| `IntelligenceTier` | `Auto / Llm / Rules / Template` -- selects processing path via `ENGRAM_INTELLIGENCE_TIER` env var |
+| `IntelligenceTier` | `Auto / Llm / Rules / Template` -- selects processing path via `KLEOS_INTELLIGENCE_TIER` env var (legacy `ENGRAM_INTELLIGENCE_TIER` accepted as fallback) |
 | `DecompositionResult` / `DecompositionWithTier` | Output of fact decomposition; carries which tier ran |
 | `FactStoreMeta` | Caller-supplied context for routing a fact into the right memory slot |
 | `ValenceResult` / `EmotionMatch` | Emotional valence + arousal scores from lexicon analysis |

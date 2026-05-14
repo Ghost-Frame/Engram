@@ -11,23 +11,337 @@ use crate::{EngError, Result};
 use rusqlite::{params, OptionalExtension};
 use tracing::{info, warn};
 
+/// Convert a rusqlite error into the crate's canonical error type.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-#[tracing::instrument(skip(_db))]
-pub async fn detect_patterns(_db: &Database) -> Result<Vec<TemporalPattern>> {
-    Ok(Vec::new())
+// ============================================================================
+// PATTERN DETECTION CONSTANTS
+// ============================================================================
+
+/// Maximum number of memories scanned per `detect_patterns` call, to bound
+/// the dreamer hot path.
+const DETECT_SCAN_LIMIT: i64 = 5_000;
+
+/// Minimum number of memories in a category before pattern detection runs.
+const MIN_SAMPLE_SIZE: usize = 5;
+
+/// Maximum number of memory ids stored per pattern.
+const MAX_MEMORY_IDS: usize = 50;
+
+/// Confidence threshold: `stddev / mean` must be below this value to emit a
+/// pattern. Values at or above this threshold are filtered as noise.
+const STDDEV_RATIO_THRESHOLD: f64 = 0.3;
+
+/// Tolerance window (in seconds) around the daily bucket centre (86 400 s).
+const DAILY_TOLERANCE_SECS: f64 = 7_200.0;
+
+/// Tolerance window (in seconds) around the weekly bucket centre (604 800 s).
+const WEEKLY_TOLERANCE_SECS: f64 = 86_400.0;
+
+/// Tolerance window (in seconds) around the monthly bucket centre (2 592 000 s).
+const MONTHLY_TOLERANCE_SECS: f64 = 432_000.0;
+
+// ============================================================================
+// TEMPORAL PATTERN DETECTION
+// ============================================================================
+
+/// Detect recurring temporal patterns across all non-forgotten memories.
+///
+/// Algorithm (category-grouped inter-arrival stddev):
+/// 1. Read `created_at` timestamps + ids for up to `DETECT_SCAN_LIMIT`
+///    non-forgotten memories, grouped by `category`.
+/// 2. For each category with >= `MIN_SAMPLE_SIZE` memories, sort timestamps,
+///    compute inter-arrival deltas in seconds, then mean and stddev.
+/// 3. If `stddev / mean < STDDEV_RATIO_THRESHOLD` and the mean falls within a
+///    recognisable bucket (daily / weekly / monthly), emit one `TemporalPattern`.
+/// 4. Each emitted pattern is persisted via `store_pattern` before returning,
+///    so the dreamer's call materialises rows in `temporal_patterns`.
+///
+/// Returns only PRECISE patterns (high confidence) -- noisy categories are
+/// silently skipped to avoid hallucinated recurrence claims.
+#[tracing::instrument(skip(db))]
+pub async fn detect_patterns(db: &Database) -> Result<Vec<TemporalPattern>> {
+    // --- 1. Load timestamps grouped by category ---
+    let rows: Vec<(i64, String, String)> = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, category, created_at \
+                     FROM memories \
+                     WHERE is_forgotten = 0 \
+                     ORDER BY category, created_at \
+                     LIMIT ?1",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            let iter = stmt
+                .query_map(params![DETECT_SCAN_LIMIT], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(rusqlite_to_eng_error)?;
+
+            iter.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+
+    // --- 2. Group by category ---
+    use std::collections::HashMap;
+    let mut by_category: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
+    for (id, category, created_at_str) in rows {
+        let ts = parse_sqlite_timestamp(&created_at_str);
+        by_category.entry(category).or_default().push((id, ts));
+    }
+
+    // --- 3. Analyse each category ---
+    let mut patterns: Vec<TemporalPattern> = Vec::new();
+
+    for (category, mut entries) in by_category {
+        if entries.len() < MIN_SAMPLE_SIZE {
+            continue;
+        }
+
+        // Sort by timestamp (should already be ordered by the query, but guarantee it)
+        entries.sort_by_key(|&(_, ts)| ts);
+
+        let ids: Vec<i64> = entries.iter().map(|(id, _)| *id).collect();
+        let timestamps: Vec<i64> = entries.iter().map(|(_, ts)| *ts).collect();
+
+        // Compute inter-arrival deltas in seconds
+        let deltas: Vec<f64> = timestamps
+            .windows(2)
+            .map(|w| (w[1] - w[0]) as f64)
+            .filter(|&d| d >= 0.0)
+            .collect();
+
+        if deltas.is_empty() {
+            continue;
+        }
+
+        let mean = deltas.iter().sum::<f64>() / deltas.len() as f64;
+        if mean <= 0.0 {
+            // Degenerate: all same timestamp. Division guard.
+            continue;
+        }
+
+        let variance =
+            deltas.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / deltas.len() as f64;
+        let stddev = variance.sqrt();
+        let ratio = stddev / mean;
+
+        if ratio >= STDDEV_RATIO_THRESHOLD {
+            // Too noisy -- skip
+            continue;
+        }
+
+        // Classify into a bucket
+        let (pattern_type, recurrence, bucket_centre) = classify_bucket(mean);
+        let pattern_type = match pattern_type {
+            Some(pt) => pt,
+            None => continue, // Mean doesn't fit a recognised bucket
+        };
+
+        let mean_hours = mean / 3600.0;
+        let confidence = (1.0 - ratio).clamp(0.0, 1.0) as f32;
+
+        let memory_ids: Vec<i64> = ids.into_iter().take(MAX_MEMORY_IDS).collect();
+
+        let description = format!(
+            "Recurring '{}' memories ~every {:.1}h ({})",
+            category,
+            mean_hours,
+            bucket_label(bucket_centre),
+        );
+
+        patterns.push(TemporalPattern {
+            id: None,
+            pattern_type: pattern_type.to_string(),
+            description,
+            memory_ids,
+            confidence,
+            recurrence: Some(recurrence.to_string()),
+            created_at: None,
+        });
+    }
+
+    // --- 4. Persist each pattern ---
+    for pattern in &patterns {
+        if let Err(e) = store_pattern(db, pattern).await {
+            warn!(msg = "temporal_pattern_store_failed", error = %e);
+        }
+    }
+
+    info!(msg = "temporal_patterns_detected", count = patterns.len());
+    Ok(patterns)
 }
 
-#[tracing::instrument(skip(_db))]
-pub async fn list_patterns(_db: &Database) -> Result<Vec<TemporalPattern>> {
-    Ok(Vec::new())
+/// Classify a mean inter-arrival time (in seconds) into a pattern bucket.
+///
+/// Returns `(pattern_type, iso_duration, bucket_centre_secs)` or `None` if
+/// the mean does not fit a recognised bucket.
+fn classify_bucket(mean_secs: f64) -> (Option<&'static str>, &'static str, f64) {
+    const DAILY_CENTRE: f64 = 86_400.0;
+    const WEEKLY_CENTRE: f64 = 604_800.0;
+    const MONTHLY_CENTRE: f64 = 2_592_000.0;
+
+    if (mean_secs - DAILY_CENTRE).abs() <= DAILY_TOLERANCE_SECS {
+        (Some("daily"), "P1D", DAILY_CENTRE)
+    } else if (mean_secs - WEEKLY_CENTRE).abs() <= WEEKLY_TOLERANCE_SECS {
+        (Some("weekly"), "P1W", WEEKLY_CENTRE)
+    } else if (mean_secs - MONTHLY_CENTRE).abs() <= MONTHLY_TOLERANCE_SECS {
+        (Some("monthly"), "P30D", MONTHLY_CENTRE)
+    } else {
+        (None, "", 0.0)
+    }
 }
 
-#[tracing::instrument(skip(_db, _pattern))]
-pub async fn store_pattern(_db: &Database, _pattern: &TemporalPattern) -> Result<()> {
-    Ok(())
+/// Return a human-readable label for a bucket identified by its centre in seconds.
+fn bucket_label(centre_secs: f64) -> &'static str {
+    match centre_secs as i64 {
+        86_400 => "daily",
+        604_800 => "weekly",
+        2_592_000 => "monthly",
+        _ => "interval",
+    }
+}
+
+/// Parse an SQLite datetime string ("YYYY-MM-DD HH:MM:SS" or ISO 8601 variants)
+/// into a Unix timestamp in seconds. Returns 0 on parse failure so entries
+/// sort to the epoch rather than panicking.
+fn parse_sqlite_timestamp(s: &str) -> i64 {
+    // Try full datetime formats first.
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return ndt.and_utc().timestamp();
+    }
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.fZ") {
+        return ndt.and_utc().timestamp();
+    }
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%SZ") {
+        return ndt.and_utc().timestamp();
+    }
+    // Fall back to date-only (midnight UTC).
+    if let Some(ndt) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+    {
+        return ndt.and_utc().timestamp();
+    }
+    0
+}
+
+// ============================================================================
+// PERSISTENCE
+// ============================================================================
+
+/// Persist a `TemporalPattern` to the `temporal_patterns` table.
+///
+/// Uses `?N` parameter binding throughout -- no string interpolation.
+/// `user_id` is intentionally omitted: the tenant DB is already scoped, and
+/// the column is dropped in migration v25 (following commit a798947).
+/// `memory_ids` is serialised to a JSON array for the TEXT column.
+#[tracing::instrument(skip(db, pattern))]
+pub async fn store_pattern(db: &Database, pattern: &TemporalPattern) -> Result<()> {
+    let pattern_type = pattern.pattern_type.clone();
+    let description = pattern.description.clone();
+    let memory_ids_json = serde_json::to_string(&pattern.memory_ids)
+        .map_err(|e| EngError::DatabaseMessage(format!("failed to serialise memory_ids: {e}")))?;
+    let confidence = f64::from(pattern.confidence);
+    let recurrence = pattern.recurrence.clone();
+
+    db.write(move |conn| {
+        conn.execute(
+            "INSERT INTO temporal_patterns \
+             (pattern_type, description, memory_ids, confidence, recurrence) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                pattern_type,
+                description,
+                memory_ids_json,
+                confidence,
+                recurrence,
+            ],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await
+}
+
+/// List persisted temporal patterns, newest first, up to `limit` rows.
+///
+/// `memory_ids` JSON text is deserialised back into `Vec<i64>`; a NULL or
+/// malformed column yields an empty vec rather than an error.
+#[tracing::instrument(skip(db))]
+pub async fn list_patterns(db: &Database, limit: i64) -> Result<Vec<TemporalPattern>> {
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, pattern_type, description, memory_ids, confidence, \
+                        recurrence, created_at \
+                 FROM temporal_patterns \
+                 ORDER BY created_at DESC \
+                 LIMIT ?1",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        let iter = stmt
+            .query_map(params![limit], |row| {
+                let id: i64 = row.get(0)?;
+                let pattern_type: String = row.get(1)?;
+                let description: String = row.get(2)?;
+                let memory_ids_json: Option<String> = row.get(3)?;
+                let confidence: f64 = row.get(4)?;
+                let recurrence: Option<String> = row.get(5)?;
+                let created_at: Option<String> = row.get(6)?;
+                Ok((
+                    id,
+                    pattern_type,
+                    description,
+                    memory_ids_json,
+                    confidence,
+                    recurrence,
+                    created_at,
+                ))
+            })
+            .map_err(rusqlite_to_eng_error)?;
+
+        let mut patterns = Vec::new();
+        for row in iter {
+            let (
+                id,
+                pattern_type,
+                description,
+                memory_ids_json,
+                confidence,
+                recurrence,
+                created_at,
+            ) = row.map_err(rusqlite_to_eng_error)?;
+
+            // Deserialise memory_ids JSON; treat NULL or bad JSON as empty vec.
+            let memory_ids: Vec<i64> = memory_ids_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+
+            patterns.push(TemporalPattern {
+                id: Some(id),
+                pattern_type,
+                description,
+                memory_ids,
+                confidence: confidence as f32,
+                recurrence,
+                created_at,
+            });
+        }
+        Ok(patterns)
+    })
+    .await
 }
 
 // ============================================================================
@@ -261,6 +575,7 @@ pub async fn detect_fact_contradictions(
     let verb_lower_owned = verb.to_lowercase();
     let is_state_verb = STATE_VERBS.contains(&verb_lower_owned.trim());
 
+    /// Ephemeral row type for candidate contradicting facts returned from the DB query.
     struct CandidateRow {
         old_id: i64,
         old_memory_id: i64,
@@ -627,6 +942,7 @@ pub async fn time_travel(
 mod tests {
     use super::*;
 
+    /// Verify that `parse_word_number` handles English words and numeric strings.
     #[test]
     fn test_parse_word_number() {
         assert_eq!(parse_word_number("one"), 1);
@@ -640,42 +956,49 @@ mod tests {
         assert_eq!(parse_word_number("xyz"), 0);
     }
 
+    /// "today" resolves to the base date.
     #[test]
     fn test_resolve_today() {
         let r = resolve_relative_date("today", "2024-06-15T12:00:00.000Z");
         assert_eq!(r, Some("2024-06-15".to_string()));
     }
 
+    /// "yesterday" resolves to base minus one day.
     #[test]
     fn test_resolve_yesterday() {
         let r = resolve_relative_date("yesterday", "2024-06-15T12:00:00.000Z");
         assert_eq!(r, Some("2024-06-14".to_string()));
     }
 
+    /// "N days ago" resolves to base minus N days.
     #[test]
     fn test_resolve_days_ago() {
         let r = resolve_relative_date("3 days ago", "2024-06-15T12:00:00.000Z");
         assert_eq!(r, Some("2024-06-12".to_string()));
     }
 
+    /// English word for N ("two days ago") resolves identically to the numeric form.
     #[test]
     fn test_resolve_word_days_ago() {
         let r = resolve_relative_date("two days ago", "2024-06-15T12:00:00.000Z");
         assert_eq!(r, Some("2024-06-13".to_string()));
     }
 
+    /// "a week ago" resolves to base minus 7 days.
     #[test]
     fn test_resolve_a_week_ago() {
         let r = resolve_relative_date("a week ago", "2024-06-15T12:00:00.000Z");
         assert_eq!(r, Some("2024-06-08".to_string()));
     }
 
+    /// "last week" resolves to base minus 7 days.
     #[test]
     fn test_resolve_last_week() {
         let r = resolve_relative_date("last week", "2024-06-15T12:00:00.000Z");
         assert_eq!(r, Some("2024-06-08".to_string()));
     }
 
+    /// "last monday" resolves correctly relative to a known weekday (Saturday base).
     #[test]
     fn test_resolve_last_monday() {
         // 2024-06-15 is a Saturday
@@ -683,33 +1006,198 @@ mod tests {
         assert_eq!(r, Some("2024-06-10".to_string()));
     }
 
+    /// "this morning" resolves to the same base date.
     #[test]
     fn test_resolve_this_morning() {
         let r = resolve_relative_date("this morning", "2024-06-15T12:00:00.000Z");
         assert_eq!(r, Some("2024-06-15".to_string()));
     }
 
+    /// An unparseable base date returns `None` without panicking.
     #[test]
     fn test_resolve_invalid_base() {
         let r = resolve_relative_date("yesterday", "not-a-date");
         assert_eq!(r, None);
     }
 
+    /// An unrecognised relative reference returns `None`.
     #[test]
     fn test_resolve_unknown_reference() {
         let r = resolve_relative_date("next century", "2024-06-15T12:00:00.000Z");
         assert_eq!(r, None);
     }
 
+    /// A date-only base string (no time component) parses correctly.
     #[test]
     fn test_resolve_date_only_base() {
         let r = resolve_relative_date("yesterday", "2024-06-15");
         assert_eq!(r, Some("2024-06-14".to_string()));
     }
 
+    /// An SQLite-format datetime base string ("YYYY-MM-DD HH:MM:SS") parses correctly.
     #[test]
     fn test_resolve_sqlite_datetime_base() {
         let r = resolve_relative_date("yesterday", "2024-06-15 12:00:00");
         assert_eq!(r, Some("2024-06-14".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // detect_patterns / store_pattern / list_patterns integration tests
+    // -----------------------------------------------------------------------
+
+    /// Build a SQLite datetime string offset from a fixed base by `hours` hours.
+    /// Base is 2026-01-01 00:00:00.
+    fn ts(hours: i64) -> String {
+        let base =
+            chrono::NaiveDateTime::parse_from_str("2026-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
+                .unwrap();
+        let t = base + chrono::Duration::hours(hours);
+        t.format("%Y-%m-%d %H:%M:%S").to_string()
+    }
+
+    /// Insert a single memory row with the given category and created_at.
+    async fn insert_memory(db: &crate::db::Database, category: &str, created_at: &str) {
+        let cat = category.to_string();
+        let cat2 = cat.clone();
+        let ts = created_at.to_string();
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, created_at, is_forgotten) \
+                 VALUES (?1, ?2, ?3, 0)",
+                rusqlite::params![format!("Memory at {} in {}", ts, cat2), cat2, ts,],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    /// 20 memories spaced exactly 24 h apart must produce a daily pattern.
+    #[tokio::test]
+    async fn test_detect_daily_pattern() {
+        let db = crate::db::Database::open_tenant_memory().await.unwrap();
+
+        // Insert 20 memories spaced 24 h apart
+        for i in 0..20i64 {
+            insert_memory(&db, "morning_routine", &ts(i * 24)).await;
+        }
+
+        let patterns = detect_patterns(&db).await.unwrap();
+
+        let daily: Vec<_> = patterns
+            .iter()
+            .filter(|p| p.pattern_type == "daily")
+            .collect();
+
+        assert!(
+            !daily.is_empty(),
+            "expected at least one daily pattern, got none"
+        );
+        let p = &daily[0];
+        assert!(
+            p.memory_ids.len() >= 5,
+            "expected memory_ids.len >= 5, got {}",
+            p.memory_ids.len()
+        );
+        assert!(
+            p.confidence > 0.5,
+            "expected confidence > 0.5, got {}",
+            p.confidence
+        );
+        assert_eq!(p.recurrence.as_deref(), Some("P1D"));
+    }
+
+    /// 3 memories at random (far-apart) intervals must produce no pattern.
+    #[tokio::test]
+    async fn test_no_pattern_for_sparse_category() {
+        let db = crate::db::Database::open_tenant_memory().await.unwrap();
+
+        // 3 memories -- below MIN_SAMPLE_SIZE=5
+        insert_memory(&db, "ad_hoc", &ts(0)).await;
+        insert_memory(&db, "ad_hoc", &ts(100)).await;
+        insert_memory(&db, "ad_hoc", &ts(5000)).await;
+
+        let patterns = detect_patterns(&db).await.unwrap();
+        let for_cat: Vec<_> = patterns
+            .iter()
+            .filter(|p| p.description.contains("ad_hoc"))
+            .collect();
+        assert!(
+            for_cat.is_empty(),
+            "expected no pattern for sparse ad_hoc category, got {:?}",
+            for_cat
+        );
+    }
+
+    /// `store_pattern` must INSERT a row; `list_patterns` must return it.
+    #[tokio::test]
+    async fn test_store_and_list_round_trip() {
+        let db = crate::db::Database::open_tenant_memory().await.unwrap();
+
+        let pattern = TemporalPattern {
+            id: None,
+            pattern_type: "daily".to_string(),
+            description: "Test pattern".to_string(),
+            memory_ids: vec![1, 2, 3],
+            confidence: 0.85,
+            recurrence: Some("P1D".to_string()),
+            created_at: None,
+        };
+
+        store_pattern(&db, &pattern).await.unwrap();
+
+        let listed = list_patterns(&db, 10).await.unwrap();
+        assert_eq!(listed.len(), 1, "expected exactly 1 pattern");
+        let got = &listed[0];
+        assert_eq!(got.pattern_type, "daily");
+        assert_eq!(got.memory_ids, vec![1i64, 2, 3]);
+        assert_eq!(got.recurrence.as_deref(), Some("P1D"));
+        assert!(got.id.is_some(), "persisted pattern must have an id");
+        assert!((got.confidence - 0.85).abs() < 0.001);
+    }
+
+    /// `list_patterns` with limit=1 must return only 1 row when 2 exist.
+    #[tokio::test]
+    async fn test_list_patterns_respects_limit() {
+        let db = crate::db::Database::open_tenant_memory().await.unwrap();
+
+        for i in 0..2i64 {
+            let p = TemporalPattern {
+                id: None,
+                pattern_type: "weekly".to_string(),
+                description: format!("Pattern {i}"),
+                memory_ids: vec![i],
+                confidence: 0.9,
+                recurrence: Some("P1W".to_string()),
+                created_at: None,
+            };
+            store_pattern(&db, &p).await.unwrap();
+        }
+
+        let listed = list_patterns(&db, 1).await.unwrap();
+        assert_eq!(listed.len(), 1, "limit=1 must return exactly 1 row");
+    }
+
+    /// `detect_patterns` followed by `list_patterns` must show persisted rows.
+    #[tokio::test]
+    async fn test_detect_then_list_persists() {
+        let db = crate::db::Database::open_tenant_memory().await.unwrap();
+
+        for i in 0..20i64 {
+            insert_memory(&db, "daily_standup", &ts(i * 24)).await;
+        }
+
+        let detected = detect_patterns(&db).await.unwrap();
+        assert!(
+            !detected.is_empty(),
+            "expected detect to find at least one pattern"
+        );
+
+        let listed = list_patterns(&db, 50).await.unwrap();
+        assert!(
+            !listed.is_empty(),
+            "expected list to return the persisted patterns"
+        );
     }
 }
