@@ -12,6 +12,7 @@ use rusqlite::params;
 use std::collections::HashMap;
 use tracing::info;
 
+/// Convert a rusqlite error into the crate's canonical error type.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
@@ -83,9 +84,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(params![pattern_query], |row| {
-                    row.get::<_, String>(0)
-                })
+                .query_map(params![pattern_query], |row| row.get::<_, String>(0))
                 .map_err(rusqlite_to_eng_error)?;
             let descs: Vec<String> = rows
                 .collect::<rusqlite::Result<Vec<_>>>()
@@ -386,6 +385,9 @@ pub async fn detect_sequence_patterns(
     Ok(out)
 }
 
+/// Parse an SQLite datetime string ("YYYY-MM-DD HH:MM:SS" or RFC3339
+/// variants) into a UTC `DateTime`. Returns `None` on any parse failure
+/// so callers can skip malformed rows rather than abort the sequence.
 fn parse_sql_timestamp(ts: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
         return Some(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
@@ -429,11 +431,15 @@ async fn predict_project(db: &Database, user_id: i64) -> Result<Option<Predicted
     .await
 }
 
+/// Unit tests for sequence-pattern detection, time-context formatting,
+/// and the supporting timestamp parser.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::memory::types::StoreRequest;
 
+    /// Test helper: build a `StoreRequest` with sensible defaults for the
+    /// fields not exercised by predictive-pattern tests.
     fn req(content: &str, category: &str, user_id: i64) -> StoreRequest {
         StoreRequest {
             content: content.to_string(),
@@ -451,6 +457,8 @@ mod tests {
         }
     }
 
+    /// Test helper: insert a memory through the canonical `memory::store`
+    /// path and return its new id.
     async fn seed(db: &Database, content: &str, category: &str, user_id: i64) -> i64 {
         crate::memory::store(db, req(content, category, user_id))
             .await
@@ -458,6 +466,8 @@ mod tests {
             .id
     }
 
+    /// Test helper: override the `created_at` of an existing memory so the
+    /// sequence detector sees a deterministic time gap between rows.
     async fn set_created(db: &Database, mid: i64, created_at: &str) {
         let owned = created_at.to_string();
         db.write(move |conn| {
@@ -472,6 +482,8 @@ mod tests {
         .expect("set created_at");
     }
 
+    /// With fewer than two memories there are no bigrams to mine, so
+    /// detect_sequence_patterns must return an empty vec.
     #[tokio::test]
     async fn sequences_empty_below_two_memories() {
         let db = Database::connect_memory().await.expect("in-mem db");
@@ -482,6 +494,8 @@ mod tests {
         assert!(out.is_empty());
     }
 
+    /// A non-positive window-minute argument must yield no sequences --
+    /// gates the detector against pathological caller input.
     #[tokio::test]
     async fn sequences_empty_when_window_non_positive() {
         let db = Database::connect_memory().await.expect("in-mem db");
@@ -495,6 +509,8 @@ mod tests {
         assert!(out.is_empty());
     }
 
+    /// When every consecutive gap exceeds the window, no bigram should
+    /// be emitted; verifies the window-boundary check.
     #[tokio::test]
     async fn sequences_empty_when_all_gaps_exceed_window() {
         let db = Database::connect_memory().await.expect("in-mem db");
@@ -506,6 +522,9 @@ mod tests {
         assert!(out.is_empty());
     }
 
+    /// The detector emits bigrams that recur within the window with
+    /// frequency above the minimum support threshold; verifies the
+    /// positive-path mining.
     #[tokio::test]
     async fn sequences_mines_repeated_bigrams() {
         let db = Database::connect_memory().await.expect("in-mem db");
@@ -589,6 +608,8 @@ mod tests {
     }
 
     #[test]
+    /// Sanity-check the human-readable formatting of the time-context
+    /// label that downstream consumers display alongside a sequence.
     fn test_time_context_format() {
         let day_names = [
             "Sunday",
