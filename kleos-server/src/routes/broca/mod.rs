@@ -99,8 +99,17 @@ async fn list_actions_handler(
     let action = params.action.as_deref();
     let since = params.since.as_deref();
 
-    let entries =
-        query_actions(&db, agent, service, action, since, limit, offset, auth.user_id).await?;
+    let entries = query_actions(
+        &db,
+        agent,
+        service,
+        action,
+        since,
+        limit,
+        offset,
+        auth.user_id,
+    )
+    .await?;
 
     Ok(Json(json!({ "actions": entries, "count": entries.len() })))
 }

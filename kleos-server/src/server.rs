@@ -197,8 +197,7 @@ pub fn build_router(state: AppState) -> Router {
     // external proxies discover tool definitions at startup. The broca
     // ingest endpoint is also public: it receives Axon webhooks and is
     // protected at the network layer rather than with bearer tokens.
-    let public_routes = routes::mcp_schema::public_router()
-        .merge(routes::broca::ingest_router());
+    let public_routes = routes::mcp_schema::public_router().merge(routes::broca::ingest_router());
 
     Router::new()
         .merge(api_routes)
