@@ -1427,7 +1427,7 @@ mod tests {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 "claude-code",
-                "engram-rust",
+                "kleos",
                 "Phase 3.4",
                 "active",
                 None::<String>,
@@ -1452,7 +1452,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(agent, "claude-code");
-        assert_eq!(project, "engram-rust");
+        assert_eq!(project, "kleos");
         assert_eq!(uid, 4);
 
         let update_count: i64 = conn
@@ -2007,7 +2007,7 @@ mod tests {
                 "claude-code",
                 "cred",
                 "resolve",
-                r#"{"svc":"engram-rust","key":"claude-code-wsl"}"#,
+                r#"{"svc":"kleos","key":"claude-code"}"#,
                 None::<String>,
                 None::<i64>,
                 4_i64,

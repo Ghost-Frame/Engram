@@ -5,7 +5,7 @@
 //!    future `xyz__brainstorming` both need to resolve when a caller asks
 //!    for "brainstorming". Each gets the bare-name alias inserted; the
 //!    search layer ranks among them by trust_score.
-//! 2. **User shortcuts.** Master can hand-add `bs` -> a brainstorming
+//! 2. **User shortcuts.** A user can hand-add `bs` -> a brainstorming
 //!    skill via `kleos-cli skill alias add ...`.
 //!
 //! The table is intentionally simple: alias TEXT, skill_id FK, confidence,
@@ -264,7 +264,7 @@ pub fn auto_aliases_for(plugin: Option<&str>, original_name: &str) -> Vec<(Strin
     push(snake, 0.85);
     push(kebab, 0.85);
     // Plugin-qualified short form (`superpowers/brainstorming`) for the
-    // collision case where Master wants to be explicit without typing
+    // collision case where the caller wants to be explicit without typing
     // the full snake-cased namespaced name.
     if let Some(plug) = plugin {
         let p = plug.to_lowercase();

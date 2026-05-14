@@ -382,8 +382,8 @@ enum CredCommands {
     /// history, agent context capture, or `ps` output.
     ///
     /// Example:
-    ///   kleos-cli cred exec kleos claude-code-wsl --env EIDOLON_KEY -- \
-    ///     curl -H "Authorization: Bearer $EIDOLON_KEY" http://...
+    ///   kleos-cli cred exec kleos my-agent --env API_KEY -- \
+    ///     curl -H "Authorization: Bearer $API_KEY" http://...
     Exec {
         /// Category (service namespace)
         category: String,

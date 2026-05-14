@@ -142,8 +142,8 @@ enum Commands {
     /// reaches a captured tool result. This is the agent-safe way to use creds.
     ///
     /// Examples:
-    ///   cred exec engram-rust claude-code-wsl --env EIDOLON_KEY -- \
-    ///       curl -H "Authorization: Bearer $EIDOLON_KEY" http://host/x
+    ///   cred exec kleos my-agent --env API_KEY -- \
+    ///       curl -H "Authorization: Bearer $API_KEY" http://host/x
     ///   cred exec ssh some-host --field private_key --stdin -- ssh-add -
     Exec {
         /// Service name
