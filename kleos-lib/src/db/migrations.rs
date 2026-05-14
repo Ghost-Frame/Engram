@@ -522,6 +522,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: true,
     },
+    Migration {
+        version: 59,
+        description: "broca_narrative_columns",
+        up: run_migration_broca_narrative_columns,
+        down: None,
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -644,6 +651,8 @@ const MIGRATION_USER_ACTIVE_AND_INVITES: i64 = 56;
 const MIGRATION_SKILL_DISPATCH_CONFIGS: i64 = 57;
 /// Version number for the api_key hash_version idempotent fixup migration.
 const MIGRATION_API_KEY_HASH_VERSION_FIXUP: i64 = 58;
+/// Version number for adding narrative and axon_event_id columns to broca_actions.
+const MIGRATION_BROCA_NARRATIVE_COLUMNS: i64 = 59;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1107,6 +1116,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_API_KEY_HASH_VERSION_FIXUP,
             "api_key_hash_version_fixup",
+        )?;
+    }
+
+    if current_version < MIGRATION_BROCA_NARRATIVE_COLUMNS {
+        info!("Running migration 59: broca_narrative_columns");
+        run_migration_broca_narrative_columns(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_BROCA_NARRATIVE_COLUMNS,
+            "broca_narrative_columns",
         )?;
     }
 
@@ -3911,6 +3930,25 @@ fn run_migration_api_key_hash_version_fixup(conn: &rusqlite::Connection) -> Resu
         "hash_version",
         "INTEGER NOT NULL DEFAULT 1",
     )
+}
+
+// ---------------------------------------------------------------------------
+// Migration 59: add narrative and axon_event_id to broca_actions
+// ---------------------------------------------------------------------------
+
+/// Migration 59: add `narrative TEXT` and `axon_event_id INTEGER` to the
+/// `broca_actions` table for existing databases.
+///
+/// Fresh databases created after this schema update already have both columns
+/// (they are present in `schema_sql.rs`). The tenant shard also has them from
+/// the v6 DROP/CREATE migration. This migration brings existing monolith
+/// databases into parity without touching fresh installs (the
+/// `add_column_if_not_exists` helper is a no-op when the column already
+/// exists).
+fn run_migration_broca_narrative_columns(conn: &rusqlite::Connection) -> Result<()> {
+    add_column_if_not_exists(conn, "broca_actions", "narrative", "TEXT")?;
+    add_column_if_not_exists(conn, "broca_actions", "axon_event_id", "INTEGER")?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

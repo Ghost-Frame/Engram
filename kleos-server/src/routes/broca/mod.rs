@@ -1,19 +1,28 @@
-use axum::extract::{Path, Query};
+//! Broca routes: action logging, feed, stats, and unauthenticated Axon ingest.
+//!
+//! The authenticated handlers (`/broca/actions`, `/broca/feed`, `/broca/stats`)
+//! are mounted inside the auth middleware stack via [`router`]. The webhook
+//! receiver (`/broca/ingest`) is mounted outside auth via [`ingest_router`]
+//! and uses the system tenant shard (user_id=1) for storage.
+
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::extractors::{Auth, ResolvedDb};
+use crate::extractors::{resolve_db_for_user, Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::broca::{
-    get_action, get_stats as get_broca_stats, log_action, query_actions, LogActionRequest,
+    get_action, get_stats as get_broca_stats, log_action, narrate_from_template, query_actions,
+    LogActionRequest,
 };
 
 mod types;
-use types::{LogActionBody, QueryActionsParams};
+use types::{IngestBody, LogActionBody, QueryActionsParams};
 
+/// Authenticated router: mounts broca routes inside the auth middleware stack.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -25,6 +34,19 @@ pub fn router() -> Router<AppState> {
         .route("/broca/stats", get(get_stats))
 }
 
+/// Unauthenticated router: mounts `/broca/ingest` outside the auth middleware.
+///
+/// Mount this via `public_routes` in `server.rs` so the route does not pass
+/// through `auth_middleware`. Network-layer controls (firewall, reverse-proxy
+/// allowlist) are the recommended protection surface.
+pub fn ingest_router() -> Router<AppState> {
+    Router::new().route("/broca/ingest", post(ingest_handler))
+}
+
+/// Handler for `POST /broca/actions`. Logs an agent action for the
+/// authenticated user. The `narrative` field (or `summary`/`detail` aliases)
+/// is stored verbatim; when absent, `log_action` auto-generates one via the
+/// template narrator.
 async fn log_action_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -57,6 +79,8 @@ async fn log_action_handler(
     Ok((StatusCode::CREATED, Json(json!(entry))))
 }
 
+/// Handler for `GET /broca/actions`. Lists broca actions for the authenticated
+/// user with optional filtering by agent, service, and action type.
 async fn list_actions_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -80,6 +104,7 @@ async fn list_actions_handler(
     Ok(Json(json!({ "actions": entries, "count": entries.len() })))
 }
 
+/// Handler for `GET /broca/actions/{id}`. Fetches a single broca action by id.
 async fn get_action_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -89,6 +114,9 @@ async fn get_action_handler(
     Ok(Json(json!(entry)))
 }
 
+/// Handler for `GET /broca/feed`. Returns a chronological action feed for the
+/// authenticated user, optionally filtered by agent. Intended for dashboard
+/// consumption where service/action filtering is not needed.
 async fn get_feed_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -107,7 +135,65 @@ async fn get_feed_handler(
     Ok(Json(json!({ "items": entries, "count": entries.len() })))
 }
 
+/// Handler for `GET /broca/stats`. Returns aggregate broca statistics
+/// (total actions, distinct agents, distinct services) for the authenticated
+/// user's tenant shard.
 async fn get_stats(Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
     let stats = get_broca_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
+}
+
+/// Handler for `POST /broca/ingest`. Intentionally unauthenticated; receives
+/// webhook events from Axon and persists them as broca actions in the system
+/// tenant shard (user_id=1) with the matching template-rendered narrative.
+///
+/// `source` and `type` are required. The upstream Axon event id is stored in
+/// `axon_event_id` for correlation. Protect this endpoint at the network layer
+/// (firewall, reverse-proxy allowlist) rather than with bearer tokens.
+async fn ingest_handler(
+    State(state): State<AppState>,
+    Json(body): Json<IngestBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.source.is_empty() {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(
+            "source is required".into(),
+        )));
+    }
+    if body.event_type.is_empty() {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(
+            "type is required".into(),
+        )));
+    }
+
+    // System user shard: webhook ingestion is not tied to a specific tenant.
+    // user_id=1 is the operator/system tenant.
+    let db = resolve_db_for_user(&state, 1).await?;
+
+    let payload = body
+        .payload
+        .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+
+    // Build the narrative before moving payload into the log request so we
+    // can borrow it for template rendering without cloning the entire value.
+    let narrative = narrate_from_template(&body.event_type, &payload);
+
+    // Use the channel as the service label when present; fall back to source.
+    let service = body.channel.unwrap_or_else(|| body.source.clone());
+
+    let req = LogActionRequest {
+        agent: body.source.clone(),
+        service: Some(service),
+        action: body.event_type,
+        narrative,
+        payload: Some(payload),
+        axon_event_id: body.id,
+        user_id: Some(1),
+    };
+
+    let entry = log_action(&db, req).await?;
+    Ok(Json(json!({
+        "ok": true,
+        "id": entry.id,
+        "axon_event_id": entry.axon_event_id,
+    })))
 }
