@@ -17,7 +17,9 @@ pub enum ReflectionPeriod {
     Month,
 }
 
+/// Format `ReflectionPeriod` as the lowercase label used in API responses.
 impl std::fmt::Display for ReflectionPeriod {
+    /// Write the lowercase period label ("day", "week", or "month").
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Day => write!(f, "day"),
@@ -50,6 +52,7 @@ pub struct DecompositionResult {
     pub skip: bool,
 }
 
+/// Which decomposition tier produced a result: LLM, rule-based, or template.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DecompositionTier {
@@ -60,7 +63,9 @@ pub enum DecompositionTier {
     Tier3Template,
 }
 
+/// Format `DecompositionTier` as the canonical string label used in API responses.
 impl std::fmt::Display for DecompositionTier {
+    /// Write the tier label ("llm", "tier2-rules", or "tier3-template").
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Llm => write!(f, "llm"),
@@ -70,6 +75,7 @@ impl std::fmt::Display for DecompositionTier {
     }
 }
 
+/// Pairs a `DecompositionResult` with the tier that produced it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecompositionWithTier {
     pub result: DecompositionResult,
@@ -105,6 +111,7 @@ pub struct ValenceResult {
     pub all_emotions: Vec<EmotionMatch>,
 }
 
+/// A single emotion label with its valence and arousal scores.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmotionMatch {
     pub emotion: String,
@@ -112,6 +119,7 @@ pub struct EmotionMatch {
     pub arousal: f64,
 }
 
+/// A memory record augmented with its emotional valence, arousal, and dominant emotion label.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmotionMemory {
     pub id: i64,
@@ -124,12 +132,14 @@ pub struct EmotionMemory {
     pub created_at: String,
 }
 
+/// Aggregate emotional profile for a tenant: per-emotion stats and overall averages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmotionalProfile {
     pub emotions: Vec<EmotionStat>,
     pub overall: OverallEmotionStats,
 }
 
+/// Per-emotion aggregate: count and average valence/arousal across all matching memories.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmotionStat {
     pub dominant_emotion: String,
@@ -138,6 +148,7 @@ pub struct EmotionStat {
     pub avg_arousal: f64,
 }
 
+/// Overall emotional statistics: averages and positive/negative/neutral polarity counts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverallEmotionStats {
     pub avg_valence: f64,
@@ -160,12 +171,14 @@ pub struct PredictiveContext {
     pub suggested_actions: Vec<String>,
 }
 
+/// A project predicted to be relevant in the current temporal context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PredictedProject {
     pub id: i64,
     pub name: String,
 }
 
+/// A memory surfaced proactively because it is predicted to be relevant now.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProactiveMemory {
     pub id: i64,
@@ -202,6 +215,7 @@ pub struct ReconsolidationResult {
     pub reason: String,
 }
 
+/// The action taken during a reconsolidation sweep for a single memory.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ReconsolidationAction {
@@ -223,6 +237,7 @@ pub struct GrowthReflectRequest {
     pub prompt_override: Option<String>,
 }
 
+/// Result of a growth reflection: the generated observation and its storage ids.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrowthReflectResult {
     pub observation: Option<String>,
@@ -251,6 +266,7 @@ pub struct ConsolidationRecord {
     pub summary: String,
 }
 
+/// Summary of a consolidation sweep: how many pairs were examined and merged.
 #[derive(Debug, Clone, Serialize)]
 pub struct SweepResult {
     pub pairs_found: i64,
@@ -272,6 +288,7 @@ pub struct DuplicatePair {
     pub importance_b: i32,
 }
 
+/// Summary of a deduplication run: candidates found, actually merged, and whether it was a dry run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeduplicateResult {
     pub pairs_found: i64,
@@ -283,12 +300,30 @@ pub struct DeduplicateResult {
 // Temporal
 // ---------------------------------------------------------------------------
 
+/// A detected recurring pattern across memory timestamps.
+///
+/// Round-trips the `temporal_patterns` DB table. The `memory_ids` column is
+/// stored as a JSON array in SQLite and deserialized here into a typed Vec.
+/// `user_id` is intentionally absent -- the tenant DB is already scoped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemporalPattern {
-    pub label: String,
-    pub detail: String,
+    /// Row id assigned by the database on INSERT; `None` before persistence.
+    pub id: Option<i64>,
+    /// Recurrence category: "daily" | "weekly" | "monthly" | "burst" | "interval".
+    pub pattern_type: String,
+    /// Human-readable description, e.g. "Recurring 'morning_routine' memories ~every 24.1h".
+    pub description: String,
+    /// Source memory ids that contributed to this pattern (capped at 50).
+    pub memory_ids: Vec<i64>,
+    /// Confidence in [0.0, 1.0]: `1.0 - (stddev / mean)`.
+    pub confidence: f32,
+    /// ISO-8601 duration string ("P1D", "P1W", "P30D"), or `None` if not applicable.
+    pub recurrence: Option<String>,
+    /// Wall-clock timestamp when this row was created; `None` before persistence.
+    pub created_at: Option<String>,
 }
 
+/// A memory returned by a time-travel query (as it existed at or before a given timestamp).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeTravelResult {
     pub id: i64,
@@ -337,7 +372,9 @@ pub struct LlmOptions {
     pub max_tokens: u32,
 }
 
+/// Provide conservative defaults: low temperature for determinism, modest token budget.
 impl Default for LlmOptions {
+    /// Return defaults: temperature 0.3 and max_tokens 1024.
     fn default() -> Self {
         Self {
             temperature: 0.3,
@@ -358,6 +395,7 @@ pub enum TaskStatus {
     Skipped,
 }
 
+/// Report for a single scheduled intelligence task: outcome, duration, and optional output.
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskReport {
     pub name: String,
@@ -369,6 +407,7 @@ pub struct TaskReport {
     pub error: Option<String>,
 }
 
+/// Aggregate report for a full intelligence pipeline run: all task reports and summary counts.
 #[derive(Debug, Clone, Serialize)]
 pub struct PipelineReport {
     pub reports: Vec<TaskReport>,
@@ -393,6 +432,7 @@ pub struct CausalChain {
     pub links: Vec<CausalLink>,
 }
 
+/// A single directed edge in a causal chain: cause memory -> effect memory with a strength score.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CausalLink {
     pub id: i64,
@@ -488,6 +528,7 @@ pub struct FeedbackRequest {
     pub context: Option<String>,
 }
 
+/// Aggregate feedback statistics for a set of memories: counts by rating category.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackStats {
     pub helpful: i64,
@@ -509,13 +550,21 @@ pub enum IntelligenceTier {
     Template,
 }
 
+/// Construct and query `IntelligenceTier` from runtime environment.
 impl IntelligenceTier {
+    /// Read the intelligence-tier environment variable; default to `Auto`.
+    ///
+    /// Checks `KLEOS_INTELLIGENCE_TIER` first. Falls back to the legacy
+    /// `ENGRAM_INTELLIGENCE_TIER` for backwards compatibility with existing
+    /// deployments; this fallback may be removed in a future release.
+    ///
+    /// Accepted values (case-insensitive): `"llm"`, `"rules"`, `"template"`.
+    /// Any other value (including unset) resolves to `Auto`.
     pub fn from_env() -> Self {
-        match std::env::var("ENGRAM_INTELLIGENCE_TIER")
-            .unwrap_or_default()
-            .to_lowercase()
-            .as_str()
-        {
+        let raw = std::env::var("KLEOS_INTELLIGENCE_TIER")
+            .or_else(|_| std::env::var("ENGRAM_INTELLIGENCE_TIER"))
+            .unwrap_or_default();
+        match raw.to_lowercase().as_str() {
             "llm" => Self::Llm,
             "rules" => Self::Rules,
             "template" => Self::Template,

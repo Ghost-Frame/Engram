@@ -8,10 +8,12 @@ use crate::{EngError, Result};
 use chrono::Utc;
 use rusqlite::params;
 
+/// Convert a rusqlite error into the crate's canonical error type.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
+/// Map a role label onto the default scope set granted to a fresh API key for that role.
 fn scopes_for_role(role: &str) -> Vec<crate::auth::Scope> {
     match role {
         "admin" => vec![
@@ -232,6 +234,7 @@ pub async fn get_maintenance(db: &Database) -> Result<MaintenanceStatus> {
     }
 }
 
+/// Toggle the server-wide maintenance flag and record the operator note.
 #[tracing::instrument(skip(db, message))]
 pub async fn set_maintenance(
     db: &Database,
@@ -321,6 +324,7 @@ pub async fn get_usage(db: &Database) -> Result<Vec<UsageRow>> {
     .await
 }
 
+/// List every tenant known to the server with row counts and last-activity timestamps.
 #[tracing::instrument(skip(db))]
 pub async fn get_tenants(db: &Database) -> Result<Vec<TenantRow>> {
     db.read(|conn| {
@@ -404,6 +408,7 @@ pub async fn provision_tenant(
     })
 }
 
+/// Remove a tenant's row and tear down its per-shard database. Returns true if a row was removed.
 #[tracing::instrument(skip(db))]
 pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
     db.write(move |conn| {
@@ -442,6 +447,7 @@ pub async fn checkpoint(db: &Database) -> Result<serde_json::Value> {
     Ok(serde_json::json!({"status": "ok", "mode": "truncate"}))
 }
 
+/// Run an integrity check over the most recent on-disk backup artifact.
 #[tracing::instrument(skip(db))]
 pub async fn verify_backup(db: &Database) -> Result<BackupVerifyResult> {
     let integrity: String = db
@@ -482,6 +488,7 @@ pub async fn get_state(db: &Database, key: &str) -> Result<Option<StateRow>> {
     .await
 }
 
+/// Insert or update a row in the shared key/value state table.
 #[tracing::instrument(skip(db, value), fields(key = %key, value_len = value.len()))]
 pub async fn upsert_state(db: &Database, key: &str, value: &str) -> Result<()> {
     let key_owned = key.to_string();
@@ -498,6 +505,7 @@ pub async fn upsert_state(db: &Database, key: &str, value: &str) -> Result<()> {
     .await
 }
 
+/// Delete a row from the shared key/value state table by key.
 #[tracing::instrument(skip(db), fields(key = %key))]
 pub async fn delete_state(db: &Database, key: &str) -> Result<bool> {
     let key_owned = key.to_string();
@@ -510,6 +518,7 @@ pub async fn delete_state(db: &Database, key: &str) -> Result<bool> {
     .await
 }
 
+/// Return every row in the shared key/value state table.
 #[tracing::instrument(skip(db))]
 pub async fn list_state(db: &Database) -> Result<Vec<StateRow>> {
     db.read(|conn| {
@@ -600,6 +609,7 @@ pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport>
     })
 }
 
+/// Serialize all rows of one user-scoped table into the export blob format used by /admin/export.
 async fn export_table_user(
     db: &Database,
     sql: &str,
@@ -631,6 +641,7 @@ async fn export_table_user(
     .await
 }
 
+/// Build the full export blob (all tables) for the current tenant database.
 #[tracing::instrument(skip(db))]
 pub async fn export_data(db: &Database) -> Result<ExportData> {
     let users = export_table(db, "SELECT * FROM users").await?;
@@ -645,6 +656,7 @@ pub async fn export_data(db: &Database) -> Result<ExportData> {
     })
 }
 
+/// Serialize all rows of one unscoped table into the export blob format used by /admin/export.
 async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>> {
     let sql_owned = sql.to_string();
     db.read(move |conn| {
@@ -725,6 +737,42 @@ pub async fn get_memories_without_facts(
             .query_map(params![limit], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
+            .map_err(rusqlite_to_eng_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(rusqlite_to_eng_error)?;
+        Ok(rows)
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Backfill: fetch memories without entity links
+// ---------------------------------------------------------------------------
+
+/// Retrieve up to `limit` memory ids and content for memories that have no
+/// rows in `memory_entities`. Used by the entity backfill admin endpoint to
+/// process the historic gap. Returns `(memory_id, content)` pairs.
+///
+/// Only considers non-forgotten memories (`is_forgotten = 0`). Results are
+/// ordered by id ascending so the caller can page through the corpus by
+/// raising the offset or re-querying after each batch.
+#[tracing::instrument(skip(db))]
+pub async fn get_memories_without_entity_links(
+    db: &Database,
+    limit: i64,
+) -> Result<Vec<(i64, String)>> {
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.id, m.content FROM memories m \
+                 WHERE m.is_forgotten = 0 \
+                 AND NOT EXISTS (SELECT 1 FROM memory_entities me WHERE me.memory_id = m.id) \
+                 ORDER BY m.id ASC \
+                 LIMIT ?1",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt
+            .query_map(params![limit], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(rusqlite_to_eng_error)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(rusqlite_to_eng_error)?;

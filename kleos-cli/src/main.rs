@@ -161,6 +161,9 @@ enum Commands {
     /// Identity key management (PIV YubiKey + software Ed25519)
     #[command(subcommand)]
     Identity(IdentityCommands),
+    /// Bearer API key management (list, revoke)
+    #[command(subcommand, name = "api-key")]
+    ApiKey(ApiKeyCommands),
     /// User account management (admin-only, multi-user instances)
     #[command(subcommand)]
     User(UserCommands),
@@ -195,6 +198,18 @@ enum IdentityCommands {
         /// Reason for revocation
         #[arg(short, long)]
         reason: Option<String>,
+    },
+}
+
+/// Subcommands for `kleos-cli api-key` -- inspect and revoke Bearer API keys via /api-keys.
+#[derive(Subcommand)]
+enum ApiKeyCommands {
+    /// List Bearer API keys for the current caller (admin sees all keys).
+    List,
+    /// Revoke a Bearer API key by ID. PIV-signed; admin scope required to revoke others.
+    Revoke {
+        /// API key ID to revoke
+        id: i64,
     },
 }
 
@@ -1201,6 +1216,41 @@ async fn main() {
                     Ok(v) => {
                         if v.get("revoked").and_then(|b| b.as_bool()).unwrap_or(false) {
                             println!("Key #{} revoked.", id);
+                        } else {
+                            eprintln!(
+                                "Unexpected response: {}",
+                                serde_json::to_string_pretty(&v).unwrap()
+                            );
+                        }
+                    }
+                    Err(e) => eprintln!("Error: {}", e),
+                }
+            }
+        },
+
+        Commands::ApiKey(cmd) => match cmd {
+            ApiKeyCommands::List => match client.get("/api-keys").await {
+                Ok(v) => match v.get("keys").and_then(|k| k.as_array()) {
+                    Some(keys) if !keys.is_empty() => {
+                        println!("ID     NAME                     SCOPES               CREATED");
+                        for k in keys {
+                            let id = k.get("id").and_then(|x| x.as_i64()).unwrap_or(-1);
+                            let name = k.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                            let scopes = k.get("scopes").and_then(|x| x.as_str()).unwrap_or("");
+                            let created =
+                                k.get("created_at").and_then(|x| x.as_str()).unwrap_or("");
+                            println!("{:<6} {:<24} {:<20} {}", id, name, scopes, created);
+                        }
+                    }
+                    _ => println!("No API keys."),
+                },
+                Err(e) => eprintln!("Error: {}", e),
+            },
+            ApiKeyCommands::Revoke { id } => {
+                match client.delete(&format!("/api-keys/{}", id)).await {
+                    Ok(v) => {
+                        if v.get("deleted").and_then(|b| b.as_bool()).unwrap_or(false) {
+                            println!("API key #{} revoked.", id);
                         } else {
                             eprintln!(
                                 "Unexpected response: {}",
