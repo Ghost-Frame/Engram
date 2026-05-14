@@ -17,11 +17,13 @@ use kleos_lib::graph::{communities, cooccurrence};
 
 mod types;
 use types::{
-    AdminCredProxyBody, AdminCredResolveBody, AdminPageRankQuery, BootstrapBody, ColdStorageParams,
-    DeprovisionBody, GcBody, MaintenanceBody, MigrateDownBody, PitrPrepareBody, ProvisionBody,
-    ReembedBody, ResetBody, VectorRebuildIndexBody, VectorSyncReplayBody,
+    AdminCredProxyBody, AdminCredResolveBody, AdminPageRankQuery, BackfillEntitiesBody,
+    BootstrapBody, ColdStorageParams, DeprovisionBody, GcBody, MaintenanceBody, MigrateDownBody,
+    PitrPrepareBody, ProvisionBody, ReembedBody, ResetBody, VectorRebuildIndexBody,
+    VectorSyncReplayBody,
 };
 
+/// Reject the request with a 403 unless the auth context carries the admin scope.
 fn require_admin(auth: &AuthContext) -> Result<(), AppError> {
     if !auth.has_scope(&Scope::Admin) {
         return Err(AppError(kleos_lib::EngError::Auth(
@@ -31,12 +33,14 @@ fn require_admin(auth: &AuthContext) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Serialize an admin handler return value into the standard `Json<Value>` response wrapper.
 fn to_json<T: serde::Serialize>(v: T) -> Result<Json<Value>, AppError> {
     serde_json::to_value(v)
         .map(Json)
         .map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))
 }
 
+/// Mount the admin router with every operator-only route, gated by `require_admin` at the handler level.
 pub fn router() -> Router<AppState> {
     Router::new()
         // Existing
@@ -51,6 +55,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/rebuild-fts", post(admin_rebuild_fts))
         .route("/admin/refresh-cache", post(refresh_cache))
         .route("/admin/backfill-facts", post(backfill_facts))
+        .route("/admin/entities/backfill", post(backfill_entities))
         // Info
         .route("/admin/schema", get(admin_schema))
         .route("/admin/embedding-info", get(embedding_info))
@@ -151,11 +156,13 @@ async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
 const BOOTSTRAP_FAILURE_LIMIT: u32 = 5;
 const BOOTSTRAP_WINDOW_SECS: u64 = 60;
 
+/// Sliding-window counter that backs off `POST /admin/bootstrap` after repeated failures.
 struct BootstrapThrottle {
     failures: u32,
     window_start: Instant,
 }
 
+/// Process-wide singleton holding the bootstrap-throttle state.
 fn bootstrap_throttle() -> &'static Mutex<BootstrapThrottle> {
     static STATE: std::sync::OnceLock<Mutex<BootstrapThrottle>> = std::sync::OnceLock::new();
     STATE.get_or_init(|| {
@@ -187,6 +194,7 @@ fn check_bootstrap_cooldown() -> Result<(), (StatusCode, Json<Value>)> {
     Ok(())
 }
 
+/// Record one bootstrap failure against the throttle and trigger the back-off window when the threshold is hit.
 fn record_bootstrap_failure() {
     let mut throttle = bootstrap_throttle()
         .lock()
@@ -199,6 +207,7 @@ fn record_bootstrap_failure() {
     throttle.failures = throttle.failures.saturating_add(1);
 }
 
+/// POST /admin/bootstrap -- initial owner enrollment that seeds the database with an admin API key.
 #[tracing::instrument(skip_all)]
 async fn bootstrap(
     State(state): State<AppState>,
@@ -358,6 +367,7 @@ async fn get_settings(
     Ok(Json(Value::Object(map)))
 }
 
+/// PUT /admin/settings -- upsert a settings row by key.
 #[tracing::instrument(skip_all)]
 async fn put_settings(
     State(state): State<AppState>,
@@ -480,6 +490,67 @@ async fn backfill_facts(
 }
 
 // ---------------------------------------------------------------------------
+// Backfill entities
+// ---------------------------------------------------------------------------
+
+/// One-shot admin handler to backfill entity extraction for historic memories.
+///
+/// Processes memories that have no rows in `memory_entities`, calling
+/// `extract_and_link_entities` for each. Returns a summary with counts of
+/// processed memories, entities created (including upserts), links created,
+/// and elapsed time. Does not trigger automatically; invoke this endpoint
+/// once after verifying forward-wiring is correct on new memories.
+#[tracing::instrument(skip_all)]
+async fn backfill_entities(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Json(body): Json<BackfillEntitiesBody>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+
+    let limit = match body.max_memories {
+        Some(max) => max.min(body.batch_size),
+        None => body.batch_size,
+    };
+
+    let memories = kleos_lib::admin::get_memories_without_entity_links(&state.db, limit).await?;
+
+    let started = std::time::Instant::now();
+    let processed = memories.len() as i64;
+    let mut entities_created: i64 = 0;
+    let mut links_created: i64 = 0;
+
+    for (memory_id, content) in memories {
+        // Use user_id = 1 as the tenant-shard owner for backfill; the field is
+        // ignored internally (post migration v35) but must be supplied for the
+        // function signature. If we ever need per-memory user_id we can add it
+        // to the backfill query.
+        match kleos_lib::graph::entities::extract_and_link_entities(
+            &state.db, memory_id, &content, 1,
+        )
+        .await
+        {
+            Ok(entities) => {
+                let count = entities.len() as i64;
+                entities_created += count;
+                links_created += count;
+            }
+            Err(e) => {
+                tracing::warn!(memory_id, "entity backfill failed for memory: {}", e);
+            }
+        }
+    }
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+    Ok(Json(json!({
+        "processed": processed,
+        "entities_created": entities_created,
+        "links_created": links_created,
+        "duration_ms": duration_ms,
+    })))
+}
+
+// ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
 
@@ -580,6 +651,7 @@ async fn admin_tasks(
     to_json(stats)
 }
 
+/// POST /admin/cred/resolve -- ask credd to resolve a cred slot for a named agent.
 #[tracing::instrument(skip_all)]
 async fn admin_cred_resolve(
     State(state): State<AppState>,
@@ -631,6 +703,7 @@ async fn admin_cred_resolve(
     })))
 }
 
+/// POST /admin/cred/proxy -- proxy a cred fetch through the server with operator-scoped audit.
 #[tracing::instrument(skip_all)]
 async fn admin_cred_proxy(
     State(state): State<AppState>,
@@ -667,6 +740,7 @@ async fn get_maintenance_handler(
     to_json(result)
 }
 
+/// POST /admin/maintenance -- enter or exit maintenance mode.
 #[tracing::instrument(skip_all)]
 async fn post_maintenance_handler(
     State(state): State<AppState>,
@@ -693,6 +767,7 @@ async fn admin_sla(
     to_json(result)
 }
 
+/// POST /admin/sla/reset -- clear the rolling SLA metrics counters.
 #[tracing::instrument(skip_all)]
 async fn admin_sla_reset(
     State(state): State<AppState>,
@@ -733,6 +808,7 @@ async fn get_quotas(
     Ok(Json(json!(result)))
 }
 
+/// PUT /admin/quotas -- upsert per-user storage and rate-limit quotas.
 #[tracing::instrument(skip_all)]
 async fn put_quotas(
     State(state): State<AppState>,
@@ -758,6 +834,7 @@ async fn admin_usage(
     to_json(rows)
 }
 
+/// GET /admin/tenants -- list all tenants known to the server.
 #[tracing::instrument(skip_all)]
 async fn admin_tenants(
     State(state): State<AppState>,
@@ -790,6 +867,7 @@ async fn provision_tenant(
     Ok((StatusCode::CREATED, json_result))
 }
 
+/// POST /admin/deprovision -- tear down a tenant's per-shard database and remove the row.
 #[tracing::instrument(skip_all)]
 async fn deprovision_tenant(
     State(state): State<AppState>,
@@ -815,6 +893,7 @@ async fn checkpoint_handler(
     Ok(Json(result))
 }
 
+/// POST /admin/backup/verify -- run an integrity check over the most recent backup artifact.
 #[tracing::instrument(skip_all)]
 async fn backup_verify_handler(
     State(state): State<AppState>,
@@ -999,6 +1078,7 @@ fn sanitize_pitr_dest(data_dir: &str, raw: &str) -> Result<std::path::PathBuf, A
     Ok(candidate)
 }
 
+/// GET /admin/pitr/snapshots -- list available point-in-time recovery snapshots.
 #[tracing::instrument(skip_all)]
 async fn admin_pitr_snapshots(
     State(state): State<AppState>,
@@ -1011,6 +1091,7 @@ async fn admin_pitr_snapshots(
     Ok(Json(json!({ "snapshots": snapshots })))
 }
 
+/// POST /admin/pitr/prepare -- stage a PITR snapshot into a sandbox directory for inspection.
 #[tracing::instrument(skip_all)]
 async fn admin_pitr_prepare(
     State(state): State<AppState>,
@@ -1116,6 +1197,7 @@ async fn detect_communities_handler(
     to_json(result)
 }
 
+/// POST /admin/cooccurrences/rebuild -- recompute the entity-cooccurrences index from scratch.
 #[tracing::instrument(skip_all)]
 async fn rebuild_cooccurrences_handler(
     State(state): State<AppState>,
@@ -1378,6 +1460,7 @@ async fn post_safe_mode_exit(
     Ok(Json(json!({ "safe_mode": false })))
 }
 
+/// POST /admin/pagerank/rebuild -- recompute PageRank scores over the memory graph.
 #[tracing::instrument(skip_all)]
 async fn admin_pagerank_rebuild(
     State(state): State<AppState>,
@@ -1439,6 +1522,7 @@ async fn admin_migrate_down(
     to_json(plan)
 }
 
+/// POST /admin/instincts/reapply -- re-evaluate instinct rules across the existing corpus.
 #[tracing::instrument(skip_all)]
 async fn admin_reapply_instincts(
     State(state): State<AppState>,
@@ -1554,6 +1638,7 @@ const MONOLITH_DRAIN_COLUMNS: &str = "\
     fsrs_last_review_at, is_superseded, is_consolidated, \
     valence, arousal, dominant_emotion, created_at, updated_at";
 
+/// POST /admin/monolith/drain -- migrate per-user rows out of the monolith DB into tenant shards.
 #[tracing::instrument(skip_all)]
 async fn admin_monolith_drain(
     State(state): State<AppState>,
@@ -1767,17 +1852,20 @@ async fn admin_monolith_drain(
     })))
 }
 
+/// Unit tests for the PITR sandbox-path validator that gates `POST /admin/pitr/prepare`.
 #[cfg(test)]
 mod pitr_sandbox_tests {
     use super::*;
     use std::fs;
 
+    /// Build a unique scratch directory path inside the temp dir for one PITR sandbox test.
     fn unique_data_dir() -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("pitr-sandbox-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&d).unwrap();
         d
     }
 
+    /// Sandbox name must be non-empty.
     #[test]
     fn rejects_empty() {
         let dd = unique_data_dir();
@@ -1785,6 +1873,7 @@ mod pitr_sandbox_tests {
         assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
     }
 
+    /// Sandbox name must not be an absolute path.
     #[test]
     fn rejects_absolute() {
         let dd = unique_data_dir();
@@ -1792,6 +1881,7 @@ mod pitr_sandbox_tests {
         assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
     }
 
+    /// Sandbox name must not contain `..` traversal segments.
     #[test]
     fn rejects_traversal() {
         let dd = unique_data_dir();
@@ -1804,6 +1894,7 @@ mod pitr_sandbox_tests {
         }
     }
 
+    /// Sandbox name must not contain path separator characters.
     #[test]
     fn rejects_separators() {
         let dd = unique_data_dir();
@@ -1813,6 +1904,7 @@ mod pitr_sandbox_tests {
         }
     }
 
+    /// Sandbox name must be plain ASCII alphanumerics, dashes, and underscores.
     #[test]
     fn rejects_unicode_and_exotic() {
         let dd = unique_data_dir();
@@ -1822,6 +1914,7 @@ mod pitr_sandbox_tests {
         }
     }
 
+    /// Sandbox name must not start with a dash or dot (avoids CLI ambiguity and hidden directories).
     #[test]
     fn rejects_leading_dash_or_dot() {
         let dd = unique_data_dir();
@@ -1831,12 +1924,14 @@ mod pitr_sandbox_tests {
         }
     }
 
+    /// The configured data directory must be absolute.
     #[test]
     fn rejects_non_absolute_data_dir() {
         let err = sanitize_pitr_dest("relative/dir", "restore.db").unwrap_err();
         assert!(matches!(err.0, kleos_lib::EngError::Internal(_)));
     }
 
+    /// A valid name resolves into a fresh jail directory under the data dir.
     #[test]
     fn accepts_plain_filename_and_creates_jail() {
         let dd = unique_data_dir();
@@ -1847,6 +1942,7 @@ mod pitr_sandbox_tests {
         assert_eq!(out.file_name().unwrap(), "restore.db");
     }
 
+    /// Refuse to prepare a sandbox whose target directory already exists.
     #[test]
     fn rejects_overwrite_existing() {
         let dd = unique_data_dir();
@@ -1857,6 +1953,7 @@ mod pitr_sandbox_tests {
         assert!(matches!(err.0, kleos_lib::EngError::InvalidInput(_)));
     }
 
+    /// Sandbox name must respect the configured length limit.
     #[test]
     fn rejects_too_long_name() {
         let dd = unique_data_dir();

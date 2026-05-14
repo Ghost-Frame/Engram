@@ -4,6 +4,7 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use kleos_lib::graph::entities::extract_and_link_entities;
 use kleos_lib::intelligence::extraction::fast_extract_facts;
 use kleos_lib::memory::{
     self,
@@ -26,6 +27,7 @@ use types::{
     ForgetBody, ListQuery, RecallBody, SearchBody, SearchTagsBody, TrashListOptions, UpdateTagsBody,
 };
 
+/// Mount the memory router with the full set of CRUD, search, recall, tag, profile, and version-chain routes.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/store", post(store_memory))
@@ -63,12 +65,14 @@ pub fn router() -> Router<AppState> {
         .layer(DefaultBodyLimit::max(256 * 1024))
 }
 
+/// Decode the optional comma-separated tag string on a stored memory row into a Vec<String>.
 fn parse_tags(tags: &Option<String>) -> Vec<String> {
     tags.as_ref()
         .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
         .unwrap_or_default()
 }
 
+/// Serialize a Memory to the JSON shape the memory routes return on the wire.
 fn memory_to_json(m: &kleos_lib::memory::types::Memory) -> Value {
     json!({
         "id": m.id, "content": m.content, "category": m.category,
@@ -91,6 +95,7 @@ fn memory_to_json(m: &kleos_lib::memory::types::Memory) -> Value {
     })
 }
 
+/// POST /memory -- store a new memory and trigger background fact and entity extraction.
 #[tracing::instrument(skip_all)]
 async fn store_memory(
     State(state): State<AppState>,
@@ -131,7 +136,9 @@ async fn store_memory(
         let db = db.clone();
         let memory_id = result.id;
         let user_id = auth.user_id;
-        let content_for_extract = content;
+        // Clone content before consuming it in the spawn so the entity_extract
+        // block below can use the same value without a borrow conflict.
+        let content_for_extract = content.clone();
         let permit = match state.fact_extract_sem.clone().acquire_owned().await {
             Ok(p) => p,
             Err(_) => {
@@ -177,6 +184,60 @@ async fn store_memory(
         });
     }
 
+    // Background: extract and link named entities from the new memory.
+    // Uses the same fact_extract_sem semaphore (H-005) and shutdown token (M-008).
+    // Runs in a separate spawn from fact_extract so a failure in one does not
+    // affect the other -- independent error blast radius.
+    {
+        let db = db.clone();
+        let memory_id = result.id;
+        let user_id = auth.user_id;
+        // Move content into this closure; it is no longer needed after this block.
+        let content_for_entities = content;
+        let permit = match state.fact_extract_sem.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!("fact_extract semaphore closed; skipping entity extraction");
+                // Semaphore closed means server is shutting down; skip extraction
+                // and fall through to return the stored memory as normal.
+                let mem = memory::get(&db, result.id, auth.user_id).await?;
+                return Ok((
+                    StatusCode::CREATED,
+                    Json(json!({
+                        "stored": true, "id": result.id, "created_at": mem.created_at,
+                        "importance": mem.importance, "embedded": embedded,
+                        "tags": parse_tags(&mem.tags),
+                        "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
+                    })),
+                ));
+            }
+        };
+        let shutdown = state.shutdown_token.clone();
+        let mut bg = state.background_tasks.lock().await;
+        bg.spawn(async move {
+            let _permit = permit;
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    tracing::debug!("background entity_extract drained on shutdown");
+                }
+                _ = async {
+                    match extract_and_link_entities(&db, memory_id, &content_for_entities, user_id).await {
+                        Ok(entities) => {
+                            if !entities.is_empty() {
+                                tracing::debug!(
+                                    memory_id,
+                                    entity_count = entities.len(),
+                                    "auto entity extraction completed"
+                                );
+                            }
+                        }
+                        Err(e) => tracing::warn!(memory_id, "auto entity extraction failed: {}", e),
+                    }
+                } => {}
+            }
+        });
+    }
+
     let mem = memory::get(&db, result.id, auth.user_id).await?;
     Ok((
         StatusCode::CREATED,
@@ -189,6 +250,7 @@ async fn store_memory(
     ))
 }
 
+/// POST /search -- hybrid keyword + semantic memory search.
 #[tracing::instrument(skip_all)]
 async fn search_memories(
     State(state): State<AppState>,
@@ -421,6 +483,7 @@ async fn explain_search(
     })))
 }
 
+/// POST /recall -- retrieve memories ranked by importance and recency.
 #[tracing::instrument(skip_all)]
 async fn recall(
     State(state): State<AppState>,
@@ -581,6 +644,7 @@ async fn recall(
     })))
 }
 
+/// GET /list -- paginated listing of stored memories.
 #[tracing::instrument(skip_all)]
 async fn list_memories(
     Auth(auth): Auth,
@@ -602,6 +666,7 @@ async fn list_memories(
     Ok(Json(json!({ "results": results })))
 }
 
+/// GET /memory/{id} -- fetch a single memory by id.
 #[tracing::instrument(skip_all)]
 async fn get_memory(
     Auth(auth): Auth,
@@ -612,6 +677,7 @@ async fn get_memory(
     Ok(Json(memory_to_json(&mem)))
 }
 
+/// DELETE /memory/{id} -- soft-delete a memory.
 #[tracing::instrument(skip_all)]
 async fn delete_memory(
     Auth(auth): Auth,
@@ -622,6 +688,7 @@ async fn delete_memory(
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
+/// GET /memory/trashed -- list memories that have been soft-deleted but are still recoverable.
 #[tracing::instrument(skip_all)]
 async fn list_trashed(
     Auth(auth): Auth,
@@ -634,6 +701,7 @@ async fn list_trashed(
     Ok(Json(json!({ "memories": items, "count": items.len() })))
 }
 
+/// POST /memory/{id}/restore -- restore a soft-deleted memory back to the active corpus.
 #[tracing::instrument(skip_all)]
 async fn restore_memory(
     Auth(auth): Auth,
@@ -644,6 +712,7 @@ async fn restore_memory(
     Ok(Json(memory_to_json(&restored)))
 }
 
+/// PUT /memory/{id} -- update fields on an existing memory.
 #[tracing::instrument(skip_all)]
 async fn update_memory(
     Auth(auth): Auth,
@@ -655,12 +724,14 @@ async fn update_memory(
     Ok(Json(memory_to_json(&updated)))
 }
 
+/// GET /tags -- list all tags in use across the corpus.
 #[tracing::instrument(skip_all)]
 async fn list_tags(Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
     let tags = memory::list_all_tags(&db, auth.user_id).await?;
     Ok(Json(json!({ "tags": tags })))
 }
 
+/// POST /tags/search -- search tags by prefix and return matching memory counts.
 #[tracing::instrument(skip_all)]
 async fn search_tags(
     Auth(auth): Auth,
@@ -710,6 +781,7 @@ async fn faceted_search_handler(
     Ok(Json(json!(resp)))
 }
 
+/// PUT /memory/{id}/tags -- replace the tag set on a memory.
 #[tracing::instrument(skip_all)]
 async fn update_tags(
     Auth(auth): Auth,
@@ -722,6 +794,7 @@ async fn update_tags(
     Ok(Json(memory_to_json(&updated)))
 }
 
+/// GET /memory/profile -- return the stored user profile synthesized from memories.
 #[tracing::instrument(skip_all)]
 async fn profile_handler(
     Auth(auth): Auth,
@@ -731,6 +804,7 @@ async fn profile_handler(
     Ok(Json(json!(profile)))
 }
 
+/// POST /memory/profile/synthesize -- rebuild the user profile from recent memories.
 #[tracing::instrument(skip_all)]
 async fn synthesize_profile(
     Auth(auth): Auth,
@@ -776,12 +850,14 @@ async fn synthesize_profile(
     Ok(Json(json!(profile)))
 }
 
+/// GET /memory/stats -- counts and aggregates for the calling user's memories.
 #[tracing::instrument(skip_all)]
 async fn user_stats(Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
     let stats = memory::get_user_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }
 
+/// POST /memory/{id}/forget -- mark a memory as forgotten so it is hidden from search.
 #[tracing::instrument(skip_all)]
 async fn forget_memory(
     Auth(auth): Auth,
@@ -796,6 +872,7 @@ async fn forget_memory(
     Ok(Json(json!({ "id": id, "status": "forgotten" })))
 }
 
+/// POST /memory/{id}/archive -- move a memory out of the active corpus into the archive.
 #[tracing::instrument(skip_all)]
 async fn archive_memory(
     Auth(auth): Auth,
@@ -806,6 +883,7 @@ async fn archive_memory(
     Ok(Json(json!({ "id": id, "status": "archived" })))
 }
 
+/// POST /memory/{id}/unarchive -- restore a memory from the archive back to the active corpus.
 #[tracing::instrument(skip_all)]
 async fn unarchive_memory(
     Auth(auth): Auth,
@@ -816,6 +894,7 @@ async fn unarchive_memory(
     Ok(Json(json!({ "id": id, "status": "active" })))
 }
 
+/// GET /memory/{id}/links -- list memory-to-memory links recorded for a given memory.
 #[tracing::instrument(skip_all)]
 async fn get_links(
     Auth(auth): Auth,
@@ -827,6 +906,7 @@ async fn get_links(
     Ok(Json(json!({ "links": links })))
 }
 
+/// GET /memory/{id}/versions -- return the full version chain rooted at this memory.
 #[tracing::instrument(skip_all)]
 async fn version_chain_handler(
     Auth(auth): Auth,
