@@ -1,9 +1,15 @@
-//! Broca service: action logging and template-based narration.
+//! Broca service: action logging, template-based narration, and LLM narration.
 //!
 //! The primary data store is `broca_actions`. `log_action` inserts a row and
 //! optionally auto-generates a `narrative` using `narrate_from_template` when
 //! the caller does not supply one. The template table mirrors the JavaScript
 //! narrator in `Ghost-Frame/broca/src/narrator.ts`.
+//!
+//! For actions that have no stored narrative and no matching template,
+//! `llm_narrate` calls a configured LLM endpoint (OpenAI-compatible or a
+//! generic `{prompt, system}` proxy) to produce a short English sentence.
+//! `get_or_narrate_action` combines the fetch-and-persist flow for use by
+//! the HTTP handlers.
 
 use crate::db::Database;
 use crate::{EngError, Result};
@@ -84,45 +90,87 @@ pub struct BrocaStats {
 /// visible. A future version may add per-template post-processing.
 const TEMPLATES: &[(&str, &str)] = &[
     // ---- Chiasm / tasks ----
-    ("task.created",          "{{agent}} started a new task: \"{{title}}\" in {{project}}"),
-    ("task.updated",          "\"{{title}}\" status is now {{status}}"),
-    ("task.completed",        "\"{{title}}\" was completed by {{agent}}"),
-    ("task.blocked",          "\"{{title}}\" is blocked: {{reason}}"),
-    ("task.blocked_on_human", "\"{{title}}\" is waiting for human approval: {{summary}}"),
-    ("task.feedback",         "Human feedback on \"{{title}}\": \"{{feedback}}\""),
-    ("task.output",           "Output submitted for \"{{title}}\""),
-    ("task.plan",             "A plan was generated for \"{{title}}\""),
+    (
+        "task.created",
+        "{{agent}} started a new task: \"{{title}}\" in {{project}}",
+    ),
+    ("task.updated", "\"{{title}}\" status is now {{status}}"),
+    ("task.completed", "\"{{title}}\" was completed by {{agent}}"),
+    ("task.blocked", "\"{{title}}\" is blocked: {{reason}}"),
+    (
+        "task.blocked_on_human",
+        "\"{{title}}\" is waiting for human approval: {{summary}}",
+    ),
+    (
+        "task.feedback",
+        "Human feedback on \"{{title}}\": \"{{feedback}}\"",
+    ),
+    ("task.output", "Output submitted for \"{{title}}\""),
+    ("task.plan", "A plan was generated for \"{{title}}\""),
     // ---- Loom / workflows ----
-    ("workflow.run.created",    "{{agent}} started the \"{{workflow}}\" workflow"),
-    ("workflow.run.completed",  "The \"{{workflow}}\" workflow finished successfully"),
-    ("workflow.run.failed",     "The \"{{workflow}}\" workflow failed on step \"{{failed_step}}\": {{error}}"),
-    ("workflow.run.cancelled",  "The \"{{workflow}}\" workflow was cancelled"),
-    ("workflow.step.started",   "Step \"{{step}}\" started in the \"{{workflow}}\" workflow"),
-    ("workflow.step.completed", "Step \"{{step}}\" finished in the \"{{workflow}}\" workflow"),
-    ("workflow.step.failed",    "Step \"{{step}}\" failed in the \"{{workflow}}\" workflow: {{error}}"),
+    (
+        "workflow.run.created",
+        "{{agent}} started the \"{{workflow}}\" workflow",
+    ),
+    (
+        "workflow.run.completed",
+        "The \"{{workflow}}\" workflow finished successfully",
+    ),
+    (
+        "workflow.run.failed",
+        "The \"{{workflow}}\" workflow failed on step \"{{failed_step}}\": {{error}}",
+    ),
+    (
+        "workflow.run.cancelled",
+        "The \"{{workflow}}\" workflow was cancelled",
+    ),
+    (
+        "workflow.step.started",
+        "Step \"{{step}}\" started in the \"{{workflow}}\" workflow",
+    ),
+    (
+        "workflow.step.completed",
+        "Step \"{{step}}\" finished in the \"{{workflow}}\" workflow",
+    ),
+    (
+        "workflow.step.failed",
+        "Step \"{{step}}\" failed in the \"{{workflow}}\" workflow: {{error}}",
+    ),
     // ---- Soma / agents ----
-    ("agent.registered",   "{{name}} came online as a {{type}}"),
+    ("agent.registered", "{{name}} came online as a {{type}}"),
     ("agent.deregistered", "{{name}} went offline"),
-    ("agent.online",       "{{agent}} is online"),
-    ("agent.offline",      "{{agent}} went offline"),
-    ("agent.heartbeat",    "{{agent}} checked in"),
-    ("agent.error",        "{{agent}} reported an error: {{error}}"),
+    ("agent.online", "{{agent}} is online"),
+    ("agent.offline", "{{agent}} went offline"),
+    ("agent.heartbeat", "{{agent}} checked in"),
+    ("agent.error", "{{agent}} reported an error: {{error}}"),
     // ---- Kleos / memory ----
-    ("memory.stored",   "{{source}} stored a memory ({{category}})"),
-    ("memory.searched", "{{agent}} searched memory for \"{{query}}\""),
-    ("memory.linked",   "Two memories were linked together"),
+    ("memory.stored", "{{source}} stored a memory ({{category}})"),
+    (
+        "memory.searched",
+        "{{agent}} searched memory for \"{{query}}\"",
+    ),
+    ("memory.linked", "Two memories were linked together"),
     ("memory.forgotten", "A memory was removed"),
     // ---- Thymus / evaluations ----
-    ("evaluation.completed", "{{agent}}'s work on \"{{subject}}\" was evaluated using the {{rubric}} rubric"),
-    ("metric.recorded",      "{{agent}} recorded {{metric}}: {{value}}"),
+    (
+        "evaluation.completed",
+        "{{agent}}'s work on \"{{subject}}\" was evaluated using the {{rubric}} rubric",
+    ),
+    (
+        "metric.recorded",
+        "{{agent}} recorded {{metric}}: {{value}}",
+    ),
     // ---- Axon / system ----
-    ("system.started",    "{{service}} started up"),
-    ("system.stopped",    "{{service}} shut down"),
-    ("deploy.started",    "Deployment started for {{service}}"),
-    ("deploy.succeeded",  "{{service}} deployed successfully"),
-    ("deploy.failed",     "Deployment failed for {{service}}: {{error}}"),
-    ("deploy.rolled_back","{{service}} was rolled back"),
-    ("alert.triggered",   "Alert triggered: {{message}}"),
+    ("system.started", "{{service}} started up"),
+    ("system.stopped", "{{service}} shut down"),
+    ("deploy.started", "Deployment started for {{service}}"),
+    ("deploy.succeeded", "{{service}} deployed successfully"),
+    (
+        "deploy.failed",
+        "Deployment failed for {{service}}: {{error}}",
+    ),
+    ("deploy.rolled_back", "{{service}} was rolled back"),
+    ("alert.triggered", "Alert triggered: {{message}}"),
 ];
 
 /// Render a template-based narrative for the given action type and payload.
@@ -335,6 +383,347 @@ pub async fn get_stats(db: &Database, _user_id: i64) -> Result<BrocaStats> {
     })
     .await
 }
+
+// ---------------------------------------------------------------------------
+// LLM narration
+// ---------------------------------------------------------------------------
+
+/// Shared HTTP client for LLM narration calls. Allocated once at first use.
+/// 60-second timeout mirrors the standalone's `AbortSignal.timeout(60000)`.
+static BROCA_LLM_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    crate::net::safe_client_builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .pool_max_idle_per_host(2)
+        .build()
+        // safe_client_builder only fails if the TLS backend is broken, which
+        // is a startup-fatal condition. `expect` is acceptable here.
+        .expect("BROCA_LLM_CLIENT build failed")
+});
+
+/// Resolve the LLM endpoint URL.
+///
+/// Checks `BROCA_LLM_URL` first, then falls back to `LLM_URL`. Returns `None`
+/// when neither is set, signalling the caller to use the template fallback.
+fn broca_llm_url() -> Option<String> {
+    std::env::var("BROCA_LLM_URL")
+        .or_else(|_| std::env::var("LLM_URL"))
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Resolve the LLM bearer token.
+///
+/// Checks `BROCA_LLM_API_KEY` first, then falls back to `LLM_API_KEY`.
+fn broca_llm_api_key() -> Option<String> {
+    std::env::var("BROCA_LLM_API_KEY")
+        .or_else(|_| std::env::var("LLM_API_KEY"))
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Resolve the model name to request.
+///
+/// Checks `BROCA_LLM_MODEL` first, then falls back to `LLM_MODEL`, then uses
+/// the hardcoded default `"qwen2.5:14b"` matching the standalone's default.
+fn broca_llm_model() -> String {
+    std::env::var("BROCA_LLM_MODEL")
+        .or_else(|_| std::env::var("LLM_MODEL"))
+        .unwrap_or_else(|_| "qwen2.5:14b".to_string())
+}
+
+/// OpenAI-compatible chat completions request body.
+#[derive(Debug, serde::Serialize)]
+struct OpenAiRequest {
+    /// Model identifier passed through to the backend.
+    model: String,
+    /// Ordered list of chat messages (system + user).
+    messages: Vec<OpenAiMessage>,
+    /// Sampling temperature; 0.3 matches the standalone.
+    temperature: f64,
+    /// Disable streaming so the response arrives as a single JSON object.
+    stream: bool,
+}
+
+/// A single message in an OpenAI-compatible chat request.
+#[derive(Debug, serde::Serialize)]
+struct OpenAiMessage {
+    /// Role: `"system"` or `"user"`.
+    role: String,
+    /// Message text.
+    content: String,
+}
+
+/// Generic `{prompt, system}` LLM request body.
+///
+/// Used when `LLM_URL` does not contain `/v1/chat` or `/chat/completions` and
+/// is not an Ollama port. Matches the Kleos `/llm` internal endpoint.
+#[derive(Debug, serde::Serialize)]
+struct GenericLlmRequest {
+    /// User message / prompt.
+    prompt: String,
+    /// System instruction.
+    system: String,
+}
+
+/// Generate a narrative for a stored action via LLM.
+///
+/// Used as a fallback when no template matched at ingest. Returns a short,
+/// human-readable past-tense sentence describing what the agent did.
+///
+/// This function is **infallible**: every error path (no URL configured,
+/// network failure, unexpected response shape) logs a warning via
+/// [`tracing::warn!`] and returns the template fallback string
+/// `"{agent} performed {action}"` instead of propagating an error.
+/// Callers can therefore use the return value directly without `?`.
+///
+/// Endpoint detection:
+/// - URLs containing `/v1/chat`, `/chat/completions`, or port `11434` (Ollama)
+///   are treated as OpenAI-compatible; `/v1/chat/completions` is appended to
+///   raw Ollama base URLs if not already present.
+/// - All other URLs are treated as generic `{prompt, system}` endpoints.
+///
+/// Env vars (first match wins):
+/// - URL:   `BROCA_LLM_URL` -> `LLM_URL`
+/// - Key:   `BROCA_LLM_API_KEY` -> `LLM_API_KEY`
+/// - Model: `BROCA_LLM_MODEL` -> `LLM_MODEL` -> `"qwen2.5:14b"`
+#[tracing::instrument(skip(payload), fields(agent, service, action))]
+pub async fn llm_narrate(
+    agent: &str,
+    service: &str,
+    action: &str,
+    payload: &serde_json::Value,
+) -> String {
+    let fallback = format!("{agent} performed {action}");
+
+    let Some(url_base) = broca_llm_url() else {
+        tracing::debug!("BROCA_LLM_URL/LLM_URL not set; using fallback narrative");
+        return fallback;
+    };
+
+    let model = broca_llm_model();
+
+    let system = "You translate technical agent actions into plain English. One sentence only.";
+    let user_prompt = format!(
+        "Convert this agent action into a single plain English sentence a non-technical person \
+         would understand. Be concise and natural. No technical jargon, no IDs, no JSON terms.\n\n\
+         Agent: {agent}\n\
+         Service: {service}\n\
+         Action: {action}\n\
+         Details: {payload}\n\n\
+         Respond with only the sentence, nothing else.",
+        payload = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string()),
+    );
+
+    // Detect endpoint style -- mirrors narrator.ts detection logic.
+    let is_ollama_or_openai_compat = url_base.contains("11434")
+        || url_base.contains("ollama")
+        || url_base.contains("/v1/chat")
+        || url_base.contains("/chat/completions");
+
+    let result = if is_ollama_or_openai_compat {
+        // OpenAI-compat path: ensure the URL ends with /v1/chat/completions.
+        let url = if url_base.contains("/v1/chat/completions")
+            || url_base.contains("/chat/completions")
+        {
+            url_base.clone()
+        } else {
+            // Strip trailing slash and append the OpenAI completions path.
+            format!("{}/v1/chat/completions", url_base.trim_end_matches('/'))
+        };
+
+        let body = OpenAiRequest {
+            model,
+            messages: vec![
+                OpenAiMessage {
+                    role: "system".to_string(),
+                    content: system.to_string(),
+                },
+                OpenAiMessage {
+                    role: "user".to_string(),
+                    content: user_prompt,
+                },
+            ],
+            temperature: 0.3,
+            stream: false,
+        };
+
+        call_llm_endpoint(&url, body, broca_llm_api_key()).await
+    } else {
+        // Generic `{prompt, system}` endpoint.
+        let body = GenericLlmRequest {
+            prompt: user_prompt,
+            system: system.to_string(),
+        };
+        call_llm_endpoint(&url_base, body, broca_llm_api_key()).await
+    };
+
+    match result {
+        Ok(raw) => {
+            // Strip whitespace and cap at 280 Unicode scalar values.
+            let trimmed = raw.trim();
+            let capped = if trimmed.chars().count() > 280 {
+                // Find the byte offset immediately after the 280th char so the
+                // slice is a valid UTF-8 boundary.
+                let end = trimmed
+                    .char_indices()
+                    .nth(280)
+                    .map(|(i, _)| i)
+                    .unwrap_or(trimmed.len());
+                trimmed[..end].to_string()
+            } else {
+                trimmed.to_string()
+            };
+            if capped.is_empty() {
+                fallback
+            } else {
+                capped
+            }
+        }
+        Err(e) => {
+            tracing::warn!("LLM narration failed: {}; using fallback", e);
+            fallback
+        }
+    }
+}
+
+/// Send a serializable body to `url` and extract the text content from the
+/// response.
+///
+/// Parses the response body into a raw [`serde_json::Value`] first, then
+/// attempts extraction in priority order:
+/// 1. `choices[0].message.content` -- OpenAI-compatible completions shape.
+/// 2. `result` -- Generic single-field shape.
+/// 3. `text` -- alternate local-proxy shape.
+/// 4. `content` -- alternate local-proxy shape.
+///
+/// This permissive extraction tolerates generic `{prompt, system}` endpoints that do not
+/// conform to the OpenAI schema without failing the typed deserialize step.
+///
+/// Returns an `Err` on network failure or when no recognisable text field is
+/// present, so the caller can decide whether to fall back gracefully.
+async fn call_llm_endpoint<B: serde::Serialize>(
+    url: &str,
+    body: B,
+    api_key: Option<String>,
+) -> std::result::Result<String, String> {
+    let mut req = BROCA_LLM_CLIENT.post(url).json(&body);
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("LLM request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<body read error: {e}>"));
+        return Err(format!("LLM returned {status}: {body_text}"));
+    }
+
+    // Parse into a generic Value to tolerate both OpenAI-compat and
+    // generic response shapes without a rigid typed deserialize.
+    let val: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("LLM response parse error: {e}"))?;
+
+    // OpenAI-compat: choices[0].message.content
+    let from_choices = val
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|s| s.as_str())
+        .map(str::to_owned);
+
+    // Generic / local-proxy fallback fields.
+    let from_flat = from_choices.or_else(|| {
+        ["result", "text", "content"]
+            .iter()
+            .find_map(|key| val.get(key).and_then(|v| v.as_str()).map(str::to_owned))
+    });
+
+    from_flat.ok_or_else(|| "LLM response contained no recognisable text field".to_string())
+}
+
+/// Fetch the action by id, scoped to the given tenant. If it already has a
+/// stored narrative, return it unchanged. Otherwise call [`llm_narrate`],
+/// persist the result via UPDATE, and return the freshly-generated narrative.
+///
+/// Returns `Ok(None)` when no action with `action_id` owned by `user_id`
+/// exists, so the HTTP handler can translate that to a 404 without this
+/// function knowing about HTTP semantics. Actions belonging to other tenants
+/// are indistinguishable from missing actions -- they return `Ok(None)`.
+#[tracing::instrument(skip(db), fields(action_id, user_id))]
+pub async fn get_or_narrate_action(
+    db: &Database,
+    action_id: i64,
+    user_id: i64,
+) -> Result<Option<String>> {
+    // Attempt to load the action; propagate DB errors but convert NotFound to None.
+    // The user_id scope ensures cross-tenant reads return None rather than data.
+    let entry = match get_action_for_narrate(db, action_id, user_id).await {
+        Ok(Some(e)) => e,
+        Ok(None) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+
+    // Fast path: narrative already stored.
+    if let Some(ref n) = entry.narrative {
+        return Ok(Some(n.clone()));
+    }
+
+    // Slow path: call LLM and persist. llm_narrate is infallible -- it returns
+    // a fallback string rather than an error, so no ? is needed here.
+    let narrative = llm_narrate(&entry.agent, &entry.service, &entry.action, &entry.payload).await;
+    let narrative_clone = narrative.clone();
+
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE broca_actions SET narrative = ?1 WHERE id = ?2",
+            rusqlite::params![narrative_clone, action_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
+        Ok(())
+    })
+    .await?;
+
+    Ok(Some(narrative))
+}
+
+/// Internal helper: fetch a single [`ActionEntry`] by id, scoped to the given
+/// tenant. Returns `Ok(None)` when absent or owned by a different tenant, so
+/// [`get_or_narrate_action`] can distinguish "not found / not yours" from a
+/// real DB error without decoding error strings.
+///
+/// The `AND user_id = ?2` clause enforces tenant isolation: a caller cannot
+/// trigger LLM narration or read the narrative for a row they do not own.
+async fn get_action_for_narrate(
+    db: &Database,
+    action_id: i64,
+    user_id: i64,
+) -> Result<Option<ActionEntry>> {
+    let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
+
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![action_id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        match rows.next().map_err(rusqlite_to_eng_error)? {
+            Some(row) => row_to_action_entry(row).map(Some),
+            None => Ok(None),
+        }
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

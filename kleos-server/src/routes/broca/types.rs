@@ -47,6 +47,13 @@ pub(super) struct QueryActionsParams {
     pub offset: Option<usize>,
 }
 
+/// Request body for `POST /broca/narrate` (bulk LLM narration).
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct NarrateBatchBody {
+    /// Action ids to narrate. Must be non-empty and at most 50 elements.
+    pub ids: Vec<i64>,
+}
+
 /// Inbound Axon webhook payload for `POST /broca/ingest`.
 ///
 /// The endpoint that receives it is intentionally unauthenticated -- protect

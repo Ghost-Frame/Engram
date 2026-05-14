@@ -1,9 +1,11 @@
-//! Broca routes: action logging, feed, stats, and unauthenticated Axon ingest.
+//! Broca routes: action logging, feed, stats, LLM narration, and unauthenticated
+//! Axon ingest.
 //!
-//! The authenticated handlers (`/broca/actions`, `/broca/feed`, `/broca/stats`)
-//! are mounted inside the auth middleware stack via [`router`]. The webhook
-//! receiver (`/broca/ingest`) is mounted outside auth via [`ingest_router`]
-//! and uses the system tenant shard (user_id=1) for storage.
+//! The authenticated handlers (`/broca/actions`, `/broca/feed`, `/broca/stats`,
+//! `/broca/actions/{id}/narrate`, `/broca/narrate`) are mounted inside the auth
+//! middleware stack via [`router`]. The webhook receiver (`/broca/ingest`) is
+//! mounted outside auth via [`ingest_router`] and uses the system tenant shard
+//! (user_id=1) for storage.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -15,12 +17,12 @@ use crate::error::AppError;
 use crate::extractors::{resolve_db_for_user, Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::broca::{
-    get_action, get_stats as get_broca_stats, log_action, narrate_from_template, query_actions,
-    LogActionRequest,
+    get_action, get_or_narrate_action, get_stats as get_broca_stats, log_action,
+    narrate_from_template, query_actions, LogActionRequest,
 };
 
 mod types;
-use types::{IngestBody, LogActionBody, QueryActionsParams};
+use types::{IngestBody, LogActionBody, NarrateBatchBody, QueryActionsParams};
 
 /// Authenticated router: mounts broca routes inside the auth middleware stack.
 pub fn router() -> Router<AppState> {
@@ -30,6 +32,8 @@ pub fn router() -> Router<AppState> {
             post(log_action_handler).get(list_actions_handler),
         )
         .route("/broca/actions/{id}", get(get_action_handler))
+        .route("/broca/actions/{id}/narrate", get(narrate_action_handler))
+        .route("/broca/narrate", post(narrate_batch_handler))
         .route("/broca/feed", get(get_feed_handler))
         .route("/broca/stats", get(get_stats))
 }
@@ -141,6 +145,72 @@ async fn get_feed_handler(
 async fn get_stats(Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
     let stats = get_broca_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
+}
+
+/// Handler for `GET /broca/actions/{id}/narrate`. Returns the narrative for a
+/// single action, scoped to the authenticated user's tenant. If the action
+/// already has a stored narrative it is returned directly; otherwise the LLM
+/// is called, the result is persisted, and then returned.
+///
+/// Response shape: `{ id, narrative }`.
+///
+/// Returns 404 when no action with the given id exists or when the action
+/// belongs to a different tenant.
+async fn narrate_action_handler(
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    // get_or_narrate_action enforces tenant scope via user_id and handles both
+    // the fetch and the LLM-persist slow path. Returns None for missing or
+    // cross-tenant ids so we can emit a clean 404.
+    let narrative = get_or_narrate_action(&db, id, auth.user_id)
+        .await?
+        .ok_or_else(|| AppError(kleos_lib::EngError::NotFound(format!("action {id}"))))?;
+
+    Ok(Json(json!({ "id": id, "narrative": narrative })))
+}
+
+/// Handler for `POST /broca/narrate`. Bulk-narrates up to 50 actions in a
+/// single call, scoped to the authenticated user's tenant.
+///
+/// Accepts `{ "ids": [i64] }`. Returns a raw JSON array
+/// `[{ "id": i64, "narrative": "..." }]` -- NOT wrapped in an envelope -- to
+/// match the standalone broca server response shape.
+///
+/// Validation errors:
+/// - 400 if `ids` is empty.
+/// - 400 if `ids` contains more than 50 elements.
+///
+/// Actions whose id does not exist in the database, or that belong to a
+/// different tenant, are silently skipped (the batch result simply omits them)
+/// rather than causing a 404 for the whole request.
+async fn narrate_batch_handler(
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Json(body): Json<NarrateBatchBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.ids.is_empty() {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(
+            "ids array required and must not be empty".into(),
+        )));
+    }
+    if body.ids.len() > 50 {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(
+            "max 50 ids per batch".into(),
+        )));
+    }
+
+    let mut results: Vec<Value> = Vec::with_capacity(body.ids.len());
+    for action_id in body.ids {
+        // get_or_narrate_action returns Ok(None) for missing ids or ids owned by
+        // other tenants -- silently skip both so cross-tenant ids don't error.
+        if let Some(narrative) = get_or_narrate_action(&db, action_id, auth.user_id).await? {
+            results.push(json!({ "id": action_id, "narrative": narrative }));
+        }
+    }
+
+    Ok(Json(Value::Array(results)))
 }
 
 /// Handler for `POST /broca/ingest`. Intentionally unauthenticated; receives
