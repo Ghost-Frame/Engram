@@ -31,10 +31,10 @@ const SKIP_PLUGINS: &[&str] = &[
     "learning-output-style",
 ];
 
-// Plugins that should always carry the `pinned` tag because Master flagged
-// them as canonical / important. Source overrides for these are read from
+// Plugins that always carry the `pinned` tag as canonical defaults.
+// Empty by default; operators can list their own pinned plugins via
 // `~/.config/kleos/skill-import.toml`.
-const DEFAULT_PINNED: &[&str] = &["ralph-loop", "ralph-wiggum"];
+const DEFAULT_PINNED: &[&str] = &[];
 
 // Heuristic keyword set for the code-dev classifier. A skill / agent /
 // command whose description hits any of these gets `domain:code-dev`. The
