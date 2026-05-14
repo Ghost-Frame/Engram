@@ -13,6 +13,9 @@ pub(super) struct BootstrapBody {
 // derive(Debug) would have printed the literal secret if a tracing layer
 // ever recorded the request body.
 impl std::fmt::Debug for BootstrapBody {
+    /// Format the body for tracing/logging output with the secret field
+    /// replaced by a fixed redaction marker so the literal value never
+    /// reaches a log sink.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BootstrapBody")
             .field(
@@ -44,6 +47,7 @@ pub(super) struct ColdStorageParams {
     pub days: i64,
 }
 
+/// serde default: cold-storage threshold in days when the body omits it.
 fn default_cold_days() -> i64 {
     90
 }
@@ -78,6 +82,7 @@ pub(super) struct ProvisionBody {
     pub role: String,
 }
 
+/// serde default: role label when the request body omits it.
 fn default_role() -> String {
     "user".to_string()
 }
@@ -126,4 +131,24 @@ pub(super) struct MigrateDownBody {
 #[serde(default)]
 pub(super) struct ResetBody {
     pub confirm: Option<String>,
+}
+
+/// Body for POST /admin/entities/backfill.
+///
+/// `batch_size` controls how many memories are processed per invocation
+/// (default 100). `max_memories` caps the total across the whole request;
+/// `None` means process all eligible memories up to `batch_size`.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(super) struct BackfillEntitiesBody {
+    /// Number of memories to process in this call (default 100).
+    #[serde(default = "default_backfill_batch_size")]
+    pub batch_size: i64,
+    /// Optional ceiling on total memories processed. None = unlimited.
+    pub max_memories: Option<i64>,
+}
+
+/// serde default: per-invocation batch size for the entity backfill route.
+fn default_backfill_batch_size() -> i64 {
+    100
 }

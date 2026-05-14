@@ -23,6 +23,8 @@ use tokio_util::sync::CancellationToken;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Server entry point: bootstraps tracing, config, database, background
+/// workers, and the Axum HTTP listener.
 #[tokio::main]
 async fn main() {
     kleos_lib::config::migrate_env_prefix();
@@ -522,6 +524,45 @@ async fn register_job_handlers(db: Arc<Database>) {
         .await;
     }
 
+    // ingestion.entity_extract -- durable extract_and_link_entities invocation.
+    // Payload: { "memory_id": i64, "content": string, "user_id": i64,
+    //            "episode_id": i64|null }
+    // Shares the same payload shape as ingestion.fact_extract for symmetry.
+    {
+        let db = Arc::clone(&db);
+        kleos_lib::jobs::register_job_handler("ingestion.entity_extract", move |payload| {
+            let db = Arc::clone(&db);
+            async move {
+                let memory_id = payload.get("memory_id").and_then(|v| v.as_i64()).ok_or(
+                    kleos_lib::EngError::InvalidInput(
+                        "ingestion.entity_extract payload missing memory_id".into(),
+                    ),
+                )?;
+                let content = payload
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or(kleos_lib::EngError::InvalidInput(
+                        "ingestion.entity_extract payload missing content".into(),
+                    ))?
+                    .to_string();
+                let user_id = payload.get("user_id").and_then(|v| v.as_i64()).ok_or(
+                    kleos_lib::EngError::InvalidInput(
+                        "ingestion.entity_extract payload missing user_id".into(),
+                    ),
+                )?;
+                kleos_lib::graph::entities::extract_and_link_entities(
+                    db.as_ref(),
+                    memory_id,
+                    &content,
+                    user_id,
+                )
+                .await
+                .map(|_| ())
+            }
+        })
+        .await;
+    }
+
     tracing::info!("durable job handlers registered");
 }
 
@@ -538,7 +579,11 @@ struct Supervised {
     consecutive_failures: u32,
 }
 
+/// Constructors and lifecycle helpers for `Supervised`, the wrapper that
+/// keeps a long-running background task alive with restart-on-crash.
 impl Supervised {
+    /// Spawn the supervised task for the first time. `factory` is held so
+    /// it can be re-invoked when the task exits unexpectedly.
     fn spawn<F>(name: &'static str, mut factory: F) -> Self
     where
         F: FnMut() -> (CancellationToken, JoinHandle<()>) + Send + 'static,
