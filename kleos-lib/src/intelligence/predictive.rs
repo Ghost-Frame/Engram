@@ -83,9 +83,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(params![pattern_query], |row| {
-                    row.get::<_, String>(0)
-                })
+                .query_map(params![pattern_query], |row| row.get::<_, String>(0))
                 .map_err(rusqlite_to_eng_error)?;
             let descs: Vec<String> = rows
                 .collect::<rusqlite::Result<Vec<_>>>()
