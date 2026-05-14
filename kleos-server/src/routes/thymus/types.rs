@@ -34,3 +34,16 @@ pub(super) struct DriftEventsParams {
     pub agent: Option<String>,
     pub limit: Option<usize>,
 }
+
+/// Query parameters for the agent-scores aggregate endpoint.
+///
+/// Both fields are optional. `rubric_id` restricts the aggregate to one rubric;
+/// `since` is an ISO 8601 lower bound on `created_at`.
+#[derive(Debug, Deserialize)]
+pub(super) struct AgentScoresParams {
+    /// When present, limits the aggregate to evaluations from this rubric.
+    pub rubric_id: Option<i64>,
+    /// When present, limits the aggregate to evaluations on or after this
+    /// ISO 8601 timestamp. Passed verbatim to SQLite as a string comparison.
+    pub since: Option<String>,
+}
