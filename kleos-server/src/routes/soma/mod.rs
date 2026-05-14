@@ -1,3 +1,10 @@
+//! Route handlers for the `/soma/*` namespace.
+//!
+//! Exposes the Soma agent registry over HTTP: agent CRUD, heartbeats, group
+//! management, per-agent logs, stats, stale-agent queries, and capability
+//! search. All routes require authentication via the [`Auth`] extractor and
+//! tenant-scoped database access via [`ResolvedDb`].
+
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -8,22 +15,33 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::soma::{
-    add_agent_to_group, create_group, delete_agent, get_agent, get_stats as get_soma_stats,
-    heartbeat, list_agent_logs, list_agents, list_groups, log_event, register_agent,
-    remove_agent_from_group, set_status, RegisterAgentRequest,
+    add_agent_to_group, create_group, delete_agent, find_by_capability, get_agent,
+    get_stale_agents, get_stats as get_soma_stats, heartbeat, list_agent_logs, list_agents,
+    list_groups, log_event, register_agent, remove_agent_from_group, set_status,
+    RegisterAgentRequest,
 };
 
 mod types;
 use types::{
     AddMemberBody, CreateAgentBody, CreateGroupBody, ListAgentsParams, ListLogsParams,
-    LogEventBody, UpdateAgentBody,
+    LogEventBody, StaleAgentsParams, UpdateAgentBody,
 };
 
+/// Build and return the soma sub-router. Mount this under the server's root
+/// router; the paths are absolute (e.g. `/soma/agents`).
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
             "/soma/agents",
             post(create_agent_handler).get(list_agents_handler),
+        )
+        // NOTE: /stale and /capability/{name} must appear BEFORE /agents/{id}
+        // because axum resolves routes in declaration order and would otherwise
+        // match the literal segments "stale" and "capability" as id values.
+        .route("/soma/agents/stale", get(get_stale_agents_handler))
+        .route(
+            "/soma/agents/capability/{name}",
+            get(find_by_capability_handler),
         )
         .route(
             "/soma/agents/{id}",
@@ -49,6 +67,10 @@ pub fn router() -> Router<AppState> {
         .route("/soma/stats", get(get_stats))
 }
 
+/// Handler for `POST /soma/agents`.
+///
+/// Registers a new agent or upserts an existing registration by name. Returns
+/// HTTP 201 with the full agent row on success.
 async fn create_agent_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -71,6 +93,10 @@ async fn create_agent_handler(
     Ok((StatusCode::CREATED, Json(json!(agent))))
 }
 
+/// Handler for `GET /soma/agents`.
+///
+/// Lists agents scoped to the authenticated tenant. Supports optional `type`,
+/// `status`, and `limit` query parameters. Returns `{ agents: [...], count: N }`.
 async fn list_agents_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -89,6 +115,10 @@ async fn list_agents_handler(
     Ok(Json(json!({ "agents": agents, "count": agents.len() })))
 }
 
+/// Handler for `GET /soma/agents/{id}`.
+///
+/// Returns the full agent row for the given numeric `id`. Returns 404 when no
+/// agent with that id exists in the tenant's shard.
 async fn get_agent_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -98,6 +128,12 @@ async fn get_agent_handler(
     Ok(Json(json!(agent)))
 }
 
+/// Handler for `PATCH /soma/agents/{id}`.
+///
+/// Partially updates an agent. Structural fields (type, description,
+/// capabilities, config) are merged via the register_agent upsert. The
+/// `status` field is applied separately via `set_status`. Returns the updated
+/// agent row.
 async fn update_agent_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -137,6 +173,10 @@ async fn update_agent_handler(
     Ok(Json(json!(agent)))
 }
 
+/// Handler for `DELETE /soma/agents/{id}`.
+///
+/// Permanently removes the agent row for the given `id`. Returns
+/// `{ "ok": true }` on success (idempotent -- does not 404 on missing id).
 async fn delete_agent_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,
@@ -146,6 +186,10 @@ async fn delete_agent_handler(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Handler for `POST /soma/agents/{id}/heartbeat`.
+///
+/// Records a heartbeat for the agent and transitions it from `offline` to
+/// `online` if applicable. Returns `{ "ok": true }`.
 async fn heartbeat_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,
@@ -155,13 +199,21 @@ async fn heartbeat_handler(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Handler for `GET /soma/stats`.
+///
+/// Returns aggregate counts: total agents, online agents, and distinct type
+/// count. Scoped to the caller's tenant shard.
 async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = get_soma_stats(&db).await?;
     Ok(Json(json!(stats)))
 }
 
-// --- New handlers for P0-0 Phase 27c: groups and logs ---
+// --- Handlers for P0-0 Phase 27c: groups and logs ---
 
+/// Handler for `POST /soma/groups`.
+///
+/// Creates a new agent group scoped to the authenticated tenant. Returns
+/// HTTP 201 with the full group row.
 async fn create_group_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -171,6 +223,10 @@ async fn create_group_handler(
     Ok((StatusCode::CREATED, Json(json!(group))))
 }
 
+/// Handler for `GET /soma/groups`.
+///
+/// Returns all groups belonging to the authenticated tenant, ordered
+/// alphabetically by name. Returns `{ groups: [...], count: N }`.
 async fn list_groups_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -179,6 +235,10 @@ async fn list_groups_handler(
     Ok(Json(json!({ "groups": groups, "count": groups.len() })))
 }
 
+/// Handler for `POST /soma/groups/{id}/members`.
+///
+/// Adds an agent to a group. The operation is idempotent (INSERT OR IGNORE).
+/// Returns `{ ok: true, group_id, agent_id }`.
 async fn add_member_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -191,6 +251,10 @@ async fn add_member_handler(
     ))
 }
 
+/// Handler for `DELETE /soma/groups/{id}/members/{agent_id}`.
+///
+/// Removes an agent from a group. Returns `{ removed: bool }` where
+/// `removed` is `false` when the membership did not exist.
 async fn remove_member_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -200,7 +264,13 @@ async fn remove_member_handler(
     Ok(Json(json!({ "removed": removed })))
 }
 
-// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
+/// Handler for `POST /soma/agents/{id}/log`.
+///
+/// Appends a structured log entry to the agent's log stream. Returns
+/// HTTP 201 with `{ id: <new_log_id> }`.
+///
+/// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the
+/// caller's tenant. Do not add `state.db` calls here without re-binding auth.
 async fn log_event_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,
@@ -211,6 +281,11 @@ async fn log_event_handler(
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
 }
 
+/// Handler for `GET /soma/agents/{id}/log` and `GET /soma/agents/{id}/logs`.
+///
+/// Returns the most recent log entries for an agent, newest first. Accepts an
+/// optional `limit` query parameter (default 100, max 1000). Returns
+/// `{ logs: [...], count: N }`.
 async fn list_logs_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,
@@ -220,4 +295,35 @@ async fn list_logs_handler(
     let limit = params.limit.unwrap_or(100).min(1000);
     let logs = list_agent_logs(&db, agent_id, limit).await?;
     Ok(Json(json!({ "logs": logs, "count": logs.len() })))
+}
+
+// --- Agent stale-window and capability search ---
+
+/// Handler for `GET /soma/agents/stale`.
+///
+/// Returns agents marked `online` whose last heartbeat is older than the
+/// `minutes` window (default 5, clamped to [1, 1440]). The result feeds
+/// external sweepers that decide when to mark an agent offline.
+async fn get_stale_agents_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Query(params): Query<StaleAgentsParams>,
+) -> Result<Json<Value>, AppError> {
+    let minutes = params.minutes.unwrap_or(5);
+    let agents = get_stale_agents(&db, minutes).await?;
+    Ok(Json(json!(agents)))
+}
+
+/// Handler for `GET /soma/agents/capability/{name}`.
+///
+/// Returns every agent whose `capabilities` array contains the exact `name`
+/// string. Path-decoded; uses `LIKE` plus an exact post-filter to avoid
+/// substring false positives (e.g. `"code"` does not match `"code-review"`).
+async fn find_by_capability_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let agents = find_by_capability(&db, &name).await?;
+    Ok(Json(json!(agents)))
 }

@@ -1,7 +1,19 @@
+//! Service functions for the Soma agent registry.
+//!
+//! Provides create/read/update/delete and query operations over the
+//! `soma_agents`, `soma_groups`, `soma_agent_groups`, and `soma_agent_logs`
+//! tables. All database access goes through the [`Database`] connection pool;
+//! callers never touch raw SQL.
+
 use crate::db::Database;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
+/// A registered Soma agent row, returned from all read operations.
+///
+/// `capabilities` and `config` are stored as JSON text in the database and
+/// deserialized to [`serde_json::Value`] on read. `drift_flags` defaults to
+/// an empty array when the column is NULL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
     pub id: i64,
@@ -20,6 +32,8 @@ pub struct Agent {
     pub user_id: i64,
 }
 
+/// Input for [`register_agent`]. Fields map to the `soma_agents` columns;
+/// absent optional fields default to empty JSON objects/arrays or `None`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterAgentRequest {
     pub name: String,
@@ -35,6 +49,7 @@ pub struct RegisterAgentRequest {
     pub user_id: Option<i64>,
 }
 
+/// Aggregate statistics returned by [`get_stats`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SomaStats {
     pub total_agents: i64,
@@ -42,20 +57,30 @@ pub struct SomaStats {
     pub types: i64,
 }
 
+/// Ordered column list shared by every SELECT on `soma_agents`. Positional
+/// indices in [`row_to_agent`] must match this order exactly.
 const AGENT_COLUMNS: &str =
     "id, name, type, description, capabilities, status, config, heartbeat_at, \
      created_at, updated_at, quality_score, drift_flags";
 
+/// Accepted values for the `status` column. Validated by [`set_status`].
 const VALID_STATUSES: &[&str] = &["pending", "online", "offline", "error"];
 
+/// Attempt to parse `text` as JSON; return `fallback` on parse failure.
+/// Used to handle rows where a JSON column was written by an older schema
+/// version or a non-Rust writer.
 fn parse_json(text: &str, fallback: serde_json::Value) -> serde_json::Value {
     serde_json::from_str(text).unwrap_or(fallback)
 }
 
+/// Convert a [`rusqlite::Error`] into [`EngError::DatabaseMessage`] so it can
+/// propagate through the crate's `Result` type.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
+/// Map a raw rusqlite `Row` to an [`Agent`] struct. Column order must match
+/// [`AGENT_COLUMNS`].
 fn row_to_agent(row: &rusqlite::Row<'_>) -> Result<Agent> {
     let capabilities_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let config_str: String = row.get(6).map_err(rusqlite_to_eng_error)?;
@@ -124,6 +149,9 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
     get_agent_by_name(db, user_id, &req.name).await
 }
 
+/// Record a heartbeat for the agent identified by `agent_id`. Updates
+/// `heartbeat_at` and `updated_at` to the current time. If the agent's
+/// current status is `offline`, transitions it back to `online`.
 #[tracing::instrument(skip(db), fields(agent_id))]
 pub async fn heartbeat(db: &Database, agent_id: i64) -> Result<()> {
     db.write(move |conn| {
@@ -141,6 +169,9 @@ pub async fn heartbeat(db: &Database, agent_id: i64) -> Result<()> {
     .await
 }
 
+/// Set the `status` field of the agent identified by `agent_id`. Returns
+/// [`EngError::InvalidInput`] when `status` is not one of the values in
+/// [`VALID_STATUSES`].
 #[tracing::instrument(skip(db), fields(agent_id, status = %status))]
 pub async fn set_status(db: &Database, agent_id: i64, status: &str) -> Result<()> {
     if !VALID_STATUSES.contains(&status) {
@@ -163,6 +194,10 @@ pub async fn set_status(db: &Database, agent_id: i64, status: &str) -> Result<()
     .await
 }
 
+/// List agents with optional type and status filters. `limit` caps the result
+/// set; callers should clamp to a sane maximum before calling. `_user_id` is
+/// accepted for API symmetry but tenant isolation is enforced at the
+/// [`Database`] shard level, not by a WHERE clause.
 #[tracing::instrument(skip(db), fields(user_id, type_filter = ?type_filter, status_filter = ?status_filter, limit))]
 pub async fn list_agents(
     db: &Database,
@@ -205,6 +240,9 @@ pub async fn list_agents(
     .await
 }
 
+/// Fetch the agent row for the given numeric `id`. Returns
+/// [`EngError::NotFound`] when no such agent exists. `_user_id` is retained
+/// for API symmetry; isolation is at the shard level.
 #[tracing::instrument(skip(db), fields(agent_id = id, user_id))]
 pub async fn get_agent(db: &Database, id: i64, _user_id: i64) -> Result<Agent> {
     let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE id = ?1");
@@ -223,6 +261,9 @@ pub async fn get_agent(db: &Database, id: i64, _user_id: i64) -> Result<Agent> {
     .await
 }
 
+/// Fetch the agent row for the given `name`. Returns [`EngError::NotFound`]
+/// when no agent with that name exists. `_user_id` is retained for API
+/// symmetry; isolation is at the shard level.
 #[tracing::instrument(skip(db), fields(user_id, name = %name))]
 pub async fn get_agent_by_name(db: &Database, _user_id: i64, name: &str) -> Result<Agent> {
     let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE name = ?1");
@@ -242,6 +283,9 @@ pub async fn get_agent_by_name(db: &Database, _user_id: i64, name: &str) -> Resu
     .await
 }
 
+/// Permanently delete the agent row identified by `id`. Does not cascade-delete
+/// group membership or log rows; those are cleaned up by the database schema
+/// via foreign-key constraints.
 #[tracing::instrument(skip(db), fields(agent_id = id))]
 pub async fn delete_agent(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
@@ -257,6 +301,8 @@ pub async fn delete_agent(db: &Database, id: i64) -> Result<()> {
 
 // --- Group types and functions (P0-0 Phase 27c) ---
 
+/// An agent group row from `soma_groups`. Groups provide logical namespacing
+/// for sets of agents within a tenant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Group {
     pub id: i64,
@@ -266,6 +312,8 @@ pub struct Group {
     pub created_at: String,
 }
 
+/// A single log entry from `soma_agent_logs`. `data` is an optional
+/// structured JSON payload attached to the log line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLog {
     pub id: i64,
@@ -276,6 +324,9 @@ pub struct AgentLog {
     pub created_at: String,
 }
 
+/// Create a new agent group named `name` owned by `user_id`. Returns the
+/// full group row on success. Name collisions produce a database error (unique
+/// constraint on `soma_groups.name`).
 #[tracing::instrument(skip(db, description), fields(name = %name, user_id))]
 pub async fn create_group(
     db: &Database,
@@ -298,6 +349,8 @@ pub async fn create_group(
     get_group_by_name(db, &name, user_id).await
 }
 
+/// Private helper: fetch a group by name and owner. Used by [`create_group`]
+/// to return the newly inserted row without a separate id lookup.
 async fn get_group_by_name(db: &Database, name: &str, user_id: i64) -> Result<Group> {
     let sql = "SELECT id, name, description, user_id, created_at
                FROM soma_groups WHERE name = ?1 AND user_id = ?2";
@@ -323,6 +376,7 @@ async fn get_group_by_name(db: &Database, name: &str, user_id: i64) -> Result<Gr
     .await
 }
 
+/// List all groups belonging to `user_id`, ordered alphabetically by name.
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn list_groups(db: &Database, user_id: i64) -> Result<Vec<Group>> {
     let sql = "SELECT id, name, description, user_id, created_at
@@ -348,6 +402,8 @@ pub async fn list_groups(db: &Database, user_id: i64) -> Result<Vec<Group>> {
     .await
 }
 
+/// Add `agent_id` to `group_id` for the given `user_id`. The operation is
+/// idempotent via `INSERT OR IGNORE`.
 #[tracing::instrument(skip(db), fields(agent_id, group_id, user_id))]
 pub async fn add_agent_to_group(
     db: &Database,
@@ -367,6 +423,8 @@ pub async fn add_agent_to_group(
     .await
 }
 
+/// Remove `agent_id` from `group_id`. Returns `true` when the membership
+/// row existed and was deleted, `false` when there was nothing to remove.
 #[tracing::instrument(skip(db), fields(agent_id, group_id, user_id))]
 pub async fn remove_agent_from_group(
     db: &Database,
@@ -387,6 +445,8 @@ pub async fn remove_agent_from_group(
     Ok(n > 0)
 }
 
+/// Append a log entry to the `soma_agent_logs` table for `agent_id`.
+/// Returns the `id` of the newly inserted row.
 #[tracing::instrument(skip(db, message, data), fields(agent_id, level = %level))]
 pub async fn log_event(
     db: &Database,
@@ -411,6 +471,8 @@ pub async fn log_event(
     .await
 }
 
+/// Return the most recent `limit` log entries for `agent_id`, ordered newest
+/// first. Callers should clamp `limit` to a reasonable maximum before calling.
 #[tracing::instrument(skip(db), fields(agent_id, limit))]
 pub async fn list_agent_logs(db: &Database, agent_id: i64, limit: i64) -> Result<Vec<AgentLog>> {
     let sql = "SELECT l.id, l.agent_id, l.level, l.message, l.data, l.created_at
@@ -440,6 +502,70 @@ pub async fn list_agent_logs(db: &Database, agent_id: i64, limit: i64) -> Result
     .await
 }
 
+/// Return every agent whose `status` is `online` but whose `heartbeat_at` is
+/// older than the given `minutes` window. Used by external sweepers that decide
+/// when to transition stale-online agents to offline.
+///
+/// `minutes` is clamped to the range [1, 1440] (1 minute to 24 hours). A value
+/// of `0` becomes `1`; a value larger than `1440` becomes `1440`.
+#[tracing::instrument(skip(db), fields(minutes = %minutes))]
+pub async fn get_stale_agents(db: &Database, minutes: i64) -> Result<Vec<Agent>> {
+    let capped = minutes.clamp(1, 1440);
+    let sql = format!(
+        "SELECT {AGENT_COLUMNS} FROM soma_agents \
+         WHERE status = 'online' \
+           AND heartbeat_at < datetime('now', '-' || ?1 || ' minutes')"
+    );
+
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![capped])
+            .map_err(rusqlite_to_eng_error)?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            results.push(row_to_agent(row)?);
+        }
+        Ok(results)
+    })
+    .await
+}
+
+/// Return every agent whose `capabilities` JSON array contains the given exact
+/// `capability` string. A `LIKE` prefilter narrows the row set in SQLite;
+/// an exact-match post-filter discards false positives where the capability
+/// string is a substring of another entry (e.g. `"code"` must not match
+/// `"code-review"`).
+///
+/// Returns an empty `Vec` when no agent matches.
+#[tracing::instrument(skip(db), fields(capability = %capability))]
+pub async fn find_by_capability(db: &Database, capability: &str) -> Result<Vec<Agent>> {
+    let needle = capability.to_string();
+    let like_pattern = format!("%{capability}%");
+    let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE capabilities LIKE ?1");
+
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![like_pattern])
+            .map_err(rusqlite_to_eng_error)?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let agent = row_to_agent(row)?;
+            if let serde_json::Value::Array(ref arr) = agent.capabilities {
+                if arr.iter().any(|v| v.as_str() == Some(needle.as_str())) {
+                    results.push(agent);
+                }
+            }
+        }
+        Ok(results)
+    })
+    .await
+}
+
+/// Return aggregate statistics for the tenant's agent registry: total agent
+/// count, count of agents currently `online`, and number of distinct agent
+/// types.
 #[tracing::instrument(skip(db))]
 pub async fn get_stats(db: &Database) -> Result<SomaStats> {
     db.read(move |conn| {
@@ -468,15 +594,20 @@ pub async fn get_stats(db: &Database) -> Result<SomaStats> {
     .await
 }
 
+/// Unit tests for the soma service layer. Each test spins up an in-memory
+/// SQLite database so tests are isolated and require no external state.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::Database;
 
+    /// Create an in-memory database for use within a single test.
     async fn setup() -> Database {
         Database::connect_memory().await.expect("db")
     }
 
+    /// Verify that registering an agent and fetching it by id or name returns
+    /// consistent data.
     #[tokio::test]
     async fn register_and_get_agent() {
         let db = setup().await;
@@ -499,6 +630,8 @@ mod tests {
         assert_eq!(by_name.id, a.id);
     }
 
+    /// Verify that registering the same agent name twice updates the existing
+    /// row rather than inserting a duplicate.
     #[tokio::test]
     async fn register_upserts_existing() {
         let db = setup().await;
@@ -533,6 +666,7 @@ mod tests {
         assert_eq!(second.description.as_deref(), Some("updated"));
     }
 
+    /// Verify that calling `heartbeat` populates the `heartbeat_at` column.
     #[tokio::test]
     async fn heartbeat_sets_timestamp() {
         let db = setup().await;
