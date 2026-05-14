@@ -573,22 +573,38 @@ async fn usage_stats_handler(
 
 #[tracing::instrument(skip_all)]
 async fn cloud_search_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<CloudSearchBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = clamp_limit(body.limit, 20, 100)?;
-    let results = cloud::search_skills_cloud(&body.query, limit).await?;
+    let results = cloud::search_skills_cloud(&db, &body.query, limit, auth.user_id).await?;
     Ok(Json(json!({ "results": results, "count": results.len() })))
 }
 
-/// Publish a skill to the Skills Cloud registry by name, description, and content.
+/// Publish a skill to the local Skills Cloud (v50) registry. The legacy
+/// route name (`/skills/cloud/upload`) is preserved for backward
+/// compatibility with clients that still target the federated-cloud path
+/// shape; the implementation now writes to the local skill registry.
 #[tracing::instrument(skip_all)]
 async fn cloud_upload_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
     Json(body): Json<CloudUploadBody>,
 ) -> Result<Json<Value>, AppError> {
     let tags = body.tags.unwrap_or_default();
+    // Source the agent slot from the PIV identity context when present
+    // (canonical for signed sessions), falling back to the API key's
+    // display name (the slot label set when the key was minted).
+    let agent = auth
+        .identity
+        .as_ref()
+        .map(|i| i.agent.clone())
+        .unwrap_or_else(|| auth.key.name.clone());
     let result = cloud::upload_skill_to_cloud(
+        &db,
+        &agent,
+        auth.user_id,
         &body.name,
         &body.description,
         &body.content,
@@ -794,18 +810,17 @@ async fn upload_skill_handler(
         ))));
     };
 
-    // Upload to cloud
-    let tags = body.tags.unwrap_or_default();
-    let description = skill.description.as_deref().unwrap_or("");
-    let category = &skill.language;
-    let result =
-        cloud::upload_skill_to_cloud(&skill.name, description, &skill.code, category, &tags)
-            .await?;
+    // With Skills Cloud v50, the local skill registry IS the cloud target,
+    // so a successful lookup means the skill is already published. No
+    // duplicate row is written. `body.tags` is accepted for backward
+    // compatibility with clients that send it but is ignored (the local
+    // skill's own tag set is the canonical one).
+    let _ = body.tags;
 
     Ok(Json(json!({
         "uploaded": true,
         "skill_id": skill.id,
-        "cloud_id": result,
+        "cloud_id": skill.id.to_string(),
     })))
 }
 
