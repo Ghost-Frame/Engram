@@ -8,9 +8,11 @@
 //! Kleos on its own behalf (e.g. to fetch per-agent bearers for the
 //! `/bootstrap/kleos-bearer` endpoint).
 //!
-//! The blob is created via `cred bootstrap wrap engram-rust credd-<host>`
-//! once per host and only ever decrypted in credd's process memory. Nothing
-//! plaintext lands on disk.
+//! The blob is created via `cred bootstrap wrap kleos credd-<host>` once
+//! per host (or `cred bootstrap wrap engram-rust credd-<host>` on legacy
+//! installs that have not yet migrated the credential namespace). The blob
+//! is only ever decrypted in credd's process memory; nothing plaintext
+//! lands on disk.
 //!
 //! On-disk format:
 //!
