@@ -181,8 +181,7 @@ async fn get_agent_scores_handler(
     Path(agent): Path<String>,
     Query(params): Query<AgentScoresParams>,
 ) -> Result<Json<Value>, AppError> {
-    let scores =
-        get_agent_scores(&db, &agent, params.rubric_id, params.since.as_deref()).await?;
+    let scores = get_agent_scores(&db, &agent, params.rubric_id, params.since.as_deref()).await?;
     Ok(Json(json!(scores)))
 }
 
