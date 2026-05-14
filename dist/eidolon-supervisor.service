@@ -1,6 +1,6 @@
 [Unit]
 Description=Eidolon Supervisor -- async session watcher for Claude Code agents
-Documentation=https://github.com/Ghost-Frame/Engram
+Documentation=https://github.com/Ghost-Frame/Kleos
 After=network.target
 
 [Service]

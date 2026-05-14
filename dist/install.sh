@@ -2,7 +2,7 @@
 # Kleos installer -- detects OS/arch and downloads the correct binaries.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Ghost-Frame/Engram/main/dist/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Ghost-Frame/Kleos/main/dist/install.sh | sh
 #
 # Options (via environment variables):
 #   KLEOS_VERSION   -- version to install (default: latest)
@@ -12,7 +12,7 @@
 
 set -eu
 
-REPO="Ghost-Frame/Engram"
+REPO="Ghost-Frame/Kleos"
 VERSION="${KLEOS_VERSION:-}"
 INSTALL_DIR="${KLEOS_INSTALL:-$HOME/.local/bin}"
 PROFILE="${KLEOS_PROFILE:-server}"

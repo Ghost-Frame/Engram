@@ -12,32 +12,32 @@
 
 class Kleos < Formula
   desc "Persistent semantic memory and cognitive infrastructure for AI agents"
-  homepage "https://github.com/Ghost-Frame/Engram"
+  homepage "https://github.com/Ghost-Frame/Kleos"
   version "0.3.1"
   license "Elastic-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/Ghost-Frame/Engram/releases/download/v#{version}/kleos-server-darwin-arm64"
+      url "https://github.com/Ghost-Frame/Kleos/releases/download/v#{version}/kleos-server-darwin-arm64"
       sha256 "PLACEHOLDER"
 
       def install
         bin.install "kleos-server-darwin-arm64" => "kleos-server"
         # Fetch additional binaries
         %w[kleos-cli kleos-mcp].each do |tool|
-          tool_url = "https://github.com/Ghost-Frame/Engram/releases/download/v#{version}/#{tool}-darwin-arm64"
+          tool_url = "https://github.com/Ghost-Frame/Kleos/releases/download/v#{version}/#{tool}-darwin-arm64"
           system "curl", "-fsSL", "-o", "#{tool}", tool_url
           bin.install tool
         end
       end
     else
-      url "https://github.com/Ghost-Frame/Engram/releases/download/v#{version}/kleos-server-darwin-x64"
+      url "https://github.com/Ghost-Frame/Kleos/releases/download/v#{version}/kleos-server-darwin-x64"
       sha256 "PLACEHOLDER"
 
       def install
         bin.install "kleos-server-darwin-x64" => "kleos-server"
         %w[kleos-cli kleos-mcp].each do |tool|
-          tool_url = "https://github.com/Ghost-Frame/Engram/releases/download/v#{version}/#{tool}-darwin-x64"
+          tool_url = "https://github.com/Ghost-Frame/Kleos/releases/download/v#{version}/#{tool}-darwin-x64"
           system "curl", "-fsSL", "-o", "#{tool}", tool_url
           bin.install tool
         end
@@ -47,25 +47,25 @@ class Kleos < Formula
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/Ghost-Frame/Engram/releases/download/v#{version}/kleos-server-linux-arm64"
+      url "https://github.com/Ghost-Frame/Kleos/releases/download/v#{version}/kleos-server-linux-arm64"
       sha256 "PLACEHOLDER"
 
       def install
         bin.install "kleos-server-linux-arm64" => "kleos-server"
         %w[kleos-cli kleos-mcp].each do |tool|
-          tool_url = "https://github.com/Ghost-Frame/Engram/releases/download/v#{version}/#{tool}-linux-arm64"
+          tool_url = "https://github.com/Ghost-Frame/Kleos/releases/download/v#{version}/#{tool}-linux-arm64"
           system "curl", "-fsSL", "-o", "#{tool}", tool_url
           bin.install tool
         end
       end
     else
-      url "https://github.com/Ghost-Frame/Engram/releases/download/v#{version}/kleos-server-linux-x64"
+      url "https://github.com/Ghost-Frame/Kleos/releases/download/v#{version}/kleos-server-linux-x64"
       sha256 "PLACEHOLDER"
 
       def install
         bin.install "kleos-server-linux-x64" => "kleos-server"
         %w[kleos-cli kleos-mcp].each do |tool|
-          tool_url = "https://github.com/Ghost-Frame/Engram/releases/download/v#{version}/#{tool}-linux-x64"
+          tool_url = "https://github.com/Ghost-Frame/Kleos/releases/download/v#{version}/#{tool}-linux-x64"
           system "curl", "-fsSL", "-o", "#{tool}", tool_url
           bin.install tool
         end

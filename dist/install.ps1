@@ -1,7 +1,7 @@
 # Kleos installer for Windows -- downloads the correct binaries.
 #
 # Usage (PowerShell):
-#   irm https://raw.githubusercontent.com/Ghost-Frame/Engram/main/dist/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Ghost-Frame/Kleos/main/dist/install.ps1 | iex
 #
 # Options (via environment variables):
 #   $env:KLEOS_VERSION   -- version to install (default: latest)
@@ -11,7 +11,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$Repo = "Ghost-Frame/Engram"
+$Repo = "Ghost-Frame/Kleos"
 $Version = if ($env:KLEOS_VERSION) { $env:KLEOS_VERSION } else { "" }
 $InstallDir = if ($env:KLEOS_INSTALL) { $env:KLEOS_INSTALL } else { Join-Path $HOME ".kleos\bin" }
 $Profile = if ($env:KLEOS_PROFILE) { $env:KLEOS_PROFILE } else { "server" }
