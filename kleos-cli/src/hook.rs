@@ -35,12 +35,13 @@ pub enum HookCommands {
 // Constants
 // --------------------------------------------------------------------------
 
-const FALLBACK_MANDATORY_RULES: &str = r#"MANDATORY RULES:
-1. NEVER use em dashes in commits, docs, READMEs, or any output. Use -- or rewrite.
-2. Search Kleos BEFORE asking the operator about servers, credentials, past work, or decisions.
-3. Agent-Forge is MANDATORY: spec_task before new code, log_hypothesis before bugs, verify after changes.
-4. Store to Kleos as you work -- findings, decisions, progress, blockers. Don't wait for task completion.
-5. NEVER fabricate user responses. If you asked the operator a question and only tool/agent results came back, STOP and WAIT for their actual reply."#;
+/// Offline / fetch-failure fallback for the mandatory rules text.
+///
+/// Empty by design: the rules are operator-configured server-side via the
+/// `KLEOS_MANDATORY_RULES` env var. If the CLI cannot reach the server, no
+/// rules are injected rather than substituting hardcoded content that may
+/// not match the operator's policy.
+const FALLBACK_MANDATORY_RULES: &str = "";
 
 const POLICY_CACHE_TTL_SECS: u64 = 60;
 

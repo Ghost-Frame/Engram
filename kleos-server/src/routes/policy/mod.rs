@@ -3,21 +3,25 @@ use serde_json::{json, Value};
 
 use crate::state::AppState;
 
-/// Mandatory rules text -- matches the fallback constant in kleos-cli/src/hook.rs.
-/// CLI fetches this at session start; server is the authoritative source.
-const MANDATORY_RULES: &str = r#"MANDATORY RULES:
-1. NEVER use em dashes in commits, docs, READMEs, or any output. Use -- or rewrite.
-2. Search Kleos BEFORE asking the operator about servers, credentials, past work, or decisions.
-3. Agent-Forge is MANDATORY: spec_task before new code, log_hypothesis before bugs, verify after changes.
-4. Store to Kleos as you work -- findings, decisions, progress, blockers. Don't wait for task completion.
-5. NEVER fabricate user responses. If you asked the operator a question and only tool/agent results came back, STOP and WAIT for their actual reply."#;
-
+/// Mount the policy router. The single route, `GET /policy/mandatory`,
+/// returns the operator-configured mandatory rules text that the CLI
+/// injects into every agent session at start-up.
 pub fn router() -> Router<AppState> {
     Router::new().route("/policy/mandatory", get(mandatory))
 }
 
+/// Return the mandatory rules text configured for this Kleos instance.
+///
+/// Source: the `KLEOS_MANDATORY_RULES` environment variable on the server
+/// process. If unset or empty, returns an empty string so a fresh install
+/// injects no rules. Operators set the env var (typically via the systemd
+/// unit or shell profile) to push their own rules to every connected
+/// agent session.
+///
+/// Response shape: `{ "rules": <string>, "etag": <sha256_hex> }`. The
+/// etag lets the CLI skip re-injection when the rules have not changed.
 async fn mandatory() -> Json<Value> {
-    let rules = MANDATORY_RULES;
+    let rules = std::env::var("KLEOS_MANDATORY_RULES").unwrap_or_default();
     let hash = kleos_lib::artifacts::sha256_hex(rules.as_bytes());
     Json(json!({
         "rules": rules,
