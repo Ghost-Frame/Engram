@@ -295,6 +295,13 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "memories_community_id",
         up: apply_schema_v51_memories_community_id,
     },
+    // Syntheos parity: task dependency DAG, path claims for resource locking,
+    // and extended chiasm_tasks columns to match the standalone TypeScript stack.
+    TenantMigration {
+        version: 52,
+        description: "syntheos_parity_chiasm_extended",
+        up: apply_schema_v52_syntheos_parity,
+    },
 ];
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
@@ -792,6 +799,115 @@ fn apply_schema_v51_memories_community_id(conn: &Connection) -> Result<()> {
             ON memories(community_id) WHERE community_id IS NOT NULL;",
     )
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v51 index failed: {e}")))
+}
+
+/// Tenant v52: Syntheos parity -- creates chiasm_task_dependencies and
+/// chiasm_path_claims tables, then idempotently extends chiasm_tasks with
+/// fields required for guardrails, heartbeats, output capture, and plan/feedback.
+fn apply_schema_v52_syntheos_parity(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v52_syntheos_parity.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v52 failed: {e}")))?;
+
+    // Idempotently add extended columns to chiasm_tasks.
+    if !table_has_column(conn, "chiasm_tasks", "expected_output")? {
+        conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN expected_output TEXT;")
+            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+    }
+    if !table_has_column(conn, "chiasm_tasks", "output_format")? {
+        conn.execute_batch(
+            "ALTER TABLE chiasm_tasks ADD COLUMN output_format TEXT NOT NULL DEFAULT 'raw';",
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+    }
+    if !table_has_column(conn, "chiasm_tasks", "output")? {
+        conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN output TEXT;")
+            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+    }
+    if !table_has_column(conn, "chiasm_tasks", "condition")? {
+        conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN condition TEXT;")
+            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+    }
+    if !table_has_column(conn, "chiasm_tasks", "guardrail_url")? {
+        conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN guardrail_url TEXT;")
+            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+    }
+    if !table_has_column(conn, "chiasm_tasks", "guardrail_retries")? {
+        conn.execute_batch(
+            "ALTER TABLE chiasm_tasks ADD COLUMN guardrail_retries INTEGER NOT NULL DEFAULT 0;",
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+    }
+    if !table_has_column(conn, "chiasm_tasks", "plan")? {
+        conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN plan TEXT;")
+            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+    }
+    if !table_has_column(conn, "chiasm_tasks", "feedback")? {
+        conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN feedback TEXT;")
+            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+    }
+    if !table_has_column(conn, "chiasm_tasks", "last_heartbeat")? {
+        conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN last_heartbeat TEXT;")
+            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+    }
+    if !table_has_column(conn, "chiasm_tasks", "heartbeat_interval")? {
+        conn.execute_batch(
+            "ALTER TABLE chiasm_tasks ADD COLUMN heartbeat_interval INTEGER NOT NULL DEFAULT 300;",
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+    }
+    if !table_has_column(conn, "chiasm_tasks", "assigned")? {
+        conn.execute_batch(
+            "ALTER TABLE chiasm_tasks ADD COLUMN assigned INTEGER NOT NULL DEFAULT 1;",
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+    }
+
+    // Remove the restrictive CHECK constraint by rebuilding the table.
+    // SQLite doesn't support ALTER TABLE DROP CONSTRAINT, so we rebuild.
+    // Note: user_id was dropped from chiasm_tasks in v25, so the INSERT SELECT
+    // must not reference it; the new table's DEFAULT 1 covers existing rows.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS chiasm_tasks_new ( \
+            id INTEGER PRIMARY KEY AUTOINCREMENT, \
+            agent TEXT NOT NULL, \
+            project TEXT NOT NULL, \
+            title TEXT NOT NULL, \
+            status TEXT NOT NULL DEFAULT 'active', \
+            summary TEXT, \
+            expected_output TEXT, \
+            output_format TEXT NOT NULL DEFAULT 'raw', \
+            output TEXT, \
+            condition TEXT, \
+            guardrail_url TEXT, \
+            guardrail_retries INTEGER NOT NULL DEFAULT 0, \
+            plan TEXT, \
+            feedback TEXT, \
+            last_heartbeat TEXT, \
+            heartbeat_interval INTEGER NOT NULL DEFAULT 300, \
+            assigned INTEGER NOT NULL DEFAULT 1, \
+            created_at TEXT NOT NULL DEFAULT (datetime('now')), \
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')) \
+        ); \
+        INSERT OR IGNORE INTO chiasm_tasks_new \
+            (id, agent, project, title, status, summary, \
+             expected_output, output_format, output, condition, guardrail_url, \
+             guardrail_retries, plan, feedback, last_heartbeat, heartbeat_interval, \
+             assigned, created_at, updated_at) \
+        SELECT \
+            id, agent, project, title, status, summary, \
+            expected_output, output_format, output, condition, guardrail_url, \
+            guardrail_retries, plan, feedback, last_heartbeat, heartbeat_interval, \
+            assigned, created_at, updated_at \
+        FROM chiasm_tasks; \
+        DROP TABLE IF EXISTS chiasm_tasks; \
+        ALTER TABLE chiasm_tasks_new RENAME TO chiasm_tasks; \
+        CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_status ON chiasm_tasks(status); \
+        CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_agent ON chiasm_tasks(agent); \
+        CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_project ON chiasm_tasks(project);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("v52 chiasm_tasks rebuild failed: {e}")))?;
+
+    Ok(())
 }
 
 /// Returns true if `column` exists in `table`; false otherwise.

@@ -45,6 +45,7 @@ url = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 futures = { workspace = true }
+async-stream = "0.3"
 rusqlite = { workspace = true }
 secrecy = { workspace = true }
 mimalloc = { workspace = true }

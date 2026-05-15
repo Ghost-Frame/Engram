@@ -8,8 +8,9 @@ use kleos_lib::llm::{local::LocalModelClient, OllamaConfig};
 use kleos_lib::reranker::{self, Reranker};
 use kleos_lib::services::brain::create_brain_backend;
 use kleos_server::background::{
-    start_auto_backup_task, start_auto_checkpoint_task, start_job_cleanup_task,
-    start_job_worker_task, start_session_reaper_task, start_vector_sync_replay_task,
+    start_auto_backup_task, start_auto_checkpoint_task, start_event_retention_task,
+    start_job_cleanup_task, start_job_worker_task, start_session_reaper_task,
+    start_stale_task_sweeper, start_vector_sync_replay_task,
 };
 use kleos_server::dreamer::{new_stats_handle, start_dreamer_task};
 use kleos_server::state::AppState;
@@ -391,6 +392,24 @@ async fn main() {
             start_vector_sync_replay_task(Arc::clone(&db), registry.clone())
         }));
         tracing::info!("vector-sync-replay background task started");
+    }
+
+    {
+        let db = Arc::clone(&state.db);
+        let registry = state.tenant_registry.clone();
+        supervised.push(Supervised::spawn("stale-task-sweeper", move || {
+            start_stale_task_sweeper(Arc::clone(&db), registry.clone())
+        }));
+        tracing::info!("stale-task sweeper background task started (60s interval)");
+    }
+
+    {
+        let db = Arc::clone(&state.db);
+        let registry = state.tenant_registry.clone();
+        supervised.push(Supervised::spawn("event-retention", move || {
+            start_event_retention_task(Arc::clone(&db), registry.clone())
+        }));
+        tracing::info!("event-retention background task started (3600s interval)");
     }
 
     if state.config.backup_enabled {

@@ -639,6 +639,7 @@ pub async fn reap_stale_sessions(
     count
 }
 
+/// Reaps expired sessions periodically.
 pub fn start_session_reaper_task(
     sessions: crate::state::SessionMap,
 ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
@@ -669,10 +670,120 @@ pub fn start_session_reaper_task(
     (token, handle)
 }
 
+/// Sweeps all tenants for stale Chiasm tasks every 60 seconds.
+///
+/// A task is stale when its last heartbeat exceeds `heartbeat_interval * 2`
+/// seconds ago. Stale tasks are moved to the "stale" status and their path
+/// claims are released.
+pub fn start_stale_task_sweeper(
+    db: Arc<Database>,
+    registry: Option<Arc<TenantRegistry>>,
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+
+    let handle = tokio::spawn(async move {
+        let interval = Duration::from_secs(60);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    info!("stale-task sweeper shutting down");
+                    break;
+                }
+                _ = tokio::time::sleep(interval) => {
+                    if let Some(ref reg) = registry {
+                        let tenants = match reg.list() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warn!(error = %e, "stale-task sweeper: failed to list tenants");
+                                continue;
+                            }
+                        };
+                        for tenant_row in tenants {
+                            if tenant_row.status != kleos_lib::tenant::TenantStatus::Active {
+                                continue;
+                            }
+                            let handle = match reg.get(&tenant_row.user_id).await {
+                                Ok(Some(h)) => h,
+                                _ => continue,
+                            };
+                            if let Err(e) = kleos_lib::services::chiasm::heartbeat::mark_stale_tasks(&handle.db, 2.0).await {
+                                warn!(tenant = %tenant_row.tenant_id, error = %e, "stale-task sweep error");
+                            }
+                        }
+                    } else {
+                        if let Err(e) = kleos_lib::services::chiasm::heartbeat::mark_stale_tasks(&db, 2.0).await {
+                            warn!(error = %e, "stale-task sweep error");
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    (token, handle)
+}
+
+/// Prunes expired Axon events hourly based on each channel's retain_hours.
+pub fn start_event_retention_task(
+    db: Arc<Database>,
+    registry: Option<Arc<TenantRegistry>>,
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+
+    let handle = tokio::spawn(async move {
+        let interval = Duration::from_secs(3600);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    info!("event-retention task shutting down");
+                    break;
+                }
+                _ = tokio::time::sleep(interval) => {
+                    if let Some(ref reg) = registry {
+                        let tenants = match reg.list() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warn!(error = %e, "event-retention: failed to list tenants");
+                                continue;
+                            }
+                        };
+                        for tenant_row in tenants {
+                            if tenant_row.status != kleos_lib::tenant::TenantStatus::Active {
+                                continue;
+                            }
+                            let handle = match reg.get(&tenant_row.user_id).await {
+                                Ok(Some(h)) => h,
+                                _ => continue,
+                            };
+                            match kleos_lib::services::axon::retention::prune_expired_events(&handle.db).await {
+                                Ok(n) if n > 0 => info!(tenant = %tenant_row.tenant_id, pruned = n, "axon retention: pruned events"),
+                                Err(e) => warn!(tenant = %tenant_row.tenant_id, error = %e, "axon retention error"),
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        match kleos_lib::services::axon::retention::prune_expired_events(&db).await {
+                            Ok(n) if n > 0 => info!(pruned = n, "axon retention: pruned events"),
+                            Err(e) => warn!(error = %e, "axon retention error"),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    (token, handle)
+}
+
+/// Unit tests.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Test: an absolute backup dir path is returned unchanged.
     #[test]
     fn resolve_backup_dir_absolute_passes_through() {
         let abs = if cfg!(windows) {
@@ -683,6 +794,7 @@ mod tests {
         assert_eq!(resolve_backup_dir("/var/data", abs), PathBuf::from(abs));
     }
 
+    /// Test: a relative backup dir path is joined to the data directory.
     #[test]
     fn resolve_backup_dir_relative_joins_data_dir() {
         assert_eq!(
@@ -691,6 +803,7 @@ mod tests {
         );
     }
 
+    /// Test: list_backups returns only prefixed backup files sorted by name.
     #[test]
     fn list_backups_filters_by_prefix_and_sorts() {
         let dir = std::env::temp_dir().join(format!("kleos-backups-list-{}", uuid::Uuid::new_v4()));
@@ -712,6 +825,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Test: date component is correctly parsed from valid backup filenames.
     #[test]
     fn backup_date_component_parses_valid_names() {
         assert_eq!(
@@ -724,6 +838,7 @@ mod tests {
         );
     }
 
+    /// Test: malformed backup filenames return None from backup_date_component.
     #[test]
     fn backup_date_component_rejects_malformed_names() {
         assert_eq!(
@@ -734,6 +849,7 @@ mod tests {
         assert_eq!(backup_date_component(Path::new("kleos-backup-.db")), None);
     }
 
+    /// Test: the first backup of a date is copied into the daily directory.
     #[test]
     fn promote_to_daily_copies_first_backup_of_date() {
         let dir = std::env::temp_dir().join(format!("kleos-promote-{}", uuid::Uuid::new_v4()));
@@ -748,6 +864,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Test: a date with an existing daily entry is not promoted again.
     #[test]
     fn promote_to_daily_skips_when_date_already_promoted() {
         let dir = std::env::temp_dir().join(format!("kleos-promote2-{}", uuid::Uuid::new_v4()));
@@ -766,6 +883,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Test: prune_backups deletes the oldest files when count exceeds retention limit.
     #[test]
     fn prune_backups_removes_oldest_beyond_retention() {
         let dir =

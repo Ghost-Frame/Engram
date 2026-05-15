@@ -1,3 +1,4 @@
+mod sse;
 mod types;
 
 use axum::extract::{Path, Query};
@@ -19,6 +20,7 @@ use types::{
     QueryEventsParams, SubscribeBody, UnsubscribeBody,
 };
 
+/// Builds the Axon event bus router.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/axon/publish", post(publish_event_handler))
@@ -36,8 +38,10 @@ pub fn router() -> Router<AppState> {
         .route("/axon/poll", post(poll_handler))
         .route("/axon/cursor", get(get_cursor_handler))
         .route("/axon/stats", get(get_stats))
+        .route("/axon/stream", get(sse::stream_handler))
 }
 
+/// Publishes a new event.
 async fn publish_event_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -62,6 +66,7 @@ async fn publish_event_handler(
     Ok((StatusCode::CREATED, Json(json!(event))))
 }
 
+/// Lists events with optional filters.
 async fn list_events_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -95,6 +100,7 @@ async fn list_events_handler(
     Ok(Json(json!({ "events": events, "count": events.len() })))
 }
 
+/// Retrieves a single event by ID.
 async fn get_event_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -104,6 +110,7 @@ async fn get_event_handler(
     Ok(Json(json!(event)))
 }
 
+/// Lists all channels.
 async fn list_channels_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,
@@ -112,6 +119,7 @@ async fn list_channels_handler(
     Ok(Json(json!({ "channels": channels })))
 }
 
+/// Returns Axon statistics.
 async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = get_axon_stats(&db).await?;
     Ok(Json(json!(stats)))
@@ -132,6 +140,7 @@ async fn create_channel_handler(
     ))
 }
 
+/// Subscribes an agent to a channel.
 async fn subscribe_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -151,6 +160,7 @@ async fn subscribe_handler(
     Ok((StatusCode::CREATED, Json(json!(sub))))
 }
 
+/// Unsubscribes from a channel.
 async fn unsubscribe_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,
@@ -160,6 +170,7 @@ async fn unsubscribe_handler(
     Ok(Json(json!({ "deleted": deleted })))
 }
 
+/// Lists subscriptions for an agent.
 async fn list_subscriptions_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -169,6 +180,7 @@ async fn list_subscriptions_handler(
     Ok(Json(json!({ "subscriptions": subs, "count": subs.len() })))
 }
 
+/// Polls for new events.
 async fn poll_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -184,6 +196,7 @@ async fn poll_handler(
     })))
 }
 
+/// Retrieves cursor position.
 async fn get_cursor_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,

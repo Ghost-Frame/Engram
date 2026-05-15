@@ -529,6 +529,20 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: true,
     },
+    Migration {
+        version: 60,
+        description: "chiasm_extended_fields",
+        up: run_migration_chiasm_extended_fields,
+        down: None,
+        transactional: true,
+    },
+    Migration {
+        version: 61,
+        description: "chiasm_path_claims",
+        up: run_migration_chiasm_path_claims,
+        down: None,
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -653,6 +667,11 @@ const MIGRATION_SKILL_DISPATCH_CONFIGS: i64 = 57;
 const MIGRATION_API_KEY_HASH_VERSION_FIXUP: i64 = 58;
 /// Version number for adding narrative and axon_event_id columns to broca_actions.
 const MIGRATION_BROCA_NARRATIVE_COLUMNS: i64 = 59;
+
+/// Version number for the Chiasm extended-fields migration.
+const MIGRATION_CHIASM_EXTENDED_FIELDS: i64 = 60;
+/// Version number for creating chiasm path claims and task dependencies tables.
+const MIGRATION_CHIASM_PATH_CLAIMS: i64 = 61;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1127,6 +1146,22 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             MIGRATION_BROCA_NARRATIVE_COLUMNS,
             "broca_narrative_columns",
         )?;
+    }
+
+    if current_version < MIGRATION_CHIASM_EXTENDED_FIELDS {
+        info!("Running migration 60: chiasm_extended_fields");
+        run_migration_chiasm_extended_fields(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_CHIASM_EXTENDED_FIELDS,
+            "chiasm_extended_fields",
+        )?;
+    }
+
+    if current_version < MIGRATION_CHIASM_PATH_CLAIMS {
+        info!("Running migration 61: chiasm_path_claims");
+        run_migration_chiasm_path_claims(conn)?;
+        record_migration(conn, MIGRATION_CHIASM_PATH_CLAIMS, "chiasm_path_claims")?;
     }
 
     Ok(())
@@ -3948,6 +3983,136 @@ fn run_migration_api_key_hash_version_fixup(conn: &rusqlite::Connection) -> Resu
 fn run_migration_broca_narrative_columns(conn: &rusqlite::Connection) -> Result<()> {
     add_column_if_not_exists(conn, "broca_actions", "narrative", "TEXT")?;
     add_column_if_not_exists(conn, "broca_actions", "axon_event_id", "INTEGER")?;
+    Ok(())
+}
+
+// Migration 60: Chiasm extended fields (syntheos parity)
+
+/// Migration 60: adds the extended Syntheos-parity columns to `chiasm_tasks`
+/// in the monolith database and removes the restrictive status CHECK constraint
+/// by rebuilding the table.
+///
+/// Fresh tenant shards receive these columns via tenant migration v52. This
+/// migration brings the monolith database into parity using the same idempotent
+/// ADD COLUMN pattern followed by a table rebuild that drops the CHECK
+/// constraint on `status`, allowing the three new statuses
+/// (blocked_on_human, stale, queued) to be inserted.
+fn run_migration_chiasm_extended_fields(conn: &rusqlite::Connection) -> Result<()> {
+    add_column_if_not_exists(conn, "chiasm_tasks", "expected_output", "TEXT")?;
+    add_column_if_not_exists(
+        conn,
+        "chiasm_tasks",
+        "output_format",
+        "TEXT NOT NULL DEFAULT 'raw'",
+    )?;
+    add_column_if_not_exists(conn, "chiasm_tasks", "output", "TEXT")?;
+    add_column_if_not_exists(conn, "chiasm_tasks", "condition", "TEXT")?;
+    add_column_if_not_exists(conn, "chiasm_tasks", "guardrail_url", "TEXT")?;
+    add_column_if_not_exists(
+        conn,
+        "chiasm_tasks",
+        "guardrail_retries",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_not_exists(conn, "chiasm_tasks", "plan", "TEXT")?;
+    add_column_if_not_exists(conn, "chiasm_tasks", "feedback", "TEXT")?;
+    add_column_if_not_exists(conn, "chiasm_tasks", "last_heartbeat", "TEXT")?;
+    add_column_if_not_exists(
+        conn,
+        "chiasm_tasks",
+        "heartbeat_interval",
+        "INTEGER NOT NULL DEFAULT 300",
+    )?;
+    add_column_if_not_exists(
+        conn,
+        "chiasm_tasks",
+        "assigned",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+
+    // Rebuild the table to remove the CHECK(status IN (...)) constraint that
+    // would reject the new statuses blocked_on_human, stale, and queued.
+    // SQLite has no ALTER TABLE DROP CONSTRAINT; the only option is a rebuild.
+    // The user_id column was dropped in migration 28, so the SELECT must omit it.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS chiasm_tasks_new ( \
+            id INTEGER PRIMARY KEY AUTOINCREMENT, \
+            agent TEXT NOT NULL, \
+            project TEXT NOT NULL, \
+            title TEXT NOT NULL, \
+            status TEXT NOT NULL DEFAULT 'active', \
+            summary TEXT, \
+            expected_output TEXT, \
+            output_format TEXT NOT NULL DEFAULT 'raw', \
+            output TEXT, \
+            condition TEXT, \
+            guardrail_url TEXT, \
+            guardrail_retries INTEGER NOT NULL DEFAULT 0, \
+            plan TEXT, \
+            feedback TEXT, \
+            last_heartbeat TEXT, \
+            heartbeat_interval INTEGER NOT NULL DEFAULT 300, \
+            assigned INTEGER NOT NULL DEFAULT 1, \
+            created_at TEXT NOT NULL DEFAULT (datetime('now')), \
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')) \
+        ); \
+        INSERT OR IGNORE INTO chiasm_tasks_new \
+            (id, agent, project, title, status, summary, \
+             expected_output, output_format, output, condition, guardrail_url, \
+             guardrail_retries, plan, feedback, last_heartbeat, heartbeat_interval, \
+             assigned, created_at, updated_at) \
+        SELECT \
+            id, agent, project, title, status, summary, \
+            expected_output, output_format, output, condition, guardrail_url, \
+            guardrail_retries, plan, feedback, last_heartbeat, heartbeat_interval, \
+            assigned, created_at, updated_at \
+        FROM chiasm_tasks; \
+        DROP TABLE IF EXISTS chiasm_tasks; \
+        ALTER TABLE chiasm_tasks_new RENAME TO chiasm_tasks; \
+        CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_status ON chiasm_tasks(status); \
+        CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_agent ON chiasm_tasks(agent); \
+        CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_project ON chiasm_tasks(project);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("migration 60 chiasm_tasks rebuild: {e}")))?;
+
+    Ok(())
+}
+
+/// Migration 61: create `chiasm_path_claims` and `chiasm_task_dependencies`
+/// tables in the monolith database.
+///
+/// Fresh tenant shards receive these tables via tenant migration v52. This
+/// migration brings the monolith database into parity using the same
+/// `CREATE TABLE IF NOT EXISTS` pattern so it is idempotent and safe to
+/// apply against databases that already have the tables (e.g. if tenant
+/// migration SQL was ever run against the monolith directly).
+fn run_migration_chiasm_path_claims(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS chiasm_task_dependencies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES chiasm_tasks(id) ON DELETE CASCADE,
+            depends_on INTEGER NOT NULL REFERENCES chiasm_tasks(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(task_id, depends_on)
+        );
+        CREATE INDEX IF NOT EXISTS idx_chiasm_deps_task ON chiasm_task_dependencies(task_id);
+        CREATE INDEX IF NOT EXISTS idx_chiasm_deps_depends ON chiasm_task_dependencies(depends_on);
+        CREATE TABLE IF NOT EXISTS chiasm_path_claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES chiasm_tasks(id) ON DELETE CASCADE,
+            agent TEXT NOT NULL,
+            project TEXT NOT NULL,
+            path TEXT NOT NULL,
+            claimed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL,
+            released INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_chiasm_claims_project_path ON chiasm_path_claims(project, path);
+        CREATE INDEX IF NOT EXISTS idx_chiasm_claims_task ON chiasm_path_claims(task_id);
+        CREATE INDEX IF NOT EXISTS idx_chiasm_claims_expires ON chiasm_path_claims(expires_at);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("migration 61 chiasm_path_claims: {e}")))?;
+    info!("Migration 61 complete: chiasm_path_claims and chiasm_task_dependencies created");
     Ok(())
 }
 

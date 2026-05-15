@@ -170,6 +170,11 @@ async fn chiasm_tasks_isolated_across_tenants() {
             status: Some("active".into()),
             summary: None,
             user_id: Some(1),
+            expected_output: None,
+            output_format: None,
+            condition: None,
+            guardrail_url: None,
+            heartbeat_interval: None,
         },
     )
     .await
