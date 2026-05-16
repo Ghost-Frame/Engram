@@ -14,9 +14,6 @@ variables:
   - &ci_env
     CARGO_TARGET_DIR: target
     CARGO_BUILD_RUSTC_WRAPPER: ""
-  - &ci_env_arm64
-    CARGO_TARGET_DIR: target-arm64
-    CARGO_BUILD_RUSTC_WRAPPER: ""
   - &ci_env_windows
     CARGO_TARGET_DIR: target-windows
     CARGO_BUILD_RUSTC_WRAPPER: ""
@@ -71,7 +68,7 @@ steps:
       - cargo deny check
 
   # ── Release builds (tags only) ───────────────────────────────
-  # Three parallel build steps: linux-x64 (native), linux-arm64, windows-x64
+  # Two parallel build steps: linux-x64 (native), windows-x64
 
   build-linux-x64:
     image: *rust_image
@@ -94,33 +91,6 @@ steps:
         done
       - ls -lh release-artifacts/
 
-  build-linux-arm64:
-    image: *rust_image
-    when:
-      - event: tag
-    environment: *ci_env_arm64
-    commands:
-      - dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross liblzma-dev:arm64 perl make && rm -rf /var/lib/apt/lists/*
-      - rustup target add aarch64-unknown-linux-gnu
-      - export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-      - export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
-      - export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
-      - export PKG_CONFIG_ALLOW_CROSS=1
-      - export CARGO_BUILD_JOBS=4
-      - cargo build --profile release-prod --target aarch64-unknown-linux-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-server
-      - cargo build --profile release-prod --target aarch64-unknown-linux-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cli -p kleos-sidecar
-      - cargo build --profile release-prod --target aarch64-unknown-linux-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cred
-      - cargo build --profile release-prod --target aarch64-unknown-linux-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
-      - mkdir -p release-artifacts
-      - |
-        for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-sh agent-forge eidolon-supervisor kr kw ke; do
-          src="target-arm64/aarch64-unknown-linux-gnu/release-prod/$bin"
-          if [ -f "$src" ]; then
-            cp "$src" "release-artifacts/$bin-linux-arm64"
-          fi
-        done
-      - ls -lh release-artifacts/
-
   build-windows-x64:
     image: *rust_image
     when:
@@ -130,10 +100,7 @@ steps:
       - apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 perl make && rm -rf /var/lib/apt/lists/*
       - rustup target add x86_64-pc-windows-gnu
       - export CARGO_BUILD_JOBS=4
-      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-server
-      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cli -p kleos-sidecar
-      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cred
-      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-sh -p agent-forge -p eidolon-supervisor
+      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-server -p kleos-cli -p kleos-sidecar -p kleos-cred -p kleos-sh -p agent-forge -p eidolon-supervisor
       - mkdir -p release-artifacts
       - |
         for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-sh agent-forge eidolon-supervisor kr kw ke; do
@@ -148,7 +115,8 @@ steps:
     image: woodpeckerci/plugin-release
     when:
       - event: tag
-    depends_on: [build-linux-x64, build-linux-arm64, build-windows-x64]
+        status: [success, failure]
+    depends_on: [build-linux-x64, build-windows-x64]
     settings:
       files:
         - "release-artifacts/*"
@@ -163,6 +131,7 @@ steps:
     image: woodpeckerci/plugin-docker-buildx
     when:
       - event: tag
+    failure: ignore
     settings:
       repo: ghostframe/kleos
       tags:
