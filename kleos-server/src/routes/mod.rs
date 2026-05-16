@@ -48,6 +48,7 @@ pub mod security;
 pub mod sessions;
 pub mod skills;
 pub mod soma;
+pub mod structural;
 pub mod supervisor;
 pub mod tasks;
 pub mod thymus;

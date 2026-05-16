@@ -1162,6 +1162,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
         step_type: String,
         config: serde_json::Value,
         merged_input: serde_json::Value,
+        timeout_ms: i32,
     }
 
     let mut ready_steps: Vec<ReadyStep> = Vec::new();
@@ -1212,6 +1213,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
             step_type: step.step_type.clone(),
             config: step.config.clone(),
             merged_input: serde_json::Value::Object(merged),
+            timeout_ms: step.timeout_ms,
         });
     }
 
@@ -1245,7 +1247,6 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
 
         match ready.step_type.as_str() {
             "transform" => {
-                // Execute inline
                 execute_transform_step(
                     db,
                     ready.id,
@@ -1255,12 +1256,27 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
                 )
                 .await?;
             }
-            // webhook and llm: leave as running -- Phase 2 will add HTTP executors
-            "webhook" | "llm" => {
-                info!(
-                    "step '{}' type '{}' requires external executor (Phase 2)",
-                    ready.name, ready.step_type
-                );
+            "webhook" => {
+                execute_webhook_step(
+                    db,
+                    ready.id,
+                    &ready.config,
+                    &ready.merged_input,
+                    ready.timeout_ms,
+                    run.user_id,
+                )
+                .await?;
+            }
+            "llm" => {
+                execute_llm_step(
+                    db,
+                    ready.id,
+                    &ready.config,
+                    &ready.merged_input,
+                    ready.timeout_ms,
+                    run.user_id,
+                )
+                .await?;
             }
             // action, decision, parallel, wait: need external completion
             _ => {
@@ -1406,4 +1422,357 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
         active_runs,
         steps,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Webhook + LLM executors (ports of the standalone loom advance_run executors)
+// ---------------------------------------------------------------------------
+
+/// Shared HTTP client for webhook + LLM step execution. Allocated once per
+/// process; each call layers its own per-step timeout via `RequestBuilder::timeout`.
+static LOOM_HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    crate::net::safe_client_builder()
+        .pool_max_idle_per_host(4)
+        .build()
+        .expect("LOOM_HTTP_CLIENT build failed")
+});
+
+/// Maximum body slice retained in error messages from non-2xx responses, in
+/// bytes. Mirrors the standalone's `text.slice(0, 500)`.
+const LOOM_ERR_BODY_CAP: usize = 500;
+
+/// Execute a `webhook`-type step by POSTing `{ step_id, run_id, input, config }`
+/// to the configured URL, then completing the step with the parsed JSON
+/// response. Non-2xx responses and transport errors route through `fail_step`
+/// so the existing retry machinery applies.
+#[tracing::instrument(skip(db, config, input), fields(step_id, user_id, timeout_ms))]
+pub async fn execute_webhook_step(
+    db: &Database,
+    step_id: i64,
+    config: &serde_json::Value,
+    input: &serde_json::Value,
+    timeout_ms: i32,
+    user_id: i64,
+) -> Result<()> {
+    let url = match config.get("url").and_then(|v| v.as_str()) {
+        Some(u) if !u.is_empty() => u.to_string(),
+        _ => {
+            Box::pin(fail_step(db, step_id, "webhook step requires config.url", user_id)).await?;
+            return Ok(());
+        }
+    };
+
+    // SECURITY: validate before issuing the request to prevent SSRF.
+    if let Err(e) = crate::webhooks::validate_webhook_url(&url) {
+        let msg = format!("webhook url rejected: {}", e);
+        Box::pin(fail_step(db, step_id, &msg, user_id)).await?;
+        return Ok(());
+    }
+
+    let method = config
+        .get("method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("POST")
+        .to_uppercase();
+    let timeout = std::time::Duration::from_millis(timeout_ms.max(1) as u64);
+
+    let body = serde_json::json!({
+        "step_id": step_id,
+        "input": input,
+        "config": config,
+    });
+
+    let mut req = match method.as_str() {
+        "GET" => LOOM_HTTP_CLIENT.get(&url),
+        "PUT" => LOOM_HTTP_CLIENT.put(&url).json(&body),
+        "DELETE" => LOOM_HTTP_CLIENT.delete(&url),
+        "PATCH" => LOOM_HTTP_CLIENT.patch(&url).json(&body),
+        _ => LOOM_HTTP_CLIENT.post(&url).json(&body),
+    };
+
+    // Layer per-step timeout and optional caller-supplied headers.
+    req = req.timeout(timeout);
+    if let Some(serde_json::Value::Object(headers)) = config.get("headers") {
+        for (k, v) in headers {
+            if let Some(val) = v.as_str() {
+                req = req.header(k.as_str(), val);
+            }
+        }
+    }
+
+    let response = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("webhook request failed: {}", e);
+            Box::pin(fail_step(db, step_id, &msg, user_id)).await?;
+            return Ok(());
+        }
+    };
+
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        let snippet: String = text.chars().take(LOOM_ERR_BODY_CAP).collect();
+        let msg = format!("HTTP {}: {}", status.as_u16(), snippet);
+        Box::pin(fail_step(db, step_id, &msg, user_id)).await?;
+        return Ok(());
+    }
+
+    let output: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({ "body": text }));
+    Box::pin(complete_step(db, step_id, output, user_id)).await?;
+    Ok(())
+}
+
+/// Execute an `llm`-type step by calling the configured endpoint. Detects
+/// OpenAI-compatible chat completions (`/v1/chat`, `/chat/completions`) versus
+/// the engram-style `{system, prompt}` shape. When `config.schema` is set, the
+/// system prompt is augmented with JSON-only instructions and the response is
+/// validated as JSON with up to 3 retries before failing the step.
+///
+/// Supported config keys:
+/// - `url` (required)
+/// - `api_key`, `model`, `temperature`
+/// - `system`, `prompt` -- both support `{{var}}` interpolation against the
+///   merged step input
+/// - `input_map` -- map of `{ alias: source_key }` to rename input variables
+/// - `schema` -- JSON object embedded into the system prompt for structured output
+#[tracing::instrument(skip(db, config, input), fields(step_id, user_id, timeout_ms))]
+pub async fn execute_llm_step(
+    db: &Database,
+    step_id: i64,
+    config: &serde_json::Value,
+    input: &serde_json::Value,
+    timeout_ms: i32,
+    user_id: i64,
+) -> Result<()> {
+    let url = match config.get("url").and_then(|v| v.as_str()) {
+        Some(u) if !u.is_empty() => u.to_string(),
+        _ => {
+            Box::pin(fail_step(db, step_id, "llm step requires config.url", user_id)).await?;
+            return Ok(());
+        }
+    };
+
+    let vars = serde_json::Value::Object(build_llm_vars(input, config.get("input_map")));
+
+    let prompt_template = config
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let user_prompt = interpolate(prompt_template, &vars);
+
+    let system_template = config.get("system").and_then(|v| v.as_str());
+    let mut system_prompt = match system_template {
+        Some(s) => interpolate(s, &vars),
+        None => "You are a helpful assistant.".to_string(),
+    };
+
+    let schema = config.get("schema").cloned();
+    if let Some(ref s) = schema {
+        let schema_pretty = serde_json::to_string_pretty(s).unwrap_or_else(|_| s.to_string());
+        system_prompt.push_str(&format!(
+            "\n\nYou MUST respond with a valid JSON object matching this schema:\n{}\n\nRespond with ONLY the JSON object, no other text.",
+            schema_pretty
+        ));
+    }
+
+    let model = config
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| "gpt-4o-mini".to_string());
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let temperature = config
+        .get("temperature")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.7);
+    let timeout = std::time::Duration::from_millis(timeout_ms.max(1) as u64);
+
+    let is_openai_compat = url.contains("/v1/chat") || url.contains("/chat/completions");
+
+    let body = if is_openai_compat {
+        serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": user_prompt },
+            ],
+            "temperature": temperature,
+        })
+    } else {
+        serde_json::json!({
+            "system": system_prompt,
+            "prompt": user_prompt,
+            "model": model,
+        })
+    };
+
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut last_err: String = String::new();
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        let mut req = LOOM_HTTP_CLIENT.post(&url).timeout(timeout).json(&body);
+        if let Some(ref key) = api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let response = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("llm request failed: {}", e);
+                if attempt == MAX_ATTEMPTS {
+                    Box::pin(fail_step(db, step_id, &last_err, user_id)).await?;
+                    return Ok(());
+                }
+                continue;
+            }
+        };
+
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            let snippet: String = text.chars().take(LOOM_ERR_BODY_CAP).collect();
+            last_err = format!("LLM HTTP {}: {}", status.as_u16(), snippet);
+            if attempt == MAX_ATTEMPTS {
+                Box::pin(fail_step(db, step_id, &last_err, user_id)).await?;
+                return Ok(());
+            }
+            continue;
+        }
+
+        let data: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => serde_json::Value::Null,
+        };
+
+        // Extract the model's text content from whichever response shape arrived.
+        let extracted = if is_openai_compat {
+            data.pointer("/choices/0/message/content")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_default()
+        } else {
+            data.get("result")
+                .or_else(|| data.get("text"))
+                .or_else(|| data.get("content"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| text.clone())
+        };
+
+        if schema.is_some() {
+            // Pull the first {...} block out of the model text and parse it.
+            let candidate = extract_json_object(&extracted).unwrap_or(extracted.clone());
+            match serde_json::from_str::<serde_json::Value>(&candidate) {
+                Ok(parsed) => {
+                    let output = serde_json::json!({
+                        "result": parsed,
+                        "raw": extracted,
+                        "attempt": attempt,
+                    });
+                    Box::pin(complete_step(db, step_id, output, user_id)).await?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_err = format!(
+                        "LLM returned invalid JSON (attempt {}): {} -- response: {}",
+                        attempt,
+                        e,
+                        extracted.chars().take(LOOM_ERR_BODY_CAP).collect::<String>()
+                    );
+                    if attempt == MAX_ATTEMPTS {
+                        Box::pin(fail_step(db, step_id, &last_err, user_id)).await?;
+                        return Ok(());
+                    }
+                    continue;
+                }
+            }
+        }
+
+        let output = serde_json::json!({
+            "result": extracted,
+            "attempt": attempt,
+        });
+        Box::pin(complete_step(db, step_id, output, user_id)).await?;
+        return Ok(());
+    }
+
+    // Defensive: only reached if MAX_ATTEMPTS is 0.
+    Box::pin(fail_step(
+        db,
+        step_id,
+        if last_err.is_empty() {
+            "llm step exhausted retries"
+        } else {
+            last_err.as_str()
+        },
+        user_id,
+    ))
+    .await?;
+    Ok(())
+}
+
+/// Build the template-variable context for an LLM step. Starts with every
+/// key in the step's merged input (object only -- non-object inputs are
+/// ignored), then applies the optional `input_map` aliases.
+fn build_llm_vars(
+    input: &serde_json::Value,
+    input_map: Option<&serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut vars = serde_json::Map::new();
+    if let serde_json::Value::Object(map) = input {
+        for (k, v) in map {
+            vars.insert(k.clone(), v.clone());
+        }
+    }
+    if let Some(serde_json::Value::Object(aliases)) = input_map {
+        for (alias, source) in aliases {
+            if let Some(src) = source.as_str() {
+                if let Some(val) = vars.get(src).cloned() {
+                    vars.insert(alias.clone(), val);
+                }
+            }
+        }
+    }
+    vars
+}
+
+/// Locate the first balanced `{...}` JSON object embedded in `text`. Returns
+/// `None` when no opening brace is present or braces are unbalanced.
+fn extract_json_object(text: &str) -> Option<String> {
+    let start = text.find('{')?;
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut escape = false;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        if in_str {
+            if escape {
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(text[start..=i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }

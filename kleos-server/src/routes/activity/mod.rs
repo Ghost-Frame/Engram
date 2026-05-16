@@ -25,7 +25,8 @@ async fn report_activity(
     Auth(auth): Auth,
     Json(body): Json<ActivityReport>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let memory_id = process_activity(&db, &body, auth.user_id).await?;
+    let caller_user_id = auth.user_id;
+    let memory_id = process_activity(&db, &body, caller_user_id).await?;
 
     // Brain absorption: fire-and-forget, best-effort, never fails the response.
     // Bounded by brain_absorb_sem (H-005); shutdown-propagated via shutdown_token (M-008).
@@ -70,7 +71,7 @@ async fn report_activity(
                     tracing::debug!("background brain_absorb drained on shutdown");
                 }
                 _ = absorb_activity_to_brain(
-                    brain, embedder, memory_id, content, category, importance, source,
+                    brain, embedder, caller_user_id, memory_id, content, category, importance, source,
                 ) => {}
             }
         });

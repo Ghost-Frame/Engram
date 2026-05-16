@@ -32,6 +32,18 @@ pub struct AxonStats {
     pub total_events: i64,
     pub channels: i64,
     pub sources: i64,
+    /// Per-channel breakdown: event count and most recent `created_at`. Ports
+    /// the standalone axon `/stats.by_channel` payload.
+    #[serde(default)]
+    pub by_channel: Vec<ChannelStat>,
+}
+
+/// One row of the per-channel stats breakdown returned by [`get_stats`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelStat {
+    pub channel: String,
+    pub count: i64,
+    pub latest: Option<String>,
 }
 
 /// An Axon pub/sub channel.
@@ -460,23 +472,48 @@ pub async fn consume(
     Ok(events)
 }
 
-/// Returns aggregate Axon statistics.
+/// Returns aggregate Axon statistics including a per-channel breakdown.
 #[tracing::instrument(skip(db))]
 pub async fn get_stats(db: &Database) -> Result<AxonStats> {
     db.read(move |conn| {
-        conn.query_row(
-            "SELECT COUNT(*), COUNT(DISTINCT channel), COUNT(DISTINCT source)
-             FROM axon_events",
-            [],
-            |row| {
-                Ok(AxonStats {
-                    total_events: row.get(0)?,
-                    channels: row.get(1)?,
-                    sources: row.get(2)?,
-                })
-            },
-        )
-        .map_err(rusqlite_to_eng_error)
+        let (total_events, channels, sources) = conn
+            .query_row(
+                "SELECT COUNT(*), COUNT(DISTINCT channel), COUNT(DISTINCT source)
+                 FROM axon_events",
+                [],
+                |row| {
+                    let total: i64 = row.get(0)?;
+                    let chans: i64 = row.get(1)?;
+                    let srcs: i64 = row.get(2)?;
+                    Ok((total, chans, srcs))
+                },
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        let mut by_channel = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT channel, COUNT(*), MAX(created_at)
+                 FROM axon_events
+                 GROUP BY channel
+                 ORDER BY channel ASC",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            by_channel.push(ChannelStat {
+                channel: row.get(0).map_err(rusqlite_to_eng_error)?,
+                count: row.get(1).map_err(rusqlite_to_eng_error)?,
+                latest: row.get(2).map_err(rusqlite_to_eng_error)?,
+            });
+        }
+
+        Ok(AxonStats {
+            total_events,
+            channels,
+            sources,
+            by_channel,
+        })
     })
     .await
 }

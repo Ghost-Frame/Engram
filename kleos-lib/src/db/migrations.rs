@@ -543,6 +543,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: true,
     },
+    Migration {
+        version: 62,
+        description: "chiasm_agent_keys",
+        up: run_migration_chiasm_agent_keys,
+        down: None,
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -672,6 +679,7 @@ const MIGRATION_BROCA_NARRATIVE_COLUMNS: i64 = 59;
 const MIGRATION_CHIASM_EXTENDED_FIELDS: i64 = 60;
 /// Version number for creating chiasm path claims and task dependencies tables.
 const MIGRATION_CHIASM_PATH_CLAIMS: i64 = 61;
+const MIGRATION_CHIASM_AGENT_KEYS: i64 = 62;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1162,6 +1170,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 61: chiasm_path_claims");
         run_migration_chiasm_path_claims(conn)?;
         record_migration(conn, MIGRATION_CHIASM_PATH_CLAIMS, "chiasm_path_claims")?;
+    }
+
+    if current_version < MIGRATION_CHIASM_AGENT_KEYS {
+        info!("Running migration 62: chiasm_agent_keys");
+        run_migration_chiasm_agent_keys(conn)?;
+        record_migration(conn, MIGRATION_CHIASM_AGENT_KEYS, "chiasm_agent_keys")?;
     }
 
     Ok(())
@@ -4113,6 +4127,29 @@ fn run_migration_chiasm_path_claims(conn: &rusqlite::Connection) -> Result<()> {
     )
     .map_err(|e| EngError::DatabaseMessage(format!("migration 61 chiasm_path_claims: {e}")))?;
     info!("Migration 61 complete: chiasm_path_claims and chiasm_task_dependencies created");
+    Ok(())
+}
+
+/// Migration 62: create `chiasm_agent_keys` table for per-agent bearer keys.
+/// Mirrors the standalone chiasm schema (agent, key_hash, key_prefix,
+/// created_at, last_used_at, revoked). Only the SHA-256 hash is stored;
+/// the raw key is returned exactly once at creation time.
+fn run_migration_chiasm_agent_keys(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS chiasm_agent_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent TEXT NOT NULL,
+            key_hash TEXT NOT NULL UNIQUE,
+            key_prefix TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_used_at TEXT,
+            revoked INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_chiasm_agent_keys_hash ON chiasm_agent_keys(key_hash);
+        CREATE INDEX IF NOT EXISTS idx_chiasm_agent_keys_agent ON chiasm_agent_keys(agent);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("migration 62 chiasm_agent_keys: {e}")))?;
+    info!("Migration 62 complete: chiasm_agent_keys created");
     Ok(())
 }
 

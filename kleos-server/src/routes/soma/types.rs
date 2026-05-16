@@ -75,3 +75,22 @@ pub(super) struct StaleAgentsParams {
     /// Staleness window in minutes. Defaults to 5 when absent.
     pub minutes: Option<i64>,
 }
+
+/// Body for `POST /soma/agents/{id}/heartbeat` -- optional status override.
+///
+/// Both fields are optional; an empty body is a valid heartbeat. When `status`
+/// is present, it overrides the default `offline -> online` transition with
+/// the supplied value (validated server-side against the allowed status set).
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct HeartbeatBody {
+    pub status: Option<String>,
+}
+
+/// Body for `PATCH /soma/agents/{id}/quality` -- update quality_score and/or
+/// drift_flags. At least one of the two fields must be supplied. `drift_flags`
+/// is stored as a JSON array of strings.
+#[derive(Debug, Deserialize)]
+pub(super) struct UpdateQualityBody {
+    pub quality_score: Option<f64>,
+    pub drift_flags: Option<serde_json::Value>,
+}

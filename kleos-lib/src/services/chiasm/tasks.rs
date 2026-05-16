@@ -582,6 +582,136 @@ pub async fn submit_feedback(db: &Database, id: i64, feedback: &str, user_id: i6
     Ok(task)
 }
 
+// ---------------------------------------------------------------------------
+// LLM-driven plan generation
+// ---------------------------------------------------------------------------
+
+/// Resolve the chiasm planner LLM endpoint. Checks `CHIASM_LLM_URL` first,
+/// then falls back to the shared `LLM_URL`. Returns `None` when neither is
+/// set so the route can surface a clear error.
+fn chiasm_llm_url() -> Option<String> {
+    std::env::var("CHIASM_LLM_URL")
+        .or_else(|_| std::env::var("LLM_URL"))
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+fn chiasm_llm_api_key() -> Option<String> {
+    std::env::var("CHIASM_LLM_API_KEY")
+        .or_else(|_| std::env::var("LLM_API_KEY"))
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+fn chiasm_llm_model() -> String {
+    std::env::var("CHIASM_LLM_MODEL")
+        .or_else(|_| std::env::var("LLM_MODEL"))
+        .unwrap_or_else(|_| "qwen2.5:14b".to_string())
+}
+
+/// Generate an execution plan for a task via the configured LLM and persist
+/// it on the task row. Mirrors the standalone chiasm `POST /tasks/:id/plan`:
+/// builds a planner prompt from the task's title/project/agent/context, calls
+/// either an OpenAI-compatible or generic engram-style endpoint depending on
+/// the URL shape, then writes the rendered plan to `chiasm_tasks.plan`.
+#[tracing::instrument(skip(db), fields(task_id = id, user_id))]
+pub async fn generate_plan(db: &Database, id: i64, user_id: i64) -> Result<Task> {
+    let task = get_task(db, id, user_id).await?;
+
+    let url = chiasm_llm_url().ok_or_else(|| {
+        EngError::InvalidInput(
+            "CHIASM_LLM_URL/LLM_URL not configured; cannot generate plan".to_string(),
+        )
+    })?;
+
+    let mut user_prompt = format!(
+        "Create a concise step-by-step execution plan for this task:\n\n\
+         Title: {}\n\
+         Project: {}\n\
+         Agent: {}\n",
+        task.title, task.project, task.agent
+    );
+    if let Some(ref expected) = task.expected_output {
+        user_prompt.push_str(&format!("Expected output: {}\n", expected));
+    }
+    if let Some(ref summary) = task.summary {
+        user_prompt.push_str(&format!("Context: {}\n", summary));
+    }
+    user_prompt.push_str(
+        "\nRespond with a numbered list of concrete steps. Be specific and actionable.",
+    );
+
+    let system =
+        "You are a precise task planner. Return only a numbered list of steps.".to_string();
+
+    let is_openai_compat = url.contains("11434")
+        || url.contains("ollama")
+        || url.contains("/v1/chat")
+        || url.contains("/chat/completions");
+
+    let model = chiasm_llm_model();
+    let api_key = chiasm_llm_api_key();
+
+    let plan = if is_openai_compat {
+        let url = if url.contains("/chat/completions") {
+            url.clone()
+        } else {
+            format!("{}/v1/chat/completions", url.trim_end_matches('/'))
+        };
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user_prompt },
+            ],
+            "temperature": 0.3,
+            "stream": false,
+        });
+        crate::services::broca::call_llm_endpoint(&url, body, api_key)
+            .await
+            .map_err(|e| EngError::Internal(format!("plan generation failed: {e}")))?
+    } else {
+        let body = serde_json::json!({
+            "system": system,
+            "prompt": user_prompt,
+            "model": model,
+        });
+        crate::services::broca::call_llm_endpoint(&url, body, api_key)
+            .await
+            .map_err(|e| EngError::Internal(format!("plan generation failed: {e}")))?
+    };
+
+    let plan_trimmed = plan.trim().to_string();
+    if plan_trimmed.is_empty() {
+        return Err(EngError::Internal(
+            "plan generation returned empty content".into(),
+        ));
+    }
+
+    let plan_for_write = plan_trimmed.clone();
+    let changed = db
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE chiasm_tasks SET plan = ?1, updated_at = datetime('now') WHERE id = ?2",
+                rusqlite::params![plan_for_write, id],
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+    if changed == 0 {
+        return Err(EngError::NotFound(format!("task {}", id)));
+    }
+
+    let task = get_task(db, id, user_id).await?;
+    super::emit_chiasm_event(
+        db,
+        "task.plan",
+        serde_json::json!({ "task_id": id, "plan_len": plan_trimmed.len() }),
+    )
+    .await;
+    Ok(task)
+}
+
 /// Unit tests.
 #[cfg(test)]
 mod tests {

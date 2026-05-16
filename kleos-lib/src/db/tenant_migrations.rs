@@ -302,6 +302,14 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "syntheos_parity_chiasm_extended",
         up: apply_schema_v52_syntheos_parity,
     },
+    // Per-agent bearer keys for Chiasm, mirroring the standalone agent_keys
+    // surface so per-agent token issuance / listing / revocation has a
+    // tenant-scoped backing store.
+    TenantMigration {
+        version: 53,
+        description: "chiasm_agent_keys",
+        up: apply_schema_v53_chiasm_agent_keys,
+    },
 ];
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
@@ -985,6 +993,16 @@ pub fn run_tenant_migrations(conn: &Connection) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Tenant v53: per-agent bearer keys for Chiasm. CREATE TABLE IF NOT EXISTS,
+/// so the migration is idempotent and safe to apply against shards that may
+/// have inherited the table from out-of-band SQL.
+fn apply_schema_v53_chiasm_agent_keys(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!(
+        "../tenant/schema_v53_chiasm_agent_keys.sql"
+    ))
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v53 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.

@@ -37,6 +37,10 @@ pub struct HopfieldNetwork {
     strengths: Vec<f32>,
     /// Maps row index to memory id.
     pattern_ids: Vec<i64>,
+    /// Maps row index to owning user_id. Parallel to `pattern_ids`. Enables
+    /// per-tenant `retrieve` filtering when the network holds patterns from
+    /// multiple users.
+    user_ids: Vec<i64>,
     /// Maps memory id to row index.
     id_to_index: HashMap<i64, usize>,
     /// Pattern dimensionality. Zero until the first pattern is stored.
@@ -50,30 +54,33 @@ impl HopfieldNetwork {
             patterns: None,
             strengths: Vec::new(),
             pattern_ids: Vec::new(),
+            user_ids: Vec::new(),
             id_to_index: HashMap::new(),
             dim: 0,
         }
     }
 
     /// Build a network from a batch of pre-loaded patterns.
-    /// Each tuple is (memory_id, pattern_vector, strength).
-    pub fn from_patterns(batch: Vec<(i64, Vec<f32>, f32)>) -> Self {
+    /// Each tuple is (memory_id, owner_user_id, pattern_vector, strength).
+    pub fn from_patterns(batch: Vec<(i64, i64, Vec<f32>, f32)>) -> Self {
         if batch.is_empty() {
             return Self::new();
         }
 
-        let dim = batch[0].1.len();
+        let dim = batch[0].2.len();
         let n = batch.len();
         let mut data = Vec::with_capacity(n * dim);
         let mut strengths = Vec::with_capacity(n);
         let mut pattern_ids = Vec::with_capacity(n);
+        let mut user_ids = Vec::with_capacity(n);
         let mut id_to_index = HashMap::with_capacity(n);
 
-        for (i, (id, pat, strength)) in batch.into_iter().enumerate() {
+        for (i, (id, owner, pat, strength)) in batch.into_iter().enumerate() {
             debug_assert_eq!(pat.len(), dim, "pattern dimension mismatch");
             data.extend_from_slice(&pat);
             strengths.push(strength);
             pattern_ids.push(id);
+            user_ids.push(owner);
             id_to_index.insert(id, i);
         }
 
@@ -83,6 +90,7 @@ impl HopfieldNetwork {
             patterns: Some(patterns),
             strengths,
             pattern_ids,
+            user_ids,
             id_to_index,
             dim,
         }
@@ -117,9 +125,10 @@ impl HopfieldNetwork {
     // Store / update / remove
     // -----------------------------------------------------------------------
 
-    /// Store a pattern. If the id already exists, the pattern and strength
-    /// are updated in place. The pattern is L2-normalized before storage.
-    pub fn store(&mut self, id: i64, pattern: &[f32], strength: f32) {
+    /// Store a pattern. If the id already exists, the pattern, strength,
+    /// and owner are updated in place. The pattern is L2-normalized before
+    /// storage.
+    pub fn store(&mut self, id: i64, user_id: i64, pattern: &[f32], strength: f32) {
         let normalized = l2_normalize(pattern);
 
         if let Some(&idx) = self.id_to_index.get(&id) {
@@ -128,6 +137,7 @@ impl HopfieldNetwork {
                 mat.row_mut(idx).assign(&Array1::from(normalized));
             }
             self.strengths[idx] = strength;
+            self.user_ids[idx] = user_id;
             return;
         }
 
@@ -152,6 +162,7 @@ impl HopfieldNetwork {
 
         let idx = self.pattern_ids.len();
         self.pattern_ids.push(id);
+        self.user_ids.push(user_id);
         self.strengths.push(strength);
         self.id_to_index.insert(id, idx);
     }
@@ -164,6 +175,7 @@ impl HopfieldNetwork {
         };
 
         self.pattern_ids.remove(idx);
+        self.user_ids.remove(idx);
         self.strengths.remove(idx);
 
         // Rebuild index map
@@ -211,11 +223,19 @@ impl HopfieldNetwork {
     // -----------------------------------------------------------------------
 
     /// Retrieve the top-k patterns most similar to the query using
-    /// softmax attention over the stored patterns.
+    /// softmax attention over the stored patterns. If `owner_user_id` is
+    /// `Some(uid)`, the result set is restricted to patterns owned by `uid`
+    /// (multi-tenant filtering on a shared brain).
     ///
     /// Returns (memory_id, activation_score) pairs sorted by activation
     /// descending.
-    pub fn retrieve(&self, query: &[f32], top_k: usize, beta: f32) -> Vec<(i64, f32)> {
+    pub fn retrieve(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        beta: f32,
+        owner_user_id: Option<i64>,
+    ) -> Vec<(i64, f32)> {
         let mat = match &self.patterns {
             Some(m) => m,
             None => return Vec::new(),
@@ -233,7 +253,9 @@ impl HopfieldNetwork {
             logits.push(beta * sims[i] * self.strengths[i]);
         }
 
-        // Softmax
+        // Softmax across the full population: tenant filtering after the
+        // softmax keeps the distribution comparable to the un-scoped case
+        // (filtering before would inflate the surviving tenant's scores).
         let activations = softmax(&logits);
 
         // Filter, collect, sort
@@ -241,12 +263,23 @@ impl HopfieldNetwork {
             .iter()
             .enumerate()
             .filter(|(_, &a)| a >= ACTIVATION_THRESHOLD)
+            .filter(|(i, _)| match owner_user_id {
+                Some(uid) => self.user_ids[*i] == uid,
+                None => true,
+            })
             .map(|(i, &a)| (self.pattern_ids[i], a))
             .collect();
 
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(top_k);
         results
+    }
+
+    /// Owner of a stored pattern, if present.
+    pub fn owner_of(&self, id: i64) -> Option<i64> {
+        self.id_to_index
+            .get(&id)
+            .and_then(|&idx| self.user_ids.get(idx).copied())
     }
 
     /// Pattern completion via iterative attention refinement.
@@ -431,15 +464,15 @@ mod tests {
         let p2 = make_pattern(64, 10);
         let p3 = make_pattern(64, 20);
 
-        net.store(1, &p1, 1.0);
-        net.store(2, &p2, 1.0);
-        net.store(3, &p3, 1.0);
+        net.store(1, 1, &p1, 1.0);
+        net.store(2, 1, &p2, 1.0);
+        net.store(3, 1, &p3, 1.0);
 
         assert_eq!(net.pattern_count(), 3);
         assert_eq!(net.dim(), 64);
 
         // Query with pattern 1 -- should retrieve pattern 1 as top result
-        let results = net.retrieve(&p1, 3, DEFAULT_BETA);
+        let results = net.retrieve(&p1, 3, DEFAULT_BETA, None);
         assert!(!results.is_empty());
         assert_eq!(results[0].0, 1);
     }
@@ -450,12 +483,12 @@ mod tests {
         let p1 = make_pattern(32, 1);
         let p2 = make_pattern(32, 5);
 
-        net.store(1, &p1, 0.5);
+        net.store(1, 1, &p1, 0.5);
         assert_eq!(net.pattern_count(), 1);
         assert!((net.strength(1).unwrap() - 0.5).abs() < 1e-5);
 
         // Update with new pattern and strength
-        net.store(1, &p2, 0.9);
+        net.store(1, 1, &p2, 0.9);
         assert_eq!(net.pattern_count(), 1);
         assert!((net.strength(1).unwrap() - 0.9).abs() < 1e-5);
     }
@@ -463,9 +496,9 @@ mod tests {
     #[test]
     fn test_remove() {
         let mut net = HopfieldNetwork::new();
-        net.store(1, &make_pattern(32, 1), 1.0);
-        net.store(2, &make_pattern(32, 5), 1.0);
-        net.store(3, &make_pattern(32, 10), 1.0);
+        net.store(1, 1, &make_pattern(32, 1), 1.0);
+        net.store(2, 1, &make_pattern(32, 5), 1.0);
+        net.store(3, 1, &make_pattern(32, 10), 1.0);
 
         assert_eq!(net.pattern_count(), 3);
         assert!(net.remove(2));
@@ -475,7 +508,7 @@ mod tests {
         assert!(net.contains(3));
 
         // Retrieve still works
-        let results = net.retrieve(&make_pattern(32, 1), 2, DEFAULT_BETA);
+        let results = net.retrieve(&make_pattern(32, 1), 2, DEFAULT_BETA, None);
         assert!(!results.is_empty());
         assert!(results.iter().all(|(id, _)| *id != 2));
     }
@@ -489,9 +522,9 @@ mod tests {
         let p2 = make_pattern(64, 50);
         let p3 = make_pattern(64, 100);
 
-        net.store(1, &p1, 1.0);
-        net.store(2, &p2, 1.0);
-        net.store(3, &p3, 1.0);
+        net.store(1, 1, &p1, 1.0);
+        net.store(2, 1, &p2, 1.0);
+        net.store(3, 1, &p3, 1.0);
 
         // Complete from p1 -- should converge near p1
         let completed = net.complete(&p1, 10, DEFAULT_BETA);
@@ -510,7 +543,7 @@ mod tests {
 
         // Store a pattern
         let original = make_pattern(dim, 42);
-        net.store(1, &original, 1.0);
+        net.store(1, 1, &original, 1.0);
 
         // Create a 50% masked cue
         let mut cue = original.clone();
@@ -537,8 +570,8 @@ mod tests {
         let p1 = make_pattern(64, 1);
         let p2 = make_pattern(64, 2); // Similar to p1
 
-        net.store(1, &p1, 1.0); // Strong
-        net.store(2, &p2, 0.1); // Weak
+        net.store(1, 1, &p1, 1.0); // Strong
+        net.store(2, 1, &p2, 0.1); // Weak
 
         // Query midpoint between p1 and p2
         let query: Vec<f32> = p1
@@ -547,7 +580,7 @@ mod tests {
             .map(|(a, b)| (a + b) / 2.0)
             .collect();
 
-        let results = net.retrieve(&query, 2, DEFAULT_BETA);
+        let results = net.retrieve(&query, 2, DEFAULT_BETA, None);
         // Pattern 1 should dominate due to higher strength
         assert!(!results.is_empty());
         if results.len() >= 2 {
@@ -558,9 +591,9 @@ mod tests {
     #[test]
     fn test_from_patterns() {
         let batch = vec![
-            (1, make_pattern(32, 1), 1.0),
-            (2, make_pattern(32, 5), 0.8),
-            (3, make_pattern(32, 10), 0.5),
+            (1, 1, make_pattern(32, 1), 1.0),
+            (2, 1, make_pattern(32, 5), 0.8),
+            (3, 1, make_pattern(32, 10), 0.5),
         ];
         let net = HopfieldNetwork::from_patterns(batch);
         assert_eq!(net.pattern_count(), 3);
@@ -575,7 +608,7 @@ mod tests {
         let net = HopfieldNetwork::new();
         assert_eq!(net.pattern_count(), 0);
         assert_eq!(net.dim(), 0);
-        assert!(net.retrieve(&[1.0, 2.0], 5, DEFAULT_BETA).is_empty());
+        assert!(net.retrieve(&[1.0, 2.0], 5, DEFAULT_BETA, None).is_empty());
 
         let completed = net.complete(&[1.0, 2.0], 5, DEFAULT_BETA);
         assert_eq!(completed, vec![1.0, 2.0]);
@@ -585,7 +618,7 @@ mod tests {
     fn test_energy_decreases_on_completion() {
         let mut net = HopfieldNetwork::new();
         let p = make_pattern(64, 7);
-        net.store(1, &p, 1.0);
+        net.store(1, 1, &p, 1.0);
 
         let noisy: Vec<f32> = p
             .iter()

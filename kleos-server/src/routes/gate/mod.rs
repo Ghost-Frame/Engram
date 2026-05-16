@@ -468,7 +468,7 @@ async fn guard_handler(
 /// if any high-activation recall contains a prohibition keyword that appears
 /// relevant to the command. Returns None if the brain/embedder is unavailable
 /// or no matching rule is found.
-async fn brain_grounded_check(state: &AppState, _user_id: i64, command: &str) -> Option<String> {
+async fn brain_grounded_check(state: &AppState, user_id: i64, command: &str) -> Option<String> {
     let brain = state.brain.as_ref()?;
     if !brain.is_ready() {
         return None;
@@ -481,7 +481,10 @@ async fn brain_grounded_check(state: &AppState, _user_id: i64, command: &str) ->
         beta: None,
         spread_hops: None,
     };
-    let result = match brain.query(embedder.as_ref(), command, &options).await {
+    let result = match brain
+        .query(embedder.as_ref(), command, user_id, &options)
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!(error = %e, "brain_grounded_check: query failed");

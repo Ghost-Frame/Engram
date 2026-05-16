@@ -128,6 +128,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::episodes::router())
         .merge(routes::conversations::router())
         .merge(routes::graph::router())
+        .merge(routes::structural::router())
         .merge(routes::intelligence::router())
         .merge(routes::skills::router())
         .merge(routes::personality::router())

@@ -132,7 +132,7 @@ pub static ROUTES: &[Route] = &[
     // -- memory -----------------------------------------------------------
     Route {
         name: "memory.store",
-        aliases: &[],
+        aliases: &["memory_store"],
         method: Method::Post,
         path: "/store",
         scope: Scope::Write,
@@ -154,7 +154,7 @@ pub static ROUTES: &[Route] = &[
     },
     Route {
         name: "memory.search",
-        aliases: &[],
+        aliases: &["memory_search", "memory_search_preset"],
         method: Method::Post,
         path: "/search",
         scope: Scope::Read,
@@ -195,7 +195,7 @@ pub static ROUTES: &[Route] = &[
     },
     Route {
         name: "memory.list",
-        aliases: &[],
+        aliases: &["memory_list"],
         method: Method::Get,
         path: "/list",
         scope: Scope::Read,
@@ -236,7 +236,7 @@ pub static ROUTES: &[Route] = &[
     },
     Route {
         name: "memory.delete",
-        aliases: &[],
+        aliases: &["memory_delete"],
         method: Method::Delete,
         path: "/memory/{id}",
         scope: Scope::Write,
@@ -288,7 +288,7 @@ pub static ROUTES: &[Route] = &[
     },
     Route {
         name: "memory.recall",
-        aliases: &[],
+        aliases: &["memory_recall"],
         method: Method::Post,
         path: "/recall",
         scope: Scope::Read,
@@ -305,7 +305,7 @@ pub static ROUTES: &[Route] = &[
     // -- skills -----------------------------------------------------------
     Route {
         name: "skill.search",
-        aliases: &[],
+        aliases: &["skill_search"],
         method: Method::Post,
         path: "/skills/search",
         scope: Scope::Read,
@@ -322,7 +322,7 @@ pub static ROUTES: &[Route] = &[
     },
     Route {
         name: "skill.execute",
-        aliases: &[],
+        aliases: &["skill_execute"],
         method: Method::Post,
         path: "/skills/execute",
         scope: Scope::Read,
@@ -338,7 +338,7 @@ pub static ROUTES: &[Route] = &[
     },
     Route {
         name: "skill.upload",
-        aliases: &[],
+        aliases: &["skill_upload"],
         method: Method::Post,
         path: "/skills/capture",
         scope: Scope::Write,
@@ -357,7 +357,7 @@ pub static ROUTES: &[Route] = &[
     },
     Route {
         name: "skill.fix",
-        aliases: &[],
+        aliases: &["skill_fix"],
         method: Method::Post,
         path: "/skills/{skill_id}/fix",
         scope: Scope::Write,
@@ -390,6 +390,54 @@ pub static ROUTES: &[Route] = &[
             },
             "required": ["action", "summary"]
         }"#,
+    },
+    // -- structural -------------------------------------------------------
+    // EN-syntax structural analysis. Mirrors the legacy snake_case names
+    // as aliases so older MCP clients keep working unchanged.
+    Route {
+        name: "structural.analyze",
+        aliases: &["structural_analyze"],
+        method: Method::Post,
+        path: "/structural/analyze",
+        scope: Scope::Read,
+        description: "Classify topology, node roles, and bridges for an EN-syntax system.",
+        input_schema: r#"{"type":"object","properties":{"source":{"type":"string"}},"required":["source"]}"#,
+    },
+    Route {
+        name: "structural.detail",
+        aliases: &["structural_detail"],
+        method: Method::Post,
+        path: "/structural/detail",
+        scope: Scope::Read,
+        description: "Extended structural metrics: concurrency, critical path, flow depth, bridge implications.",
+        input_schema: r#"{"type":"object","properties":{"source":{"type":"string"}},"required":["source"]}"#,
+    },
+    Route {
+        name: "structural.between",
+        aliases: &["structural_between"],
+        method: Method::Post,
+        path: "/structural/between",
+        scope: Scope::Read,
+        description: "Betweenness centrality for one node (fraction of shortest paths through it).",
+        input_schema: r#"{"type":"object","properties":{"source":{"type":"string"},"node":{"type":"string"}},"required":["source","node"]}"#,
+    },
+    Route {
+        name: "structural.distance",
+        aliases: &["structural_distance"],
+        method: Method::Post,
+        path: "/structural/distance",
+        scope: Scope::Read,
+        description: "Directed shortest path between two nodes.",
+        input_schema: r#"{"type":"object","properties":{"source":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["source","from","to"]}"#,
+    },
+    Route {
+        name: "structural.trace",
+        aliases: &["structural_trace"],
+        method: Method::Post,
+        path: "/structural/trace",
+        scope: Scope::Read,
+        description: "Directed path with undirected fallback; flags reversed hops.",
+        input_schema: r#"{"type":"object","properties":{"source":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["source","from","to"]}"#,
     },
     // -- health -----------------------------------------------------------
     Route {
@@ -734,7 +782,7 @@ pub static ROUTES: &[Route] = &[
     // -- episodes ---------------------------------------------------------
     Route {
         name: "episodes.list",
-        aliases: &[],
+        aliases: &["memory_episodes"],
         method: Method::Get,
         path: "/episodes",
         scope: Scope::Read,
@@ -1036,7 +1084,7 @@ pub static ROUTES: &[Route] = &[
     // -- projects ---------------------------------------------------------
     Route {
         name: "projects.list",
-        aliases: &[],
+        aliases: &["memory_projects"],
         method: Method::Get,
         path: "/projects",
         scope: Scope::Read,
@@ -1199,7 +1247,7 @@ pub static ROUTES: &[Route] = &[
     },
     Route {
         name: "gate.guard",
-        aliases: &[],
+        aliases: &["memory_guard"],
         method: Method::Post,
         path: "/guard",
         scope: Scope::Read,
@@ -1872,7 +1920,7 @@ pub static ROUTES: &[Route] = &[
     // -- context (8-layer assembly) ---------------------------------------
     Route {
         name: "context.build",
-        aliases: &["context.assemble_context"],
+        aliases: &["context.assemble_context", "memory_context"],
         method: Method::Post,
         path: "/context",
         scope: Scope::Read,
@@ -2960,7 +3008,7 @@ pub static ROUTES: &[Route] = &[
     },
     Route {
         name: "graph.list_entities",
-        aliases: &[],
+        aliases: &["memory_entities"],
         method: Method::Get,
         path: "/entities",
         scope: Scope::Read,
@@ -4451,6 +4499,42 @@ pub static ROUTES: &[Route] = &[
         scope: Scope::Write,
         description: "Auto: POST /chiasm/tasks.",
         input_schema: r#"{"type":"object","additionalProperties":true}"#,
+    },
+    Route {
+        name: "chiasm.generate_plan",
+        aliases: &[],
+        method: Method::Post,
+        path: "/chiasm/tasks/{id}/plan",
+        scope: Scope::Write,
+        description: "Generate an LLM execution plan for a Chiasm task.",
+        input_schema: r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#,
+    },
+    Route {
+        name: "chiasm.admin_create_key",
+        aliases: &[],
+        method: Method::Post,
+        path: "/chiasm/admin/keys",
+        scope: Scope::Admin,
+        description: "Mint a per-agent bearer key. Raw key returned exactly once.",
+        input_schema: r#"{"type":"object","properties":{"agent":{"type":"string"}},"required":["agent"]}"#,
+    },
+    Route {
+        name: "chiasm.admin_list_keys",
+        aliases: &[],
+        method: Method::Get,
+        path: "/chiasm/admin/keys",
+        scope: Scope::Admin,
+        description: "List per-agent bearer keys (no secrets).",
+        input_schema: r#"{"type":"object"}"#,
+    },
+    Route {
+        name: "chiasm.admin_revoke_key",
+        aliases: &[],
+        method: Method::Delete,
+        path: "/chiasm/admin/keys/{id}",
+        scope: Scope::Admin,
+        description: "Revoke a per-agent bearer key by id.",
+        input_schema: r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#,
     },
     Route {
         name: "tasks.delete_task",

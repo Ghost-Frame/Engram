@@ -8,10 +8,18 @@
 //! (user_id=1) for storage.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
+
+/// Embedded dashboard HTML, served at `GET /broca/` so the standalone
+/// cyberpunk-themed UI ports across to Kleos as a single self-contained
+/// asset. Browser code inside the page fetches the authenticated
+/// `/broca/ask` and `/broca/feed` endpoints; configure session auth (or
+/// proxy in a Bearer header) to drive the question UI from a browser.
+const DASHBOARD_HTML: &str = include_str!("ui.html");
 
 use crate::error::AppError;
 use crate::extractors::{resolve_db_for_user, Auth, ResolvedDb};
@@ -39,13 +47,30 @@ pub fn router() -> Router<AppState> {
         .route("/broca/ask", post(ask_handler))
 }
 
-/// Unauthenticated router: mounts `/broca/ingest` outside the auth middleware.
+/// Unauthenticated router: mounts `/broca/ingest` and the browser dashboard
+/// at `GET /broca/` outside the auth middleware. The dashboard JS hits the
+/// authenticated `/broca/ask` and `/broca/feed` endpoints separately, so
+/// browser-side auth still applies to its data calls.
 ///
-/// Mount this via `public_routes` in `server.rs` so the route does not pass
+/// Mount this via `public_routes` in `server.rs` so the routes do not pass
 /// through `auth_middleware`. Network-layer controls (firewall, reverse-proxy
 /// allowlist) are the recommended protection surface.
 pub fn ingest_router() -> Router<AppState> {
-    Router::new().route("/broca/ingest", post(ingest_handler))
+    Router::new()
+        .route("/broca/ingest", post(ingest_handler))
+        .route("/broca/", get(dashboard_handler))
+        .route("/broca", get(dashboard_handler))
+}
+
+/// Serve the embedded cyberpunk dashboard. Static HTML; no DB access, no
+/// auth. JS inside the page hits the authenticated endpoints separately.
+async fn dashboard_handler() -> impl IntoResponse {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    (StatusCode::OK, headers, DASHBOARD_HTML)
 }
 
 /// Handler for `POST /broca/actions`. Logs an agent action for the

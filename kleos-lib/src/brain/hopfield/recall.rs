@@ -92,7 +92,7 @@ pub async fn store_pattern(
     strength: f32,
 ) -> Result<()> {
     // Store in network (L2-normalizes internally)
-    network.store(id, embedding, strength);
+    network.store(id, user_id, embedding, strength);
 
     // Persist to database
     let bp = BrainPattern {
@@ -387,7 +387,9 @@ pub async fn recall_pattern(
     top_k: usize,
     beta: f32,
 ) -> Result<Vec<RecallResult>> {
-    let results = network.retrieve(query_embedding, top_k, beta);
+    // Scope retrieval to the caller's patterns; cross-tenant leakage is the
+    // class of bug that motivated the user_ids parallel vec on the network.
+    let results = network.retrieve(query_embedding, top_k, beta, Some(user_id));
 
     // Touch each recalled pattern in the DB (update access tracking)
     for &(id, _) in &results {

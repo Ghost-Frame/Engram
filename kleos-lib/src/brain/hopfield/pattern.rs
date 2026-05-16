@@ -91,6 +91,32 @@ pub async fn get_pattern(db: &Database, id: i64, user_id: i64) -> Result<BrainPa
     .await
 }
 
+/// Load all patterns across every user. Used to populate the in-memory
+/// network at startup so a single shared backend can serve multi-tenant
+/// queries with per-tenant filtering at recall time.
+#[tracing::instrument(skip(db))]
+pub async fn list_all_patterns(db: &Database) -> Result<Vec<BrainPattern>> {
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, user_id, pattern, strength, importance, access_count, \
+                        last_activated_at, created_at \
+                 FROM brain_patterns \
+                 ORDER BY id",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        let patterns = stmt
+            .query_map([], |row| Ok(row_to_pattern(row)))
+            .map_err(rusqlite_to_eng_error)?
+            .map(|r| r.map_err(rusqlite_to_eng_error).and_then(|inner| inner))
+            .collect::<Result<Vec<BrainPattern>>>()?;
+
+        Ok(patterns)
+    })
+    .await
+}
+
 /// Load all patterns for a user. Used to populate the in-memory network
 /// at startup.
 #[tracing::instrument(skip(db), fields(user_id))]

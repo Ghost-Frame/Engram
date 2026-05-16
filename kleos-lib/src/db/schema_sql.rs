@@ -1284,6 +1284,18 @@ pub const SYNTHEOS_SERVICES_SQL: &str = r#"
     );
     CREATE INDEX IF NOT EXISTS idx_chiasm_task_updates_task_id ON chiasm_task_updates(task_id);
 
+    CREATE TABLE IF NOT EXISTS chiasm_agent_keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent TEXT NOT NULL,
+        key_hash TEXT NOT NULL UNIQUE,
+        key_prefix TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_used_at TEXT,
+        revoked INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_chiasm_agent_keys_hash ON chiasm_agent_keys(key_hash);
+    CREATE INDEX IF NOT EXISTS idx_chiasm_agent_keys_agent ON chiasm_agent_keys(agent);
+
     -- Soma: agent registry and groups ---------------------------------
     CREATE TABLE IF NOT EXISTS soma_agents (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

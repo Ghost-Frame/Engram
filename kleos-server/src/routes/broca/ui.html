@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BROCA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #060608;
+  --surface: #0c0c10;
+  --surface2: #111118;
+  --border: #1e1e2e;
+  --text: #c8ccd8;
+  --muted: #4a4a6a;
+  --dim: #2a2a3a;
+  --phosphor: #00e5a0;
+  --phosphor-dim: #00e5a015;
+  --amber: #f5a623;
+  --amber-dim: #f5a62318;
+  --cyan: #38bdf8;
+  --error: #ff5f5f;
+  --error-bg: #1a0808;
+  --mono: 'IBM Plex Mono', monospace;
+  --display: 'Syne', sans-serif;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow: hidden;
+}
+
+/* ── Scanline overlay ── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.08) 2px,
+    rgba(0,0,0,0.08) 4px
+  );
+  pointer-events: none;
+  z-index: 100;
+}
+
+/* ── Animated grid background ── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0,229,160,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,229,160,0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+  animation: gridDrift 40s linear infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+@keyframes gridDrift {
+  0%   { background-position: 0 0; }
+  100% { background-position: 48px 48px; }
+}
+
+/* ── Layout ── */
+.layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 24px;
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Header ── */
+header {
+  padding: 22px 0 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.logo {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.logo-word {
+  font-family: var(--display);
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  color: var(--phosphor);
+}
+
+.logo-sub {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 1px;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--phosphor);
+  display: inline-block;
+  margin-right: 4px;
+}
+
+/* ── Feed ── */
+.feed {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.feed::-webkit-scrollbar { width: 4px; }
+.feed::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ── Messages ── */
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  animation: msgIn 0.25s ease-out both;
+}
+@keyframes msgIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Question bubble — command prompt style */
+.msg.question .bubble {
+  align-self: flex-end;
+  max-width: 80%;
+  background: var(--amber-dim);
+  border: 1px solid #f5a62330;
+  border-radius: 2px 12px 12px 2px;
+  color: var(--amber);
+  padding: 10px 14px 10px 36px;
+  position: relative;
+  font-weight: 500;
+}
+.msg.question .bubble::before {
+  content: '>';
+  position: absolute;
+  left: 14px;
+  top: 10px;
+  color: var(--phosphor);
+  font-weight: 600;
+  text-shadow: 0 0 8px var(--phosphor);
+}
+
+/* Answer bubble — intelligence responding */
+.msg.answer .bubble {
+  align-self: flex-start;
+  max-width: 90%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--phosphor);
+  border-radius: 0 12px 12px 0;
+  color: var(--text);
+  padding: 12px 16px;
+  box-shadow: inset 0 0 30px rgba(0,229,160,0.03);
+}
+
+/* Thinking ── */
+.msg.thinking .bubble {
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--muted);
+  border-radius: 0 12px 12px 0;
+  padding: 12px 16px;
+  color: var(--muted);
+}
+
+.dot-flashing {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+.dot-flashing span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--phosphor);
+  animation: dotPulse 1.4s ease-in-out infinite;
+}
+.dot-flashing span:nth-child(2) { animation-delay: 0.2s; }
+.dot-flashing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dotPulse {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.3; }
+  40%            { transform: scale(1); opacity: 1; }
+}
+
+/* Scan line on thinking bubble */
+.thinking-scan {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--phosphor), transparent);
+  margin-top: 8px;
+  animation: scan 2s linear infinite;
+  opacity: 0.6;
+}
+@keyframes scan {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+/* Error */
+.msg.error .bubble {
+  align-self: flex-start;
+  max-width: 90%;
+  background: var(--error-bg);
+  border: 1px solid #ff5f5f30;
+  border-left: 2px solid var(--error);
+  border-radius: 0 12px 12px 0;
+  color: var(--error);
+  padding: 12px 16px;
+}
+.msg.error .bubble::before {
+  content: '! ';
+  font-weight: 700;
+}
+
+.bubble { font-size: 13px; line-height: 1.65; }
+
+/* Meta + service tag */
+.meta {
+  font-size: 10px;
+  color: var(--muted);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 0 6px;
+  letter-spacing: 0.5px;
+}
+.msg.question .meta { align-self: flex-end; }
+
+.meta .service {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 7px;
+  font-family: var(--mono);
+  color: var(--phosphor);
+  letter-spacing: 1px;
+}
+
+/* Raw data */
+.details {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 0 6px;
+}
+.details summary {
+  cursor: pointer;
+  user-select: none;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.details summary::marker { color: var(--phosphor); }
+.details summary:hover { color: var(--phosphor); }
+.details pre {
+  margin-top: 8px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+  color: var(--muted);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+/* ── Recent activity feed ── */
+.feed-section {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.feed-section-header {
+  padding: 8px 14px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.feed-section-header h2 {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-weight: 400;
+}
+.feed-section-header::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--phosphor);
+}
+.event {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 7px 14px;
+  border-bottom: 1px solid #1e1e2e55;
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  font-family: var(--mono);
+  transition: background 0.15s;
+}
+.event:last-child { border-bottom: none; }
+.event:hover { background: var(--surface2); color: var(--text); }
+.event .time {
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--dim);
+  min-width: 72px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.event .text { color: #8888aa; }
+.event:hover .text { color: var(--text); }
+
+/* ── Input row ── */
+.input-row {
+  padding: 14px 0 22px;
+  display: flex;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  position: relative;
+}
+.input-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--phosphor), transparent);
+  opacity: 0.3;
+}
+
+.input-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+}
+.input-wrap::before {
+  content: '>';
+  position: absolute;
+  left: 14px;
+  top: 11px;
+  color: var(--phosphor);
+  font-weight: 600;
+  font-size: 14px;
+  pointer-events: none;
+  z-index: 1;
+  line-height: 1.5;
+}
+
+textarea {
+  flex: 1;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--amber);
+  padding: 10px 14px 10px 34px;
+  font-size: 13px;
+  font-family: var(--mono);
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+  min-height: 44px;
+  max-height: 140px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  caret-color: var(--phosphor);
+}
+textarea:focus {
+  border-color: #00e5a050;
+}
+textarea::placeholder { color: var(--muted); font-weight: 300; }
+
+button#send {
+  background: transparent;
+  border: 1px solid var(--phosphor);
+  border-radius: 6px;
+  color: var(--phosphor);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  padding: 0 20px;
+  min-height: 44px;
+  min-width: 80px;
+  transition: background 0.15s, color 0.15s;
+}
+button#send:hover {
+  background: var(--phosphor);
+  color: var(--bg);
+}
+button#send:active {
+  opacity: 0.8;
+}
+button#send:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <header>
+    <div class="logo">
+      <span class="logo-word">BROCA</span>
+      <span class="logo-sub">agent OS explorer</span>
+    </div>
+    <div class="status-bar">
+      <span><span class="status-dot"></span>ONLINE</span>
+    </div>
+  </header>
+
+  <div class="feed" id="feed"></div>
+
+  <div class="input-row">
+    <div class="input-wrap">
+      <textarea id="input" placeholder="what tasks are blocked? what did loom do today? which agents are online?" rows="1"></textarea>
+    </div>
+    <button id="send">SEND</button>
+  </div>
+</div>
+
+<script>
+const feed = document.getElementById('feed');
+const input = document.getElementById('input');
+const send = document.getElementById('send');
+
+function timeAgo(iso) {
+  const d = new Date(iso.includes('T') ? iso : iso + 'Z');
+  const s = Math.floor((Date.now() - d) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+
+function addMsg(type, content, meta) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + type;
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+
+  if (type === 'thinking') {
+    bubble.innerHTML = '<div class="dot-flashing"><span></span><span></span><span></span></div><div class="thinking-scan"></div>';
+  } else {
+    bubble.textContent = content;
+  }
+  div.appendChild(bubble);
+
+  if (meta) {
+    const m = document.createElement('div');
+    m.className = 'meta';
+    if (meta.service) {
+      const s = document.createElement('span');
+      s.className = 'service';
+      s.textContent = meta.service + ' ' + meta.method + ' ' + meta.path;
+      m.appendChild(s);
+    }
+    div.appendChild(m);
+
+    if (meta.raw) {
+      const det = document.createElement('details');
+      det.className = 'details';
+      const sum = document.createElement('summary');
+      sum.textContent = 'raw data';
+      const pre = document.createElement('pre');
+      pre.textContent = JSON.stringify(meta.raw, null, 2);
+      det.appendChild(sum);
+      det.appendChild(pre);
+      div.appendChild(det);
+    }
+  }
+
+  feed.appendChild(div);
+  feed.scrollTop = feed.scrollHeight;
+  return div;
+}
+
+async function ask(question) {
+  addMsg('question', question);
+  const thinking = addMsg('thinking');
+  send.disabled = true;
+  input.disabled = true;
+
+  try {
+    const res = await fetch('/broca/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+      signal: AbortSignal.timeout(360000),
+    });
+    const data = await res.json();
+    thinking.remove();
+
+    if (!res.ok) {
+      addMsg('error', data.error || 'Something went wrong.');
+    } else {
+      addMsg('answer', data.answer, { service: data.plan.service, method: data.plan.method, path: data.plan.path, raw: data.raw });
+    }
+  } catch (e) {
+    thinking.remove();
+    addMsg('error', e.name === 'TimeoutError' ? 'Timed out — the model is loading, try again in a moment.' : e.message);
+  } finally {
+    send.disabled = false;
+    input.disabled = false;
+    input.focus();
+  }
+}
+
+send.addEventListener('click', () => {
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = '';
+  autoResize();
+  ask(q);
+});
+
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    send.click();
+  }
+});
+
+function autoResize() {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+}
+input.addEventListener('input', autoResize);
+
+// Load recent feed on start
+fetch('/broca/feed?limit=8').then(r => r.json()).then(events => {
+  if (!events.length) return;
+  const section = document.createElement('div');
+  section.className = 'feed-section';
+
+  const hdr = document.createElement('div');
+  hdr.className = 'feed-section-header';
+  const h = document.createElement('h2');
+  h.textContent = 'Recent activity';
+  hdr.appendChild(h);
+  section.appendChild(hdr);
+
+  events.reverse().forEach(e => {
+    const row = document.createElement('div');
+    row.className = 'event';
+    row.innerHTML = \`<span class="time">\${timeAgo(e.created_at)}</span><span class="text">\${e.narrative || e.action}</span>\`;
+    section.appendChild(row);
+  });
+  feed.appendChild(section);
+}).catch(() => {});
+
+input.focus();
+</script>
+</body>
+</html>

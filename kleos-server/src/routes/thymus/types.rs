@@ -35,6 +35,13 @@ pub(super) struct DriftEventsParams {
     pub limit: Option<usize>,
 }
 
+/// Query parameters for `GET /thymus/drift-summary`. `agent` is required;
+/// the handler returns 400 when absent.
+#[derive(Debug, Deserialize)]
+pub(super) struct DriftSummaryParams {
+    pub agent: Option<String>,
+}
+
 /// Query parameters for the agent-scores aggregate endpoint.
 ///
 /// Both fields are optional. `rubric_id` restricts the aggregate to one rubric;

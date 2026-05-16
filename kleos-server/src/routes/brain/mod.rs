@@ -60,26 +60,24 @@ async fn require_brain(state: &AppState) -> Result<(), AppError> {
     )))
 }
 
-// Stats are global brain telemetry (no per-tenant data); auth required but
-// no user_id needed.
+// Stats are per-tenant: counts the caller's own patterns.
 async fn stats_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
     let brain = state
         .brain
         .as_ref()
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("brain not configured".into())))?;
-    let stats = brain.stats().await?;
+    let stats = brain.stats(auth.user_id).await?;
     Ok(Json(json!({ "ok": true, "stats": stats })))
 }
 
-// Query is read-only against the global brain index; the per-user filter
-// inside the brain is the responsibility of the embedder + reranker pipeline.
+// Query scopes the recall to the caller's pattern space via auth.user_id.
 async fn query_handler(
     State(state): State<AppState>,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(body): Json<BrainQueryOptions>,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
@@ -92,7 +90,9 @@ async fn query_handler(
             "embedder not ready (still loading)".into(),
         ))
     })?;
-    let result = brain.query(embedder.as_ref(), &body.query, &body).await?;
+    let result = brain
+        .query(embedder.as_ref(), &body.query, auth.user_id, &body)
+        .await?;
     Ok(Json(json!({ "ok": true, "result": result })))
 }
 
@@ -116,7 +116,9 @@ async fn absorb_handler(
         ))
     })?;
     let memory = get_memory_for_absorb(&db, body.id, auth.user_id).await?;
-    brain.absorb(embedder.as_ref(), memory).await?;
+    brain
+        .absorb(embedder.as_ref(), auth.user_id, memory)
+        .await?;
     Ok(Json(json!({ "ok": true, "id": body.id })))
 }
 
@@ -158,7 +160,7 @@ async fn feedback_handler(
         .as_ref()
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("brain not configured".into())))?;
     let result = brain
-        .feedback_signal(body.memory_ids, body.edge_pairs, body.useful)
+        .feedback_signal(auth.user_id, body.memory_ids, body.edge_pairs, body.useful)
         .await?;
     Ok(Json(json!({ "ok": true, "result": result })))
 }
@@ -178,7 +180,7 @@ async fn decay_handler(
         .as_ref()
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("brain not configured".into())))?;
     let ticks = body.ticks.clamp(0, MAX_DECAY_TICKS);
-    brain.decay_tick(ticks).await?;
+    brain.decay_tick(auth.user_id, ticks).await?;
     Ok(Json(json!({ "ok": true, "ticks_applied": ticks })))
 }
 
@@ -203,7 +205,7 @@ async fn evolution_feedback_handler(
         .as_ref()
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("brain not configured".into())))?;
     let result = brain
-        .feedback_signal(body.memory_ids, body.edge_pairs, body.useful)
+        .feedback_signal(auth.user_id, body.memory_ids, body.edge_pairs, body.useful)
         .await?;
     Ok(Json(json!({ "ok": true, "result": result })))
 }

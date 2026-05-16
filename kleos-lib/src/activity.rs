@@ -435,7 +435,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
         }
         Err(e) => return Err(e),
     };
-    heartbeat(db, agent_id).await?;
+    heartbeat(db, agent_id, None).await?;
 
     // Publish Axon event
     let channel = action_to_channel(&report.action).to_string();

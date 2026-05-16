@@ -7,11 +7,26 @@ use serde_json::{json, Value};
 use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
+use kleos_lib::auth::{AuthContext, Scope};
 use kleos_lib::services::chiasm::{
-    create_task, delete_task, get_feed as get_task_feed, get_stats as get_task_stats, get_task,
-    list_task_history, list_tasks, submit_feedback, submit_output, update_task, CreateTaskRequest,
-    UpdateTaskRequest,
+    create_task, delete_task, generate_plan, get_feed as get_task_feed,
+    get_stats as get_task_stats, get_task, keys as agent_keys, list_task_history, list_tasks,
+    submit_feedback, submit_output, update_task, CreateTaskRequest, UpdateTaskRequest,
 };
+
+#[derive(serde::Deserialize)]
+struct CreateAgentKeyBody {
+    agent: String,
+}
+
+fn require_admin(auth: &AuthContext) -> Result<(), AppError> {
+    if !auth.has_scope(&Scope::Admin) {
+        return Err(AppError(kleos_lib::EngError::Auth(
+            "admin scope required".into(),
+        )));
+    }
+    Ok(())
+}
 
 mod types;
 use types::{
@@ -49,6 +64,7 @@ pub fn router() -> Router<AppState> {
         .route("/chiasm/feed", get(get_feed))
         .route("/tasks/{id}/output", post(submit_output_handler))
         .route("/tasks/{id}/feedback", post(submit_feedback_handler))
+        .route("/tasks/{id}/plan", post(generate_plan_handler))
         .route(
             "/tasks/{id}/dependencies",
             get(list_deps_handler).post(add_deps_handler),
@@ -59,6 +75,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/chiasm/tasks/{id}/output", post(submit_output_handler))
         .route("/chiasm/tasks/{id}/feedback", post(submit_feedback_handler))
+        .route("/chiasm/tasks/{id}/plan", post(generate_plan_handler))
         .route(
             "/chiasm/tasks/{id}/dependencies",
             get(list_deps_handler).post(add_deps_handler),
@@ -91,6 +108,15 @@ pub fn router() -> Router<AppState> {
         .route("/queue/claim", post(claim_handler))
         .route("/chiasm/queue", post(enqueue_handler))
         .route("/chiasm/queue/claim", post(claim_handler))
+        // Admin: per-agent bearer keys (mirrors standalone chiasm /admin/keys)
+        .route(
+            "/chiasm/admin/keys",
+            post(create_agent_key_handler).get(list_agent_keys_handler),
+        )
+        .route(
+            "/chiasm/admin/keys/{id}",
+            delete(revoke_agent_key_handler),
+        )
 }
 
 /// Lists tasks with optional filters.
@@ -229,6 +255,18 @@ async fn submit_feedback_handler(
     Json(body): Json<SubmitFeedbackBody>,
 ) -> Result<Json<Value>, AppError> {
     let task = submit_feedback(&db, id, &body.feedback, auth.user_id).await?;
+    Ok(Json(json!(task)))
+}
+
+/// Generate an LLM execution plan for a task. POST body is ignored (the
+/// standalone accepts `{}`); we keep the same contract so existing chiasm
+/// clients drop in unchanged.
+async fn generate_plan_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let task = generate_plan(&db, id, auth.user_id).await?;
     Ok(Json(json!(task)))
 }
 
@@ -384,4 +422,45 @@ async fn claim_handler(
     )
     .await?;
     Ok(Json(json!({ "task": task })))
+}
+
+/// Create a per-agent bearer key. Admin only; the raw key is shown exactly
+/// once in the response (`key` field) -- the server only persists its
+/// SHA-256 hash.
+async fn create_agent_key_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Json(body): Json<CreateAgentKeyBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    require_admin(&auth)?;
+    let created = agent_keys::create_key(&db, &body.agent).await?;
+    Ok((StatusCode::CREATED, Json(json!(created))))
+}
+
+/// List every stored key (active or revoked) with no secrets.
+async fn list_agent_keys_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let keys = agent_keys::list_keys(&db).await?;
+    Ok(Json(json!({ "keys": keys })))
+}
+
+/// Mark a key as revoked. Idempotent: revoking an already-revoked key
+/// returns 404 so callers can distinguish "no such key" from "already done".
+async fn revoke_agent_key_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let revoked = agent_keys::revoke_key(&db, id).await?;
+    if !revoked {
+        return Err(AppError(kleos_lib::EngError::NotFound(format!(
+            "key {}",
+            id
+        ))));
+    }
+    Ok(Json(json!({ "ok": true, "revoked": true })))
 }

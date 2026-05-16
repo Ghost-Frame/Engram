@@ -8,17 +8,17 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::thymus::{
-    create_rubric, delete_rubric, evaluate, get_agent_scores, get_drift_events, get_evaluation,
-    get_metric_summary, get_metrics, get_rubric, get_session_quality, get_stats, list_evaluations,
-    list_rubrics, record_drift_event, record_metric, record_session_quality, update_rubric,
-    CreateRubricRequest, EvaluateRequest, RecordDriftEventRequest, RecordMetricRequest,
-    RecordSessionQualityRequest, UpdateRubricRequest,
+    create_rubric, delete_rubric, evaluate, get_agent_scores, get_drift_events, get_drift_summary,
+    get_evaluation, get_metric_summary, get_metrics, get_rubric, get_session_quality, get_stats,
+    list_evaluations, list_rubrics, record_drift_event, record_metric, record_session_quality,
+    update_rubric, CreateRubricRequest, EvaluateRequest, RecordDriftEventRequest,
+    RecordMetricRequest, RecordSessionQualityRequest, UpdateRubricRequest,
 };
 
 mod types;
 use types::{
-    AgentScoresParams, DriftEventsParams, GetMetricsParams, ListEvaluationsParams,
-    MetricSummaryParams, SessionQualityParams,
+    AgentScoresParams, DriftEventsParams, DriftSummaryParams, GetMetricsParams,
+    ListEvaluationsParams, MetricSummaryParams, SessionQualityParams,
 };
 
 /// Builds the Axum sub-router for all `/thymus/*` endpoints.
@@ -58,6 +58,7 @@ pub fn router() -> Router<AppState> {
             "/thymus/drift-events",
             post(record_drift_event_handler).get(get_drift_events_handler),
         )
+        .route("/thymus/drift-summary", get(get_drift_summary_handler))
         .route("/thymus/stats", get(get_stats_handler))
 }
 
@@ -298,6 +299,21 @@ async fn get_drift_events_handler(
     let limit = params.limit.unwrap_or(100).min(1000);
     let events = get_drift_events(&db, agent, limit).await?;
     Ok(Json(json!({ "drift_events": events })))
+}
+
+/// Handler for `GET /thymus/drift-summary?agent=<name>`. Returns aggregated
+/// drift event counts grouped by drift_type and severity for the named agent.
+/// Requires the `agent` query parameter; returns 400 when absent.
+async fn get_drift_summary_handler(
+    Auth(_auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Query(params): Query<DriftSummaryParams>,
+) -> Result<Json<Value>, AppError> {
+    let agent = params
+        .agent
+        .ok_or_else(|| kleos_lib::EngError::InvalidInput("agent is required".into()))?;
+    let summary = get_drift_summary(&db, &agent).await?;
+    Ok(Json(json!({ "drift_summary": summary })))
 }
 
 // ---------------------------------------------------------------------------

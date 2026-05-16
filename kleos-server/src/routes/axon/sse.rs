@@ -23,10 +23,20 @@ pub async fn stream_handler(
     Auth(auth): Auth,
     Query(params): Query<SseStreamParams>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, AppError> {
-    let channels: Vec<String> = params
+    // Parse the channels CSV. A literal "*" entry (or an entirely empty channel
+    // list) means "subscribe to every channel"; in that mode the inner loop
+    // queries with channel=None so SQL returns events across all channels.
+    let raw_channels: Vec<String> = params
         .channels
-        .map(|c| c.split(',').map(|s| s.trim().to_string()).collect())
+        .map(|c| {
+            c.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
+    let wildcard = raw_channels.is_empty() || raw_channels.iter().any(|s| s == "*");
+    let channels = raw_channels;
     let filter_type = params.filter_type.clone();
     let mut last_id = params.last_event_id.unwrap_or(0);
 
@@ -35,10 +45,19 @@ pub async fn stream_handler(
         loop {
             interval.tick().await;
 
-            for channel in &channels {
+            // In wildcard mode, issue one query with channel=None to fetch
+            // across every channel in a single round-trip. Otherwise iterate
+            // the explicit channel set.
+            let channel_iter: Vec<Option<&str>> = if wildcard {
+                vec![None]
+            } else {
+                channels.iter().map(|c| Some(c.as_str())).collect()
+            };
+
+            for channel_filter in channel_iter {
                 let events = match query_events(
                     &db,
-                    Some(channel),
+                    channel_filter,
                     filter_type.as_deref(),
                     None,
                     100,

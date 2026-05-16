@@ -1,7 +1,7 @@
 mod sse;
 mod types;
 
-use axum::extract::{Path, Query};
+use axum::extract::{DefaultBodyLimit, Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -20,10 +20,25 @@ use types::{
     QueryEventsParams, SubscribeBody, UnsubscribeBody,
 };
 
+/// Default body-size cap on `POST /axon/publish`. Mirrors the standalone
+/// `BODY_MAX_BYTES` (64 KB). Override with `AXON_BODY_MAX_BYTES` at startup.
+const DEFAULT_PUBLISH_BODY_BYTES: usize = 64 * 1024;
+
+fn publish_body_limit() -> usize {
+    std::env::var("AXON_BODY_MAX_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_PUBLISH_BODY_BYTES)
+}
+
 /// Builds the Axon event bus router.
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/axon/publish", post(publish_event_handler))
+        .route(
+            "/axon/publish",
+            post(publish_event_handler).layer(DefaultBodyLimit::max(publish_body_limit())),
+        )
         .route("/axon/events", get(list_events_handler))
         .route("/axon/events/{id}", get(get_event_handler))
         .route(
@@ -38,6 +53,7 @@ pub fn router() -> Router<AppState> {
         .route("/axon/poll", post(poll_handler))
         .route("/axon/cursor", get(get_cursor_handler))
         .route("/axon/stats", get(get_stats))
+        .route("/axon/health", get(health_handler))
         .route("/axon/stream", get(sse::stream_handler))
 }
 
@@ -123,6 +139,17 @@ async fn list_channels_handler(
 async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = get_axon_stats(&db).await?;
     Ok(Json(json!(stats)))
+}
+
+/// Public unauthenticated health probe. Mirrors the standalone `/health`
+/// surface: returns `{ status: "ok", version }` without auth or a tenant
+/// context. Detailed per-tenant stats remain on the authenticated `/stats`.
+async fn health_handler() -> Json<Value> {
+    Json(json!({
+        "status": "ok",
+        "service": "axon",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
 
 // --- New handlers for P0-0 Phase 27c ---

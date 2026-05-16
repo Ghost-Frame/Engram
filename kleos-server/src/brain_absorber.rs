@@ -20,10 +20,12 @@ use kleos_lib::services::brain::{AbsorbMemoryData, BrainBackend};
 /// - `category`: "task" for task.* actions, "activity" for others
 /// - `importance`: 6 for completed, 7 for blocked/error, 4 otherwise
 /// - `source`: The agent name from the activity report
+#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(brain, embedder, content), fields(memory_id, category = %category, importance, source = %source))]
 pub async fn absorb_activity_to_brain(
     brain: Arc<dyn BrainBackend>,
     embedder: Arc<RwLock<Option<Arc<dyn EmbeddingProvider>>>>,
+    user_id: i64,
     memory_id: i64,
     content: String,
     category: String,
@@ -58,7 +60,7 @@ pub async fn absorb_activity_to_brain(
         tags: None,
     };
 
-    match brain.absorb(embedder_ref.as_ref(), memory).await {
+    match brain.absorb(embedder_ref.as_ref(), user_id, memory).await {
         Ok(()) => tracing::debug!("brain_absorber: absorbed activity memory id={}", memory_id),
         Err(e) => tracing::warn!(
             "brain_absorber: brain absorb failed for memory {}: {}",
@@ -87,6 +89,7 @@ pub async fn absorb_activity_to_brain(
 pub async fn absorb_session_to_brain(
     brain: Arc<dyn BrainBackend>,
     embedder: Arc<RwLock<Option<Arc<dyn EmbeddingProvider>>>>,
+    user_id: i64,
     session_short_id: String,
     task: String,
     outcome: &str,
@@ -118,6 +121,7 @@ pub async fn absorb_session_to_brain(
     absorb_one(
         &brain,
         &embedder,
+        user_id,
         &summary,
         &format!("{}task", category_prefix),
         importance,
@@ -134,6 +138,7 @@ pub async fn absorb_session_to_brain(
         absorb_one(
             &brain,
             &embedder,
+            user_id,
             &block_content,
             &format!("{}issue", category_prefix),
             8.0,
@@ -158,6 +163,7 @@ pub async fn absorb_session_to_brain(
         absorb_one(
             &brain,
             &embedder,
+            user_id,
             &discovery_content,
             &format!("{}discovery", category_prefix),
             5.0,
@@ -177,6 +183,7 @@ pub async fn absorb_session_to_brain(
 async fn absorb_one(
     brain: &Arc<dyn BrainBackend>,
     embedder: &Arc<RwLock<Option<Arc<dyn EmbeddingProvider>>>>,
+    user_id: i64,
     content: &str,
     category: &str,
     importance: f64,
@@ -208,7 +215,7 @@ async fn absorb_one(
         tags: None,
     };
 
-    match brain.absorb(embedder_ref.as_ref(), memory).await {
+    match brain.absorb(embedder_ref.as_ref(), user_id, memory).await {
         Ok(()) => tracing::debug!("brain_absorber: absorbed id={} category={}", id, category),
         Err(e) => tracing::warn!(
             "brain_absorber: brain absorb failed (category={}): {}",

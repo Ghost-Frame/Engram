@@ -186,7 +186,7 @@ async fn post_prompt_generate(
                         spread_hops: None,
                     };
                     let task_result = brain
-                        .query(embedder.as_ref(), task, &task_opts)
+                        .query(embedder.as_ref(), task, auth.user_id, &task_opts)
                         .await
                         .unwrap_or_default();
 
@@ -201,6 +201,7 @@ async fn post_prompt_generate(
                         .query(
                             embedder.as_ref(),
                             "server infrastructure deployment SSH configuration",
+                            auth.user_id,
                             &infra_opts,
                         )
                         .await
@@ -215,7 +216,7 @@ async fn post_prompt_generate(
                         spread_hops: None,
                     };
                     let failure_result = brain
-                        .query(embedder.as_ref(), &failure_query, &failure_opts)
+                        .query(embedder.as_ref(), &failure_query, auth.user_id, &failure_opts)
                         .await
                         .unwrap_or_default();
 

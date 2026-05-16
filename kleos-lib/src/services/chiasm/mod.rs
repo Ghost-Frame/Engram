@@ -19,6 +19,10 @@ pub mod heartbeat;
 /// Work queue for unassigned tasks -- enqueue and claim-next.
 pub mod queue;
 
+/// Per-agent bearer keys (admin-managed). Mirrors the standalone chiasm
+/// admin/keys surface; raw keys are returned exactly once on creation.
+pub mod keys;
+
 pub use tasks::*;
 
 use crate::db::Database;

@@ -36,9 +36,9 @@ mod hopfield_tests {
         let dim = 128;
         let p = make_pattern(dim, 42);
 
-        net.store(1, &p, 1.0);
+        net.store(1, 1, &p, 1.0);
 
-        let results = net.retrieve(&p, 5, DEFAULT_BETA);
+        let results = net.retrieve(&p, 5, DEFAULT_BETA, None);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 1);
         assert!(
@@ -53,7 +53,7 @@ mod hopfield_tests {
         let dim = 128;
         let original = make_pattern(dim, 42);
 
-        net.store(1, &original, 1.0);
+        net.store(1, 1, &original, 1.0);
 
         // 50% masked cue
         let mut cue = original.clone();
@@ -81,7 +81,7 @@ mod hopfield_tests {
     #[test]
     fn reinforce_increases_strength() {
         let mut net = HopfieldNetwork::new();
-        net.store(1, &make_pattern(64, 1), 0.3);
+        net.store(1, 1, &make_pattern(64, 1), 0.3);
 
         let old = net.strength(1).unwrap();
         // Simulate reinforce: new = old + 0.3 * (1 - old)
@@ -100,7 +100,7 @@ mod hopfield_tests {
     #[test]
     fn decay_reduces_strength() {
         let mut net = HopfieldNetwork::new();
-        net.store(1, &make_pattern(64, 1), 1.0);
+        net.store(1, 1, &make_pattern(64, 1), 1.0);
 
         // Simulate 100 ticks at importance=0
         let rate: f32 = 0.995;
@@ -115,9 +115,9 @@ mod hopfield_tests {
     #[test]
     fn prune_removes_weak_patterns() {
         let mut net = HopfieldNetwork::new();
-        net.store(1, &make_pattern(64, 1), 1.0);
-        net.store(2, &make_pattern(64, 5), 0.03); // Below DEATH_THRESHOLD
-        net.store(3, &make_pattern(64, 10), 0.8);
+        net.store(1, 1, &make_pattern(64, 1), 1.0);
+        net.store(2, 1, &make_pattern(64, 5), 0.03); // Below DEATH_THRESHOLD
+        net.store(3, 1, &make_pattern(64, 10), 0.8);
 
         assert_eq!(net.pattern_count(), 3);
 
@@ -153,7 +153,7 @@ mod hopfield_tests {
 
         let mut net = HopfieldNetwork::new();
         for (i, p) in patterns.iter().enumerate() {
-            net.store(i as i64 + 1, p, 1.0);
+            net.store(i as i64 + 1, 1, p, 1.0);
         }
 
         assert_eq!(net.pattern_count(), n);
@@ -198,13 +198,13 @@ mod hopfield_tests {
 
         let mut net = HopfieldNetwork::new();
         for (i, p) in patterns.iter().enumerate() {
-            net.store(i as i64 + 1, p, 1.0);
+            net.store(i as i64 + 1, 1, p, 1.0);
         }
 
         // Each pattern should be its own top-1 retrieval result
         let mut correct = 0;
         for (i, p) in patterns.iter().enumerate() {
-            let results = net.retrieve(p, 1, DEFAULT_BETA);
+            let results = net.retrieve(p, 1, DEFAULT_BETA, None);
             if !results.is_empty() && results[0].0 == (i as i64 + 1) {
                 correct += 1;
             }
@@ -229,9 +229,9 @@ mod hopfield_tests {
         let p2: Vec<f32> = p1.iter().map(|x| x + 0.001).collect();
         let p3 = make_pattern(64, 100); // Very different
 
-        net.store(1, &p1, 0.9);
-        net.store(2, &p2, 0.5);
-        net.store(3, &p3, 0.8);
+        net.store(1, 1, &p1, 0.9);
+        net.store(2, 1, &p2, 0.5);
+        net.store(3, 1, &p3, 0.8);
 
         let n1 = l2_normalize(&p1);
         let n2 = l2_normalize(&p2);
