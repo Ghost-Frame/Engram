@@ -1,6 +1,6 @@
 [package]
 name = "kleos-credd"
-version = "1.1.0"
+version = "1.1.2"
 edition = "2021"
 rust-version.workspace = true
 description = "Credential management daemon for Kleos"
@@ -15,8 +15,8 @@ name = "kleos-credd"
 path = "src/main.rs"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.1.0", features = ["sqlcipher", "piv"] }
-kleos-cred = { path = "../kleos-cred", version = "1.1.0" }
+kleos-lib = { path = "../kleos-lib", version = "1.1.2", features = ["sqlcipher", "piv"] }
+kleos-cred = { path = "../kleos-cred", version = "1.1.2" }
 
 # Web framework
 axum.workspace = true

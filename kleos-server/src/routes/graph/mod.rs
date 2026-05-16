@@ -780,6 +780,11 @@ async fn community_detail_handler(
         .await
         .map_err(AppError)?;
     let community = stats.into_iter().find(|item| item.community_id == id);
+    if community.is_none() && members.is_empty() {
+        return Err(AppError(kleos_lib::EngError::NotFound(format!(
+            "community {id}"
+        ))));
+    }
 
     Ok(Json(json!({
         "community": community,

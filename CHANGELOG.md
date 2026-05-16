@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-05-14
+
+### Fixed
+
+- Release workflow: set OPENSSL_DIR on Windows so bundled-sqlcipher links against preinstalled OpenSSL
+- Release workflow: tolerate partial matrix failure so assets upload when at least one build leg succeeds
+- Release workflow: rename checksum file to SHASUMS256.txt to match installer expectations
+- Installer scripts: point at Ghost-Frame/Kleos instead of Ghost-Frame/Engram
+- agent-forge: add bundled rusqlite for Windows where no system sqlite3.lib exists
+- PowerShell installer: add SHA-256 checksum verification (parity with Unix installer)
+
 ## [1.1.0] - 2026-05-12
 
 ### Added
@@ -34,7 +45,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `kleos-mcp` HTTP transport drops front-door bearer auth -- reachability (bind address) is the access-control boundary, consistent with kleos-cli. Operators must bind to a private interface (loopback, LAN, mesh)
 - `kleos-mcp` hard-fails at startup if neither a PIV signer nor `KLEOS_API_KEY` is configured -- refuses to start unauthenticated
-- Private infrastructure references (internal IPs, mesh network IDs, personal hostnames, agent-config artifacts) scrubbed from tracked files in dedicated commits (b83a972, b5810f6, bdaadb3) prior to public release work
 
 ## [1.0.0] - 2026-05-10
 

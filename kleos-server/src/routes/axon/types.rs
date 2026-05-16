@@ -60,3 +60,18 @@ pub(super) struct GetCursorParams {
     pub agent: String,
     pub channel: String,
 }
+
+/// Query parameters for the SSE streaming endpoint.
+#[derive(Debug, Deserialize)]
+pub(super) struct SseStreamParams {
+    /// Agent identity for the stream.
+    #[allow(dead_code)]
+    pub agent: String,
+    /// Comma-separated list of channels to subscribe to.
+    pub channels: Option<String>,
+    /// Optional event type filter.
+    #[serde(rename = "type")]
+    pub filter_type: Option<String>,
+    /// Resume from this event ID (exclusive).
+    pub last_event_id: Option<i64>,
+}

@@ -1,7 +1,12 @@
 // Portability routes: export, import (auto-detect), state, preferences
 
 use axum::{
-    body::Body, extract::Path, http::header, response::Response, routing::get, Json, Router,
+    body::Body,
+    extract::{Path, Query},
+    http::header,
+    response::Response,
+    routing::get,
+    Json, Router,
 };
 use rusqlite::params;
 use serde_json::{json, Value};
@@ -317,34 +322,58 @@ async fn import_mem0_array(
 async fn get_state_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
+    Query(params): Query<GetStateQuery>,
 ) -> Result<Json<Value>, AppError> {
-    // SECURITY (SEC-LOW-8): push user filter into SQL instead of fetching all
-    // rows and filtering in memory. Avoids leaking timing information about
-    // total state table size and reduces unnecessary data transfer.
     let prefix = format!("user:{}:", auth.user_id);
-    let prefix_like = format!("{}%", prefix);
     let prefix_len = prefix.len();
+    let filter_key = params.key.clone();
+
     let user_state: serde_json::Map<String, Value> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT key, value FROM app_state WHERE key LIKE ?1 ORDER BY key")
-                .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
-            let rows = stmt
-                .query_map(params![prefix_like], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
-            let mut result = serde_json::Map::new();
-            for row in rows {
-                let (k, v) = row.map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
-                let short_key = k[prefix_len..].to_string();
-                result.insert(short_key, Value::String(v));
+            if let Some(key) = &filter_key {
+                let full_key = format!("{}{}", prefix, key);
+                let mut stmt = conn
+                    .prepare("SELECT key, value FROM app_state WHERE key = ?1")
+                    .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![full_key], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
+                let mut result = serde_json::Map::new();
+                for row in rows {
+                    let (k, v) = row.map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
+                    let short_key = k[prefix_len..].to_string();
+                    result.insert(short_key, Value::String(v));
+                }
+                Ok(result)
+            } else {
+                let prefix_like = format!("{}%", prefix);
+                let mut stmt = conn
+                    .prepare("SELECT key, value FROM app_state WHERE key LIKE ?1 ORDER BY key")
+                    .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![prefix_like], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
+                let mut result = serde_json::Map::new();
+                for row in rows {
+                    let (k, v) = row.map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
+                    let short_key = k[prefix_len..].to_string();
+                    result.insert(short_key, Value::String(v));
+                }
+                Ok(result)
             }
-            Ok(result)
         })
         .await
         .map_err(AppError)?;
     Ok(Json(json!({ "state": user_state })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GetStateQuery {
+    key: Option<String>,
 }
 
 async fn delete_state_handler(
@@ -371,9 +400,10 @@ async fn list_preferences_handler(
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     let prefs = kleos_lib::preferences::list_preferences(&db, auth.user_id).await?;
-    Ok(Json(serde_json::to_value(prefs).map_err(|e| {
-        AppError(kleos_lib::EngError::Internal(e.to_string()))
-    })?))
+    let count = prefs.len();
+    let items = serde_json::to_value(prefs)
+        .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?;
+    Ok(Json(json!({ "items": items, "count": count })))
 }
 
 async fn get_preference_handler(

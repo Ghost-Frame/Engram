@@ -1,94 +1,193 @@
+//! Chiasm task coordination service -- CRUD, history, stats, and activity feed
+//! for multi-agent task management.
+
 use crate::db::Database;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// A Chiasm task representing a unit of work in multi-agent coordination.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
+    /// Unique task identifier.
     pub id: i64,
+    /// Agent responsible for this task.
     pub agent: String,
+    /// Project this task belongs to.
     pub project: String,
+    /// Short human-readable title.
     pub title: String,
+    /// Current lifecycle status (active, paused, blocked, completed, blocked_on_human, stale, queued).
     pub status: String,
+    /// Optional longer description or progress note.
     pub summary: Option<String>,
+    /// Description of what the task should produce.
+    pub expected_output: Option<String>,
+    /// Format of the expected output (e.g. "json", "raw", "markdown").
+    pub output_format: Option<String>,
+    /// The actual output submitted by the agent.
+    pub output: Option<String>,
+    /// Precondition that must hold before the task can start.
+    pub condition: Option<String>,
+    /// External URL to validate output against (guardrail endpoint).
+    pub guardrail_url: Option<String>,
+    /// Number of times guardrail validation has been attempted.
+    pub guardrail_retries: i64,
+    /// LLM-generated execution plan for this task.
+    pub plan: Option<String>,
+    /// Feedback from a reviewer or guardrail rejection.
+    pub feedback: Option<String>,
+    /// Timestamp of the last heartbeat from the assigned agent.
+    pub last_heartbeat: Option<String>,
+    /// Expected interval (seconds) between heartbeats; used for stale detection.
+    pub heartbeat_interval: i64,
+    /// Whether the task has been assigned to an agent (false for queued/unassigned).
+    pub assigned: bool,
+    /// When the task was created.
     pub created_at: String,
+    /// When the task was last modified.
     pub updated_at: String,
+    /// Tenant user ID (shim for shard-level isolation).
     pub user_id: i64,
 }
 
+/// A single history entry recording a state transition for a Chiasm task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskUpdate {
+    /// Unique update record identifier.
     pub id: i64,
+    /// The task this update belongs to.
     pub task_id: i64,
+    /// Agent that made this update.
     pub agent: String,
+    /// Status after this update.
     pub status: String,
+    /// Summary at the time of this update.
     pub summary: Option<String>,
+    /// When the update was recorded.
     pub created_at: String,
+    /// Tenant user ID.
     pub user_id: i64,
 }
 
+/// Request payload for creating a new Chiasm task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTaskRequest {
+    /// Agent to assign the task to.
     pub agent: String,
+    /// Project the task belongs to.
     pub project: String,
+    /// Short human-readable title.
     pub title: String,
+    /// Initial status (defaults to "active").
     #[serde(default)]
     pub status: Option<String>,
+    /// Optional longer description.
     #[serde(default)]
     pub summary: Option<String>,
+    /// Tenant user ID.
     #[serde(default)]
     pub user_id: Option<i64>,
+    /// Description of expected output.
+    #[serde(default)]
+    pub expected_output: Option<String>,
+    /// Format of expected output (defaults to "raw").
+    #[serde(default)]
+    pub output_format: Option<String>,
+    /// Precondition for task start.
+    #[serde(default)]
+    pub condition: Option<String>,
+    /// External guardrail validation URL.
+    #[serde(default)]
+    pub guardrail_url: Option<String>,
+    /// Heartbeat interval in seconds (defaults to 300).
+    #[serde(default)]
+    pub heartbeat_interval: Option<i64>,
 }
 
+/// Request payload for partially updating an existing Chiasm task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateTaskRequest {
+    /// New title, if changing.
     #[serde(default)]
     pub title: Option<String>,
+    /// New status, if changing.
     #[serde(default)]
     pub status: Option<String>,
+    /// New summary, if changing.
     #[serde(default)]
     pub summary: Option<String>,
+    /// New agent assignment, if changing.
     #[serde(default)]
     pub agent: Option<String>,
 }
 
+/// Aggregated statistics for the Chiasm task table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChiasmStats {
+    /// Total number of tasks across all statuses.
     pub total: i64,
+    /// Counts broken down by status value.
     pub by_status: BTreeMap<String, i64>,
 }
 
+/// A lightweight summary of a task for the activity feed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedItem {
+    /// Unique task identifier.
     pub id: i64,
+    /// Agent responsible for this task.
     pub agent: String,
+    /// Project this task belongs to.
     pub project: String,
+    /// Short title.
     pub title: String,
+    /// Current status.
     pub status: String,
+    /// Optional summary text.
     pub summary: Option<String>,
+    /// When the task was last modified.
     pub updated_at: String,
+    /// When the task was created.
     pub created_at: String,
 }
 
-const TASK_COLUMNS: &str = "id, agent, project, title, status, summary, created_at, updated_at";
+/// Column list for SELECT queries on chiasm_tasks.
+const TASK_COLUMNS: &str = "id, agent, project, title, status, summary, \
+    expected_output, output_format, output, condition, guardrail_url, \
+    guardrail_retries, plan, feedback, last_heartbeat, heartbeat_interval, \
+    assigned, created_at, updated_at";
 
-const VALID_STATUSES: &[&str] = &["active", "paused", "blocked", "completed"];
+/// All valid Chiasm task statuses.
+const VALID_STATUSES: &[&str] = &[
+    "active",
+    "paused",
+    "blocked",
+    "completed",
+    "blocked_on_human",
+    "stale",
+    "queued",
+];
 
+/// Validate that the given string is a recognized Chiasm task status.
 fn validate_status(status: &str) -> Result<()> {
     if VALID_STATUSES.contains(&status) {
         Ok(())
     } else {
         Err(EngError::InvalidInput(format!(
-            "invalid chiasm status '{}', must be one of active, paused, blocked, completed",
-            status
+            "invalid chiasm status '{}', must be one of: {}",
+            status,
+            VALID_STATUSES.join(", ")
         )))
     }
 }
 
+/// Map a rusqlite error to the crate's EngError type.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
+/// Convert a database row to a Task struct.
 fn row_to_task(row: &rusqlite::Row<'_>) -> Result<Task> {
     Ok(Task {
         id: row.get(0).map_err(rusqlite_to_eng_error)?,
@@ -97,12 +196,24 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> Result<Task> {
         title: row.get(3).map_err(rusqlite_to_eng_error)?,
         status: row.get(4).map_err(rusqlite_to_eng_error)?,
         summary: row.get(5).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(6).map_err(rusqlite_to_eng_error)?,
-        updated_at: row.get(7).map_err(rusqlite_to_eng_error)?,
+        expected_output: row.get(6).map_err(rusqlite_to_eng_error)?,
+        output_format: row.get(7).map_err(rusqlite_to_eng_error)?,
+        output: row.get(8).map_err(rusqlite_to_eng_error)?,
+        condition: row.get(9).map_err(rusqlite_to_eng_error)?,
+        guardrail_url: row.get(10).map_err(rusqlite_to_eng_error)?,
+        guardrail_retries: row.get::<_, i64>(11).map_err(rusqlite_to_eng_error)?,
+        plan: row.get(12).map_err(rusqlite_to_eng_error)?,
+        feedback: row.get(13).map_err(rusqlite_to_eng_error)?,
+        last_heartbeat: row.get(14).map_err(rusqlite_to_eng_error)?,
+        heartbeat_interval: row.get::<_, i64>(15).map_err(rusqlite_to_eng_error)?,
+        assigned: row.get::<_, i64>(16).map_err(rusqlite_to_eng_error)? != 0,
+        created_at: row.get(17).map_err(rusqlite_to_eng_error)?,
+        updated_at: row.get(18).map_err(rusqlite_to_eng_error)?,
         user_id: 1,
     })
 }
 
+/// Create a new Chiasm task in the database.
 #[tracing::instrument(skip(db, req), fields(agent = %req.agent, project = ?req.project, title = %req.title))]
 pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> {
     let status = req.status.clone().unwrap_or_else(|| "active".to_string());
@@ -115,21 +226,55 @@ pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> 
     let project = req.project.clone();
     let title = req.title.clone();
     let summary = req.summary.clone();
+    let expected_output = req.expected_output.clone();
+    let output_format = req
+        .output_format
+        .clone()
+        .unwrap_or_else(|| "raw".to_string());
+    let condition = req.condition.clone();
+    let guardrail_url = req.guardrail_url.clone();
+    let heartbeat_interval = req.heartbeat_interval.unwrap_or(300);
     let status_ins = status.clone();
+
     let id = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO chiasm_tasks (agent, project, title, status, summary)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![agent, project, title, status_ins, summary],
+                "INSERT INTO chiasm_tasks (agent, project, title, status, summary, \
+                 expected_output, output_format, condition, guardrail_url, heartbeat_interval) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    agent,
+                    project,
+                    title,
+                    status_ins,
+                    summary,
+                    expected_output,
+                    output_format,
+                    condition,
+                    guardrail_url,
+                    heartbeat_interval
+                ],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
-    get_task(db, id, user_id).await
+    let task = get_task(db, id, user_id).await?;
+    super::emit_chiasm_event(
+        db,
+        "task.created",
+        serde_json::json!({
+            "task_id": task.id,
+            "agent": task.agent,
+            "project": task.project,
+            "title": task.title,
+        }),
+    )
+    .await;
+    Ok(task)
 }
 
+/// Retrieve a single task by ID.
 #[tracing::instrument(skip(db), fields(task_id = id, user_id))]
 pub async fn get_task(db: &Database, id: i64, _user_id: i64) -> Result<Task> {
     let sql = format!("SELECT {TASK_COLUMNS} FROM chiasm_tasks WHERE id = ?1");
@@ -148,6 +293,7 @@ pub async fn get_task(db: &Database, id: i64, _user_id: i64) -> Result<Task> {
     .await
 }
 
+/// List tasks with optional filtering by status, agent, and project.
 #[tracing::instrument(skip(db), fields(user_id, status = ?status, agent = ?agent, project = ?project, limit, offset))]
 pub async fn list_tasks(
     db: &Database,
@@ -271,9 +417,26 @@ pub async fn update_task(
         Ok(())
     })
     .await?;
-    get_task(db, id, user_id).await
+    let task = get_task(db, id, user_id).await?;
+    let event_action = if task.status == "completed" {
+        "task.completed"
+    } else {
+        "task.updated"
+    };
+    super::emit_chiasm_event(
+        db,
+        event_action,
+        serde_json::json!({
+            "task_id": task.id,
+            "status": task.status,
+            "agent": task.agent,
+        }),
+    )
+    .await;
+    Ok(task)
 }
 
+/// Delete a task by ID.
 #[tracing::instrument(skip(db), fields(task_id = id))]
 pub async fn delete_task(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
@@ -287,6 +450,7 @@ pub async fn delete_task(db: &Database, id: i64) -> Result<()> {
     .await
 }
 
+/// Return the update history for a task in reverse chronological order.
 #[tracing::instrument(skip(db), fields(task_id, user_id, limit))]
 pub async fn list_task_history(
     db: &Database,
@@ -322,6 +486,7 @@ pub async fn list_task_history(
     .await
 }
 
+/// Return aggregated task counts grouped by status.
 #[tracing::instrument(skip(db))]
 pub async fn get_stats(db: &Database) -> Result<ChiasmStats> {
     db.read(move |conn| {
@@ -342,6 +507,7 @@ pub async fn get_stats(db: &Database) -> Result<ChiasmStats> {
     .await
 }
 
+/// Return a recent activity feed of tasks ordered by last modification time.
 #[tracing::instrument(skip(db), fields(limit, offset))]
 pub async fn get_feed(db: &Database, limit: usize, offset: usize) -> Result<Vec<FeedItem>> {
     let sql = "SELECT id, agent, project, title, status, summary, updated_at, created_at
@@ -372,14 +538,107 @@ pub async fn get_feed(db: &Database, limit: usize, offset: usize) -> Result<Vec<
     .await
 }
 
+/// Submit output for a task. Stores the output string and updates the timestamp.
+#[tracing::instrument(skip(db), fields(task_id = id, user_id))]
+pub async fn submit_output(db: &Database, id: i64, output: &str, user_id: i64) -> Result<Task> {
+    let output_s = output.to_string();
+    let changed = db
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE chiasm_tasks SET output = ?1, updated_at = datetime('now') WHERE id = ?2",
+                rusqlite::params![output_s, id],
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+    if changed == 0 {
+        return Err(EngError::NotFound(format!("task {}", id)));
+    }
+    let task = get_task(db, id, user_id).await?;
+    super::emit_chiasm_event(db, "task.output", serde_json::json!({"task_id": id})).await;
+    Ok(task)
+}
+
+/// Submit feedback for a task. Stores feedback and resets status to "active"
+/// so the assigned agent can retry with the reviewer's guidance.
+#[tracing::instrument(skip(db), fields(task_id = id, user_id))]
+pub async fn submit_feedback(db: &Database, id: i64, feedback: &str, user_id: i64) -> Result<Task> {
+    let feedback_s = feedback.to_string();
+    let changed = db
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE chiasm_tasks SET feedback = ?1, status = 'active', \
+                 updated_at = datetime('now') WHERE id = ?2",
+                rusqlite::params![feedback_s, id],
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+    if changed == 0 {
+        return Err(EngError::NotFound(format!("task {}", id)));
+    }
+    let task = get_task(db, id, user_id).await?;
+    super::emit_chiasm_event(db, "task.feedback", serde_json::json!({"task_id": id})).await;
+    Ok(task)
+}
+
+/// Unit tests.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Initialize an in-memory database for testing.
     async fn setup() -> Database {
         Database::connect_memory().await.expect("db")
     }
 
+    /// Helper to build a minimal CreateTaskRequest for tests.
+    fn test_req(title: &str) -> CreateTaskRequest {
+        CreateTaskRequest {
+            agent: "a".into(),
+            project: "p".into(),
+            title: title.into(),
+            status: None,
+            summary: None,
+            user_id: Some(1),
+            expected_output: None,
+            output_format: None,
+            condition: None,
+            guardrail_url: None,
+            heartbeat_interval: None,
+        }
+    }
+
+    /// Test: submitting output stores the value and returns the updated task.
+    #[tokio::test]
+    async fn submit_output_stores_and_returns() {
+        let db = setup().await;
+        let t = create_task(&db, test_req("output-test")).await.unwrap();
+        let updated = submit_output(&db, t.id, "result data", 1).await.unwrap();
+        assert_eq!(updated.output.as_deref(), Some("result data"));
+    }
+
+    /// Test: submitting feedback stores the message and resets task status to active.
+    #[tokio::test]
+    async fn submit_feedback_resets_to_active() {
+        let db = setup().await;
+        let t = create_task(
+            &db,
+            CreateTaskRequest {
+                status: Some("completed".into()),
+                ..test_req("feedback-test")
+            },
+        )
+        .await
+        .unwrap();
+        let updated = submit_feedback(&db, t.id, "needs revision", 1)
+            .await
+            .unwrap();
+        assert_eq!(updated.feedback.as_deref(), Some("needs revision"));
+        assert_eq!(updated.status, "active");
+    }
+
+    /// Test: a created task can be retrieved by ID with its fields intact.
     #[tokio::test]
     async fn create_and_get_task() {
         let db = setup().await;
@@ -392,6 +651,11 @@ mod tests {
                 status: Some("active".into()),
                 summary: Some("phase 27b".into()),
                 user_id: Some(1),
+                expected_output: None,
+                output_format: None,
+                condition: None,
+                guardrail_url: None,
+                heartbeat_interval: None,
             },
         )
         .await
@@ -401,6 +665,7 @@ mod tests {
         assert_eq!(fetched.title, "port syntheos");
     }
 
+    /// Test: updating a task writes a history entry with the new status and summary.
     #[tokio::test]
     async fn update_task_writes_history() {
         let db = setup().await;
@@ -413,6 +678,11 @@ mod tests {
                 status: None,
                 summary: None,
                 user_id: Some(1),
+                expected_output: None,
+                output_format: None,
+                condition: None,
+                guardrail_url: None,
+                heartbeat_interval: None,
             },
         )
         .await
@@ -459,6 +729,11 @@ mod tests {
                 status: None,
                 summary: None,
                 user_id: Some(1),
+                expected_output: None,
+                output_format: None,
+                condition: None,
+                guardrail_url: None,
+                heartbeat_interval: None,
             },
         )
         .await
@@ -467,6 +742,7 @@ mod tests {
         assert!(other.is_empty());
     }
 
+    /// Test: creating a task with an unrecognised status string returns an error.
     #[tokio::test]
     async fn invalid_status_rejected() {
         let db = setup().await;
@@ -479,9 +755,69 @@ mod tests {
                 status: Some("nonsense".into()),
                 summary: None,
                 user_id: Some(1),
+                expected_output: None,
+                output_format: None,
+                condition: None,
+                guardrail_url: None,
+                heartbeat_interval: None,
             },
         )
         .await;
         assert!(r.is_err());
+    }
+
+    /// Test: extended fields like expected_output and heartbeat_interval are persisted correctly.
+    #[tokio::test]
+    async fn create_task_with_extended_fields() {
+        let db = setup().await;
+        let t = create_task(
+            &db,
+            CreateTaskRequest {
+                agent: "claude-code".into(),
+                project: "kleos".into(),
+                title: "port syntheos".into(),
+                status: Some("active".into()),
+                summary: Some("phase 52".into()),
+                user_id: Some(1),
+                expected_output: Some("all tests pass".into()),
+                output_format: Some("json".into()),
+                condition: Some("ci green".into()),
+                guardrail_url: None,
+                heartbeat_interval: Some(120),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(t.expected_output.as_deref(), Some("all tests pass"));
+        assert_eq!(t.output_format.as_deref(), Some("json"));
+        assert_eq!(t.heartbeat_interval, 120);
+        assert!(t.assigned); // default is 1/true
+    }
+
+    /// Test: non-standard status values like blocked_on_human and stale are accepted.
+    #[tokio::test]
+    async fn extended_statuses_accepted() {
+        let db = setup().await;
+        for status in &["blocked_on_human", "stale", "queued"] {
+            let t = create_task(
+                &db,
+                CreateTaskRequest {
+                    agent: "a".into(),
+                    project: "p".into(),
+                    title: format!("test-{}", status),
+                    status: Some(status.to_string()),
+                    summary: None,
+                    user_id: Some(1),
+                    expected_output: None,
+                    output_format: None,
+                    condition: None,
+                    guardrail_url: None,
+                    heartbeat_interval: None,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(t.status, *status);
+        }
     }
 }

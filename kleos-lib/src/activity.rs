@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
-use crate::services::axon::{publish_event, PublishEventRequest};
+use crate::services::axon::fanout::publish_and_fanout;
+use crate::services::axon::PublishEventRequest;
 use crate::services::broca::{log_action, LogActionRequest};
 use crate::services::chiasm::{
     create_task, list_tasks, update_task, CreateTaskRequest, UpdateTaskRequest,
@@ -71,6 +72,7 @@ pub fn action_to_channel(action: &str) -> &'static str {
     }
 }
 
+/// Maps activity action strings to numeric importance levels.
 fn action_to_importance(action: &str) -> i32 {
     match action {
         "task.completed" => 6,
@@ -79,6 +81,7 @@ fn action_to_importance(action: &str) -> i32 {
     }
 }
 
+/// Maps activity action strings to category labels.
 fn action_to_category(action: &str) -> &'static str {
     if action.starts_with("task.") {
         "task"
@@ -108,6 +111,28 @@ async fn fanout_chiasm(db: &Database, report: &ActivityReport, user_id: i64) {
         _ => "active",
     };
 
+    // Extract extended Chiasm fields from activity details when present
+    let details = report.details.as_ref();
+    let expected_output = details
+        .and_then(|d| d.get("expected_output"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let output_format = details
+        .and_then(|d| d.get("output_format"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let condition = details
+        .and_then(|d| d.get("condition"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let guardrail_url = details
+        .and_then(|d| d.get("guardrail_url"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let heartbeat_interval = details
+        .and_then(|d| d.get("heartbeat_interval"))
+        .and_then(|v| v.as_i64());
+
     // task.started always creates a new task
     if report.action == "task.started" {
         match create_task(
@@ -119,6 +144,11 @@ async fn fanout_chiasm(db: &Database, report: &ActivityReport, user_id: i64) {
                 status: Some("active".to_string()),
                 summary: None,
                 user_id: Some(user_id),
+                expected_output: expected_output.clone(),
+                output_format: output_format.clone(),
+                condition: condition.clone(),
+                guardrail_url: guardrail_url.clone(),
+                heartbeat_interval,
             },
         )
         .await
@@ -182,6 +212,11 @@ async fn fanout_chiasm(db: &Database, report: &ActivityReport, user_id: i64) {
                     status: Some("active".to_string()),
                     summary: None,
                     user_id: Some(user_id),
+                    expected_output,
+                    output_format,
+                    condition,
+                    guardrail_url,
+                    heartbeat_interval,
                 },
             )
             .await
@@ -416,7 +451,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
         payload["details"] = details.clone();
     }
 
-    let axon_event = publish_event(
+    let axon_event = publish_and_fanout(
         db,
         PublishEventRequest {
             channel,
@@ -450,6 +485,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
 mod tests {
     use super::*;
 
+    /// Test: validates that required fields agent, action, and summary must be non-empty.
     #[test]
     fn test_activity_validates_required_fields() {
         let empty_agent = ActivityReport {
@@ -489,6 +525,7 @@ mod tests {
         assert!(validate_activity_report(&valid).is_ok());
     }
 
+    /// Test: action strings are routed to the correct Axon channel.
     #[test]
     fn test_activity_channel_selection() {
         assert_eq!(action_to_channel("task.blocked"), "alerts");
@@ -502,6 +539,7 @@ mod tests {
         assert_eq!(action_to_channel("deploy.pushed"), "system");
     }
 
+    /// Test: action strings map to the correct numeric importance levels.
     #[test]
     fn test_activity_importance() {
         assert_eq!(action_to_importance("task.completed"), 6);
@@ -511,6 +549,7 @@ mod tests {
         assert_eq!(action_to_importance("agent.online"), 4);
     }
 
+    /// Test: action strings map to the correct category labels.
     #[test]
     fn test_activity_category() {
         assert_eq!(action_to_category("task.started"), "task");
@@ -519,6 +558,7 @@ mod tests {
         assert_eq!(action_to_category("agent.online"), "activity");
     }
 
+    /// Test: reports with fields exceeding maximum lengths are rejected.
     #[test]
     fn test_activity_validates_length_limits() {
         let long_agent = ActivityReport {
@@ -549,6 +589,7 @@ mod tests {
         assert!(validate_activity_report(&long_summary).is_err());
     }
 
+    /// Test: processing an activity report stores a memory entry in the database.
     #[tokio::test]
     async fn test_activity_fan_out_creates_memory() {
         use crate::db::Database;

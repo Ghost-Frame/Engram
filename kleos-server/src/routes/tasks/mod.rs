@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
@@ -9,12 +9,18 @@ use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::chiasm::{
     create_task, delete_task, get_feed as get_task_feed, get_stats as get_task_stats, get_task,
-    list_task_history, list_tasks, update_task, CreateTaskRequest, UpdateTaskRequest,
+    list_task_history, list_tasks, submit_feedback, submit_output, update_task, CreateTaskRequest,
+    UpdateTaskRequest,
 };
 
 mod types;
-use types::{CreateTaskBody, HistoryParams, ListTasksParams, UpdateTaskBody};
+use types::{
+    AddDepsBody, CheckConflictsBody, ClaimBody, ClaimsProjectParams, CreateClaimsBody,
+    CreateTaskBody, EnqueueBody, HistoryParams, ListTasksParams, SubmitFeedbackBody,
+    SubmitOutputBody, UpdateTaskBody,
+};
 
+/// Builds the Chiasm tasks router.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/tasks", get(list_tasks_handler).post(create_task_handler))
@@ -41,8 +47,53 @@ pub fn router() -> Router<AppState> {
         )
         .route("/chiasm/tasks/{id}/history", get(get_task_history_handler))
         .route("/chiasm/feed", get(get_feed))
+        .route("/tasks/{id}/output", post(submit_output_handler))
+        .route("/tasks/{id}/feedback", post(submit_feedback_handler))
+        .route(
+            "/tasks/{id}/dependencies",
+            get(list_deps_handler).post(add_deps_handler),
+        )
+        .route(
+            "/tasks/{id}/dependencies/{dep_id}",
+            delete(remove_dep_handler),
+        )
+        .route("/chiasm/tasks/{id}/output", post(submit_output_handler))
+        .route("/chiasm/tasks/{id}/feedback", post(submit_feedback_handler))
+        .route(
+            "/chiasm/tasks/{id}/dependencies",
+            get(list_deps_handler).post(add_deps_handler),
+        )
+        .route(
+            "/chiasm/tasks/{id}/dependencies/{dep_id}",
+            delete(remove_dep_handler),
+        )
+        .route(
+            "/tasks/{id}/claims",
+            get(list_task_claims_handler)
+                .post(create_claims_handler)
+                .delete(release_claims_handler),
+        )
+        .route("/claims/check", post(check_conflicts_handler))
+        .route("/claims", get(list_project_claims_handler))
+        .route(
+            "/chiasm/tasks/{id}/claims",
+            get(list_task_claims_handler)
+                .post(create_claims_handler)
+                .delete(release_claims_handler),
+        )
+        .route("/chiasm/claims/check", post(check_conflicts_handler))
+        .route("/chiasm/claims", get(list_project_claims_handler))
+        // Heartbeat
+        .route("/tasks/{id}/heartbeat", post(heartbeat_handler))
+        .route("/chiasm/tasks/{id}/heartbeat", post(heartbeat_handler))
+        // Queue
+        .route("/queue", post(enqueue_handler))
+        .route("/queue/claim", post(claim_handler))
+        .route("/chiasm/queue", post(enqueue_handler))
+        .route("/chiasm/queue/claim", post(claim_handler))
 }
 
+/// Lists tasks with optional filters.
 async fn list_tasks_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -65,6 +116,7 @@ async fn list_tasks_handler(
     Ok(Json(json!({ "tasks": tasks, "count": tasks.len() })))
 }
 
+/// Creates a new task.
 async fn create_task_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -77,17 +129,24 @@ async fn create_task_handler(
         status: body.status,
         summary: body.summary,
         user_id: Some(auth.user_id),
+        expected_output: body.expected_output,
+        output_format: body.output_format,
+        condition: body.condition,
+        guardrail_url: body.guardrail_url,
+        heartbeat_interval: body.heartbeat_interval,
     };
 
     let task = create_task(&db, req).await?;
     Ok((StatusCode::CREATED, Json(json!(task))))
 }
 
+/// Returns task statistics.
 async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = get_task_stats(&db).await?;
     Ok(Json(json!(stats)))
 }
 
+/// Retrieves a single task by ID.
 async fn get_task_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -97,6 +156,7 @@ async fn get_task_handler(
     Ok(Json(json!(task)))
 }
 
+/// Partially updates a task.
 async fn update_task_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -114,17 +174,20 @@ async fn update_task_handler(
     Ok(Json(json!(task)))
 }
 
+/// Lists history entries for a task.
 async fn get_task_history_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Path(id): Path<i64>,
     Query(params): Query<HistoryParams>,
 ) -> Result<Json<Value>, AppError> {
+    let _ = get_task(&db, id, auth.user_id).await?;
     let limit = params.limit.unwrap_or(100).min(1000);
     let history = list_task_history(&db, id, auth.user_id, limit).await?;
     Ok(Json(json!({ "history": history, "count": history.len() })))
 }
 
+/// Deletes a task.
 async fn delete_task_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,
@@ -134,6 +197,7 @@ async fn delete_task_handler(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Returns the task activity feed.
 async fn get_feed(
     ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,
@@ -144,4 +208,180 @@ async fn get_feed(
     let items = get_task_feed(&db, limit, offset).await?;
     let total = get_task_stats(&db).await?.total;
     Ok(Json(json!({ "items": items, "total": total })))
+}
+
+/// Submit output for a task.
+async fn submit_output_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+    Json(body): Json<SubmitOutputBody>,
+) -> Result<Json<Value>, AppError> {
+    let task = submit_output(&db, id, &body.output, auth.user_id).await?;
+    Ok(Json(json!(task)))
+}
+
+/// Submit feedback for a task, resetting it to active.
+async fn submit_feedback_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+    Json(body): Json<SubmitFeedbackBody>,
+) -> Result<Json<Value>, AppError> {
+    let task = submit_feedback(&db, id, &body.feedback, auth.user_id).await?;
+    Ok(Json(json!(task)))
+}
+
+/// List all dependencies for a task.
+async fn list_deps_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let deps = kleos_lib::services::chiasm::dependencies::get_dependencies(&db, id).await?;
+    Ok(Json(json!({ "dependencies": deps, "count": deps.len() })))
+}
+
+/// Add dependencies to a task with circular dependency detection.
+async fn add_deps_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Path(id): Path<i64>,
+    Json(body): Json<AddDepsBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    kleos_lib::services::chiasm::dependencies::add_dependencies(&db, id, &body.depends_on).await?;
+    let deps = kleos_lib::services::chiasm::dependencies::get_dependencies(&db, id).await?;
+    Ok((StatusCode::CREATED, Json(json!({ "dependencies": deps }))))
+}
+
+/// Remove a single dependency edge.
+async fn remove_dep_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Path((id, dep_id)): Path<(i64, i64)>,
+) -> Result<Json<Value>, AppError> {
+    let removed =
+        kleos_lib::services::chiasm::dependencies::remove_dependency(&db, id, dep_id).await?;
+    Ok(Json(json!({ "removed": removed })))
+}
+
+/// Create path claims for a task.
+async fn create_claims_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Path(id): Path<i64>,
+    Json(body): Json<CreateClaimsBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let ttl = body.ttl_seconds.unwrap_or(1800);
+    let path_refs: Vec<&str> = body.paths.iter().map(|s| s.as_str()).collect();
+    let claims = kleos_lib::services::chiasm::claims::create_claims(
+        &db,
+        id,
+        &body.agent,
+        &body.project,
+        &path_refs,
+        ttl,
+    )
+    .await?;
+    let count = claims.len();
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "claims": claims, "count": count })),
+    ))
+}
+
+/// List active claims for a task.
+async fn list_task_claims_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let claims = kleos_lib::services::chiasm::claims::get_claims_for_task(&db, id).await?;
+    let count = claims.len();
+    Ok(Json(json!({ "claims": claims, "count": count })))
+}
+
+/// Release all claims for a task.
+async fn release_claims_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let released = kleos_lib::services::chiasm::claims::release_claims(&db, id).await?;
+    Ok(Json(json!({ "released": released })))
+}
+
+/// Check for path conflicts before creating claims.
+async fn check_conflicts_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Json(body): Json<CheckConflictsBody>,
+) -> Result<Json<Value>, AppError> {
+    let path_refs: Vec<&str> = body.paths.iter().map(|s| s.as_str()).collect();
+    let conflicts = kleos_lib::services::chiasm::claims::check_conflicts(
+        &db,
+        &body.project,
+        &path_refs,
+        body.exclude_task_id,
+    )
+    .await?;
+    let has_conflicts = !conflicts.is_empty();
+    Ok(Json(
+        json!({ "conflicts": conflicts, "has_conflicts": has_conflicts }),
+    ))
+}
+
+/// List all active claims in a project.
+async fn list_project_claims_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Query(params): Query<ClaimsProjectParams>,
+) -> Result<Json<Value>, AppError> {
+    let claims =
+        kleos_lib::services::chiasm::claims::get_claims_for_project(&db, &params.project).await?;
+    let count = claims.len();
+    Ok(Json(json!({ "claims": claims, "count": count })))
+}
+
+/// Record a heartbeat for a task, refreshing its liveness timestamp.
+async fn heartbeat_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    kleos_lib::services::chiasm::heartbeat::record_heartbeat(&db, id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Enqueue a new unassigned task into the work queue.
+async fn enqueue_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Json(body): Json<EnqueueBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let task = kleos_lib::services::chiasm::queue::enqueue_task(
+        &db,
+        &body.project,
+        &body.title,
+        body.summary.as_deref(),
+        auth.user_id,
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(json!(task))))
+}
+
+/// Claim the next available queued task for an agent.
+async fn claim_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Json(body): Json<ClaimBody>,
+) -> Result<Json<Value>, AppError> {
+    let task = kleos_lib::services::chiasm::queue::claim_next_task(
+        &db,
+        &body.agent,
+        body.project.as_deref(),
+        auth.user_id,
+    )
+    .await?;
+    Ok(Json(json!({ "task": task })))
 }

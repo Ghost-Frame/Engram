@@ -132,6 +132,7 @@ fn resolve_api_key() -> Option<String> {
     None
 }
 
+#[cfg(unix)]
 fn resolve_key_via_credd() -> Option<String> {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
@@ -143,7 +144,7 @@ fn resolve_key_via_credd() -> Option<String> {
     }
 
     let slot = std::env::var("KLEOS_AGENT_SLOT")
-        .unwrap_or_else(|_| "claude-code-wsl".into())
+        .unwrap_or_else(|_| "claude-code".into())
         .replace(['\r', '\n'], "");
     let agent_key = agent_key.replace(['\r', '\n'], "");
     let request = format!(
@@ -169,6 +170,11 @@ fn resolve_key_via_credd() -> Option<String> {
         return None;
     }
     Some(key.to_string())
+}
+
+#[cfg(not(unix))]
+fn resolve_key_via_credd() -> Option<String> {
+    None
 }
 
 /// Fail-open policy. In --claude-hook mode the default is OPEN (matching

@@ -8,10 +8,16 @@ use crate::{EngError, Result};
 use std::collections::HashMap;
 use tracing::info;
 
+/// Convert a rusqlite error into the crate's canonical error type.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
+/// Compute the edge weight used by the Louvain community detector for a
+/// memory_links row. Causal links carry the most weight, corrective and
+/// extending links carry slightly less, consolidation edges are dampened
+/// to avoid collapsing communities, and everything else falls back to the
+/// raw similarity score.
 fn edge_weight(link_type: &str, similarity: f64) -> f64 {
     let tw = match link_type {
         "caused_by" | "causes" => 2.0,
@@ -23,6 +29,11 @@ fn edge_weight(link_type: &str, similarity: f64) -> f64 {
     similarity * tw
 }
 
+/// Run Louvain modularity optimization over the memory graph and write
+/// the resulting `community_id` back onto each memory. Bounded to 10,000
+/// nodes and 100 iterations to keep the call from running the server out
+/// of CPU on a large tenant. Returns the assignment summary that the
+/// caller turns into a JSON response.
 #[tracing::instrument(skip(db))]
 pub async fn detect_communities(
     db: &Database,
@@ -257,6 +268,9 @@ pub async fn detect_communities(
     })
 }
 
+/// Return up to `limit` memories assigned to the given `community_id`,
+/// ordered by importance and recency. Excludes forgotten and archived
+/// rows. Backs `GET /graph/communities/{id}/members`.
 #[tracing::instrument(skip(db))]
 pub async fn get_community_members(
     db: &Database,
@@ -273,18 +287,15 @@ pub async fn get_community_members(
             )
             .map_err(rusqlite_to_eng_error)?;
         let members = stmt
-            .query_map(
-                rusqlite::params![community_id, limit as i64],
-                |row| {
-                    Ok(CommunityMember {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        category: row.get(2)?,
-                        importance: row.get(3)?,
-                        created_at: row.get(4)?,
-                    })
-                },
-            )
+            .query_map(rusqlite::params![community_id, limit as i64], |row| {
+                Ok(CommunityMember {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get(2)?,
+                    importance: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })
             .map_err(rusqlite_to_eng_error)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(rusqlite_to_eng_error)?;
@@ -293,6 +304,8 @@ pub async fn get_community_members(
     .await
 }
 
+/// Return per-community size, average importance, and category set for
+/// the top 50 communities by size. Backs `GET /graph/communities/stats`.
 #[tracing::instrument(skip(db))]
 pub async fn get_community_stats(db: &Database, _user_id: i64) -> Result<Vec<CommunityStats>> {
     db.read(move |conn| {

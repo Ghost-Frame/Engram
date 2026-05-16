@@ -1,6 +1,6 @@
 [package]
 name = "kleos-lib"
-version = "1.1.0"
+version = "1.1.2"
 edition = "2021"
 rust-version.workspace = true
 description = "Core library for Kleos -- persistent semantic memory and cognitive infrastructure for AI agents"
@@ -23,9 +23,13 @@ piv = ["yubikey"]
 # Vendor SQLCipher for at-rest encryption. Mutually exclusive with libsql
 # in the same binary (symbol collision), so engram-migrate must NOT enable this.
 sqlcipher = ["rusqlite/bundled-sqlcipher"]
+# SQLCipher with vendored OpenSSL for cross-compilation targets.
+sqlcipher-vendored = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
 # Bundle SQLite from source (needed on Windows where no system sqlite3.lib exists).
 # Mutually exclusive with libsql in the same binary (symbol collision).
 bundled-sqlite = ["rusqlite/bundled"]
+# Vendor OpenSSL from source for cross-compilation targets.
+vendored-openssl = ["openssl/vendored"]
 
 [dependencies]
 rusqlite = { workspace = true }
@@ -78,6 +82,7 @@ ed25519-dalek = { workspace = true }
 hkdf = "0.12"
 aes-gcm = "0.10"
 yubikey = { version = "0.8", optional = true }
+openssl = { version = "0.10", optional = true }
 
 # Vendored protoc binary -- only available for Linux x86_64.
 # Other platforms install protoc via system package manager.

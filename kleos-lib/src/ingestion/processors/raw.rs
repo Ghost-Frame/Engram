@@ -84,6 +84,23 @@ pub async fn process(
                         e
                     );
                 }
+                // Enqueue entity extraction alongside fact extraction.
+                // Same payload shape: memory_id, content, user_id, episode_id.
+                // Max retries = 3 to match fact_extract.
+                if let Err(e) = enqueue_job(
+                    db.as_ref(),
+                    "ingestion.entity_extract",
+                    &payload.to_string(),
+                    3,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        memory_id = result.id,
+                        "failed to enqueue ingestion.entity_extract job: {}",
+                        e
+                    );
+                }
             }
             Err(e) => {
                 errors.push(format!("Chunk {}: insert failed: {}", chunk.index, e));

@@ -4,4 +4,5 @@ use serde::Deserialize;
 pub(super) struct DecayScoresQuery {
     pub limit: Option<usize>,
     pub order: Option<String>,
+    pub memory_id: Option<i64>,
 }

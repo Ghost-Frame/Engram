@@ -101,16 +101,18 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
     let new_id: i64 = db
         .transaction(move |tx| {
             // Insert consolidated memory.
+            // N.B.: user_id is intentionally omitted -- tenant-shard DBs dropped
+            // the column in migration v22. The row inherits the shard owner's
+            // identity from the DB path itself.
             tx.execute(
                 "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-                 source_count, is_static, is_forgotten, confidence, status, user_id, created_at, updated_at) \
-                 VALUES (?1, ?2, 'consolidation', ?3, 1, 1, ?4, 1, 0, 1.0, 'approved', ?5, datetime('now'), datetime('now'))",
+                 source_count, is_static, is_forgotten, confidence, status, created_at, updated_at) \
+                 VALUES (?1, ?2, 'consolidation', ?3, 1, 1, ?4, 1, 0, 1.0, 'approved', datetime('now'), datetime('now'))",
                 rusqlite::params![
                     merged_content,
                     category,
                     max_importance,
                     source_count,
-                    user_id
                 ],
             )
             .map_err(rusqlite_to_eng_error)?;

@@ -4,6 +4,7 @@
 //! `kleos-mcp` (and any future Rust consumer) share one signing path.
 
 use crate::routes::{render_path, Method, Route};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -233,15 +234,9 @@ impl Client {
         })?;
         let parsed: Result<Value, _> = serde_json::from_slice(&bytes);
         if status.is_success() {
-            parsed.map_err(|e| {
-                format!(
-                    "{} {} returned {} but body was not valid JSON: {} (body: {})",
-                    method,
-                    url,
-                    status,
-                    e,
-                    body_excerpt(&bytes)
-                )
+            parsed.or_else(|_| {
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                Ok(serde_json::json!({ "content": text }))
             })
         } else {
             let msg = parsed
@@ -312,11 +307,18 @@ impl Client {
     ///
     /// `args` is mutated in place: keys consumed by the path template are
     /// removed before the body is serialised so they do not double-up.
+    /// For GET/DELETE, remaining args become query-string parameters.
     pub async fn call_route(&self, route: &Route, mut args: Value) -> Result<Value, String> {
         let path = render_path(route.path, &mut args)?;
         match route.method {
-            Method::Get => self.get(&path).await,
-            Method::Delete => self.delete(&path).await,
+            Method::Get => {
+                let full = append_query_string(&path, &args);
+                self.get(&full).await
+            }
+            Method::Delete => {
+                let full = append_query_string(&path, &args);
+                self.delete(&full).await
+            }
             Method::Post => self.post(&path, args).await,
             Method::Put => self.put(&path, args).await,
             Method::Patch => self.patch(&path, args).await,
@@ -350,6 +352,48 @@ pub fn format_error_chain<E: std::error::Error + ?Sized>(err: &E) -> String {
     out
 }
 
+/// Appends remaining JSON object fields as query-string parameters.
+/// Scalar values become `key=value`; arrays become repeated `key=v1&key=v2`;
+/// null values and empty objects are skipped.
+fn append_query_string(path: &str, args: &Value) -> String {
+    let map = match args.as_object() {
+        Some(m) if !m.is_empty() => m,
+        _ => return path.to_string(),
+    };
+    let mut qs = String::new();
+    for (k, v) in map {
+        match v {
+            Value::Null => continue,
+            Value::Object(inner) if inner.is_empty() => continue,
+            Value::Array(arr) => {
+                for item in arr {
+                    push_qparam(&mut qs, k, item);
+                }
+            }
+            _ => push_qparam(&mut qs, k, v),
+        }
+    }
+    if qs.is_empty() {
+        return path.to_string();
+    }
+    format!("{path}?{}", &qs[1..]) // skip leading '&'
+}
+
+fn push_qparam(qs: &mut String, key: &str, val: &Value) {
+    let encoded_key = utf8_percent_encode(key, NON_ALPHANUMERIC);
+    let raw = match val {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => return,
+    };
+    let encoded_val = utf8_percent_encode(&raw, NON_ALPHANUMERIC);
+    qs.push('&');
+    qs.push_str(&encoded_key.to_string());
+    qs.push('=');
+    qs.push_str(&encoded_val.to_string());
+}
+
 /// Returns up to 512 bytes of the response body as a UTF-8 string for error messages.
 pub fn body_excerpt(bytes: &[u8]) -> String {
     const MAX: usize = 512;
@@ -370,5 +414,52 @@ pub fn truncate(s: &str, max: usize) -> &str {
         s
     } else {
         &s[..max]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn query_string_from_scalars() {
+        let args = json!({"limit": 10, "offset": 5});
+        let result = append_query_string("/list", &args);
+        assert!(result.starts_with("/list?"));
+        assert!(result.contains("limit=10"));
+        assert!(result.contains("offset=5"));
+    }
+
+    #[test]
+    fn query_string_skips_null_and_empty_object() {
+        let args = json!({"limit": 10, "filter": null, "opts": {}});
+        let result = append_query_string("/list", &args);
+        assert!(result.contains("limit=10"));
+        assert!(!result.contains("filter"));
+        assert!(!result.contains("opts"));
+    }
+
+    #[test]
+    fn query_string_empty_args() {
+        assert_eq!(append_query_string("/list", &json!({})), "/list");
+        assert_eq!(append_query_string("/list", &json!(null)), "/list");
+    }
+
+    #[test]
+    fn query_string_encodes_special_chars() {
+        let args = json!({"q": "hello world&more"});
+        let result = append_query_string("/search", &args);
+        assert!(result.starts_with("/search?"));
+        assert!(!result.contains(' '));
+        assert!(result.contains("q="));
+    }
+
+    #[test]
+    fn query_string_array_repeats_key() {
+        let args = json!({"tags": ["bug", "fix"]});
+        let result = append_query_string("/list", &args);
+        let count = result.matches("tags=").count();
+        assert_eq!(count, 2);
     }
 }

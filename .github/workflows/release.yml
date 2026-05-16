@@ -33,6 +33,8 @@ jobs:
             ext: ".exe"
 
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: ${{ contains(matrix.suffix, 'arm') && '1' || '2' }}
 
     steps:
       - name: Checkout code
@@ -51,7 +53,12 @@ jobs:
 
       - name: Install system dependencies (Windows)
         if: runner.os == 'Windows'
-        run: choco install protoc -y
+        run: choco install protoc openssl -y
+
+      - name: Set OpenSSL dir (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "OPENSSL_DIR=C:/Program Files/OpenSSL-Win64" >> "$GITHUB_ENV"
 
       - name: Cache cargo registry and target dir
         uses: Swatinem/rust-cache@v2
@@ -60,23 +67,15 @@ jobs:
       # on Linux/Windows, 14 GiB on macOS). Splitting into staged builds
       # keeps peak memory under the limit while sharing incremental cache.
       - name: Build kleos-server
-        env:
-          CARGO_BUILD_JOBS: "2"
         run: cargo build --release -p kleos-server
 
       - name: Build kleos-cli and kleos-sidecar
-        env:
-          CARGO_BUILD_JOBS: "2"
         run: cargo build --release -p kleos-cli -p kleos-sidecar
 
       - name: Build kleos-credd, kleos-cred, kleos-mcp
-        env:
-          CARGO_BUILD_JOBS: "2"
         run: cargo build --release -p kleos-credd -p kleos-cred -p kleos-mcp
 
       - name: Build kleos-sh, kleos-fs, agent-forge, eidolon-supervisor
-        env:
-          CARGO_BUILD_JOBS: "2"
         run: cargo build --release -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
 
       - name: Collect binaries
@@ -101,6 +100,7 @@ jobs:
   # ─── Collect all artifacts and create GitHub release ──────────────────────
   release:
     needs: build
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -112,11 +112,20 @@ jobs:
           path: all-artifacts
           merge-multiple: true
 
+      - name: Verify artifacts exist
+        run: |
+          if [ ! -d all-artifacts ] || [ -z "$(ls all-artifacts/ 2>/dev/null)" ]; then
+            echo "::error::No build artifacts found -- all platform builds failed"
+            exit 1
+          fi
+          echo "Artifacts to release:"
+          ls -lh all-artifacts/
+
       - name: Generate checksums
         working-directory: all-artifacts
         run: |
-          sha256sum * > checksums-sha256.txt
-          cat checksums-sha256.txt
+          sha256sum * > SHASUMS256.txt
+          cat SHASUMS256.txt
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2

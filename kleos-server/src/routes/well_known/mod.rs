@@ -36,7 +36,7 @@ async fn agent_card() -> impl IntoResponse {
         "name": "kleos",
         "description": "Cognitive memory service for AI agents. Hybrid search, knowledge graph, spaced repetition, coordination services, quality tracking.",
         "url": url,
-        "version": "1.0.0",
+        "version": env!("CARGO_PKG_VERSION"),
         "protocol": "a2a",
         "capabilities": {
             "streaming": false,
@@ -124,7 +124,7 @@ async fn agent_commerce(State(state): State<AppState>) -> impl IntoResponse {
     let org = org_name();
 
     let descriptor = json!({
-        "kleos": "1.0.0",
+        "kleos": env!("CARGO_PKG_VERSION"),
         "acp": "0.1.0",
         "provider": {
             "name": "Kleos",
@@ -142,7 +142,7 @@ async fn agent_commerce(State(state): State<AppState>) -> impl IntoResponse {
             "mcp": {
                 "transport": "stdio",
                 "binary": "kleos-mcp",
-                "tools": 57
+                "tools": 465
             }
         }
     });
@@ -236,6 +236,7 @@ async fn build_service_descriptors(state: &AppState) -> serde_json::Value {
 
 async fn llms_txt() -> Response {
     let org = org_name();
+    let tools = 465;
     let text = format!(
         r#"# Kleos
 
@@ -262,7 +263,7 @@ Bearer token (API key) or x402 pay-per-call (USDC on Base L2).
 
 ## MCP
 
-57 tools via stdio transport. Binary: kleos-mcp
+{tools} tools via stdio transport. Binary: kleos-mcp
 "#
     );
 

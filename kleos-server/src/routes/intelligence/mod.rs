@@ -217,6 +217,7 @@ async fn consolidate_handler(
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
+/// GET /intelligence/candidates -- list memory candidates for further intelligence processing.
 #[tracing::instrument(skip_all)]
 async fn candidates_handler(
     Auth(auth): Auth,
@@ -228,6 +229,7 @@ async fn candidates_handler(
     Ok(Json(json!({ "groups": groups })))
 }
 
+/// GET /intelligence/consolidations -- list completed consolidation records.
 #[tracing::instrument(skip_all)]
 async fn list_consolidations_handler(
     Auth(auth): Auth,
@@ -254,6 +256,7 @@ async fn contradictions_handler(
     Ok(Json(json!({ "contradictions": contradictions })))
 }
 
+/// POST /intelligence/contradictions -- scan the corpus for fact-level contradictions and return all detected pairs.
 #[tracing::instrument(skip_all)]
 async fn scan_contradictions_handler(
     Auth(auth): Auth,
@@ -295,15 +298,15 @@ async fn detect_temporal_handler(
     Ok(Json(json!({ "patterns": patterns })))
 }
 
+/// GET /intelligence/temporal/patterns -- list previously detected temporal patterns, newest first.
 #[tracing::instrument(skip_all)]
 async fn list_temporal_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20).min(500);
-    let _ = limit;
-    let patterns = list_patterns(&db).await?;
+    let limit = params.limit.unwrap_or(20).min(500) as i64;
+    let patterns = list_patterns(&db, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
 
@@ -322,6 +325,7 @@ async fn generate_digest_handler(
     Ok((StatusCode::CREATED, Json(json!(digest))))
 }
 
+/// GET /intelligence/digests -- list generated periodic digests, newest first.
 #[tracing::instrument(skip_all)]
 async fn list_digests_handler(
     Auth(_auth): Auth,
@@ -357,6 +361,7 @@ async fn create_reflection_handler(
     Ok((StatusCode::CREATED, Json(json!(reflection))))
 }
 
+/// GET /intelligence/reflections -- list generated reflection records, newest first.
 #[tracing::instrument(skip_all)]
 async fn list_reflections_handler(
     Auth(auth): Auth,
@@ -402,6 +407,7 @@ async fn create_chain_handler(
     Ok((StatusCode::CREATED, Json(json!(chain))))
 }
 
+/// GET /intelligence/chains -- list causal chains, newest first.
 #[tracing::instrument(skip_all)]
 async fn list_chains_handler(
     Auth(auth): Auth,
@@ -413,6 +419,7 @@ async fn list_chains_handler(
     Ok(Json(json!({ "chains": items })))
 }
 
+/// GET /intelligence/chains/{id} -- fetch one causal chain with its full link set.
 #[tracing::instrument(skip_all)]
 async fn get_chain_handler(
     Auth(auth): Auth,
@@ -423,6 +430,7 @@ async fn get_chain_handler(
     Ok(Json(json!(chain)))
 }
 
+/// POST /intelligence/chains/{id}/links -- append a causal link to an existing chain.
 #[tracing::instrument(skip_all)]
 async fn add_link_handler(
     Auth(auth): Auth,
@@ -444,6 +452,7 @@ async fn add_link_handler(
     Ok((StatusCode::CREATED, Json(json!(link))))
 }
 
+/// GET /intelligence/causal/backward/{memory_id} -- traverse causal links backward from a memory.
 #[tracing::instrument(skip_all)]
 async fn causal_backward_handler(
     Auth(auth): Auth,
@@ -497,6 +506,7 @@ async fn sentiment_analyze_handler(
     })))
 }
 
+/// GET /intelligence/sentiment/history -- list historical sentiment records.
 #[tracing::instrument(skip_all)]
 async fn sentiment_history_handler(
     Auth(_auth): Auth,
@@ -565,6 +575,7 @@ async fn valence_score_handler(
     }
 }
 
+/// GET /intelligence/valence/{memory_id} -- fetch the emotional valence record for a memory.
 #[tracing::instrument(skip_all)]
 async fn valence_get_handler(
     Auth(auth): Auth,
@@ -580,6 +591,7 @@ async fn valence_get_handler(
     })))
 }
 
+/// GET /intelligence/valence/profile -- aggregate emotional profile across the corpus.
 #[tracing::instrument(skip_all)]
 async fn valence_profile_handler(
     Auth(_auth): Auth,
@@ -602,6 +614,7 @@ async fn predictive_recall_handler(
     Ok(Json(json!(context)))
 }
 
+/// GET /intelligence/predictive/patterns -- return persisted temporal patterns used to drive predictions.
 #[tracing::instrument(skip_all)]
 async fn predictive_patterns_handler(
     Auth(_auth): Auth,
@@ -609,12 +622,12 @@ async fn predictive_patterns_handler(
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     // Return temporal patterns that drive predictions
-    let limit = params.limit.unwrap_or(20).min(500);
-    let _ = limit;
-    let patterns = list_patterns(&db).await?;
+    let limit = params.limit.unwrap_or(20).min(500) as i64;
+    let patterns = list_patterns(&db, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
 
+/// GET /intelligence/predictive/sequences -- mine recent memory sequences for repeated bigrams within a time window.
 #[tracing::instrument(skip_all)]
 async fn predictive_sequences_handler(
     Auth(_auth): Auth,
@@ -642,6 +655,7 @@ async fn reconsolidate_handler(
     Ok(Json(json!(result)))
 }
 
+/// GET /intelligence/reconsolidation/candidates -- list memories eligible for the next reconsolidation sweep.
 #[tracing::instrument(skip_all)]
 async fn reconsolidation_candidates_handler(
     Auth(auth): Auth,
@@ -791,6 +805,7 @@ async fn feedback_handler(
     Ok((StatusCode::CREATED, Json(json!({ "ok": true }))))
 }
 
+/// GET /intelligence/feedback/stats -- aggregate stats over recorded user feedback events.
 #[tracing::instrument(skip_all)]
 async fn feedback_stats_handler(
     Auth(_auth): Auth,
@@ -816,6 +831,7 @@ async fn duplicates_handler(
     Ok(Json(json!({ "duplicates": pairs, "count": pairs.len() })))
 }
 
+/// POST /intelligence/deduplicate -- scan for near-duplicate memory pairs and persist memory_links rows.
 #[tracing::instrument(skip_all)]
 async fn deduplicate_handler(
     Auth(auth): Auth,

@@ -1,6 +1,6 @@
 [package]
 name = "agent-forge"
-version = "1.1.0"
+version = "1.1.2"
 edition = "2021"
 rust-version.workspace = true
 license = "Elastic-2.0"
@@ -30,6 +30,9 @@ tree-sitter-javascript = "0.23"
 tree-sitter-c = "0.23"
 tree-sitter-json = "0.23"
 reqwest = { workspace = true, features = ["blocking"] }
+
+[target.'cfg(windows)'.dependencies]
+rusqlite = { workspace = true, features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

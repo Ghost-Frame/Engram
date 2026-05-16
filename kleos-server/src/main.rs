@@ -8,8 +8,9 @@ use kleos_lib::llm::{local::LocalModelClient, OllamaConfig};
 use kleos_lib::reranker::{self, Reranker};
 use kleos_lib::services::brain::create_brain_backend;
 use kleos_server::background::{
-    start_auto_backup_task, start_auto_checkpoint_task, start_job_cleanup_task,
-    start_job_worker_task, start_session_reaper_task, start_vector_sync_replay_task,
+    start_auto_backup_task, start_auto_checkpoint_task, start_event_retention_task,
+    start_job_cleanup_task, start_job_worker_task, start_session_reaper_task,
+    start_stale_task_sweeper, start_vector_sync_replay_task,
 };
 use kleos_server::dreamer::{new_stats_handle, start_dreamer_task};
 use kleos_server::state::AppState;
@@ -23,6 +24,8 @@ use tokio_util::sync::CancellationToken;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Server entry point: bootstraps tracing, config, database, background
+/// workers, and the Axum HTTP listener.
 #[tokio::main]
 async fn main() {
     kleos_lib::config::migrate_env_prefix();
@@ -391,6 +394,24 @@ async fn main() {
         tracing::info!("vector-sync-replay background task started");
     }
 
+    {
+        let db = Arc::clone(&state.db);
+        let registry = state.tenant_registry.clone();
+        supervised.push(Supervised::spawn("stale-task-sweeper", move || {
+            start_stale_task_sweeper(Arc::clone(&db), registry.clone())
+        }));
+        tracing::info!("stale-task sweeper background task started (60s interval)");
+    }
+
+    {
+        let db = Arc::clone(&state.db);
+        let registry = state.tenant_registry.clone();
+        supervised.push(Supervised::spawn("event-retention", move || {
+            start_event_retention_task(Arc::clone(&db), registry.clone())
+        }));
+        tracing::info!("event-retention background task started (3600s interval)");
+    }
+
     if state.config.backup_enabled {
         let db = Arc::clone(&state.db);
         let data_dir = state.config.data_dir.clone();
@@ -522,6 +543,45 @@ async fn register_job_handlers(db: Arc<Database>) {
         .await;
     }
 
+    // ingestion.entity_extract -- durable extract_and_link_entities invocation.
+    // Payload: { "memory_id": i64, "content": string, "user_id": i64,
+    //            "episode_id": i64|null }
+    // Shares the same payload shape as ingestion.fact_extract for symmetry.
+    {
+        let db = Arc::clone(&db);
+        kleos_lib::jobs::register_job_handler("ingestion.entity_extract", move |payload| {
+            let db = Arc::clone(&db);
+            async move {
+                let memory_id = payload.get("memory_id").and_then(|v| v.as_i64()).ok_or(
+                    kleos_lib::EngError::InvalidInput(
+                        "ingestion.entity_extract payload missing memory_id".into(),
+                    ),
+                )?;
+                let content = payload
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or(kleos_lib::EngError::InvalidInput(
+                        "ingestion.entity_extract payload missing content".into(),
+                    ))?
+                    .to_string();
+                let user_id = payload.get("user_id").and_then(|v| v.as_i64()).ok_or(
+                    kleos_lib::EngError::InvalidInput(
+                        "ingestion.entity_extract payload missing user_id".into(),
+                    ),
+                )?;
+                kleos_lib::graph::entities::extract_and_link_entities(
+                    db.as_ref(),
+                    memory_id,
+                    &content,
+                    user_id,
+                )
+                .await
+                .map(|_| ())
+            }
+        })
+        .await;
+    }
+
     tracing::info!("durable job handlers registered");
 }
 
@@ -538,7 +598,11 @@ struct Supervised {
     consecutive_failures: u32,
 }
 
+/// Constructors and lifecycle helpers for `Supervised`, the wrapper that
+/// keeps a long-running background task alive with restart-on-crash.
 impl Supervised {
+    /// Spawn the supervised task for the first time. `factory` is held so
+    /// it can be re-invoked when the task exits unexpectedly.
     fn spawn<F>(name: &'static str, mut factory: F) -> Self
     where
         F: FnMut() -> (CancellationToken, JoinHandle<()>) + Send + 'static,

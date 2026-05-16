@@ -88,11 +88,32 @@ async fn get_decay_scores(
 ) -> Result<Json<Value>, AppError> {
     let limit = query_params.limit.unwrap_or(20).min(100) as i64;
     let order_asc = query_params.order.as_deref() == Some("asc");
+    let filter_id = query_params.memory_id;
     let _user_id = auth.user_id;
 
     let memories: Vec<Value> = state
         .db
         .read(move |conn| {
+            if let Some(mid) = filter_id {
+                let mut stmt = conn.prepare(
+                    "SELECT id, content, category, importance, decay_score, created_at \
+                     FROM memories WHERE id = ?1 AND is_forgotten = 0",
+                )?;
+                let rows = stmt.query_map(params![mid], |r| {
+                    let id: i64 = r.get(0)?;
+                    let content: String = r.get::<_, Option<String>>(1)?.unwrap_or_default();
+                    let category: Option<String> = r.get(2)?;
+                    let importance: f64 = r.get::<_, Option<f64>>(3)?.unwrap_or(5.0);
+                    let decay_score: Option<f64> = r.get(4)?;
+                    let created_at: String = r.get::<_, Option<String>>(5)?.unwrap_or_default();
+                    Ok(json!({
+                        "id": id, "content": content, "category": category,
+                        "importance": importance, "decay_score": decay_score,
+                        "created_at": created_at,
+                    }))
+                })?;
+                return rows.collect::<Result<Vec<_>, _>>().map_err(Into::into);
+            }
             let sql = if order_asc {
                 "SELECT id, content, category, importance, decay_score, created_at \
                  FROM memories WHERE is_forgotten = 0 \

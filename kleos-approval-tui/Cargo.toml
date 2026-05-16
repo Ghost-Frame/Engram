@@ -1,6 +1,6 @@
 [package]
 name = "kleos-approval-tui"
-version = "1.1.0"
+version = "1.1.2"
 edition = "2021"
 rust-version.workspace = true
 description = "Terminal UI for human approval workflow"
@@ -11,7 +11,7 @@ name = "engram-approval-tui"
 path = "src/main.rs"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.1.0" }
+kleos-lib = { path = "../kleos-lib", version = "1.1.2" }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

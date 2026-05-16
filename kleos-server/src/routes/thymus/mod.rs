@@ -8,19 +8,24 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::thymus::{
-    create_rubric, delete_rubric, evaluate, get_drift_events, get_evaluation, get_metric_summary,
-    get_metrics, get_rubric, get_session_quality, get_stats, list_evaluations, list_rubrics,
-    record_drift_event, record_metric, record_session_quality, update_rubric, CreateRubricRequest,
-    EvaluateRequest, RecordDriftEventRequest, RecordMetricRequest, RecordSessionQualityRequest,
-    UpdateRubricRequest,
+    create_rubric, delete_rubric, evaluate, get_agent_scores, get_drift_events, get_evaluation,
+    get_metric_summary, get_metrics, get_rubric, get_session_quality, get_stats, list_evaluations,
+    list_rubrics, record_drift_event, record_metric, record_session_quality, update_rubric,
+    CreateRubricRequest, EvaluateRequest, RecordDriftEventRequest, RecordMetricRequest,
+    RecordSessionQualityRequest, UpdateRubricRequest,
 };
 
 mod types;
 use types::{
-    DriftEventsParams, GetMetricsParams, ListEvaluationsParams, MetricSummaryParams,
-    SessionQualityParams,
+    AgentScoresParams, DriftEventsParams, GetMetricsParams, ListEvaluationsParams,
+    MetricSummaryParams, SessionQualityParams,
 };
 
+/// Builds the Axum sub-router for all `/thymus/*` endpoints.
+///
+/// Registers rubric CRUD, evaluation, agent score aggregation, quality metrics,
+/// session quality, drift events, and stats routes. The returned router is
+/// expected to be merged into the top-level [`AppState`] router.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -36,6 +41,10 @@ pub fn router() -> Router<AppState> {
         .route("/thymus/evaluate", post(evaluate_handler))
         .route("/thymus/evaluations", get(list_evaluations_handler))
         .route("/thymus/evaluations/{id}", get(get_evaluation_handler))
+        .route(
+            "/thymus/agents/{agent}/scores",
+            get(get_agent_scores_handler),
+        )
         .route(
             "/thymus/metrics",
             post(record_metric_handler).get(get_metrics_handler),
@@ -56,6 +65,8 @@ pub fn router() -> Router<AppState> {
 // Rubric handlers
 // ---------------------------------------------------------------------------
 
+/// Handler for `GET /thymus/rubrics`. Returns all rubrics as `{ "rubrics": [...] }`.
+/// No filtering or pagination -- returns the full set. Returns 200 on success.
 async fn list_rubrics_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -64,6 +75,8 @@ async fn list_rubrics_handler(
     Ok(Json(json!({ "rubrics": rubrics })))
 }
 
+/// Handler for `POST /thymus/rubrics`. Creates a new rubric and returns it
+/// with `201 Created`. Injects the authenticated user's ID into the request.
 async fn create_rubric_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -77,6 +90,7 @@ async fn create_rubric_handler(
     Ok((StatusCode::CREATED, Json(json!(rubric))))
 }
 
+/// Handler for `GET /thymus/rubrics/{id}`. Returns the rubric or 404 if not found.
 async fn get_rubric_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -86,6 +100,8 @@ async fn get_rubric_handler(
     Ok(Json(json!(rubric)))
 }
 
+/// Handler for `PATCH /thymus/rubrics/{id}`. Applies a partial update and
+/// returns the updated rubric. Fails with 404 if the rubric does not exist.
 async fn update_rubric_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -96,6 +112,8 @@ async fn update_rubric_handler(
     Ok(Json(json!(rubric)))
 }
 
+/// Handler for `DELETE /thymus/rubrics/{id}`. Deletes the rubric and returns
+/// `{ "ok": true }`. Idempotent -- succeeds even if the rubric did not exist.
 async fn delete_rubric_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -109,6 +127,9 @@ async fn delete_rubric_handler(
 // Evaluation handlers
 // ---------------------------------------------------------------------------
 
+/// Handler for `POST /thymus/evaluate`. Runs an evaluation against a rubric and
+/// records the result. Injects the authenticated user's ID into the request body.
+/// Returns `201 Created` with the full evaluation record on success.
 async fn evaluate_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -122,6 +143,8 @@ async fn evaluate_handler(
     Ok((StatusCode::CREATED, Json(json!(evaluation))))
 }
 
+/// Handler for `GET /thymus/evaluations`. Returns a page of evaluations,
+/// optionally filtered by agent and rubric. Limit is capped at 1000.
 async fn list_evaluations_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -133,6 +156,8 @@ async fn list_evaluations_handler(
     Ok(Json(json!({ "evaluations": evaluations })))
 }
 
+/// Handler for `GET /thymus/evaluations/{id}`. Returns a single evaluation
+/// by primary key, or 404 if not found.
 async fn get_evaluation_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -142,10 +167,31 @@ async fn get_evaluation_handler(
     Ok(Json(json!(evaluation)))
 }
 
+/// Handler for `GET /thymus/agents/{agent}/scores`.
+///
+/// Returns aggregate evaluation scores for one agent across all evaluations,
+/// optionally filtered to a specific rubric (`rubric_id`) or a time window
+/// (`since`). Delegates to
+/// [`kleos_lib::services::thymus::get_agent_scores`].
+///
+/// Response shape: `{ agent, overall_avg, evaluation_count, by_criterion }`.
+async fn get_agent_scores_handler(
+    Auth(_auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Path(agent): Path<String>,
+    Query(params): Query<AgentScoresParams>,
+) -> Result<Json<Value>, AppError> {
+    let scores = get_agent_scores(&db, &agent, params.rubric_id, params.since.as_deref()).await?;
+    Ok(Json(json!(scores)))
+}
+
 // ---------------------------------------------------------------------------
 // Metric handlers
 // ---------------------------------------------------------------------------
 
+/// Handler for `POST /thymus/metrics`. Records a single quality metric observation.
+/// Injects the authenticated user's ID into the request body before persisting.
+/// Returns `201 Created` with the stored metric record on success.
 async fn record_metric_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -159,6 +205,8 @@ async fn record_metric_handler(
     Ok((StatusCode::CREATED, Json(json!(metric))))
 }
 
+/// Handler for `GET /thymus/metrics`. Returns quality metric records,
+/// optionally filtered by agent, metric name, and time window. Limit capped at 1000.
 async fn get_metrics_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -176,6 +224,8 @@ async fn get_metrics_handler(
     Ok(Json(json!({ "metrics": metrics })))
 }
 
+/// Handler for `GET /thymus/metrics/summary`. Returns aggregate statistics
+/// (avg, min, max, count) for a given agent+metric combination.
 async fn get_metric_summary_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -192,6 +242,10 @@ async fn get_metric_summary_handler(
 // Session quality handlers
 // ---------------------------------------------------------------------------
 
+/// Handler for `POST /thymus/session-quality`. Records a session quality snapshot
+/// (e.g. coherence, goal completion, drift indicators). Stamps the authenticated
+/// user's ID onto the mutable body before persisting.
+/// Returns `201 Created` with the stored session quality record on success.
 async fn record_session_quality_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -202,6 +256,8 @@ async fn record_session_quality_handler(
     Ok((StatusCode::CREATED, Json(json!(sq))))
 }
 
+/// Handler for `GET /thymus/session-quality`. Returns session quality records
+/// for a given agent, optionally windowed by `since`. Limit capped at 1000.
 async fn get_session_quality_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -217,6 +273,10 @@ async fn get_session_quality_handler(
 // Drift event handlers
 // ---------------------------------------------------------------------------
 
+/// Handler for `POST /thymus/drift-events`. Records a behavioral drift event for
+/// an agent (e.g. persona divergence, instruction violation). Stamps the
+/// authenticated user's ID onto the mutable body before persisting.
+/// Returns `201 Created` with the stored drift event record on success.
 async fn record_drift_event_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -227,6 +287,8 @@ async fn record_drift_event_handler(
     Ok((StatusCode::CREATED, Json(json!(event))))
 }
 
+/// Handler for `GET /thymus/drift-events`. Returns behavioral drift event
+/// records for a given agent. Limit capped at 1000.
 async fn get_drift_events_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -242,6 +304,10 @@ async fn get_drift_events_handler(
 // Stats
 // ---------------------------------------------------------------------------
 
+/// Handler for `GET /thymus/stats`. Returns aggregate system-wide thymus statistics
+/// (rubric count, evaluation count, metric count, etc.). No query parameters.
+/// Response is the raw stats object from the service layer; no envelope wrapper.
+/// Returns 200 on success.
 async fn get_stats_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,

@@ -1,6 +1,6 @@
 [package]
 name = "kleos-mcp"
-version = "1.1.0"
+version = "1.1.2"
 edition = "2021"
 rust-version.workspace = true
 description = "MCP server for Kleos -- Model Context Protocol integration for LLM tools"
@@ -17,12 +17,13 @@ path = "src/main.rs"
 name = "kleos_mcp"
 
 [features]
-default = []
+default = ["piv"]
+piv = ["kleos-lib/piv", "kleos-client/piv"]
 http = ["dep:axum", "dep:tower-http"]
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.1.0", features = ["piv"] }
-kleos-client = { path = "../kleos-client", version = "1.1.0" }
+kleos-lib = { path = "../kleos-lib", version = "1.1.2" }
+kleos-client = { path = "../kleos-client", version = "1.1.2", default-features = false }
 axum = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 clap = { workspace = true }

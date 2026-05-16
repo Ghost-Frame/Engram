@@ -168,9 +168,8 @@ Use for:
 - `--agent` defaults to `claude-code`.
 - `--metadata` accepts a JSON object string and is mapped onto the
   `metadata`/`details` field server-side.
-- Prefer this over the legacy `cred exec curl` recipe in
-  `~/.claude/reference/eidolon-activity.md`; that path is only the fallback
-  for hosts without an enrolled identity.
+- This is the recommended path for activity reporting; `cred exec curl`
+  remains as a fallback for hosts without an enrolled identity.
 
 Use for:
 

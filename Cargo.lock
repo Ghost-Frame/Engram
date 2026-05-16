@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "agent-forge"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "clap",
@@ -3221,7 +3221,7 @@ dependencies = [
 
 [[package]]
 name = "eidolon-supervisor"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "lru 0.16.4",
@@ -3622,7 +3622,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "forge"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "clap",
  "hostname",
@@ -4840,7 +4840,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kleos-approval-tui"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "clap",
@@ -4857,7 +4857,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-cleanup"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "clap",
  "rusqlite",
@@ -4865,7 +4865,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-cli"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4887,7 +4887,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-client"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "kleos-lib",
  "percent-encoding",
@@ -4898,7 +4898,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-cred"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4933,7 +4933,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-credd"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4966,7 +4966,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-fs"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "reqwest",
  "serde_json",
@@ -4975,7 +4975,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-ingest"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "clap",
@@ -4994,7 +4994,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-lib"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "aes-gcm",
  "arrow-array",
@@ -5016,6 +5016,7 @@ dependencies = [
  "lru 0.16.4",
  "metrics",
  "ndarray 0.16.1",
+ "openssl",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -5053,7 +5054,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-mcp"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "axum 0.8.9",
  "clap",
@@ -5070,7 +5071,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-migrate"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "arrow",
@@ -5089,8 +5090,9 @@ dependencies = [
 
 [[package]]
 name = "kleos-server"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
+ "async-stream",
  "axum 0.8.9",
  "base64 0.22.1",
  "chrono",
@@ -5127,7 +5129,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-sh"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "clap",
  "reqwest",
@@ -5138,7 +5140,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-sidecar"
-version = "1.1.0"
+version = "1.1.2"
 dependencies = [
  "arc-swap",
  "axum 0.8.9",
@@ -5884,6 +5886,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c10584274047cb335c23d3e61bcef8e323adae7c5c8c760540f73610177fc3f"
 dependencies = [
  "cc",
+ "openssl-sys",
  "pkg-config",
  "vcpkg",
 ]
@@ -7078,6 +7081,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "openssl-src"
+version = "300.6.0+3.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8e8cbfd3a4a8c8f089147fd7aaa33cf8c7450c4d09f8f80698a0cf093abeff4"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "openssl-sys"
 version = "0.9.113"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7085,6 +7097,7 @@ checksum = "ad2f2c0eba47118757e4c6d2bff2838f3e0523380021356e7875e858372ce644"
 dependencies = [
  "cc",
  "libc",
+ "openssl-src",
  "pkg-config",
  "vcpkg",
 ]

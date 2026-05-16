@@ -2,6 +2,7 @@ use crate::db::Database;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
+/// Represents a published Axon event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: i64,
@@ -14,6 +15,7 @@ pub struct Event {
     pub created_at: String,
 }
 
+/// Request payload for publishing an event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishEventRequest {
     pub channel: String,
@@ -24,6 +26,7 @@ pub struct PublishEventRequest {
     pub user_id: Option<i64>,
 }
 
+/// Aggregate statistics for the Axon event bus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AxonStats {
     pub total_events: i64,
@@ -31,6 +34,7 @@ pub struct AxonStats {
     pub sources: i64,
 }
 
+/// An Axon pub/sub channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Channel {
     pub id: i64,
@@ -40,6 +44,7 @@ pub struct Channel {
     pub created_at: String,
 }
 
+/// An agent's subscription to a channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subscription {
     pub id: i64,
@@ -51,6 +56,7 @@ pub struct Subscription {
     pub created_at: String,
 }
 
+/// Tracks an agent's read position in a channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cursor {
     pub agent: String,
@@ -60,6 +66,7 @@ pub struct Cursor {
     pub user_id: i64, // populated from caller context; not stored after v31
 }
 
+/// Request payload for subscribing to a channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscribeRequest {
     pub agent: String,
@@ -68,10 +75,12 @@ pub struct SubscribeRequest {
     pub webhook_url: Option<String>,
 }
 
+/// Maps a rusqlite error to EngError.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
+/// Converts a rusqlite Row into an Event.
 fn row_to_event(row: &rusqlite::Row<'_>) -> Result<Event> {
     let payload_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let payload: serde_json::Value = serde_json::from_str(&payload_str)?;
@@ -90,6 +99,7 @@ fn row_to_event(row: &rusqlite::Row<'_>) -> Result<Event> {
 
 const EVENT_COLUMNS: &str = "id, channel, source, type, payload, created_at";
 
+/// Resolves the event source, defaulting to "unknown".
 fn resolve_source(req: &PublishEventRequest) -> String {
     req.source
         .clone()
@@ -97,6 +107,7 @@ fn resolve_source(req: &PublishEventRequest) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Publishes an event to a channel.
 #[tracing::instrument(skip(db, req), fields(channel = %req.channel, action = %req.action))]
 pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Event> {
     let payload = req
@@ -123,6 +134,7 @@ pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Ev
     get_event(db, id, user_id).await
 }
 
+/// Retrieves a single event by ID.
 #[tracing::instrument(skip(db), fields(event_id = id, user_id))]
 pub async fn get_event(db: &Database, id: i64, _user_id: i64) -> Result<Event> {
     let sql = format!("SELECT {EVENT_COLUMNS} FROM axon_events WHERE id = ?1");
@@ -141,6 +153,7 @@ pub async fn get_event(db: &Database, id: i64, _user_id: i64) -> Result<Event> {
     .await
 }
 
+/// Queries events with optional filters.
 #[tracing::instrument(skip(db), fields(channel = ?channel, action = ?action, source = ?source, limit, offset, user_id))]
 pub async fn query_events(
     db: &Database,
@@ -197,6 +210,7 @@ pub async fn query_events(
     .await
 }
 
+/// Lists all Axon channels.
 #[tracing::instrument(skip(db))]
 pub async fn list_channels(db: &Database) -> Result<Vec<Channel>> {
     let sql = "SELECT id, name, description, retain_hours, created_at
@@ -220,6 +234,7 @@ pub async fn list_channels(db: &Database) -> Result<Vec<Channel>> {
     .await
 }
 
+/// Creates a channel if it does not exist.
 #[tracing::instrument(skip(db, description), fields(name = %name))]
 pub async fn ensure_channel(
     db: &Database,
@@ -238,6 +253,7 @@ pub async fn ensure_channel(
     .await
 }
 
+/// Creates or updates a subscription.
 #[tracing::instrument(skip(db, req), fields(agent = %req.agent, channel = %req.channel, user_id))]
 pub async fn upsert_subscription(
     db: &Database,
@@ -263,6 +279,7 @@ pub async fn upsert_subscription(
     get_subscription(db, &req.agent, &req.channel, user_id).await
 }
 
+/// Retrieves a subscription by agent and channel.
 #[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel, user_id))]
 pub async fn get_subscription(
     db: &Database,
@@ -298,6 +315,7 @@ pub async fn get_subscription(
     .await
 }
 
+/// Removes a subscription.
 #[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel))]
 pub async fn delete_subscription(db: &Database, agent: &str, channel: &str) -> Result<bool> {
     let sql = "DELETE FROM axon_subscriptions WHERE agent = ?1 AND channel = ?2";
@@ -313,6 +331,7 @@ pub async fn delete_subscription(db: &Database, agent: &str, channel: &str) -> R
     Ok(n > 0)
 }
 
+/// Lists all subscriptions for an agent.
 #[tracing::instrument(skip(db), fields(agent = %agent, user_id))]
 pub async fn list_subscriptions_for_agent(
     db: &Database,
@@ -347,6 +366,7 @@ pub async fn list_subscriptions_for_agent(
     .await
 }
 
+/// Retrieves the cursor position for an agent on a channel.
 #[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel, user_id))]
 pub async fn get_cursor(db: &Database, agent: &str, channel: &str, user_id: i64) -> Result<Cursor> {
     let sql = "SELECT agent, channel, last_event_id, updated_at
@@ -380,6 +400,7 @@ pub async fn get_cursor(db: &Database, agent: &str, channel: &str, user_id: i64)
     .await
 }
 
+/// Creates or updates a cursor position.
 async fn upsert_cursor(
     db: &Database,
     agent: &str,
@@ -402,6 +423,7 @@ async fn upsert_cursor(
     .await
 }
 
+/// Consumes events from a cursor position forward.
 #[tracing::instrument(skip(db), fields(agent = %agent, channel = %channel, limit, user_id))]
 pub async fn consume(
     db: &Database,
@@ -438,6 +460,7 @@ pub async fn consume(
     Ok(events)
 }
 
+/// Returns aggregate Axon statistics.
 #[tracing::instrument(skip(db))]
 pub async fn get_stats(db: &Database) -> Result<AxonStats> {
     db.read(move |conn| {
@@ -458,15 +481,18 @@ pub async fn get_stats(db: &Database) -> Result<AxonStats> {
     .await
 }
 
+/// Unit tests.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::Database;
 
+    /// Creates an in-memory database for testing.
     async fn setup() -> Database {
         Database::connect_memory().await.expect("db")
     }
 
+    /// Publishes an event and retrieves it by ID.
     #[tokio::test]
     async fn publish_and_get_event() {
         let db = setup().await;
@@ -490,6 +516,7 @@ mod tests {
         assert_eq!(fetched.id, ev.id);
     }
 
+    /// Consuming events advances the cursor position.
     #[tokio::test]
     async fn consume_advances_cursor() {
         let db = setup().await;
@@ -541,6 +568,7 @@ mod tests {
         assert!(other.is_empty());
     }
 
+    /// Upserting the same subscription twice does not duplicate it.
     #[tokio::test]
     async fn subscription_upsert_is_idempotent() {
         let db = setup().await;
@@ -573,6 +601,7 @@ mod tests {
         assert_eq!(all.len(), 1);
     }
 
+    /// The seeded "system" channel appears in the channel list.
     #[tokio::test]
     async fn list_channels_returns_seeded() {
         let db = setup().await;

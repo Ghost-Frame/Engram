@@ -1,0 +1,174 @@
+# Woodpecker CI pipeline for Kleos
+# Runs on hetzner-dedi local runner (Podman backend)
+
+when:
+  - event: [push, pull_request, tag]
+
+variables:
+  - &rust_image "rust:1.94-bookworm"
+  - &install_deps >-
+    apt-get update &&
+    apt-get install -y --no-install-recommends
+    protobuf-compiler libpcsclite-dev pkg-config libssl-dev clang libprotobuf-dev
+    && rm -rf /var/lib/apt/lists/*
+  - &ci_env
+    CARGO_TARGET_DIR: target
+    CARGO_BUILD_RUSTC_WRAPPER: ""
+  - &ci_env_windows
+    CARGO_TARGET_DIR: target-windows
+    CARGO_BUILD_RUSTC_WRAPPER: ""
+
+steps:
+  # ── CI checks (push to main + PRs) ──────────────────────────
+  check:
+    image: *rust_image
+    when:
+      - event: [push, pull_request]
+    environment: *ci_env
+    commands:
+      - *install_deps
+      - cargo check --workspace
+
+  clippy:
+    image: *rust_image
+    when:
+      - event: [push, pull_request]
+    depends_on: [check]
+    environment: *ci_env
+    commands:
+      - *install_deps
+      - rustup component add clippy
+      - cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings
+
+  test:
+    image: *rust_image
+    when:
+      - event: [push, pull_request]
+    depends_on: [check]
+    environment: *ci_env
+    commands:
+      - *install_deps
+      - cargo test --workspace --exclude kleos-migrate
+
+  fmt:
+    image: *rust_image
+    when:
+      - event: [push, pull_request]
+    commands:
+      - rustup component add rustfmt
+      - cargo fmt --all -- --check
+
+  deny:
+    image: *rust_image
+    when:
+      - event: [push, pull_request]
+    environment: *ci_env
+    commands:
+      - cargo install --locked cargo-deny
+      - cargo deny check
+
+  # ── Release builds (tags only) ───────────────────────────────
+  # Two parallel build steps: linux-x64 (native), windows-x64
+
+  build-linux-x64:
+    image: *rust_image
+    when:
+      - event: tag
+    environment: *ci_env
+    commands:
+      - *install_deps
+      - cargo build --profile release-prod -p kleos-server
+      - cargo build --profile release-prod -p kleos-cli -p kleos-sidecar
+      - cargo build --profile release-prod --features kleos-cred/gui -p kleos-credd -p kleos-cred -p kleos-mcp
+      - cargo build --profile release-prod -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
+      - mkdir -p release-artifacts
+      - |
+        for bin in kleos-server kleos-cli kleos-sidecar kleos-credd cred cred-gui kleos-mcp kleos-sh kleos-fs agent-forge eidolon-supervisor kr kw ke; do
+          src="target/release-prod/$bin"
+          if [ -f "$src" ]; then
+            cp "$src" "release-artifacts/$bin-linux-x64"
+          fi
+        done
+      - ls -lh release-artifacts/
+
+  build-windows-x64:
+    image: *rust_image
+    when:
+      - event: tag
+    environment: *ci_env_windows
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 perl make && rm -rf /var/lib/apt/lists/*
+      - rustup target add x86_64-pc-windows-gnu
+      - export CARGO_BUILD_JOBS=4
+      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored,kleos-cred/gui -p kleos-server -p kleos-cli -p kleos-sidecar -p kleos-cred -p kleos-mcp -p kleos-sh -p agent-forge -p eidolon-supervisor
+      - mkdir -p release-artifacts
+      - |
+        for bin in kleos-server kleos-cli kleos-sidecar cred cred-gui kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
+          src="target-windows/x86_64-pc-windows-gnu/release-prod/$bin.exe"
+          if [ -f "$src" ]; then
+            cp "$src" "release-artifacts/$bin-windows-x64.exe"
+          fi
+        done
+      - ls -lh release-artifacts/
+
+  release:
+    image: woodpeckerci/plugin-release
+    when:
+      - event: tag
+        status: [success, failure]
+    depends_on: [build-linux-x64, build-windows-x64]
+    settings:
+      files:
+        - "release-artifacts/*"
+      api_key:
+        from_secret: github_token
+      title: "${CI_COMMIT_TAG}"
+      generate_release_notes: true
+      checksum:
+        - sha256
+
+  build-docker:
+    image: woodpeckerci/plugin-docker-buildx
+    when:
+      - event: tag
+    failure: ignore
+    settings:
+      repo: ghostframe/kleos
+      tags:
+        - latest
+        - "${CI_COMMIT_TAG}"
+      dockerfile: Dockerfile
+      username:
+        from_secret: dockerhub_username
+      password:
+        from_secret: dockerhub_token
+
+  publish-crates:
+    image: *rust_image
+    when:
+      - event: tag
+    depends_on: [build-linux-x64]
+    environment:
+      <<: *ci_env
+      CARGO_REGISTRY_TOKEN:
+        from_secret: cargo_registry_token
+    commands:
+      - *install_deps
+      - |
+        publish() {
+          local crate="$1"
+          local out
+          if out=$(cargo publish -p "$crate" --no-verify 2>&1); then
+            echo "$out"
+          else
+            echo "$out"
+            if echo "$out" | grep -qE 'already (uploaded|exists)|crate version .* is already uploaded'; then
+              echo "WARNING: $crate already published, skipping"
+              return 0
+            fi
+            return 1
+          fi
+        }
+        publish kleos-lib
+        sleep 30
+        publish kleos-cred

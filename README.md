@@ -130,7 +130,7 @@ A protocol that controls how agents think, not just what they remember:
 
 ```bash
 git clone https://github.com/Ghost-Frame/Kleos.git && cd Kleos
-cargo build --release
+cargo build --release -p kleos-server -p kleos-cli
 KLEOS_BOOTSTRAP_SECRET=pick-a-secret ./target/release/kleos-server
 ```
 
@@ -226,7 +226,21 @@ Copy the hooks, configure `settings.json`, and your agent has persistent memory,
 ### Building from source
 
 ```bash
-cargo build --release --workspace                                             # everything
+# Server-only (recommended for self-hosting)
+cargo build --release -p kleos-server -p kleos-cli -p kleos-mcp
+
+# Agent-host (CLI tools, credential daemon, supervisor)
+cargo build --release -p kleos-cli -p kleos-sh -p kleos-cred -p kleos-credd \
+  -p agent-forge -p eidolon-supervisor
+
+# Full workspace (all 17 crates -- needs ~8 GiB RAM)
+cargo build --release --workspace
+```
+
+The server-only build skips heavy workspace crates (approval TUI, tree-sitter
+parsers, supervisor) and finishes significantly faster.
+
+```bash
 cargo test --workspace --exclude kleos-migrate                                # test suite
 cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings # lint gate
 ```

@@ -8,6 +8,7 @@ use crate::{EngError, Result};
 use rusqlite::params;
 use tracing::{info, warn};
 
+/// Convert a rusqlite error into the crate's canonical error type.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
@@ -71,17 +72,14 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                     )
                     .map_err(rusqlite_to_eng_error)?;
                 let rows = stmt
-                    .query_map(
-                        params![subject_c, predicate_c, memory_id, nfid],
-                        |row| {
-                            Ok((
-                                row.get::<_, i64>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, i64>(2)?,
-                                row.get::<_, f64>(3)?,
-                            ))
-                        },
-                    )
+                    .query_map(params![subject_c, predicate_c, memory_id, nfid], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, f64>(3)?,
+                        ))
+                    })
                     .map_err(rusqlite_to_eng_error)?
                     .collect::<std::result::Result<Vec<_>, _>>()
                     .map_err(rusqlite_to_eng_error)?;
@@ -218,30 +216,38 @@ fn objects_match(a: &str, b: &str) -> bool {
     a_norm == b_norm
 }
 
+/// Unit tests for object-comparison helpers and contradiction formatting.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// objects_match treats two identical strings as a match.
     #[test]
     fn test_objects_match_identical() {
         assert!(objects_match("hello", "hello"));
     }
 
+    /// objects_match is case-insensitive.
     #[test]
     fn test_objects_match_case_insensitive() {
         assert!(objects_match("Hello World", "hello world"));
     }
 
+    /// objects_match trims surrounding whitespace before comparing.
     #[test]
     fn test_objects_match_whitespace() {
         assert!(objects_match("  hello  ", "hello"));
     }
 
+    /// objects_match returns false for clearly different strings.
     #[test]
     fn test_objects_mismatch() {
         assert!(!objects_match("blue", "red"));
     }
 
+    /// Verify the contradiction description string format matches the
+    /// "Conflicting {predicate}: '{a}' vs '{b}' (subject: {s}, predicate: {p})"
+    /// shape that downstream consumers parse.
     #[test]
     fn test_contradiction_description_format() {
         let c = Contradiction {

@@ -564,14 +564,7 @@ pub static ROUTES: &[Route] = &[
         path: "/fsrs/review",
         scope: Scope::Write,
         description: "Record an FSRS review outcome for a memory.",
-        input_schema: r#"{
-            "type": "object",
-            "properties": {
-                "memory_id": {"type":"integer"},
-                "rating": {"type":"integer", "description":"1=Again, 2=Hard, 3=Good, 4=Easy"}
-            },
-            "required": ["memory_id", "rating"]
-        }"#,
+        input_schema: r#"{"type":"object","properties":{"id":{"type":"integer"},"memory_id":{"type":"integer"},"grade":{"type":"integer","description":"1=Again, 2=Hard, 3=Good, 4=Easy"}}}"#,
     },
     Route {
         name: "fsrs.state",
@@ -580,7 +573,7 @@ pub static ROUTES: &[Route] = &[
         path: "/fsrs/state",
         scope: Scope::Read,
         description: "Fetch FSRS scheduling state for a memory.",
-        input_schema: r#"{"type": "object", "properties": {"memory_id": {"type":"integer"}}, "required": ["memory_id"]}"#,
+        input_schema: r#"{"type": "object", "properties": {"id": {"type":"integer"}}, "required": ["id"]}"#,
     },
     Route {
         name: "fsrs.init",
@@ -598,7 +591,7 @@ pub static ROUTES: &[Route] = &[
         path: "/fsrs/recall-due",
         scope: Scope::Read,
         description: "List memories due for spaced-repetition reinforcement.",
-        input_schema: r#"{"type": "object", "properties": {"limit": {"type":"integer"}}}"#,
+        input_schema: r#"{"type": "object", "properties": {"topic": {"type":"string"}, "limit": {"type":"integer"}, "session": {"type":"string"}}, "required": ["topic"]}"#,
     },
     // -- tasks (chiasm) ---------------------------------------------------
     Route {
@@ -825,8 +818,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Get,
         path: "/prompt",
         scope: Scope::Read,
-        description: "Fetch the active prompt template.",
-        input_schema: r#"{"type": "object", "properties": {"name": {"type":"string"}}}"#,
+        description: "Generate a RAG-based prompt from memory.",
+        input_schema: r#"{"type":"object","properties":{"format":{"type":"string"},"tokens":{"type":"integer"},"context":{"type":"string"}}}"#,
     },
     Route {
         name: "prompts.generate",
@@ -868,7 +861,7 @@ pub static ROUTES: &[Route] = &[
         path: "/personality/detect",
         scope: Scope::Read,
         description: "Detect personality cues from a sample of text.",
-        input_schema: r#"{"type": "object", "properties": {"text": {"type":"string"}}, "required": ["text"]}"#,
+        input_schema: r#"{"type": "object", "properties": {"content": {"type":"string"}}, "required": ["content"]}"#,
     },
     Route {
         name: "personality.profile",
@@ -1175,7 +1168,7 @@ pub static ROUTES: &[Route] = &[
         path: "/gate/check",
         scope: Scope::Read,
         description: "Pre-flight a tool invocation against gate policy.",
-        input_schema: r#"{"type":"object","properties":{"agent":{"type":"string"},"tool":{"type":"string"},"args":{"type":"object"}},"required":["tool"]}"#,
+        input_schema: r#"{"type":"object","properties":{"command":{"type":"string"},"agent":{"type":"string"},"context":{"type":"string"},"tool_name":{"type":"string"},"session_id":{"type":"string"},"skip_approval":{"type":"boolean"}},"required":["command","agent"]}"#,
     },
     Route {
         name: "gate.respond",
@@ -1184,7 +1177,7 @@ pub static ROUTES: &[Route] = &[
         path: "/gate/respond",
         scope: Scope::Write,
         description: "Respond to a gate prompt.",
-        input_schema: r#"{"type":"object","properties":{"gate_id":{"type":"string"},"response":{"type":"string"}},"required":["gate_id","response"]}"#,
+        input_schema: r#"{"type":"object","properties":{"gate_id":{"type":"integer"},"approved":{"type":"boolean"},"reason":{"type":"string"}},"required":["gate_id","approved"]}"#,
     },
     Route {
         name: "gate.complete",
@@ -1193,7 +1186,7 @@ pub static ROUTES: &[Route] = &[
         path: "/gate/complete",
         scope: Scope::Write,
         description: "Mark a gate-tracked action complete.",
-        input_schema: r#"{"type":"object","properties":{"gate_id":{"type":"string"},"result":{"type":"string"}}}"#,
+        input_schema: r#"{"type":"object","properties":{"gate_id":{"type":"integer"},"output":{"type":"string"},"known_secrets":{"type":"array","items":{"type":"string"}}},"required":["gate_id","output"]}"#,
     },
     Route {
         name: "gate.complete_latest",
@@ -1202,7 +1195,7 @@ pub static ROUTES: &[Route] = &[
         path: "/gate/complete-latest",
         scope: Scope::Write,
         description: "Mark the most recent gate-tracked action complete.",
-        input_schema: r#"{"type":"object","properties":{"result":{"type":"string"}}}"#,
+        input_schema: r#"{"type":"object","properties":{"session_id":{"type":"string"},"output":{"type":"string"},"known_secrets":{"type":"array","items":{"type":"string"}}},"required":["session_id","output"]}"#,
     },
     Route {
         name: "gate.guard",
@@ -1211,7 +1204,7 @@ pub static ROUTES: &[Route] = &[
         path: "/guard",
         scope: Scope::Read,
         description: "Run content against the policy guard.",
-        input_schema: r#"{"type":"object","properties":{"content":{"type":"string"},"action":{"type":"string"}},"required":["content"]}"#,
+        input_schema: r#"{"type":"object","properties":{"action":{"type":"string"}},"required":["action"]}"#,
     },
     // -- security ---------------------------------------------------------
     Route {
@@ -1470,7 +1463,7 @@ pub static ROUTES: &[Route] = &[
         path: "/verify",
         scope: Scope::Write,
         description: "Verify a code change against the spec (agent-forge verify).",
-        input_schema: r#"{"type":"object","properties":{"spec_id":{"type":"string"},"steps":{"type":"array"}}}"#,
+        input_schema: r#"{"type":"object","properties":{"passport":{"type":"object"},"execution":{"type":"object"},"message":{"type":"object"},"tool_manifest":{"type":"object"}}}"#,
     },
     // -- conversations ----------------------------------------------------
     Route {
@@ -1545,7 +1538,7 @@ pub static ROUTES: &[Route] = &[
         path: "/supervisor/inject",
         scope: Scope::Write,
         description: "Inject a supervisor directive.",
-        input_schema: r#"{"type":"object","properties":{"agent":{"type":"string"},"directive":{"type":"string"}},"required":["directive"]}"#,
+        input_schema: r#"{"type":"object","properties":{"session_id":{"type":"string"},"rule_id":{"type":"string"},"severity":{"type":"string"},"message":{"type":"string"}},"required":["session_id","rule_id","severity","message"]}"#,
     },
     Route {
         name: "supervisor.pending",
@@ -1554,7 +1547,7 @@ pub static ROUTES: &[Route] = &[
         path: "/supervisor/pending",
         scope: Scope::Read,
         description: "List pending supervisor directives.",
-        input_schema: r#"{"type":"object"}"#,
+        input_schema: r#"{"type":"object","properties":{"session_id":{"type":"string"}},"required":["session_id"]}"#,
     },
     // -- brain (Hopfield) -------------------------------------------------
     Route {
@@ -1573,7 +1566,7 @@ pub static ROUTES: &[Route] = &[
         path: "/brain/query",
         scope: Scope::Read,
         description: "Query the Hopfield brain with a partial cue.",
-        input_schema: r#"{"type":"object","properties":{"cue":{"type":"string"},"limit":{"type":"integer"}},"required":["cue"]}"#,
+        input_schema: r#"{"type":"object","properties":{"query":{"type":"string"},"top_k":{"type":"integer"},"beta":{"type":"number"},"spread_hops":{"type":"integer"}},"required":["query"]}"#,
     },
     Route {
         name: "brain.absorb",
@@ -1581,8 +1574,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/brain/absorb",
         scope: Scope::Write,
-        description: "Absorb a new pattern into the Hopfield brain.",
-        input_schema: r#"{"type":"object","properties":{"pattern":{"type":"string"},"weight":{"type":"number"}},"required":["pattern"]}"#,
+        description: "Absorb a memory into the Hopfield brain by ID.",
+        input_schema: r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#,
     },
     Route {
         name: "brain.dream",
@@ -1600,7 +1593,7 @@ pub static ROUTES: &[Route] = &[
         path: "/brain/feedback",
         scope: Scope::Write,
         description: "Provide feedback on a Hopfield recall.",
-        input_schema: r#"{"type":"object","properties":{"pattern":{"type":"string"},"rating":{"type":"integer"}},"required":["pattern","rating"]}"#,
+        input_schema: r#"{"type":"object","properties":{"memory_ids":{"type":"array","items":{"type":"integer"}},"edge_pairs":{"type":"array","items":{"type":"array","items":{"type":"integer"}}},"useful":{"type":"boolean"}},"required":["memory_ids","edge_pairs","useful"]}"#,
     },
     Route {
         name: "brain.decay",
@@ -1609,7 +1602,7 @@ pub static ROUTES: &[Route] = &[
         path: "/brain/decay",
         scope: Scope::Admin,
         description: "Apply a decay sweep to stored patterns.",
-        input_schema: r#"{"type":"object","properties":{"factor":{"type":"number"}}}"#,
+        input_schema: r#"{"type":"object","properties":{"ticks":{"type":"integer"}}}"#,
     },
     Route {
         name: "brain.evolution_train",
@@ -1728,7 +1721,7 @@ pub static ROUTES: &[Route] = &[
         path: "/digests/generate",
         scope: Scope::Write,
         description: "Generate a memory digest.",
-        input_schema: r#"{"type":"object","properties":{"window":{"type":"string"}}}"#,
+        input_schema: r#"{"type":"object","properties":{"period":{"type":"string"}}}"#,
     },
     Route {
         name: "intelligence.list_digests",
@@ -1746,7 +1739,7 @@ pub static ROUTES: &[Route] = &[
         path: "/reflect",
         scope: Scope::Write,
         description: "Create a reflection record.",
-        input_schema: r#"{"type":"object","properties":{"reflection_type":{"type":"string"},"summary":{"type":"string"},"refs":{"type":"array","items":{"type":"integer"}}},"required":["summary"]}"#,
+        input_schema: r#"{"type":"object","properties":{"content":{"type":"string"},"reflection_type":{"type":"string"},"source_memory_ids":{"type":"array","items":{"type":"integer"}},"confidence":{"type":"number"}},"required":["content","source_memory_ids"]}"#,
     },
     // -- admin ------------------------------------------------------------
     Route {
@@ -1884,7 +1877,7 @@ pub static ROUTES: &[Route] = &[
         path: "/context",
         scope: Scope::Read,
         description: "Build an 8-layer context bundle for a task.",
-        input_schema: r#"{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"integer"}},"required":["task"]}"#,
+        input_schema: r#"{"type":"object","properties":{"query":{"type":"string"},"max_tokens":{"type":"integer"},"model_id":{"type":"string"},"source":{"type":"string"},"session":{"type":"string"}},"required":["query"]}"#,
     },
     Route {
         name: "context.build_stream",
@@ -1949,7 +1942,7 @@ pub static ROUTES: &[Route] = &[
         path: "/axon/subscriptions",
         scope: Scope::Read,
         description: "List Axon subscriptions.",
-        input_schema: r#"{"type":"object"}"#,
+        input_schema: r#"{"type":"object","properties":{"agent":{"type":"string"}},"required":["agent"]}"#,
     },
     Route {
         name: "axon.poll",
@@ -1967,7 +1960,7 @@ pub static ROUTES: &[Route] = &[
         path: "/axon/cursor",
         scope: Scope::Read,
         description: "Get the current Axon cursor.",
-        input_schema: r#"{"type":"object","properties":{"channel":{"type":"string"}}}"#,
+        input_schema: r#"{"type":"object","properties":{"agent":{"type":"string"},"channel":{"type":"string"}},"required":["agent","channel"]}"#,
     },
     Route {
         name: "axon.stats",
@@ -2051,7 +2044,7 @@ pub static ROUTES: &[Route] = &[
         path: "/thymus/evaluate",
         scope: Scope::Write,
         description: "Record an evaluation outcome.",
-        input_schema: r#"{"type":"object","properties":{"rubric_id":{"type":"integer"},"agent":{"type":"string"},"subject":{"type":"string"},"scores":{"type":"object"}},"required":["rubric_id","agent","subject","scores"]}"#,
+        input_schema: r#"{"type":"object","properties":{"rubric_id":{"type":"integer"},"agent":{"type":"string"},"evaluator":{"type":"string"},"subject":{"type":"string"},"scores":{"type":"object"},"input":{"type":"object"},"output":{"type":"object"},"notes":{"type":"string"}},"required":["rubric_id","agent","evaluator","subject","scores"]}"#,
     },
     Route {
         name: "thymus.list_evaluations",
@@ -2097,7 +2090,7 @@ pub static ROUTES: &[Route] = &[
         path: "/growth/reflect",
         scope: Scope::Write,
         description: "Record a growth-reflection note.",
-        input_schema: r#"{"type":"object","properties":{"observation":{"type":"string"},"context":{"type":"string"}},"required":["observation"]}"#,
+        input_schema: r#"{"type":"object","properties":{"service":{"type":"string"},"context":{"type":"array","items":{"type":"string"}},"existing_growth":{"type":"string"},"prompt_override":{"type":"string"}},"required":["service"]}"#,
     },
     Route {
         name: "growth.observations",
@@ -2115,7 +2108,7 @@ pub static ROUTES: &[Route] = &[
         path: "/growth/materialize",
         scope: Scope::Write,
         description: "Materialise growth notes into durable memory.",
-        input_schema: r#"{"type":"object","properties":{"ids":{"type":"array","items":{"type":"integer"}}}}"#,
+        input_schema: r#"{"type":"object","properties":{"observation_id":{"type":"integer"}},"required":["observation_id"]}"#,
     },
     // -- commerce ---------------------------------------------------------
     Route {
@@ -2143,7 +2136,7 @@ pub static ROUTES: &[Route] = &[
         path: "/commerce/check",
         scope: Scope::Read,
         description: "Pre-flight a spend against budget.",
-        input_schema: r#"{"type":"object","properties":{"amount":{"type":"number"},"currency":{"type":"string"}},"required":["amount"]}"#,
+        input_schema: r#"{"type":"object","properties":{"quote_id":{"type":"string"}},"required":["quote_id"]}"#,
     },
     Route {
         name: "commerce.reconciliation",
@@ -2225,7 +2218,7 @@ pub static ROUTES: &[Route] = &[
         path: "/loom/steps/{id}/fail",
         scope: Scope::Write,
         description: "Mark a step failed.",
-        input_schema: r#"{"type":"object","properties":{"id":{"type":"integer"},"reason":{"type":"string"}},"required":["id"]}"#,
+        input_schema: r#"{"type":"object","properties":{"id":{"type":"integer"},"error":{"type":"string"}},"required":["id"]}"#,
     },
     Route {
         name: "loom.stats",
@@ -2831,8 +2824,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/brain/evolution/feedback",
         scope: Scope::Write,
-        description: "Auto: POST /brain/evolution/feedback.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Submit evolution feedback to the brain.",
+        input_schema: r#"{"type":"object","properties":{"memory_ids":{"type":"array","items":{"type":"integer"}},"edge_pairs":{"type":"array","items":{"type":"array"}},"useful":{"type":"boolean"}},"required":["memory_ids","edge_pairs","useful"]}"#,
     },
     // -- broca (generated) --
     Route {
@@ -3310,8 +3303,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/correct",
         scope: Scope::Write,
-        description: "Auto: POST /correct.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Correct a memory's content.",
+        input_schema: r#"{"type":"object","properties":{"memory_id":{"type":"integer"},"content":{"type":"string"},"reason":{"type":"string"}},"required":["memory_id","content"]}"#,
     },
     Route {
         name: "intelligence.deduplicate",
@@ -3337,8 +3330,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/feedback",
         scope: Scope::Write,
-        description: "Auto: POST /feedback.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Record user feedback on a memory.",
+        input_schema: r#"{"type":"object","properties":{"memory_id":{"type":"integer"},"rating":{"type":"string"},"context":{"type":"string"}},"required":["memory_id","rating"]}"#,
     },
     Route {
         name: "intelligence.feedback_stats",
@@ -3373,8 +3366,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/intelligence/causal/chains",
         scope: Scope::Write,
-        description: "Auto: POST /intelligence/causal/chains.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Create a causal chain.",
+        input_schema: r#"{"type":"object","properties":{"root_memory_id":{"type":"integer"},"description":{"type":"string"}}}"#,
     },
     Route {
         name: "intelligence.get_chain",
@@ -3391,8 +3384,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/intelligence/causal/links",
         scope: Scope::Write,
-        description: "Auto: POST /intelligence/causal/links.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Add a causal link to a chain.",
+        input_schema: r#"{"type":"object","properties":{"chain_id":{"type":"integer"},"cause_memory_id":{"type":"integer"},"effect_memory_id":{"type":"integer"},"strength":{"type":"number"},"order_index":{"type":"integer"}},"required":["chain_id","cause_memory_id","effect_memory_id"]}"#,
     },
     Route {
         name: "intelligence.candidates",
@@ -3508,8 +3501,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/intelligence/reflections",
         scope: Scope::Write,
-        description: "Auto: POST /intelligence/reflections.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Create an intelligence reflection.",
+        input_schema: r#"{"type":"object","properties":{"content":{"type":"string"},"reflection_type":{"type":"string"},"source_memory_ids":{"type":"array","items":{"type":"integer"}},"confidence":{"type":"number"}},"required":["content","source_memory_ids"]}"#,
     },
     Route {
         name: "intelligence.generate_reflections",
@@ -3616,8 +3609,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/timetravel",
         scope: Scope::Write,
-        description: "Auto: POST /timetravel.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Query memories from a specific point in time.",
+        input_schema: r#"{"type":"object","properties":{"query":{"type":"string"},"timestamp":{"type":"string"},"limit":{"type":"integer"}},"required":["timestamp"]}"#,
     },
     // -- loom (generated) --
     Route {
@@ -3909,8 +3902,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Get,
         path: "/state",
         scope: Scope::Read,
-        description: "Auto: GET /state.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Get portable app state, optionally filtered by key.",
+        input_schema: r#"{"type":"object","properties":{"key":{"type":"string"}}}"#,
     },
     // -- projects (generated) --
     Route {
@@ -3938,8 +3931,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Get,
         path: "/decay/scores",
         scope: Scope::Read,
-        description: "Auto: GET /decay/scores.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Get memory decay scores, optionally for a specific memory.",
+        input_schema: r#"{"type":"object","properties":{"memory_id":{"type":"integer"},"limit":{"type":"integer"},"order":{"type":"string"}}}"#,
     },
     Route {
         name: "search.web",
@@ -4502,8 +4495,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/thymus/drift-events",
         scope: Scope::Write,
-        description: "Auto: POST /thymus/drift-events.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Record a thymus drift event.",
+        input_schema: r#"{"type":"object","properties":{"agent":{"type":"string"},"drift_type":{"type":"string"},"signal":{"type":"string"},"session_id":{"type":"string"},"severity":{"type":"string"}},"required":["agent","drift_type","signal"]}"#,
     },
     Route {
         name: "thymus.get_metrics",
@@ -4520,8 +4513,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/thymus/metrics",
         scope: Scope::Write,
-        description: "Auto: POST /thymus/metrics.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Record a thymus metric value.",
+        input_schema: r#"{"type":"object","properties":{"agent":{"type":"string"},"metric":{"type":"string"},"value":{"type":"number"},"tags":{"type":"object"}},"required":["agent","metric","value"]}"#,
     },
     Route {
         name: "thymus.list_rubrics",
@@ -4538,8 +4531,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/thymus/rubrics",
         scope: Scope::Write,
-        description: "Auto: POST /thymus/rubrics.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Create a thymus rubric.",
+        input_schema: r#"{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"criteria":{"type":"object"}},"required":["name","criteria"]}"#,
     },
     Route {
         name: "thymus.delete_rubric",
@@ -4583,8 +4576,8 @@ pub static ROUTES: &[Route] = &[
         method: Method::Post,
         path: "/thymus/session-quality",
         scope: Scope::Write,
-        description: "Auto: POST /thymus/session-quality.",
-        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+        description: "Record session quality metrics.",
+        input_schema: r#"{"type":"object","properties":{"session_id":{"type":"string"},"agent":{"type":"string"},"turn_count":{"type":"integer"},"rules_followed":{"type":"array","items":{"type":"string"}},"rules_drifted":{"type":"array","items":{"type":"string"}},"personality_score":{"type":"number"},"rule_compliance_rate":{"type":"number"}},"required":["session_id","agent"]}"#,
     },
     // -- webhooks (generated) --
     Route {

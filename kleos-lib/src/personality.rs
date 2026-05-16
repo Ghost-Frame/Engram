@@ -1005,7 +1005,11 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
         return Ok("Insufficient data for personality synthesis. No personality signals have been extracted yet.".to_string());
     }
 
-    // Gather preferences
+    // Gather preferences.
+    // domain and preference are nullable columns (TEXT without NOT NULL); use
+    // Option<String> when reading and fall back to empty string so a NULL value
+    // in either column does not abort the entire preferences query with an
+    // InvalidColumnType error.
     let preferences = db.read(move |conn| {
         let mut stmt = conn.prepare(
             "SELECT domain, preference, strength FROM user_preferences ORDER BY strength DESC LIMIT 50",
@@ -1013,8 +1017,8 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
 
         let rows = stmt.query_map([], |row| {
             Ok(PreferenceRow {
-                domain: row.get(0)?,
-                preference: row.get(1)?,
+                domain: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                preference: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 strength: row.get(2)?,
             })
         }).map_err(rusqlite_to_eng_error)?;

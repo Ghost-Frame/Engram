@@ -9,9 +9,12 @@
 //!      scope. (Stage 5 ships owner-only; Stage 6 adds scoped-agent support.)
 //!   3. Special case: agent == "credd-<host>" returns bootstrap_master itself
 //!      (credd's own Kleos bearer). Owner-only.
-//!   4. Otherwise: credd uses bootstrap_master as a Kleos bearer to fetch the
-//!      [CRED:v3] engram-rust/<agent> memory row from Kleos, decrypts it with
-//!      state.master_key, returns the bare per-agent bearer.
+//!   4. Otherwise: credd uses bootstrap_master as a Kleos bearer to fetch
+//!      the per-agent [CRED:v3] memory row from Kleos. The lookup tries the
+//!      canonical `kleos/<agent>` prefix first and falls back to the legacy
+//!      `engram-rust/<agent>` prefix for entries created before the rename.
+//!      credd decrypts the row with state.master_key and returns the bare
+//!      per-agent bearer.
 //!   5. Response includes a TTL hint so clients can cache without re-asking
 //!      every call. Per-agent bearers themselves are rotated separately
 //!      (Kleos-side); the TTL is the cache invalidation primitive.
@@ -124,8 +127,9 @@ pub async fn get_bootstrap_kleos_bearer(
         .into());
     }
 
-    // Fetch the [CRED:v3] engram-rust/<agent> memory from Kleos, decrypt it
-    // with the cred master key, return the bare bearer.
+    // Fetch the [CRED:v3] kleos/<agent> memory from Kleos (or legacy
+    // engram-rust/<agent> for entries created before the rename), decrypt
+    // it with the cred master key, return the bare bearer.
     let kleos_url = std::env::var("KLEOS_URL")
         .or_else(|_| std::env::var("ENGRAM_URL"))
         .map_err(|_| {
@@ -162,15 +166,26 @@ pub async fn get_bootstrap_kleos_bearer(
         CredError::InvalidInput(format!("kleos response parse error: {}", e))
     })?;
 
-    let target_prefix = format!("[CRED:v3] engram-rust/{} = ", params.agent);
-    let entry = list
+    // Try the canonical `kleos/` prefix first, fall back to the legacy
+    // `engram-rust/` prefix for entries created before the rename.
+    let kleos_prefix = format!("[CRED:v3] kleos/{} = ", params.agent);
+    let legacy_prefix = format!("[CRED:v3] engram-rust/{} = ", params.agent);
+    let (entry, target_prefix) = list
         .results
         .iter()
-        .find(|m| m.content.starts_with(&target_prefix))
+        .find_map(|m| {
+            if m.content.starts_with(&kleos_prefix) {
+                Some((m, kleos_prefix.clone()))
+            } else if m.content.starts_with(&legacy_prefix) {
+                Some((m, legacy_prefix.clone()))
+            } else {
+                None
+            }
+        })
         .ok_or_else(|| {
             warn!(
-                "no [CRED:v3] entry for agent={} (looked for prefix `{}`)",
-                params.agent, target_prefix
+                "no [CRED:v3] entry for agent={} (tried prefixes `{}` and `{}`)",
+                params.agent, kleos_prefix, legacy_prefix
             );
             CredError::NotFound(format!("agent bearer not found: {}", params.agent))
         })?;
@@ -279,15 +294,26 @@ async fn resolve_agent_bearer(state: &AppState, agent: &str) -> Result<String, A
         CredError::InvalidInput(format!("kleos response parse error: {}", e))
     })?;
 
-    let target_prefix = format!("[CRED:v3] engram-rust/{} = ", agent);
-    let entry = list
+    // Try the canonical `kleos/` prefix first, fall back to the legacy
+    // `engram-rust/` prefix for entries created before the rename.
+    let kleos_prefix = format!("[CRED:v3] kleos/{} = ", agent);
+    let legacy_prefix = format!("[CRED:v3] engram-rust/{} = ", agent);
+    let (entry, target_prefix) = list
         .results
         .iter()
-        .find(|m| m.content.starts_with(&target_prefix))
+        .find_map(|m| {
+            if m.content.starts_with(&kleos_prefix) {
+                Some((m, kleos_prefix.clone()))
+            } else if m.content.starts_with(&legacy_prefix) {
+                Some((m, legacy_prefix.clone()))
+            } else {
+                None
+            }
+        })
         .ok_or_else(|| {
             warn!(
-                "no [CRED:v3] entry for agent={} (looked for prefix `{}`)",
-                agent, target_prefix
+                "no [CRED:v3] entry for agent={} (tried prefixes `{}` and `{}`)",
+                agent, kleos_prefix, legacy_prefix
             );
             CredError::NotFound(format!("agent bearer not found: {}", agent))
         })?;
