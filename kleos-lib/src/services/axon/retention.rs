@@ -109,7 +109,10 @@ mod tests {
         .expect("backdate");
 
         let deleted = prune_expired_events(&db).await.expect("prune");
-        assert_eq!(deleted, 1, "expected exactly one expired event to be pruned");
+        assert_eq!(
+            deleted, 1,
+            "expected exactly one expired event to be pruned"
+        );
     }
 
     /// Publish a recent event (not backdated) and assert that
@@ -123,6 +126,9 @@ mod tests {
             .expect("publish");
 
         let deleted = prune_expired_events(&db).await.expect("prune");
-        assert_eq!(deleted, 0, "expected no events to be pruned for a fresh event");
+        assert_eq!(
+            deleted, 0,
+            "expected no events to be pruned for a fresh event"
+        );
     }
 }

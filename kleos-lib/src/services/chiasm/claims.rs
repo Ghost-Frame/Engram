@@ -315,9 +315,16 @@ mod tests {
         let db = Database::connect_memory().await.expect("db");
         let task = create_task(&db, test_task("list-claims")).await.unwrap();
 
-        let claims = create_claims(&db, task.id, "test-agent", "test-project", &["a.rs", "b.rs"], 1800)
-            .await
-            .unwrap();
+        let claims = create_claims(
+            &db,
+            task.id,
+            "test-agent",
+            "test-project",
+            &["a.rs", "b.rs"],
+            1800,
+        )
+        .await
+        .unwrap();
         assert_eq!(claims.len(), 2);
 
         let listed = get_claims_for_task(&db, task.id).await.unwrap();

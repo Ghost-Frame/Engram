@@ -811,7 +811,9 @@ fn apply_schema_v52_syntheos_parity(conn: &Connection) -> Result<()> {
     // Idempotently add extended columns to chiasm_tasks.
     if !table_has_column(conn, "chiasm_tasks", "expected_output")? {
         conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN expected_output TEXT;")
-            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}"))
+            })?;
     }
     if !table_has_column(conn, "chiasm_tasks", "output_format")? {
         conn.execute_batch(
@@ -821,15 +823,21 @@ fn apply_schema_v52_syntheos_parity(conn: &Connection) -> Result<()> {
     }
     if !table_has_column(conn, "chiasm_tasks", "output")? {
         conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN output TEXT;")
-            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}"))
+            })?;
     }
     if !table_has_column(conn, "chiasm_tasks", "condition")? {
         conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN condition TEXT;")
-            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}"))
+            })?;
     }
     if !table_has_column(conn, "chiasm_tasks", "guardrail_url")? {
         conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN guardrail_url TEXT;")
-            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}"))
+            })?;
     }
     if !table_has_column(conn, "chiasm_tasks", "guardrail_retries")? {
         conn.execute_batch(
@@ -839,15 +847,21 @@ fn apply_schema_v52_syntheos_parity(conn: &Connection) -> Result<()> {
     }
     if !table_has_column(conn, "chiasm_tasks", "plan")? {
         conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN plan TEXT;")
-            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}"))
+            })?;
     }
     if !table_has_column(conn, "chiasm_tasks", "feedback")? {
         conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN feedback TEXT;")
-            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}"))
+            })?;
     }
     if !table_has_column(conn, "chiasm_tasks", "last_heartbeat")? {
         conn.execute_batch("ALTER TABLE chiasm_tasks ADD COLUMN last_heartbeat TEXT;")
-            .map_err(|e| EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}")))?;
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("v52 alter chiasm_tasks failed: {e}"))
+            })?;
     }
     if !table_has_column(conn, "chiasm_tasks", "heartbeat_interval")? {
         conn.execute_batch(

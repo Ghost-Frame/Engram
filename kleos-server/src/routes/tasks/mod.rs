@@ -284,7 +284,10 @@ async fn create_claims_handler(
     )
     .await?;
     let count = claims.len();
-    Ok((StatusCode::CREATED, Json(json!({ "claims": claims, "count": count }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "claims": claims, "count": count })),
+    ))
 }
 
 /// List active claims for a task.
@@ -323,7 +326,9 @@ async fn check_conflicts_handler(
     )
     .await?;
     let has_conflicts = !conflicts.is_empty();
-    Ok(Json(json!({ "conflicts": conflicts, "has_conflicts": has_conflicts })))
+    Ok(Json(
+        json!({ "conflicts": conflicts, "has_conflicts": has_conflicts }),
+    ))
 }
 
 /// List all active claims in a project.

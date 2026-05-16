@@ -28,11 +28,7 @@ use crate::db::Database;
 /// Publishes to the "tasks" channel via Axon's publish-and-fanout pipeline.
 /// Errors are logged but never propagated -- event emission must not break
 /// the primary operation.
-pub(crate) async fn emit_chiasm_event(
-    db: &Database,
-    action: &str,
-    payload: serde_json::Value,
-) {
+pub(crate) async fn emit_chiasm_event(db: &Database, action: &str, payload: serde_json::Value) {
     let req = crate::services::axon::PublishEventRequest {
         channel: "tasks".to_string(),
         action: action.to_string(),

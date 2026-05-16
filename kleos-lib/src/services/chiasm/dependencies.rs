@@ -33,11 +33,7 @@ pub struct Dependency {
 /// Check whether adding `target_id` as a dependency of `task_id` would create
 /// a cycle. Uses BFS from `target_id` following existing dependency edges; if
 /// the traversal reaches `task_id`, a cycle exists.
-pub async fn has_circular_dependency(
-    db: &Database,
-    task_id: i64,
-    target_id: i64,
-) -> Result<bool> {
+pub async fn has_circular_dependency(db: &Database, task_id: i64, target_id: i64) -> Result<bool> {
     let tid = task_id;
     db.read(move |conn| {
         let mut visited = std::collections::HashSet::new();
@@ -72,7 +68,9 @@ pub async fn has_circular_dependency(
 pub async fn add_dependencies(db: &Database, task_id: i64, depends_on: &[i64]) -> Result<()> {
     for &dep_id in depends_on {
         if dep_id == task_id {
-            return Err(EngError::InvalidInput("task cannot depend on itself".into()));
+            return Err(EngError::InvalidInput(
+                "task cannot depend on itself".into(),
+            ));
         }
         if has_circular_dependency(db, task_id, dep_id).await? {
             return Err(EngError::InvalidInput(format!(
@@ -145,7 +143,10 @@ pub async fn remove_dependency(db: &Database, task_id: i64, dep_id: i64) -> Resu
 /// After a task completes, check all tasks that depend on it. If ALL of a
 /// dependent task's dependencies are now completed, auto-unblock it by
 /// setting its status to "active".
-pub async fn check_and_unblock(db: &Database, completed_task_id: i64) -> Result<Vec<super::tasks::Task>> {
+pub async fn check_and_unblock(
+    db: &Database,
+    completed_task_id: i64,
+) -> Result<Vec<super::tasks::Task>> {
     // Find all tasks that have a dependency on the completed task
     let dependents: Vec<i64> = db
         .read(move |conn| {

@@ -119,12 +119,7 @@ pub async fn mark_stale_tasks(
         // the authoritative signal; claim cleanup is best-effort.
         let _ = super::claims::release_claims(db, task_id).await;
 
-        super::emit_chiasm_event(
-            db,
-            "task.stale",
-            serde_json::json!({"task_id": task_id}),
-        )
-        .await;
+        super::emit_chiasm_event(db, "task.stale", serde_json::json!({"task_id": task_id})).await;
 
         stale.push(updated);
     }

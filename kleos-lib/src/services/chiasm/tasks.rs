@@ -227,7 +227,10 @@ pub async fn create_task(db: &Database, req: CreateTaskRequest) -> Result<Task> 
     let title = req.title.clone();
     let summary = req.summary.clone();
     let expected_output = req.expected_output.clone();
-    let output_format = req.output_format.clone().unwrap_or_else(|| "raw".to_string());
+    let output_format = req
+        .output_format
+        .clone()
+        .unwrap_or_else(|| "raw".to_string());
     let condition = req.condition.clone();
     let guardrail_url = req.guardrail_url.clone();
     let heartbeat_interval = req.heartbeat_interval.unwrap_or(300);
@@ -552,12 +555,7 @@ pub async fn submit_output(db: &Database, id: i64, output: &str, user_id: i64) -
         return Err(EngError::NotFound(format!("task {}", id)));
     }
     let task = get_task(db, id, user_id).await?;
-    super::emit_chiasm_event(
-        db,
-        "task.output",
-        serde_json::json!({"task_id": id}),
-    )
-    .await;
+    super::emit_chiasm_event(db, "task.output", serde_json::json!({"task_id": id})).await;
     Ok(task)
 }
 
@@ -580,12 +578,7 @@ pub async fn submit_feedback(db: &Database, id: i64, feedback: &str, user_id: i6
         return Err(EngError::NotFound(format!("task {}", id)));
     }
     let task = get_task(db, id, user_id).await?;
-    super::emit_chiasm_event(
-        db,
-        "task.feedback",
-        serde_json::json!({"task_id": id}),
-    )
-    .await;
+    super::emit_chiasm_event(db, "task.feedback", serde_json::json!({"task_id": id})).await;
     Ok(task)
 }
 
@@ -638,7 +631,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let updated = submit_feedback(&db, t.id, "needs revision", 1).await.unwrap();
+        let updated = submit_feedback(&db, t.id, "needs revision", 1)
+            .await
+            .unwrap();
         assert_eq!(updated.feedback.as_deref(), Some("needs revision"));
         assert_eq!(updated.status, "active");
     }

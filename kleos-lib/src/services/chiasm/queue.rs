@@ -177,7 +177,10 @@ mod tests {
             .expect("enqueue_task should succeed");
 
         // Freshly enqueued task must be queued and unassigned.
-        assert_eq!(queued.status, "queued", "status should be queued after enqueue");
+        assert_eq!(
+            queued.status, "queued",
+            "status should be queued after enqueue"
+        );
         assert!(!queued.assigned, "assigned should be false after enqueue");
         assert_eq!(queued.agent, "unassigned");
 
@@ -188,15 +191,27 @@ mod tests {
             .expect("should return Some when a queued task exists");
 
         // Claimed task must reflect the agent claim.
-        assert_eq!(claimed.id, queued.id, "claimed task id should match enqueued id");
-        assert_eq!(claimed.status, "active", "status should be active after claim");
+        assert_eq!(
+            claimed.id, queued.id,
+            "claimed task id should match enqueued id"
+        );
+        assert_eq!(
+            claimed.status, "active",
+            "status should be active after claim"
+        );
         assert!(claimed.assigned, "assigned should be true after claim");
-        assert_eq!(claimed.agent, "agent-smith", "agent should be updated to claiming agent");
+        assert_eq!(
+            claimed.agent, "agent-smith",
+            "agent should be updated to claiming agent"
+        );
 
         // A second claim attempt must return None -- queue is empty.
         let none = claim_next_task(&db, "agent-smith", None, 1)
             .await
             .expect("second claim_next_task should not error");
-        assert!(none.is_none(), "second claim should return None when queue is empty");
+        assert!(
+            none.is_none(),
+            "second claim should return None when queue is empty"
+        );
     }
 }

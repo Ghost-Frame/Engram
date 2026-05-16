@@ -132,7 +132,7 @@ pub async fn publish_and_fanout(
 mod tests {
     use super::*;
     use crate::db::Database;
-    use crate::services::axon::core::{SubscribeRequest, upsert_subscription};
+    use crate::services::axon::core::{upsert_subscription, SubscribeRequest};
 
     /// Sets up an in-memory database for testing.
     async fn setup() -> Database {
@@ -182,7 +182,10 @@ mod tests {
             targets_completed.len(),
             2,
             "expected 2 targets for task.completed, got {:?}",
-            targets_completed.iter().map(|t| &t.agent).collect::<Vec<_>>()
+            targets_completed
+                .iter()
+                .map(|t| &t.agent)
+                .collect::<Vec<_>>()
         );
 
         // Only logger should match "task.started" (broca's filter doesn't match)
