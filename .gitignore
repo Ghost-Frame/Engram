@@ -48,3 +48,8 @@ _gen_memory.py
 __pycache__/
 .persona/
 GROWTH.md
+
+# Frameshift persona system (per-session activation state, never in project repos)
+frameshift.toml
+frameshift.lock
+.wrangler/
