@@ -1,3 +1,5 @@
+pub mod atoms;
+
 use crate::db::Database;
 use crate::{EngError, Result};
 use deadpool_sqlite::Pool;
