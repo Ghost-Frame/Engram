@@ -35,10 +35,30 @@ TMP_IN="$(mktemp)"
 TMP_OUT="$(mktemp)"
 trap 'rm -f "$TMP_IN" "$TMP_OUT"' EXIT
 
+# Returns 0 if the staged change for a Rust file is a pure rustfmt reformatting
+# of its HEAD content (semantically equivalent, no logic added/changed/removed).
+# Fails closed: if rustfmt or HEAD content is unavailable, returns non-zero so
+# the normal comment-check still runs.
+is_fmt_only_rust() {
+    local rel="$1"
+    [[ "$rel" == *.rs ]] || return 1
+    command -v rustfmt >/dev/null 2>&1 || return 1
+    git cat-file -e "HEAD:$rel" 2>/dev/null || return 1   # new file -- needs check
+    local head_canon staged_canon
+    head_canon=$(git show "HEAD:$rel" | rustfmt --edition 2021 --emit stdout 2>/dev/null) || return 1
+    staged_canon=$(git show ":$rel" | rustfmt --edition 2021 --emit stdout 2>/dev/null) || return 1
+    [[ "$head_canon" == "$staged_canon" ]]
+}
+
 FAILED=0
 for rel in "${STAGED[@]}"; do
     abs="$REPO_ROOT/$rel"
     [[ -f "$abs" ]] || continue
+    # Skip pure rustfmt reformattings -- they touch no logic and should not
+    # block on pre-existing undocumented declarations whose lines moved.
+    if is_fmt_only_rust "$rel"; then
+        continue
+    fi
     printf '{"file_path":"%s"}' "$abs" > "$TMP_IN"
     agent-forge --input "$TMP_IN" --output "$TMP_OUT" comment-check >/dev/null 2>&1 || true
 
