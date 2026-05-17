@@ -741,6 +741,53 @@ enum HandoffCommands {
         #[arg(long)]
         keep: Option<i64>,
     },
+    /// Atom operations (list, packed context, supersede, decay)
+    Atoms {
+        #[command(subcommand)]
+        cmd: AtomCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AtomCommands {
+    /// List active atoms for a project
+    List {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        atom_type: Option<String>,
+        #[arg(long, default_value = "active")]
+        status: String,
+        #[arg(long, default_value = "50")]
+        limit: i64,
+        #[arg(long)]
+        dir: Option<String>,
+    },
+    /// Get budget-packed context atoms for a project
+    Packed {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, default_value = "4000")]
+        max_tokens: usize,
+        #[arg(long)]
+        dir: Option<String>,
+    },
+    /// Mark an atom as superseded by another
+    Supersede {
+        #[arg(long)]
+        old: String,
+        #[arg(long)]
+        new: String,
+    },
+    /// Apply decay to atoms (call on session start)
+    Decay {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, default_value = "1")]
+        sessions: u32,
+        #[arg(long)]
+        dir: Option<String>,
+    },
 }
 
 /// Extracts a JSON value as a string, coercing integers.
@@ -3159,6 +3206,120 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
                     let deleted = v.get("deleted").and_then(|d| d.as_i64()).unwrap_or(0);
                     let remaining = v.get("remaining").and_then(|r| r.as_i64()).unwrap_or(0);
                     println!("Deleted {} handoffs. Remaining: {}", deleted, remaining);
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        HandoffCommands::Atoms { cmd } => {
+            handle_atom_command(client, cmd).await;
+        }
+    }
+}
+
+async fn handle_atom_command(client: &Client, cmd: &AtomCommands) {
+    match cmd {
+        AtomCommands::List {
+            project,
+            atom_type,
+            status,
+            limit,
+            dir,
+        } => {
+            let dir_str = dir.as_deref();
+            let project = project.clone().or_else(|| detect_project(dir_str));
+
+            let Some(ref project) = project else {
+                eprintln!("Error: could not detect project. Use --project");
+                std::process::exit(1);
+            };
+
+            let mut query = format!("project={}&status={}&limit={}", project, status, limit);
+            if let Some(ref at) = atom_type {
+                query.push_str(&format!("&atom_type={}", at));
+            }
+
+            match client.get(&format!("/handoffs/atoms?{}", query)).await {
+                Ok(v) => {
+                    if let Some(atoms) = v.get("atoms").and_then(|a| a.as_array()) {
+                        if atoms.is_empty() {
+                            println!("No atoms found for project '{}'", project);
+                            return;
+                        }
+                        for atom in atoms {
+                            let atype = atom.get("atom_type").and_then(|t| t.as_str()).unwrap_or("?");
+                            let content = atom.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                            let salience = atom.get("salience").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                            let seen = atom.get("seen_count").and_then(|s| s.as_i64()).unwrap_or(1);
+                            let aid = atom.get("atom_id").and_then(|a| a.as_str()).unwrap_or("");
+                            println!(
+                                "[{:.2}] ({}) {} [seen:{}] id:{}",
+                                salience, atype, content, seen, aid
+                            );
+                        }
+                        println!("\n{} atoms total", atoms.len());
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        AtomCommands::Packed {
+            project,
+            max_tokens,
+            dir,
+        } => {
+            let dir_str = dir.as_deref();
+            let project = project.clone().or_else(|| detect_project(dir_str));
+
+            let Some(ref project) = project else {
+                eprintln!("Error: could not detect project. Use --project");
+                std::process::exit(1);
+            };
+
+            let query = format!("project={}&max_tokens={}", project, max_tokens);
+            match client.get(&format!("/handoffs/atoms/packed?{}", query)).await {
+                Ok(v) => {
+                    if let Some(context) = v.get("context").and_then(|c| c.as_str()) {
+                        println!("{}", context);
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        AtomCommands::Supersede { old, new } => {
+            let body = serde_json::json!({
+                "old_atom_id": old,
+                "new_atom_id": new,
+            });
+            match client.post("/handoffs/atoms/supersede", body).await {
+                Ok(_) => println!("Atom {} superseded by {}", old, new),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        AtomCommands::Decay {
+            project,
+            sessions,
+            dir,
+        } => {
+            let dir_str = dir.as_deref();
+            let project = project.clone().or_else(|| detect_project(dir_str));
+
+            let Some(ref project) = project else {
+                eprintln!("Error: could not detect project. Use --project");
+                std::process::exit(1);
+            };
+
+            let body = serde_json::json!({
+                "project": project,
+                "sessions_elapsed": sessions,
+            });
+            match client.post("/handoffs/atoms/decay", body).await {
+                Ok(v) => {
+                    let affected = v.get("affected").and_then(|a| a.as_i64()).unwrap_or(0);
+                    println!("Applied decay ({} sessions): {} atoms affected", sessions, affected);
                 }
                 Err(e) => eprintln!("Error: {}", e),
             }
