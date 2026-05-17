@@ -637,9 +637,8 @@ pub async fn generate_plan(db: &Database, id: i64, user_id: i64) -> Result<Task>
     if let Some(ref summary) = task.summary {
         user_prompt.push_str(&format!("Context: {}\n", summary));
     }
-    user_prompt.push_str(
-        "\nRespond with a numbered list of concrete steps. Be specific and actionable.",
-    );
+    user_prompt
+        .push_str("\nRespond with a numbered list of concrete steps. Be specific and actionable.");
 
     let system =
         "You are a precise task planner. Return only a numbered list of steps.".to_string();

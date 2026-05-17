@@ -16,7 +16,10 @@ struct Cli {
     #[arg(long, help = "Print ledger stats and exit")]
     status: bool,
 
-    #[arg(long, help = "Log what would be stored without actually posting to Kleos")]
+    #[arg(
+        long,
+        help = "Log what would be stored without actually posting to Kleos"
+    )]
     dry_run: bool,
 
     #[arg(long, help = "Process existing files once then exit (no watcher loop)")]

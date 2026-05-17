@@ -1457,7 +1457,13 @@ pub async fn execute_webhook_step(
     let url = match config.get("url").and_then(|v| v.as_str()) {
         Some(u) if !u.is_empty() => u.to_string(),
         _ => {
-            Box::pin(fail_step(db, step_id, "webhook step requires config.url", user_id)).await?;
+            Box::pin(fail_step(
+                db,
+                step_id,
+                "webhook step requires config.url",
+                user_id,
+            ))
+            .await?;
             return Ok(());
         }
     };
@@ -1550,17 +1556,20 @@ pub async fn execute_llm_step(
     let url = match config.get("url").and_then(|v| v.as_str()) {
         Some(u) if !u.is_empty() => u.to_string(),
         _ => {
-            Box::pin(fail_step(db, step_id, "llm step requires config.url", user_id)).await?;
+            Box::pin(fail_step(
+                db,
+                step_id,
+                "llm step requires config.url",
+                user_id,
+            ))
+            .await?;
             return Ok(());
         }
     };
 
     let vars = serde_json::Value::Object(build_llm_vars(input, config.get("input_map")));
 
-    let prompt_template = config
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let prompt_template = config.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
     let user_prompt = interpolate(prompt_template, &vars);
 
     let system_template = config.get("system").and_then(|v| v.as_str());
@@ -1684,7 +1693,10 @@ pub async fn execute_llm_step(
                         "LLM returned invalid JSON (attempt {}): {} -- response: {}",
                         attempt,
                         e,
-                        extracted.chars().take(LOOM_ERR_BODY_CAP).collect::<String>()
+                        extracted
+                            .chars()
+                            .take(LOOM_ERR_BODY_CAP)
+                            .collect::<String>()
                     );
                     if attempt == MAX_ATTEMPTS {
                         Box::pin(fail_step(db, step_id, &last_err, user_id)).await?;

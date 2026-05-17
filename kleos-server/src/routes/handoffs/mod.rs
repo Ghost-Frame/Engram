@@ -238,7 +238,9 @@ async fn get_packed_context(
     let context = db
         .get_packed_context(&params.project, params.max_tokens as usize, auth.user_id)
         .await?;
-    Ok(Json(json!({ "context": context, "max_tokens": params.max_tokens })))
+    Ok(Json(
+        json!({ "context": context, "max_tokens": params.max_tokens }),
+    ))
 }
 
 /// Request body for the supersede atom endpoint.

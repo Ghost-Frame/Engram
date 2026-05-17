@@ -216,7 +216,12 @@ async fn post_prompt_generate(
                         spread_hops: None,
                     };
                     let failure_result = brain
-                        .query(embedder.as_ref(), &failure_query, auth.user_id, &failure_opts)
+                        .query(
+                            embedder.as_ref(),
+                            &failure_query,
+                            auth.user_id,
+                            &failure_opts,
+                        )
                         .await
                         .unwrap_or_default();
 

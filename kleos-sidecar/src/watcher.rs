@@ -109,10 +109,15 @@ async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Erro
     let gate = match state.llm.as_ref() {
         Some(llm) => Arc::new(MemoryGate::new(
             Arc::clone(llm),
-            state.gate_model.clone().or_else(|| state.compress_model.clone()),
+            state
+                .gate_model
+                .clone()
+                .or_else(|| state.compress_model.clone()),
         )),
         None => {
-            tracing::warn!("watcher: no LLM available, gate disabled -- watcher will not store memories");
+            tracing::warn!(
+                "watcher: no LLM available, gate disabled -- watcher will not store memories"
+            );
             return Ok(());
         }
     };
@@ -258,8 +263,8 @@ async fn extract_turns_from_file(
 ) -> Result<Vec<PendingTurn>, Box<dyn std::error::Error + Send + Sync>> {
     let path_buf = path.to_path_buf();
 
-    let (project, session_id) = parse_session_path(path)
-        .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+    let (project, session_id) =
+        parse_session_path(path).unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
 
     let last_pos = {
         let pos_map = positions.read().await;
@@ -385,11 +390,7 @@ async fn store_gate_results(results: &[GateResult], state: &SidecarState) -> usi
             continue;
         }
 
-        let category = result
-            .verdict
-            .category
-            .as_deref()
-            .unwrap_or("session");
+        let category = result.verdict.category.as_deref().unwrap_or("session");
 
         let importance = result.verdict.importance.unwrap_or(3);
 

@@ -149,7 +149,10 @@ impl Graph {
             q.push_back(start);
             comp[start] = next_id;
             while let Some(node) = q.pop_front() {
-                for &neigh in self.out_edges[node].iter().chain(self.in_edges[node].iter()) {
+                for &neigh in self.out_edges[node]
+                    .iter()
+                    .chain(self.in_edges[node].iter())
+                {
                     if comp[neigh] == usize::MAX {
                         comp[neigh] = next_id;
                         q.push_back(neigh);
@@ -397,8 +400,7 @@ impl Graph {
                         for win in ids.windows(2) {
                             let (a, b) = (win[0], win[1]);
                             if !directed.contains(&(a, b)) && directed.contains(&(b, a)) {
-                                reverse_edges
-                                    .push((self.names[a].clone(), self.names[b].clone()));
+                                reverse_edges.push((self.names[a].clone(), self.names[b].clone()));
                             }
                         }
                         for id in &ids {

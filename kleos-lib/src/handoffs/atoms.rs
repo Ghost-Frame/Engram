@@ -6,10 +6,10 @@
 //! windows efficiently via the [`BudgetPacker`].
 
 use regex::Regex;
-use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::sync::LazyLock;
 use tracing::warn;
 
 // ---------------------------------------------------------------------------
@@ -184,10 +184,8 @@ pub fn make_atom_id(atom_type: AtomType, canonical_form: &str) -> String {
 // ---------------------------------------------------------------------------
 
 static RE_DECISION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)\b(we\s+will|we\s+should|decided\s+to|chose\s+to|went\s+with|using)\b.{1,120}",
-    )
-    .expect("RE_DECISION is a valid regex")
+    Regex::new(r"(?i)\b(we\s+will|we\s+should|decided\s+to|chose\s+to|went\s+with|using)\b.{1,120}")
+        .expect("RE_DECISION is a valid regex")
 });
 
 static RE_CONSTRAINT: LazyLock<Regex> = LazyLock::new(|| {
@@ -203,10 +201,8 @@ static RE_TASK: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static RE_QUESTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)\b(not\s+sure|unclear|open\s+question|need\s+to\s+figure\s+out)\b.{0,120}",
-    )
-    .expect("RE_QUESTION is a valid regex")
+    Regex::new(r"(?i)\b(not\s+sure|unclear|open\s+question|need\s+to\s+figure\s+out)\b.{0,120}")
+        .expect("RE_QUESTION is a valid regex")
 });
 
 /// Matches Unix-style paths with at least two segments (e.g. /foo/bar.rs or
@@ -682,7 +678,10 @@ mod tests {
             .iter()
             .filter(|a| a.atom_type == AtomType::Constraint)
             .collect();
-        assert!(!constraints.is_empty(), "should find at least one constraint");
+        assert!(
+            !constraints.is_empty(),
+            "should find at least one constraint"
+        );
     }
 
     #[test]
@@ -749,7 +748,12 @@ mod tests {
 
     #[test]
     fn budget_packer_mandatory_first() {
-        let mandatory = make_atom(AtomType::Decision, "mandatory decision atom content", 0.9, true);
+        let mandatory = make_atom(
+            AtomType::Decision,
+            "mandatory decision atom content",
+            0.9,
+            true,
+        );
         let optional = make_atom(AtomType::Task, "optional task item for packing", 0.5, false);
         let atoms = vec![optional.clone(), mandatory.clone()];
 
@@ -767,7 +771,14 @@ mod tests {
     fn budget_packer_respects_budget() {
         // Create many atoms that would exceed a tiny budget.
         let atoms: Vec<Atom> = (0..20)
-            .map(|i| make_atom(AtomType::Task, &format!("task item number {i} here"), 0.5, false))
+            .map(|i| {
+                make_atom(
+                    AtomType::Task,
+                    &format!("task item number {i} here"),
+                    0.5,
+                    false,
+                )
+            })
             .collect();
 
         let packer = BudgetPacker::new(10, 5);

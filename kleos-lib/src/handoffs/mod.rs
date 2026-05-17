@@ -1,8 +1,8 @@
 pub mod atoms;
 
 pub use atoms::{
-    Atom, AtomStatus, AtomType, BudgetPacker, ExtractedAtom, extract, extract_heuristic,
-    make_atom_id,
+    extract, extract_heuristic, make_atom_id, Atom, AtomStatus, AtomType, BudgetPacker,
+    ExtractedAtom,
 };
 
 use crate::db::Database;
@@ -317,9 +317,7 @@ impl HandoffsDb {
 
         let extracted = match pre_extracted_atoms {
             Some(atoms) => atoms,
-            None => {
-                atoms::extract(&params.content, sidecar_url).await
-            }
+            None => atoms::extract(&params.content, sidecar_url).await,
         };
 
         if !extracted.is_empty() {
@@ -747,9 +745,10 @@ impl HandoffsDb {
         extracted: &[atoms::ExtractedAtom],
         user_id: i64,
     ) -> Result<Vec<String>> {
-        let conn = self.writer().get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
-        })?;
+        let conn =
+            self.writer().get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
+            })?;
 
         // Clone everything needed to move into interact closure.
         let project = project.to_string();
@@ -825,19 +824,18 @@ impl HandoffsDb {
         limit: i64,
         user_id: i64,
     ) -> Result<Vec<atoms::Atom>> {
-        let conn = self.reader().get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
-        })?;
+        let conn =
+            self.reader().get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
+            })?;
 
         let project = project.to_string();
         let atom_type = atom_type.map(|s| s.to_string());
         let status = status.map(|s| s.to_string());
 
         conn.interact(move |conn| {
-            let mut conditions: Vec<String> = vec![
-                "user_id = ?1".to_string(),
-                "project = ?2".to_string(),
-            ];
+            let mut conditions: Vec<String> =
+                vec!["user_id = ?1".to_string(), "project = ?2".to_string()];
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
                 Box::new(user_id) as Box<dyn rusqlite::types::ToSql>,
                 Box::new(project),
@@ -878,33 +876,33 @@ impl HandoffsDb {
                     .and_then(|s| serde_json::from_str(s).ok());
 
                 // Default to Entity if the stored value is somehow unknown.
-                let atom_type = atoms::AtomType::parse(&atom_type_str)
-                    .unwrap_or(atoms::AtomType::Entity);
+                let atom_type =
+                    atoms::AtomType::parse(&atom_type_str).unwrap_or(atoms::AtomType::Entity);
 
                 let status = match status_str.as_str() {
-                    "resolved"   => atoms::AtomStatus::Resolved,
+                    "resolved" => atoms::AtomStatus::Resolved,
                     "superseded" => atoms::AtomStatus::Superseded,
-                    "contested"  => atoms::AtomStatus::Contested,
-                    _            => atoms::AtomStatus::Active,
+                    "contested" => atoms::AtomStatus::Contested,
+                    _ => atoms::AtomStatus::Active,
                 };
 
                 Ok(atoms::Atom {
-                    id:             Some(row.get(0)?),
-                    atom_id:        row.get(1)?,
-                    handoff_id:     row.get(2)?,
-                    user_id:        row.get(3)?,
-                    project:        row.get(4)?,
+                    id: Some(row.get(0)?),
+                    atom_id: row.get(1)?,
+                    handoff_id: row.get(2)?,
+                    user_id: row.get(3)?,
+                    project: row.get(4)?,
                     atom_type,
-                    content:        row.get(6)?,
+                    content: row.get(6)?,
                     canonical_form: row.get(7)?,
-                    salience:       row.get(8)?,
-                    confidence:     row.get(9)?,
+                    salience: row.get(8)?,
+                    confidence: row.get(9)?,
                     status,
-                    created_at:     row.get(11)?,
-                    last_seen_at:   row.get(12)?,
-                    seen_count:     row.get(13)?,
-                    decay_immune:   row.get(14)?,
-                    superseded_by:  row.get(15)?,
+                    created_at: row.get(11)?,
+                    last_seen_at: row.get(12)?,
+                    seen_count: row.get(13)?,
+                    decay_immune: row.get(14)?,
+                    superseded_by: row.get(15)?,
                     metadata,
                 })
             })?;
@@ -947,9 +945,10 @@ impl HandoffsDb {
         new_atom_id: &str,
         user_id: i64,
     ) -> Result<()> {
-        let conn = self.writer().get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
-        })?;
+        let conn =
+            self.writer().get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
+            })?;
 
         let old_atom_id = old_atom_id.to_string();
         let new_atom_id = new_atom_id.to_string();
@@ -980,9 +979,10 @@ impl HandoffsDb {
         sessions_elapsed: u32,
         user_id: i64,
     ) -> Result<u64> {
-        let conn = self.writer().get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
-        })?;
+        let conn =
+            self.writer().get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
+            })?;
 
         let project = project.to_string();
 
@@ -1025,9 +1025,10 @@ impl HandoffsDb {
         entity_id: i64,
         user_id: i64,
     ) -> Result<()> {
-        let conn = self.writer().get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
-        })?;
+        let conn =
+            self.writer().get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
+            })?;
 
         let atom_id = atom_id.to_string();
 
@@ -1044,20 +1045,17 @@ impl HandoffsDb {
         .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
-    pub async fn get_atom_entities(
-        &self,
-        atom_id: &str,
-        user_id: i64,
-    ) -> Result<Vec<i64>> {
-        let conn = self.reader().get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
-        })?;
+    pub async fn get_atom_entities(&self, atom_id: &str, user_id: i64) -> Result<Vec<i64>> {
+        let conn =
+            self.reader().get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
+            })?;
 
         let atom_id = atom_id.to_string();
 
         conn.interact(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT entity_id FROM atom_entity_links WHERE atom_id = ?1 AND user_id = ?2"
+                "SELECT entity_id FROM atom_entity_links WHERE atom_id = ?1 AND user_id = ?2",
             )?;
             let rows = stmt.query_map(rusqlite::params![atom_id, user_id], |row| row.get(0))?;
             rows.collect::<rusqlite::Result<Vec<i64>>>()
@@ -1067,14 +1065,11 @@ impl HandoffsDb {
         .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
-    pub async fn get_entity_atoms(
-        &self,
-        entity_id: i64,
-        user_id: i64,
-    ) -> Result<Vec<atoms::Atom>> {
-        let conn = self.reader().get().await.map_err(|e| {
-            EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
-        })?;
+    pub async fn get_entity_atoms(&self, entity_id: i64, user_id: i64) -> Result<Vec<atoms::Atom>> {
+        let conn =
+            self.reader().get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
+            })?;
 
         conn.interact(move |conn| {
             let mut stmt = conn.prepare(
@@ -1085,7 +1080,7 @@ impl HandoffsDb {
                  FROM handoff_atoms a
                  JOIN atom_entity_links l ON l.atom_id = a.atom_id AND l.user_id = a.user_id
                  WHERE l.entity_id = ?1 AND l.user_id = ?2 AND a.status = 'active'
-                 ORDER BY a.salience DESC"
+                 ORDER BY a.salience DESC",
             )?;
             let rows = stmt.query_map(rusqlite::params![entity_id, user_id], |row| {
                 let atom_type_str: String = row.get(5)?;
@@ -1095,33 +1090,33 @@ impl HandoffsDb {
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok());
 
-                let atom_type = atoms::AtomType::parse(&atom_type_str)
-                    .unwrap_or(atoms::AtomType::Entity);
+                let atom_type =
+                    atoms::AtomType::parse(&atom_type_str).unwrap_or(atoms::AtomType::Entity);
 
                 let status = match status_str.as_str() {
-                    "resolved"   => atoms::AtomStatus::Resolved,
+                    "resolved" => atoms::AtomStatus::Resolved,
                     "superseded" => atoms::AtomStatus::Superseded,
-                    "contested"  => atoms::AtomStatus::Contested,
-                    _            => atoms::AtomStatus::Active,
+                    "contested" => atoms::AtomStatus::Contested,
+                    _ => atoms::AtomStatus::Active,
                 };
 
                 Ok(atoms::Atom {
-                    id:             Some(row.get(0)?),
-                    atom_id:        row.get(1)?,
-                    handoff_id:     row.get(2)?,
-                    user_id:        row.get(3)?,
-                    project:        row.get(4)?,
+                    id: Some(row.get(0)?),
+                    atom_id: row.get(1)?,
+                    handoff_id: row.get(2)?,
+                    user_id: row.get(3)?,
+                    project: row.get(4)?,
                     atom_type,
-                    content:        row.get(6)?,
+                    content: row.get(6)?,
                     canonical_form: row.get(7)?,
-                    salience:       row.get(8)?,
-                    confidence:     row.get(9)?,
+                    salience: row.get(8)?,
+                    confidence: row.get(9)?,
                     status,
-                    created_at:     row.get(11)?,
-                    last_seen_at:   row.get(12)?,
-                    seen_count:     row.get(13)?,
-                    decay_immune:   row.get(14)?,
-                    superseded_by:  row.get(15)?,
+                    created_at: row.get(11)?,
+                    last_seen_at: row.get(12)?,
+                    seen_count: row.get(13)?,
+                    decay_immune: row.get(14)?,
+                    superseded_by: row.get(15)?,
                     metadata,
                 })
             })?;

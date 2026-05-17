@@ -49,10 +49,7 @@ impl MemoryGate {
         Self { llm, model }
     }
 
-    pub async fn evaluate_batch(
-        &self,
-        turns: Vec<PendingTurn>,
-    ) -> Vec<GateResult> {
+    pub async fn evaluate_batch(&self, turns: Vec<PendingTurn>) -> Vec<GateResult> {
         let mut results = Vec::new();
 
         for turn in turns {

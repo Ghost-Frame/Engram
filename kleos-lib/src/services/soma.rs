@@ -158,11 +158,7 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
 /// otherwise. This mirrors the legacy engram-ts/standalone behavior where the
 /// heartbeat body may carry a fresh status (e.g. `"error"`, `"online"`).
 #[tracing::instrument(skip(db), fields(agent_id, status = ?status_override))]
-pub async fn heartbeat(
-    db: &Database,
-    agent_id: i64,
-    status_override: Option<&str>,
-) -> Result<()> {
+pub async fn heartbeat(db: &Database, agent_id: i64, status_override: Option<&str>) -> Result<()> {
     if let Some(s) = status_override {
         if !VALID_STATUSES.contains(&s) {
             return Err(EngError::InvalidInput(format!(
@@ -695,8 +691,7 @@ pub async fn update_agent_quality(
             let sql = format!("UPDATE soma_agents SET {} WHERE id = ?{}", numbered, idx);
 
             let converted = rusqlite::params_from_iter(params.iter().cloned());
-            conn.execute(&sql, converted)
-                .map_err(rusqlite_to_eng_error)
+            conn.execute(&sql, converted).map_err(rusqlite_to_eng_error)
         })
         .await?;
 

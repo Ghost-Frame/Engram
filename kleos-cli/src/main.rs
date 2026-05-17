@@ -3247,9 +3247,14 @@ async fn handle_atom_command(client: &Client, cmd: &AtomCommands) {
                             return;
                         }
                         for atom in atoms {
-                            let atype = atom.get("atom_type").and_then(|t| t.as_str()).unwrap_or("?");
-                            let content = atom.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                            let salience = atom.get("salience").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                            let atype = atom
+                                .get("atom_type")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("?");
+                            let content =
+                                atom.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                            let salience =
+                                atom.get("salience").and_then(|s| s.as_f64()).unwrap_or(0.0);
                             let seen = atom.get("seen_count").and_then(|s| s.as_i64()).unwrap_or(1);
                             let aid = atom.get("atom_id").and_then(|a| a.as_str()).unwrap_or("");
                             println!(
@@ -3278,7 +3283,10 @@ async fn handle_atom_command(client: &Client, cmd: &AtomCommands) {
             };
 
             let query = format!("project={}&max_tokens={}", project, max_tokens);
-            match client.get(&format!("/handoffs/atoms/packed?{}", query)).await {
+            match client
+                .get(&format!("/handoffs/atoms/packed?{}", query))
+                .await
+            {
                 Ok(v) => {
                     if let Some(context) = v.get("context").and_then(|c| c.as_str()) {
                         println!("{}", context);
@@ -3319,7 +3327,10 @@ async fn handle_atom_command(client: &Client, cmd: &AtomCommands) {
             match client.post("/handoffs/atoms/decay", body).await {
                 Ok(v) => {
                     let affected = v.get("affected").and_then(|a| a.as_i64()).unwrap_or(0);
-                    println!("Applied decay ({} sessions): {} atoms affected", sessions, affected);
+                    println!(
+                        "Applied decay ({} sessions): {} atoms affected",
+                        sessions, affected
+                    );
                 }
                 Err(e) => eprintln!("Error: {}", e),
             }

@@ -113,10 +113,7 @@ pub fn router() -> Router<AppState> {
             "/chiasm/admin/keys",
             post(create_agent_key_handler).get(list_agent_keys_handler),
         )
-        .route(
-            "/chiasm/admin/keys/{id}",
-            delete(revoke_agent_key_handler),
-        )
+        .route("/chiasm/admin/keys/{id}", delete(revoke_agent_key_handler))
 }
 
 /// Lists tasks with optional filters.
