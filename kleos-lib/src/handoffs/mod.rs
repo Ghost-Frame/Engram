@@ -267,14 +267,10 @@ impl HandoffsDb {
             };
 
             if total > 500 {
-                let gc_conn = match writer_clone.get().await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("handoffs auto_gc gc conn acquire failed: {}", e);
-                        return;
-                    }
-                };
-                if let Err(e) = gc_conn
+                // Reuse the same writer conn -- acquiring a second from the
+                // single-writer pool while still holding the first deadlocks
+                // the writer indefinitely.
+                if let Err(e) = conn
                     .interact(move |c| run_tiered_gc(c, &project3, user_id))
                     .await
                 {
