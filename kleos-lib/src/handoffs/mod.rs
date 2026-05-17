@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use tracing::error;
+use tracing::{error, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Handoff {
@@ -287,6 +287,62 @@ impl HandoffsDb {
             id: Some(new_id),
             skipped: false,
         })
+    }
+
+    /// Stores a handoff and then automatically extracts and persists context atoms.
+    ///
+    /// Wraps [`HandoffsDb::store`] with optional atom extraction. If
+    /// `pre_extracted_atoms` is supplied those atoms are used directly; otherwise
+    /// [`atoms::extract`] is called with the handoff content. Mechanical
+    /// handoffs are stored as normal but atom extraction is skipped entirely
+    /// because git-state dumps do not contain semantic atoms worth indexing.
+    ///
+    /// If atom extraction or storage fails a warning is logged but the original
+    /// [`StoreResult`] is still returned -- atom failure is non-fatal.
+    pub async fn store_with_atoms(
+        &self,
+        params: StoreParams,
+        user_id: i64,
+        pre_extracted_atoms: Option<Vec<atoms::ExtractedAtom>>,
+        sidecar_url: Option<&str>,
+    ) -> Result<StoreResult> {
+        let result = self.store(params.clone(), user_id).await?;
+
+        // Mechanical handoffs are git-state dumps; skip atom extraction.
+        if params.handoff_type.as_deref() == Some("mechanical") {
+            return Ok(result);
+        }
+
+        let handoff_id = match result.id {
+            Some(id) => id,
+            // Skipped (duplicate mechanical) -- nothing to attach atoms to.
+            None => return Ok(result),
+        };
+
+        let extracted = match pre_extracted_atoms {
+            Some(atoms) => atoms,
+            None => {
+                atoms::extract(&params.content, sidecar_url).await
+            }
+        };
+
+        if !extracted.is_empty() {
+            let count = extracted.len();
+            if let Err(e) = self
+                .store_atoms(handoff_id, &params.project, &extracted, user_id)
+                .await
+            {
+                warn!(
+                    handoff_id,
+                    error = %e,
+                    "atom storage failed; handoff was saved but atoms were not indexed"
+                );
+            } else {
+                info!(handoff_id, atom_count = count, "atoms indexed for handoff");
+            }
+        }
+
+        Ok(result)
     }
 
     pub async fn list(&self, filters: HandoffFilters, user_id: i64) -> Result<Vec<Handoff>> {
