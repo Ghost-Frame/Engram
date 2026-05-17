@@ -34,6 +34,7 @@ pub(super) struct ListAgentsParams {
     #[serde(alias = "type")]
     pub agent_type: Option<String>,
     pub status: Option<String>,
+    pub capability: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -58,10 +59,12 @@ pub(super) struct LogEventBody {
     pub data: Option<serde_json::Value>,
 }
 
-/// Query parameters for `GET /soma/agents/{id}/logs` -- log pagination.
+/// Query parameters for `GET /soma/agents/{id}/logs` -- log pagination and
+/// optional level filter.
 #[derive(Debug, Deserialize)]
 pub(super) struct ListLogsParams {
     pub limit: Option<i64>,
+    pub level: Option<String>,
 }
 
 /// Query parameters for `GET /soma/agents/stale` -- staleness window.
