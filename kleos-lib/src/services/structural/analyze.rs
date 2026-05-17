@@ -134,7 +134,9 @@ pub fn detail_source(source: &str) -> DetailReport {
     let critical_path_length = g.critical_path_length();
     let flow_depth = g.flow_depth();
     let concurrency_by_level = g.concurrency_by_level();
-    let max_concurrency = concurrency_by_level.as_ref().and_then(|m| m.values().copied().max());
+    let max_concurrency = concurrency_by_level
+        .as_ref()
+        .and_then(|m| m.values().copied().max());
 
     let bridge_implications = analyze
         .bridges
@@ -232,7 +234,10 @@ mod tests {
         assert_eq!(rep.node_count, 3);
         assert_eq!(rep.edge_count, 2);
         assert!(matches!(rep.topology, Topology::Pipeline));
-        assert!(rep.roles.iter().any(|r| r.node == "B" && matches!(r.role, NodeRole::Pipeline)));
+        assert!(rep
+            .roles
+            .iter()
+            .any(|r| r.node == "B" && matches!(r.role, NodeRole::Pipeline)));
         // Every pipeline edge is a bridge.
         assert_eq!(rep.bridges.len(), 2);
     }
@@ -249,39 +254,26 @@ mod tests {
 
     #[test]
     fn between_intermediate_node_scores_higher() {
-        let mid = node_betweenness_in_source(
-            "A yields: x. B needs: x yields: y. C needs: y.",
-            "B",
-        )
-        .unwrap();
-        let sink = node_betweenness_in_source(
-            "A yields: x. B needs: x yields: y. C needs: y.",
-            "C",
-        )
-        .unwrap();
+        let mid = node_betweenness_in_source("A yields: x. B needs: x yields: y. C needs: y.", "B")
+            .unwrap();
+        let sink =
+            node_betweenness_in_source("A yields: x. B needs: x yields: y. C needs: y.", "C")
+                .unwrap();
         assert!(mid > sink);
     }
 
     #[test]
     fn distance_reports_path_length() {
-        let rep = distance_in_source(
-            "A yields: x. B needs: x yields: y. C needs: y.",
-            "A",
-            "C",
-        )
-        .unwrap();
+        let rep =
+            distance_in_source("A yields: x. B needs: x yields: y. C needs: y.", "A", "C").unwrap();
         assert_eq!(rep.distance, Some(2));
         assert_eq!(rep.path.unwrap(), vec!["A", "B", "C"]);
     }
 
     #[test]
     fn trace_falls_back_to_undirected_and_flags_reverse() {
-        let rep = trace_in_source(
-            "A yields: x. B needs: x yields: y. C needs: y.",
-            "C",
-            "A",
-        )
-        .unwrap();
+        let rep =
+            trace_in_source("A yields: x. B needs: x yields: y. C needs: y.", "C", "A").unwrap();
         assert!(rep.used_undirected);
         assert_eq!(rep.path.unwrap(), vec!["C", "B", "A"]);
         assert_eq!(rep.reverse_edges.len(), 2);

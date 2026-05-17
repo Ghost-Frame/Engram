@@ -17,8 +17,8 @@ use crate::state::AppState;
 use kleos_lib::services::soma::{
     add_agent_to_group, create_group, delete_agent, delete_group, find_by_capability, get_agent,
     get_group, get_group_members, get_stale_agents, get_stats as get_soma_stats, heartbeat,
-    list_agent_logs, list_agents, list_groups, log_event, register_agent,
-    remove_agent_from_group, set_status, update_agent_quality, RegisterAgentRequest,
+    list_agent_logs, list_agents, list_groups, log_event, register_agent, remove_agent_from_group,
+    set_status, update_agent_quality, RegisterAgentRequest,
 };
 
 mod types;

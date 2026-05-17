@@ -76,7 +76,7 @@ subtle = { workspace = true }
 
 [features]
 default = []
-gui = ["eframe"]
+gui = ["eframe", "reqwest/blocking"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

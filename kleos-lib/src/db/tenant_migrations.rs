@@ -999,10 +999,8 @@ pub fn run_tenant_migrations(conn: &Connection) -> Result<()> {
 /// so the migration is idempotent and safe to apply against shards that may
 /// have inherited the table from out-of-band SQL.
 fn apply_schema_v53_chiasm_agent_keys(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!(
-        "../tenant/schema_v53_chiasm_agent_keys.sql"
-    ))
-    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v53 failed: {e}")))
+    conn.execute_batch(include_str!("../tenant/schema_v53_chiasm_agent_keys.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v53 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.

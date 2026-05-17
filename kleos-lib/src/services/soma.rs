@@ -160,11 +160,18 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
     .await?;
     let agent = get_agent_by_name(db, user_id, &req.name).await?;
 
-    let _ = publish_internal(db, "system", "soma", "agent.registered", serde_json::json!({
-        "agent_id": agent.id,
-        "name": &agent.name,
-        "type": &agent.type_,
-    })).await;
+    let _ = publish_internal(
+        db,
+        "system",
+        "soma",
+        "agent.registered",
+        serde_json::json!({
+            "agent_id": agent.id,
+            "name": &agent.name,
+            "type": &agent.type_,
+        }),
+    )
+    .await;
 
     Ok(agent)
 }
@@ -178,11 +185,7 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
 /// otherwise. This mirrors the legacy engram-ts/standalone behavior where the
 /// heartbeat body may carry a fresh status (e.g. `"error"`, `"online"`).
 #[tracing::instrument(skip(db), fields(agent_id, status = ?status_override))]
-pub async fn heartbeat(
-    db: &Database,
-    agent_id: i64,
-    status_override: Option<&str>,
-) -> Result<()> {
+pub async fn heartbeat(db: &Database, agent_id: i64, status_override: Option<&str>) -> Result<()> {
     if let Some(s) = status_override {
         if !VALID_STATUSES.contains(&s) {
             return Err(EngError::InvalidInput(format!(
@@ -352,9 +355,16 @@ pub async fn delete_agent(db: &Database, id: i64) -> Result<()> {
     })
     .await?;
 
-    let _ = publish_internal(db, "system", "soma", "agent.deregistered", serde_json::json!({
-        "agent_id": id,
-    })).await;
+    let _ = publish_internal(
+        db,
+        "system",
+        "soma",
+        "agent.deregistered",
+        serde_json::json!({
+            "agent_id": id,
+        }),
+    )
+    .await;
 
     Ok(())
 }
@@ -470,8 +480,12 @@ pub async fn get_group(db: &Database, id: i64, user_id: i64) -> Result<Group> {
                FROM soma_groups WHERE id = ?1 AND user_id = ?2";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![id, user_id]).map_err(rusqlite_to_eng_error)?;
-        let row = rows.next().map_err(rusqlite_to_eng_error)?
+        let mut rows = stmt
+            .query(rusqlite::params![id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        let row = rows
+            .next()
+            .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::NotFound(format!("group {}", id)))?;
         Ok(Group {
             id: row.get(0).map_err(rusqlite_to_eng_error)?,
@@ -480,7 +494,8 @@ pub async fn get_group(db: &Database, id: i64, user_id: i64) -> Result<Group> {
             user_id: row.get(3).map_err(rusqlite_to_eng_error)?,
             created_at: row.get(4).map_err(rusqlite_to_eng_error)?,
         })
-    }).await
+    })
+    .await
 }
 
 /// Return all agents that are members of `group_id`, ordered alphabetically
@@ -495,13 +510,16 @@ pub async fn get_group_members(db: &Database, group_id: i64) -> Result<Vec<Agent
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![group_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![group_id])
+            .map_err(rusqlite_to_eng_error)?;
         let mut agents = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             agents.push(row_to_agent(row)?);
         }
         Ok(agents)
-    }).await
+    })
+    .await
 }
 
 /// Add `agent_id` to `group_id` for the given `user_id`. The operation is
@@ -828,8 +846,7 @@ pub async fn update_agent_quality(
             let sql = format!("UPDATE soma_agents SET {} WHERE id = ?{}", numbered, idx);
 
             let converted = rusqlite::params_from_iter(params.iter().cloned());
-            conn.execute(&sql, converted)
-                .map_err(rusqlite_to_eng_error)
+            conn.execute(&sql, converted).map_err(rusqlite_to_eng_error)
         })
         .await?;
 

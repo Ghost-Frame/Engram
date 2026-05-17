@@ -294,20 +294,31 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
         .await?;
     let mut entry = get_action(db, id, user_id).await?;
 
-    if let Ok(axon_id) = publish_internal(db, "system", "broca", "broca.action.logged", serde_json::json!({
-        "action_id": entry.id,
-        "agent": &entry.agent,
-        "service": &entry.service,
-        "action": &entry.action,
-    })).await {
+    if let Ok(axon_id) = publish_internal(
+        db,
+        "system",
+        "broca",
+        "broca.action.logged",
+        serde_json::json!({
+            "action_id": entry.id,
+            "agent": &entry.agent,
+            "service": &entry.service,
+            "action": &entry.action,
+        }),
+    )
+    .await
+    {
         let action_id = entry.id;
-        let _ = db.write(move |conn| {
-            conn.execute(
-                "UPDATE broca_actions SET axon_event_id = ?1 WHERE id = ?2",
-                rusqlite::params![axon_id, action_id],
-            ).map_err(rusqlite_to_eng_error)?;
-            Ok(())
-        }).await;
+        let _ = db
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE broca_actions SET axon_event_id = ?1 WHERE id = ?2",
+                    rusqlite::params![axon_id, action_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                Ok(())
+            })
+            .await;
         entry.axon_event_id = Some(axon_id);
     }
 
@@ -420,7 +431,13 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
                 "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
                  FROM broca_actions WHERE user_id = ?1",
                 rusqlite::params![user_id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
             )
             .map_err(rusqlite_to_eng_error)?;
 
@@ -432,7 +449,9 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
                  WHERE user_id = ?1 GROUP BY service ORDER BY cnt DESC LIMIT 20",
             )
             .map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             by_service.push(StatBreakdown {
                 name: row.get(0).map_err(rusqlite_to_eng_error)?,
@@ -448,7 +467,9 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
                  WHERE user_id = ?1 GROUP BY agent ORDER BY cnt DESC LIMIT 20",
             )
             .map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             by_agent.push(StatBreakdown {
                 name: row.get(0).map_err(rusqlite_to_eng_error)?,
@@ -464,7 +485,9 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
                  WHERE user_id = ?1 GROUP BY action ORDER BY cnt DESC LIMIT 20",
             )
             .map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query(rusqlite::params![user_id]).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             by_action.push(StatBreakdown {
                 name: row.get(0).map_err(rusqlite_to_eng_error)?,
@@ -936,8 +959,7 @@ async fn ask_dispatch(db: &Database, plan: &AskPlan, user_id: i64) -> Result<Vec
 
     match plan.service.as_deref() {
         Some("soma") => {
-            let agents =
-                crate::services::soma::list_agents(db, user_id, None, None, limit).await?;
+            let agents = crate::services::soma::list_agents(db, user_id, None, None, limit).await?;
             Ok(agents
                 .iter()
                 .map(|a| AskRow {
@@ -951,10 +973,9 @@ async fn ask_dispatch(db: &Database, plan: &AskPlan, user_id: i64) -> Result<Vec
                 .collect())
         }
         Some("chiasm") => {
-            let tasks = crate::services::chiasm::list_tasks(
-                db, user_id, None, agent, None, limit, 0,
-            )
-            .await?;
+            let tasks =
+                crate::services::chiasm::list_tasks(db, user_id, None, agent, None, limit, 0)
+                    .await?;
             Ok(tasks
                 .iter()
                 .map(|t| AskRow {
@@ -968,8 +989,7 @@ async fn ask_dispatch(db: &Database, plan: &AskPlan, user_id: i64) -> Result<Vec
                 .collect())
         }
         Some("thymus") => {
-            let evals =
-                crate::services::thymus::list_evaluations(db, agent, None, limit).await?;
+            let evals = crate::services::thymus::list_evaluations(db, agent, None, limit).await?;
             Ok(evals
                 .iter()
                 .map(|e| AskRow {
@@ -1073,8 +1093,7 @@ async fn ask_plan_call(question: &str) -> AskPlan {
         return ask_keyword_heuristic(question);
     };
 
-    let system =
-        "You translate a user question about an agent system into a JSON query plan. \
+    let system = "You translate a user question about an agent system into a JSON query plan. \
         Return ONLY a JSON object with these optional fields and nothing else -- no explanation, \
         no markdown, no code fences:\n\
         {\"agent\":\"<agent-name>\",\"service\":\"<service-name>\",\

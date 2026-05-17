@@ -22,9 +22,8 @@ pub mod graph;
 pub mod parser;
 
 pub use analyze::{
-    analyze_source, detail_source, distance_in_source, node_betweenness_in_source,
-    trace_in_source, AnalyzeReport, BridgeInfo, DetailReport, DistanceReport, NodeRoleEntry,
-    TraceReport,
+    analyze_source, detail_source, distance_in_source, node_betweenness_in_source, trace_in_source,
+    AnalyzeReport, BridgeInfo, DetailReport, DistanceReport, NodeRoleEntry, TraceReport,
 };
 pub use graph::{Graph, NodeRole, Topology};
 pub use parser::{parse_en_source, EnStatement};

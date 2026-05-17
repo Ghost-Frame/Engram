@@ -53,7 +53,11 @@ pub async fn stream_handler(
 
     // Catch-up: replay missed events from DB
     let catchup_events = if last_id > 0 {
-        let channel_filter = if wildcard { None } else { channels.first().map(|s| s.as_str()) };
+        let channel_filter = if wildcard {
+            None
+        } else {
+            channels.first().map(|s| s.as_str())
+        };
         query_events(
             &db,
             channel_filter,

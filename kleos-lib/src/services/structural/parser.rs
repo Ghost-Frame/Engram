@@ -40,8 +40,7 @@ fn parse_one(stmt: &str) -> Option<EnStatement> {
         while let Some(rel) = lower[start..].find(kw) {
             let pos = start + rel;
             // Treat as keyword only when preceded by whitespace or BOL.
-            let before_ok = pos == 0
-                || lower.as_bytes()[pos - 1].is_ascii_whitespace();
+            let before_ok = pos == 0 || lower.as_bytes()[pos - 1].is_ascii_whitespace();
             if before_ok {
                 spans.push((pos, pos + kw.len(), kw));
             }
@@ -148,7 +147,8 @@ mod tests {
 
     #[test]
     fn multiline_chains() {
-        let src = "API do: serve needs: DB yields: JSON.\nUI do: render needs: JSON yields: pixels.";
+        let src =
+            "API do: serve needs: DB yields: JSON.\nUI do: render needs: JSON yields: pixels.";
         let stmts = parse_en_source(src);
         assert_eq!(stmts.len(), 2);
         assert_eq!(stmts[1].subject, "UI");

@@ -747,11 +747,18 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
     )
     .await?;
 
-    let _ = publish_internal(db, "tasks", "loom", "workflow.run.created", serde_json::json!({
-        "run_id": run.id,
-        "workflow_id": run.workflow_id,
-        "status": run.status,
-    })).await;
+    let _ = publish_internal(
+        db,
+        "tasks",
+        "loom",
+        "workflow.run.created",
+        serde_json::json!({
+            "run_id": run.id,
+            "workflow_id": run.workflow_id,
+            "status": run.status,
+        }),
+    )
+    .await;
 
     info!("created run {} for workflow {}", run.id, req.workflow_id);
     Ok(run)
@@ -894,9 +901,16 @@ pub async fn cancel_run(db: &Database, id: i64, _user_id: i64) -> Result<bool> {
 
     add_log(db, id, None, "info", "run cancelled", None).await?;
 
-    let _ = publish_internal(db, "tasks", "loom", "workflow.run.cancelled", serde_json::json!({
-        "run_id": id,
-    })).await;
+    let _ = publish_internal(
+        db,
+        "tasks",
+        "loom",
+        "workflow.run.cancelled",
+        serde_json::json!({
+            "run_id": id,
+        }),
+    )
+    .await;
 
     info!("cancelled run {}", id);
     Ok(true)
@@ -1087,10 +1101,17 @@ pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) 
         )
         .await?;
 
-        let _ = publish_internal(db, "alerts", "loom", "workflow.run.failed", serde_json::json!({
-            "run_id": run_id,
-            "error": "retries exhausted",
-        })).await;
+        let _ = publish_internal(
+            db,
+            "alerts",
+            "loom",
+            "workflow.run.failed",
+            serde_json::json!({
+                "run_id": run_id,
+                "error": "retries exhausted",
+            }),
+        )
+        .await;
 
         warn!(
             "run {} failed: step '{}' exhausted retries",
@@ -1191,9 +1212,16 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
 
         add_log(db, run_id, None, "info", "run completed", None).await?;
 
-        let _ = publish_internal(db, "tasks", "loom", "workflow.run.completed", serde_json::json!({
-            "run_id": run_id,
-        })).await;
+        let _ = publish_internal(
+            db,
+            "tasks",
+            "loom",
+            "workflow.run.completed",
+            serde_json::json!({
+                "run_id": run_id,
+            }),
+        )
+        .await;
 
         info!("run {} completed", run_id);
         return Ok(());
@@ -1536,7 +1564,13 @@ pub async fn execute_webhook_step(
     let url = match config.get("url").and_then(|v| v.as_str()) {
         Some(u) if !u.is_empty() => u.to_string(),
         _ => {
-            Box::pin(fail_step(db, step_id, "webhook step requires config.url", user_id)).await?;
+            Box::pin(fail_step(
+                db,
+                step_id,
+                "webhook step requires config.url",
+                user_id,
+            ))
+            .await?;
             return Ok(());
         }
     };
@@ -1629,17 +1663,20 @@ pub async fn execute_llm_step(
     let url = match config.get("url").and_then(|v| v.as_str()) {
         Some(u) if !u.is_empty() => u.to_string(),
         _ => {
-            Box::pin(fail_step(db, step_id, "llm step requires config.url", user_id)).await?;
+            Box::pin(fail_step(
+                db,
+                step_id,
+                "llm step requires config.url",
+                user_id,
+            ))
+            .await?;
             return Ok(());
         }
     };
 
     let vars = serde_json::Value::Object(build_llm_vars(input, config.get("input_map")));
 
-    let prompt_template = config
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let prompt_template = config.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
     let user_prompt = interpolate(prompt_template, &vars);
 
     let system_template = config.get("system").and_then(|v| v.as_str());
@@ -1763,7 +1800,10 @@ pub async fn execute_llm_step(
                         "LLM returned invalid JSON (attempt {}): {} -- response: {}",
                         attempt,
                         e,
-                        extracted.chars().take(LOOM_ERR_BODY_CAP).collect::<String>()
+                        extracted
+                            .chars()
+                            .take(LOOM_ERR_BODY_CAP)
+                            .collect::<String>()
                     );
                     if attempt == MAX_ATTEMPTS {
                         Box::pin(fail_step(db, step_id, &last_err, user_id)).await?;
