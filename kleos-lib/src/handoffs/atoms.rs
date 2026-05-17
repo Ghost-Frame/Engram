@@ -36,6 +36,7 @@ pub enum AtomType {
     Relation,
 }
 
+/// Inherent methods for classifying and converting `AtomType` values.
 impl AtomType {
     /// Returns the canonical lowercase string representation.
     pub fn as_str(&self) -> &'static str {
@@ -91,6 +92,7 @@ pub enum AtomStatus {
     Contested,
 }
 
+/// Inherent methods for converting `AtomStatus` to its string form.
 impl AtomStatus {
     /// Returns the canonical lowercase string representation.
     pub fn as_str(&self) -> &'static str {
@@ -303,11 +305,13 @@ struct LlmResponse {
     choices: Vec<LlmChoice>,
 }
 
+/// Deserialization target for a single choice entry in an LLM API response.
 #[derive(Debug, Deserialize)]
 struct LlmChoice {
     message: LlmMessage,
 }
 
+/// Deserialization target for the message body inside an LLM API choice.
 #[derive(Debug, Deserialize)]
 struct LlmMessage {
     content: String,
@@ -319,6 +323,7 @@ struct LlmAtomList {
     atoms: Vec<LlmAtomItem>,
 }
 
+/// Deserialization target for a single atom entry returned by the LLM in JSON mode.
 #[derive(Debug, Deserialize)]
 struct LlmAtomItem {
     atom_type: String,
@@ -453,6 +458,7 @@ pub struct BudgetPacker {
     pub overhead_per_atom: usize,
 }
 
+/// Methods for packing, scoring, and rendering atoms within a token budget.
 impl BudgetPacker {
     /// Creates a new `BudgetPacker` with the given token budget and per-atom
     /// overhead.
@@ -563,6 +569,7 @@ impl BudgetPacker {
     }
 }
 
+/// Capitalizes the first Unicode character of a string slice.
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
@@ -603,6 +610,7 @@ pub fn apply_decay(atoms: &mut [Atom], sessions_elapsed: u32) {
 mod tests {
     use super::*;
 
+    /// Builds a fully populated `Atom` with the given type, content, salience, and decay-immune flag.
     fn make_atom(atom_type: AtomType, content: &str, salience: f64, immune: bool) -> Atom {
         let canonical = content.to_lowercase();
         let atom_id = make_atom_id(atom_type.clone(), &canonical);
@@ -627,6 +635,7 @@ mod tests {
         }
     }
 
+    /// Verifies that atom IDs are deterministic and canonical-form stable.
     #[test]
     fn atom_id_is_stable() {
         let id1 = make_atom_id(AtomType::Decision, "  Use Postgres  ");
@@ -635,6 +644,7 @@ mod tests {
         assert_eq!(id1.len(), 16, "atom_id must be 16 hex chars");
     }
 
+    /// Verifies that every `AtomType` variant round-trips through `parse` and `as_str`.
     #[test]
     fn atom_type_roundtrip() {
         for (s, expected) in [
@@ -651,6 +661,7 @@ mod tests {
         assert_eq!(AtomType::parse("unknown_xyz"), None);
     }
 
+    /// Verifies that only Decision and Constraint atom types are marked decay-immune.
     #[test]
     fn decay_immune_types() {
         assert!(AtomType::Decision.is_decay_immune());
@@ -659,6 +670,7 @@ mod tests {
         assert!(!AtomType::Entity.is_decay_immune());
     }
 
+    /// Verifies that the heuristic extractor identifies decision atoms from trigger phrases.
     #[test]
     fn heuristic_extracts_decision() {
         let text = "We decided to use Postgres for the main database.";
@@ -670,6 +682,7 @@ mod tests {
         assert!(!decisions.is_empty(), "should find at least one decision");
     }
 
+    /// Verifies that the heuristic extractor identifies constraint atoms from must-not/never phrases.
     #[test]
     fn heuristic_extracts_constraint() {
         let text = "You must not write to the production database directly.";
@@ -684,6 +697,7 @@ mod tests {
         );
     }
 
+    /// Verifies that the heuristic extractor identifies task atoms from TODO and action phrases.
     #[test]
     fn heuristic_extracts_task() {
         let text = "TODO: implement the atom decay function.";
@@ -695,9 +709,10 @@ mod tests {
         assert!(!tasks.is_empty(), "should find at least one task");
     }
 
+    /// Verifies that the heuristic extractor identifies entity atoms from filesystem paths.
     #[test]
     fn heuristic_extracts_entity_path() {
-        let text = "The main entry point is /home/zan/projects/Kleos/src/main.rs.";
+        let text = "The main entry point is /home/user/projects/app/src/main.rs.";
         let atoms = extract_heuristic(text);
         let entities: Vec<_> = atoms
             .iter()
@@ -706,6 +721,7 @@ mod tests {
         assert!(!entities.is_empty(), "should find file path entity");
     }
 
+    /// Verifies that the heuristic extractor does not emit duplicate canonical forms.
     #[test]
     fn heuristic_deduplicates() {
         let text = "TODO: fix the bug. TODO: fix the bug.";
@@ -718,6 +734,7 @@ mod tests {
         );
     }
 
+    /// Verifies that the heuristic extractor drops matched content shorter than 4 characters.
     #[test]
     fn heuristic_skips_short_content() {
         // The regex will match but "no" is 2 chars -- below the 4-char floor.
@@ -726,6 +743,7 @@ mod tests {
         assert!(atoms.is_empty() || atoms.len() < 100);
     }
 
+    /// Verifies that `apply_decay` lowers salience on non-immune atoms and leaves immune atoms unchanged.
     #[test]
     fn decay_reduces_salience() {
         let mut atoms = vec![
@@ -739,6 +757,7 @@ mod tests {
         assert!((atoms[1].salience - 1.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies that atoms whose salience decays below 0.05 are automatically resolved.
     #[test]
     fn decay_resolves_below_threshold() {
         let mut atoms = vec![make_atom(AtomType::Task, "stale task", 0.06, false)];
@@ -746,6 +765,7 @@ mod tests {
         assert_eq!(atoms[0].status, AtomStatus::Resolved);
     }
 
+    /// Verifies that decay-immune active atoms are always included in the packed output.
     #[test]
     fn budget_packer_mandatory_first() {
         let mandatory = make_atom(
@@ -767,6 +787,7 @@ mod tests {
         );
     }
 
+    /// Verifies that `BudgetPacker::pack` does not exceed the configured token budget.
     #[test]
     fn budget_packer_respects_budget() {
         // Create many atoms that would exceed a tiny budget.
@@ -787,6 +808,7 @@ mod tests {
         assert!(packed.len() < 20, "should not pack all atoms");
     }
 
+    /// Verifies that `to_context_string` emits a separate markdown section for each atom type.
     #[test]
     fn context_string_groups_by_type() {
         let d = make_atom(AtomType::Decision, "use postgres for storage", 1.0, true);
