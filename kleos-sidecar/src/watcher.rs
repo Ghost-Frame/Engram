@@ -34,11 +34,35 @@ const BATCH_MAX_PENDING: usize = 20;
 /// Hard cap on how many turns a single file-extract pass will emit.
 /// Defends against giant files (recovered state, fresh attach, etc.)
 /// queueing hundreds of LLM calls in one batch.
-const MAX_TURNS_PER_EXTRACT: usize = 10;
+///
+/// Default tuned for modest GPU/CPU; faster hardware can raise it via
+/// `KLEOS_SIDECAR_MAX_TURNS_PER_EXTRACT`, slower hardware can lower it.
+const MAX_TURNS_PER_EXTRACT_DEFAULT: usize = 10;
 
 /// Minimum delay between gate LLM calls. Spaces out GPU work so a
 /// long batch can't pin the device at 100% for minutes on end.
-const GATE_PACE_MS: u64 = 1500;
+///
+/// Default tuned for modest GPU/CPU; override with
+/// `KLEOS_SIDECAR_GATE_PACE_MS` (set to `0` to disable pacing).
+const GATE_PACE_MS_DEFAULT: u64 = 1500;
+
+/// Resolve the per-pass turn cap from `KLEOS_SIDECAR_MAX_TURNS_PER_EXTRACT`,
+/// falling back to `MAX_TURNS_PER_EXTRACT_DEFAULT` when unset or unparseable.
+fn max_turns_per_extract() -> usize {
+    std::env::var("KLEOS_SIDECAR_MAX_TURNS_PER_EXTRACT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(MAX_TURNS_PER_EXTRACT_DEFAULT)
+}
+
+/// Resolve the inter-call gate pacing from `KLEOS_SIDECAR_GATE_PACE_MS`,
+/// falling back to `GATE_PACE_MS_DEFAULT` when unset or unparseable.
+fn gate_pace_ms() -> u64 {
+    std::env::var("KLEOS_SIDECAR_GATE_PACE_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(GATE_PACE_MS_DEFAULT)
+}
 
 /// Read the watcher checkpoint JSON from `path`, returning an empty map if the
 /// file is missing or corrupt so the watcher can keep running without history.
@@ -136,7 +160,7 @@ async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Erro
                 .gate_model
                 .clone()
                 .or_else(|| state.compress_model.clone()),
-            GATE_PACE_MS,
+            gate_pace_ms(),
         )),
         None => {
             tracing::warn!(
@@ -284,8 +308,9 @@ fn parse_session_path(path: &Path) -> Option<(String, String)> {
 }
 
 /// Read new assistant turns from `path` starting at the saved offset, advance
-/// the offset, and return up to `MAX_TURNS_PER_EXTRACT` turns. First-seen files
-/// are checkpointed at EOF so historic content is not replayed.
+/// the offset, and return up to the env-resolved per-pass cap (see
+/// `max_turns_per_extract`). First-seen files are checkpointed at EOF so
+/// historic content is not replayed.
 async fn extract_turns_from_file(
     path: &Path,
     positions: &FilePositions,
@@ -321,6 +346,9 @@ async fn extract_turns_from_file(
 
     let mut new_pos = start_pos;
     let mut turns = Vec::new();
+    // Resolve the per-pass cap once per extract so env changes take effect on
+    // the next file event without restarting the watcher.
+    let max_turns = max_turns_per_extract();
 
     for line in reader.lines() {
         let line = match line {
@@ -345,7 +373,7 @@ async fn extract_turns_from_file(
                         session_id: session_id.clone(),
                         project: project.clone(),
                     });
-                    if turns.len() >= MAX_TURNS_PER_EXTRACT {
+                    if turns.len() >= max_turns {
                         // Don't advance past this line; we'll resume here next event.
                         break;
                     }
