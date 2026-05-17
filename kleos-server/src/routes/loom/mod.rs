@@ -177,8 +177,8 @@ async fn complete_step_handler(
     Path(id): Path<i64>,
     Json(body): Json<CompleteStepBody>,
 ) -> Result<Json<Value>, AppError> {
-    complete_step(&db, id, body.output, auth.user_id).await?;
-    Ok(Json(json!({ "ok": true })))
+    let step = complete_step(&db, id, body.output, auth.user_id).await?;
+    Ok(Json(json!(step)))
 }
 
 async fn fail_step_handler(
@@ -187,8 +187,8 @@ async fn fail_step_handler(
     Path(id): Path<i64>,
     Json(body): Json<FailStepBody>,
 ) -> Result<Json<Value>, AppError> {
-    fail_step(&db, id, &body.error, auth.user_id).await?;
-    Ok(Json(json!({ "ok": true })))
+    let step = fail_step(&db, id, &body.error, auth.user_id).await?;
+    Ok(Json(json!(step)))
 }
 
 // ---------------------------------------------------------------------------

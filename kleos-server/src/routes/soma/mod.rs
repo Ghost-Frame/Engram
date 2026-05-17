@@ -229,7 +229,8 @@ async fn heartbeat_handler(
 ) -> Result<Json<Value>, AppError> {
     let status = body.and_then(|Json(b)| b.status);
     heartbeat(&db, id, status.as_deref()).await?;
-    Ok(Json(json!({ "ok": true })))
+    let agent = get_agent(&db, id, 0).await?;
+    Ok(Json(json!(agent)))
 }
 
 /// Handler for `PATCH /soma/agents/{id}/quality`.
