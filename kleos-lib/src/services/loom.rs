@@ -83,6 +83,7 @@ pub struct Run {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRunRequest {
     pub workflow_id: i64,
+    pub workflow_name: Option<String>,
     pub input: Option<serde_json::Value>,
     pub user_id: Option<i64>,
 }
@@ -131,12 +132,21 @@ pub struct LogEntry {
 // Stats
 // ---------------------------------------------------------------------------
 
+/// Per-category count breakdown used inside stats responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatBreakdown {
+    pub name: String,
+    pub count: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoomStats {
     pub workflows: i64,
     pub runs: i64,
     pub active_runs: i64,
     pub steps: i64,
+    #[serde(default)]
+    pub runs_by_status: Vec<StatBreakdown>,
 }
 
 // ---------------------------------------------------------------------------
@@ -629,7 +639,16 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
     let input_str = serde_json::to_string(&input)?;
 
     // Fetch workflow and validate it has steps (tenant-scoped).
-    let workflow_id = req.workflow_id;
+    let workflow_id = if req.workflow_id > 0 {
+        req.workflow_id
+    } else if let Some(ref name) = req.workflow_name {
+        let wf = get_workflow_by_name(db, name).await?;
+        wf.id
+    } else {
+        return Err(EngError::InvalidInput(
+            "workflow_id or workflow_name required".into(),
+        ));
+    };
     let workflow = db
         .read(move |conn| {
             let mut stmt = conn
@@ -1144,14 +1163,17 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
         .all(|s| !matches!(s.status.as_str(), "pending" | "running"));
 
     if all_done {
-        // Find last completed step output to use as run output
-        let last_output = steps
-            .iter()
-            .rfind(|s| s.status == "completed")
-            .map(|s| s.output.clone())
-            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-
-        let output_str = serde_json::to_string(&last_output)?;
+        // Merge outputs from all completed steps into a single object.
+        // Later steps overwrite earlier ones for the same key (matches TS Object.assign behavior).
+        let mut merged = serde_json::Map::new();
+        for step in steps.iter().filter(|s| s.status == "completed") {
+            if let serde_json::Value::Object(ref map) = step.output {
+                for (k, v) in map {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        let output_str = serde_json::to_string(&serde_json::Value::Object(merged))?;
 
         db.write(move |conn| {
             conn.execute(
@@ -1388,7 +1410,7 @@ pub async fn execute_transform_step(
 
 #[tracing::instrument(skip(db), fields(user_id = ?user_id))]
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats> {
-    let (workflows, runs, active_runs, steps) = if let Some(_uid) = user_id {
+    let (workflows, runs, active_runs, steps, runs_by_status) = if let Some(_uid) = user_id {
         db.read(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -1401,15 +1423,32 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
 
-            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let (w, ru, ar, s) = if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 let w: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
                 let ru: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
                 let ar: i64 = row.get(2).map_err(rusqlite_to_eng_error)?;
                 let s: i64 = row.get(3).map_err(rusqlite_to_eng_error)?;
-                Ok((w, ru, ar, s))
+                (w, ru, ar, s)
             } else {
-                Ok((0i64, 0i64, 0i64, 0i64))
+                (0i64, 0i64, 0i64, 0i64)
+            };
+
+            let mut runs_by_status = Vec::new();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT status, COUNT(*) as cnt FROM loom_runs \
+                     GROUP BY status ORDER BY cnt DESC",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
+            while let Some(r) = rows.next().map_err(rusqlite_to_eng_error)? {
+                runs_by_status.push(StatBreakdown {
+                    name: r.get(0).map_err(rusqlite_to_eng_error)?,
+                    count: r.get(1).map_err(rusqlite_to_eng_error)?,
+                });
             }
+
+            Ok((w, ru, ar, s, runs_by_status))
         })
         .await?
     } else {
@@ -1425,15 +1464,32 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
 
-            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let (w, ru, ar, s) = if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 let w: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
                 let ru: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
                 let ar: i64 = row.get(2).map_err(rusqlite_to_eng_error)?;
                 let s: i64 = row.get(3).map_err(rusqlite_to_eng_error)?;
-                Ok((w, ru, ar, s))
+                (w, ru, ar, s)
             } else {
-                Ok((0i64, 0i64, 0i64, 0i64))
+                (0i64, 0i64, 0i64, 0i64)
+            };
+
+            let mut runs_by_status = Vec::new();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT status, COUNT(*) as cnt FROM loom_runs \
+                     GROUP BY status ORDER BY cnt DESC",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
+            while let Some(r) = rows.next().map_err(rusqlite_to_eng_error)? {
+                runs_by_status.push(StatBreakdown {
+                    name: r.get(0).map_err(rusqlite_to_eng_error)?,
+                    count: r.get(1).map_err(rusqlite_to_eng_error)?,
+                });
             }
+
+            Ok((w, ru, ar, s, runs_by_status))
         })
         .await?
     };
@@ -1443,6 +1499,7 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
         runs,
         active_runs,
         steps,
+        runs_by_status,
     })
 }
 
