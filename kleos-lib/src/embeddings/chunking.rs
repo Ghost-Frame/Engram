@@ -5,6 +5,21 @@ use std::sync::LazyLock;
 
 static SENTENCE_BREAK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[.!?]\s").unwrap());
 
+/// Snap `idx` down to the nearest valid UTF-8 char boundary in `text`. Returns
+/// `text.len()` when `idx >= text.len()` and `0` for `idx == 0`. Used to keep
+/// every byte index handed to `&text[..]` on a codepoint boundary so multi-byte
+/// chars (emoji, CJK) at chunk seams cannot trigger a slice panic.
+fn floor_char_boundary(text: &str, idx: usize) -> usize {
+    if idx >= text.len() {
+        return text.len();
+    }
+    let mut i = idx;
+    while i > 0 && !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// Chunk `content` and embed each chunk via `embedder`. Returns the
 /// (chunk_text, embedding) pairs ready for `StoreRequest::chunk_embeddings`
 /// or direct insert into `memory_chunks`.
@@ -52,17 +67,21 @@ pub fn chunk_text_with_limit(
     let mut start = 0;
 
     while start < text.len() && chunks.len() < max_chunks {
-        let end = (start + chunk_size).min(text.len());
+        // Floor `end` to a char boundary so the `&text[start..end]` slice
+        // below cannot land inside a multi-byte UTF-8 codepoint when
+        // chunk_size happens to fall mid-emoji or mid-CJK glyph.
+        let end = floor_char_boundary(text, (start + chunk_size).min(text.len()));
         let slice = &text[start..end];
 
-        // Try to break at sentence boundary after 70% of chunk_size
-        let break_search_start = chunk_size * 7 / 10;
+        // Try to break at sentence boundary after 70% of chunk_size.
+        // The intra-slice offset is also floored so the inner regex slice is safe.
+        let break_search_start = floor_char_boundary(slice, (chunk_size * 7 / 10).min(slice.len()));
         let actual_end = if end < text.len() {
-            if let Some(m) = SENTENCE_BREAK.find(&slice[break_search_start.min(slice.len())..]) {
-                let break_pos: usize = break_search_start.min(slice.len()) + m.end();
+            if let Some(m) = SENTENCE_BREAK.find(&slice[break_search_start..]) {
+                let break_pos: usize = break_search_start + m.end();
                 start + break_pos
             } else {
-                // Fallback: break at last space after 50% of chunk_size
+                // Fallback: break at last space after 50% of chunk_size.
                 let half = chunk_size / 2;
                 let search_region = &text[start..end];
                 if let Some(pos) = search_region.rfind(' ') {
@@ -92,10 +111,41 @@ pub fn chunk_text_with_limit(
     chunks
 }
 
+/// Unit tests for chunk_text/chunk_text_with_limit, including regression
+/// coverage for the UTF-8 boundary panic fix.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Regression: a 4-byte emoji straddling the chunk_size byte boundary
+    /// used to panic with `start byte index N is not a char boundary`. The
+    /// fix snaps every slice endpoint down to a valid char boundary.
+    #[test]
+    fn emoji_at_chunk_boundary_does_not_panic() {
+        // Pad so the 😤 emoji (4 bytes) lands across byte position 100.
+        let mut text = "a".repeat(98);
+        text.push('😤');
+        text.push_str(&"b".repeat(200));
+        let chunks = chunk_text(&text, 100, 20);
+        assert!(!chunks.is_empty(), "expected at least one chunk");
+        for chunk in &chunks {
+            assert!(std::str::from_utf8(chunk.as_bytes()).is_ok());
+        }
+    }
+
+    /// Regression companion: all-emoji input has no ASCII positions at all,
+    /// so naive byte slicing would panic on every iteration.
+    #[test]
+    fn all_emoji_chunks_safely() {
+        let text = "🎸".repeat(500); // 500 * 4 bytes = 2000
+        let chunks = chunk_text(&text, 200, 40);
+        assert!(!chunks.is_empty());
+        for chunk in &chunks {
+            assert!(std::str::from_utf8(chunk.as_bytes()).is_ok());
+        }
+    }
+
+    /// Text shorter than chunk_size returns exactly one chunk equal to the input.
     #[test]
     fn short_text_returns_single_chunk() {
         let text = "Hello world.";
@@ -104,18 +154,21 @@ mod tests {
         assert_eq!(chunks[0], "Hello world.");
     }
 
+    /// Empty input yields zero chunks.
     #[test]
     fn empty_text_returns_empty() {
         let chunks = chunk_text("", 1440, 160);
         assert!(chunks.is_empty());
     }
 
+    /// Whitespace-only input trims to empty and yields zero chunks.
     #[test]
     fn whitespace_only_returns_empty() {
         let chunks = chunk_text("   \n  ", 1440, 160);
         assert!(chunks.is_empty());
     }
 
+    /// Long text splits into multiple chunks at sentence boundaries below the cap.
     #[test]
     fn long_text_splits_at_sentence_boundary() {
         let text = "First sentence here. Second sentence here. Third sentence here. Fourth sentence here. Fifth sentence here.";
@@ -130,6 +183,7 @@ mod tests {
         }
     }
 
+    /// Successive chunks share `overlap` bytes of context.
     #[test]
     fn chunks_overlap() {
         let text = "Word ".repeat(100);
@@ -145,6 +199,7 @@ mod tests {
         }
     }
 
+    /// Chunk count is capped by the explicit `max_chunks` argument regardless of input length.
     #[test]
     fn respects_max_chunks_limit() {
         let text = "Sentence. ".repeat(200);
