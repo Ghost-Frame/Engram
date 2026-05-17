@@ -1,4 +1,5 @@
 mod auth;
+mod gate;
 mod metrics;
 mod routes;
 mod session;
@@ -43,6 +44,8 @@ struct ConfigFile {
     max_pending_per_session: Option<usize>,
     compress_enabled: Option<bool>,
     compress_model: Option<String>,
+    #[serde(alias = "gate_model")]
+    gate_model: Option<String>,
     compress_passthrough_bytes: Option<usize>,
     compress_max_input_bytes: Option<usize>,
     compress_timeout_ms: Option<u64>,
@@ -145,6 +148,11 @@ struct Cli {
     #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_MODEL")]
     compress_model: Option<String>,
 
+    /// Model override for the memory gate (file watcher quality filter).
+    /// Defaults to the compress model if unset.
+    #[arg(long, env = "KLEOS_SIDECAR_GATE_MODEL")]
+    gate_model: Option<String>,
+
     /// Byte threshold below which /compress passes content through without LLM.
     #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_PASSTHROUGH_BYTES")]
     compress_passthrough_bytes: Option<usize>,
@@ -188,6 +196,7 @@ struct ResolvedConfig {
     max_pending_per_session: usize,
     compress_enabled: bool,
     compress_model: Option<String>,
+    gate_model: Option<String>,
     compress_passthrough_bytes: usize,
     compress_max_input_bytes: usize,
     compress_timeout_ms: u64,
@@ -233,6 +242,7 @@ fn resolve_config(cli: Cli, cfg: ConfigFile) -> ResolvedConfig {
         ),
         compress_enabled: pick!(cli.compress_enabled, cfg.compress_enabled, true),
         compress_model: cli.compress_model.or(cfg.compress_model),
+        gate_model: cli.gate_model.or(cfg.gate_model),
         compress_passthrough_bytes: pick!(
             cli.compress_passthrough_bytes,
             cfg.compress_passthrough_bytes,
@@ -386,6 +396,7 @@ async fn main() {
         token,
         compress_enabled: rc.compress_enabled,
         compress_model: rc.compress_model,
+        gate_model: rc.gate_model,
         batch_size: rc.batch_size.max(1),
         batch_interval_ms: rc.batch_interval_ms,
         max_pending_per_session: rc.max_pending_per_session.max(1),

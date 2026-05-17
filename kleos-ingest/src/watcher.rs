@@ -14,7 +14,7 @@ use crate::summarizer;
 use crate::tailer;
 use crate::writer::KleosWriter;
 
-pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter) {
+pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: bool) {
     let config = Arc::new(config);
     let ledger = Arc::new(ledger);
     let writer = Arc::new(Mutex::new(writer));
@@ -78,7 +78,7 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter) {
                 let ledger = Arc::clone(&ledger);
                 let writer = Arc::clone(&writer);
                 tokio::spawn(async move {
-                    tailer::tail_file(path, config, ledger, writer).await;
+                    tailer::tail_file(path, config, ledger, writer, dry_run).await;
                 });
             }
             _ = idle_interval.tick() => {

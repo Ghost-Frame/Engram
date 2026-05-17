@@ -3,6 +3,7 @@
 // accessible as `kleos_sidecar::...` from test code.
 
 pub mod auth;
+pub mod gate;
 pub mod metrics;
 pub mod routes;
 pub mod session;
@@ -43,6 +44,7 @@ pub fn build_test_state(kleos_url: String, token: Option<String>) -> SidecarStat
         token,
         compress_enabled: true,
         compress_model: None,
+        gate_model: None,
         batch_size: 5,
         batch_interval_ms: 0, // disable time-based flush in tests
         max_pending_per_session: 100,

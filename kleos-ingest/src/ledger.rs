@@ -8,9 +8,11 @@ pub struct Ledger {
 
 impl Ledger {
     pub fn open(path: &Path) -> Result<Self, String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create ledger dir: {}", e))?;
+        if path != Path::new(":memory:") {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("failed to create ledger dir: {}", e))?;
+            }
         }
         let conn = Connection::open(path).map_err(|e| format!("failed to open ledger: {}", e))?;
         conn.execute_batch(

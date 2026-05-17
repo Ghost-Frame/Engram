@@ -1,28 +1,34 @@
 //! File watcher for Claude Code session JSONL files.
 //! Monitors ~/.claude/projects/*/sessions/*.jsonl for changes,
-//! parses new entries, and stores condensed summaries to Kleos.
+//! extracts assistant text turns, feeds them through the LLM quality gate,
+//! and stores only curated memories to Kleos.
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
+use crate::gate::{GateResult, MemoryGate, PendingTurn};
 use crate::SidecarState;
 
-/// Tracks file read positions to only process new content.
 type FilePositions = Arc<RwLock<HashMap<PathBuf, u64>>>;
 
-/// Flush the in-memory position map to the checkpoint file every N successful parses.
 const CHECKPOINT_FLUSH_EVERY: usize = 10;
 
-/// Load checkpoint from disk. Missing or unreadable file is logged and treated as empty.
+/// How long to wait after the last file event before flushing the pending batch
+/// through the LLM gate. Gives rapid successive writes time to accumulate.
+const BATCH_IDLE_SECS: u64 = 5;
+
+/// Flush when pending turns exceed this count regardless of idle time.
+const BATCH_MAX_PENDING: usize = 20;
+
 fn load_checkpoint(path: &Path) -> HashMap<PathBuf, u64> {
     match std::fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<HashMap<PathBuf, u64>>(&text) {
@@ -43,9 +49,7 @@ fn load_checkpoint(path: &Path) -> HashMap<PathBuf, u64> {
     }
 }
 
-/// Atomically write the position map to disk via tempfile + rename.
 pub fn flush_checkpoint(path: &Path, positions: &HashMap<PathBuf, u64>) {
-    // Ensure parent directory exists.
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             tracing::warn!(error = %e, "watcher checkpoint: could not create parent dir");
@@ -70,7 +74,6 @@ pub fn flush_checkpoint(path: &Path, positions: &HashMap<PathBuf, u64>) {
     }
 }
 
-/// Resolve the checkpoint path: env var > default.
 pub fn checkpoint_path() -> PathBuf {
     if let Ok(p) = std::env::var("ENGRAM_SIDECAR_WATCHER_STATE_PATH") {
         return PathBuf::from(p);
@@ -81,8 +84,6 @@ pub fn checkpoint_path() -> PathBuf {
         .join("sidecar-watcher-state.json")
 }
 
-/// Start the file watcher in a background task.
-/// Returns a JoinHandle that can be used to await completion.
 pub fn start(state: SidecarState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = run_watcher(state).await {
@@ -96,7 +97,6 @@ async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Erro
 
     if !watch_dir.exists() {
         tracing::warn!(path = %watch_dir.display(), "watch directory does not exist, waiting...");
-        // Wait for directory to appear
         loop {
             tokio::time::sleep(Duration::from_secs(10)).await;
             if watch_dir.exists() {
@@ -106,21 +106,29 @@ async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Erro
         }
     }
 
-    // Load persisted positions so restarts don't re-ingest already-processed lines.
+    let gate = match state.llm.as_ref() {
+        Some(llm) => Arc::new(MemoryGate::new(
+            Arc::clone(llm),
+            state.gate_model.clone().or_else(|| state.compress_model.clone()),
+        )),
+        None => {
+            tracing::warn!("watcher: no LLM available, gate disabled -- watcher will not store memories");
+            return Ok(());
+        }
+    };
+
     let cp_path = checkpoint_path();
     let initial = load_checkpoint(&cp_path);
     let positions: FilePositions = Arc::new(RwLock::new(initial));
 
-    // Channel for debounced events
     let (tx, mut rx) = mpsc::channel(100);
 
-    // Create debouncer (500ms debounce to batch rapid writes)
     let mut debouncer = new_debouncer(
         Duration::from_millis(500),
         move |res: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
             if let Ok(events) = res {
                 for event in events {
-                    let _ = tx.blocking_send(event);
+                    let _ = tx.blocking_send(event.clone());
                 }
             }
         },
@@ -129,52 +137,95 @@ async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Erro
     debouncer
         .watcher()
         .watch(&watch_dir, RecursiveMode::Recursive)?;
-    tracing::info!(path = %watch_dir.display(), "file watcher started");
+    tracing::info!(path = %watch_dir.display(), "file watcher started (LLM gate enabled)");
 
     let mut parse_count: usize = 0;
+    let mut pending_turns: Vec<PendingTurn> = Vec::new();
+    let mut batch_started: Option<Instant> = None;
 
-    // Process events
-    while let Some(event) = rx.recv().await {
-        if event.kind != DebouncedEventKind::Any {
-            continue;
-        }
+    loop {
+        let timeout = Duration::from_secs(BATCH_IDLE_SECS);
+        let event = tokio::time::timeout(timeout, rx.recv()).await;
 
-        let path = &event.path;
+        match event {
+            Ok(Some(event)) => {
+                if event.kind != DebouncedEventKind::Any {
+                    continue;
+                }
 
-        // Only process .jsonl files
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
+                let path = &event.path;
+                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                if !path.exists() {
+                    continue;
+                }
 
-        // Skip if file doesn't exist (deleted)
-        if !path.exists() {
-            continue;
-        }
+                tracing::debug!(path = %path.display(), "processing changed jsonl file");
 
-        tracing::debug!(path = %path.display(), "processing changed file");
-
-        match process_file(path, &positions, &state).await {
-            Ok(parsed) => {
-                if parsed > 0 {
-                    parse_count += parsed;
-                    if parse_count >= CHECKPOINT_FLUSH_EVERY {
-                        let map = positions.read().await;
-                        flush_checkpoint(&cp_path, &map);
-                        parse_count = 0;
+                match extract_turns_from_file(path, &positions).await {
+                    Ok(turns) => {
+                        let count = turns.len();
+                        if count > 0 {
+                            if batch_started.is_none() {
+                                batch_started = Some(Instant::now());
+                            }
+                            pending_turns.extend(turns);
+                            parse_count += count;
+                            if parse_count >= CHECKPOINT_FLUSH_EVERY {
+                                let map = positions.read().await;
+                                flush_checkpoint(&cp_path, &map);
+                                parse_count = 0;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %path.display(), error = %e, "failed to extract turns");
                     }
                 }
             }
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to process file");
-            }
+            Ok(None) => break,
+            Err(_) => {} // timeout, handled below
+        }
+
+        // Flush when: batch is large enough OR batch has been pending long enough
+        let should_flush = if pending_turns.is_empty() {
+            false
+        } else if pending_turns.len() >= BATCH_MAX_PENDING {
+            true
+        } else if let Some(started) = batch_started {
+            started.elapsed() >= Duration::from_secs(BATCH_IDLE_SECS)
+        } else {
+            false
+        };
+
+        if should_flush {
+            let batch = std::mem::take(&mut pending_turns);
+            batch_started = None;
+            let batch_len = batch.len();
+            tracing::info!(turns = batch_len, "flushing batch through LLM gate");
+
+            let results = gate.evaluate_batch(batch).await;
+            let stored = store_gate_results(&results, &state).await;
+
+            tracing::info!(
+                evaluated = batch_len,
+                stored,
+                skipped = batch_len - stored,
+                "gate batch complete"
+            );
         }
     }
 
-    // Best-effort checkpoint flush on normal watcher exit.
-    {
-        let map = positions.read().await;
-        flush_checkpoint(&cp_path, &map);
+    // Final flush on exit
+    if !pending_turns.is_empty() {
+        let batch = std::mem::take(&mut pending_turns);
+        let results = gate.evaluate_batch(batch).await;
+        store_gate_results(&results, &state).await;
     }
+
+    let map = positions.read().await;
+    flush_checkpoint(&cp_path, &map);
 
     Ok(())
 }
@@ -183,24 +234,33 @@ fn get_watch_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("CLAUDE_SESSIONS_DIR") {
         return PathBuf::from(dir);
     }
-
-    // Default: ~/.claude/projects
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".claude")
         .join("projects")
 }
 
-/// Returns the number of successfully parsed observations (used by caller for checkpoint
-/// flush cadence). Position is always updated even when no observations were extracted.
-async fn process_file(
+/// Parse project and session_id from a path like:
+/// ~/.claude/projects/<proj-hash>/sessions/<session-id>.jsonl
+fn parse_session_path(path: &Path) -> Option<(String, String)> {
+    let stem = path.file_stem()?.to_str()?.to_string();
+    let mut ancestors = path.ancestors();
+    ancestors.next(); // the file itself
+    let _sessions_dir = ancestors.next()?; // sessions/
+    let project_dir = ancestors.next()?; // <project-hash>/
+    let project = project_dir.file_name()?.to_str()?.to_string();
+    Some((project, stem))
+}
+
+async fn extract_turns_from_file(
     path: &Path,
     positions: &FilePositions,
-    state: &SidecarState,
-) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Vec<PendingTurn>, Box<dyn std::error::Error + Send + Sync>> {
     let path_buf = path.to_path_buf();
 
-    // Get last read position
+    let (project, session_id) = parse_session_path(path)
+        .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+
     let last_pos = {
         let pos_map = positions.read().await;
         pos_map.get(&path_buf).copied().unwrap_or(0)
@@ -208,15 +268,13 @@ async fn process_file(
 
     let file = File::open(path)?;
     let file_len = file.metadata()?.len();
-
-    // If file is smaller than last position, it was truncated - start from beginning
     let start_pos = if file_len < last_pos { 0 } else { last_pos };
 
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::Start(start_pos))?;
 
     let mut new_pos = start_pos;
-    let mut observations = Vec::new();
+    let mut turns = Vec::new();
 
     for line in reader.lines() {
         let line = match line {
@@ -227,153 +285,126 @@ async fn process_file(
             }
         };
 
-        new_pos += line.len() as u64 + 1; // +1 for newline
+        new_pos += line.len() as u64 + 1;
 
         if line.trim().is_empty() {
             continue;
         }
 
-        // Parse JSON and extract relevant info
-        if let Some(obs) = parse_jsonl_entry(&line) {
-            observations.push(obs);
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+            if let Some(text) = extract_assistant_text(&parsed) {
+                if text.len() > 50 {
+                    turns.push(PendingTurn {
+                        text,
+                        session_id: session_id.clone(),
+                        project: project.clone(),
+                    });
+                }
+            }
         }
     }
 
-    // Update position
     {
         let mut pos_map = positions.write().await;
         pos_map.insert(path_buf, new_pos);
     }
 
-    let parsed = observations.len();
-
-    // Store observations
-    if !observations.is_empty() {
-        tracing::debug!(count = observations.len(), "storing observations from file");
-        store_observations(observations, state).await;
-    }
-
-    Ok(parsed)
+    Ok(turns)
 }
 
-struct FileObservation {
-    tool_name: String,
-    content: String,
-    importance: i32,
-}
+/// Extract assistant text content from a JSONL line.
+/// Only takes assistant messages -- user messages and tool_use entries are skipped.
+fn extract_assistant_text(value: &serde_json::Value) -> Option<String> {
+    let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
-fn parse_jsonl_entry(line: &str) -> Option<FileObservation> {
-    let json: serde_json::Value = serde_json::from_str(line).ok()?;
-
-    // Claude Code JSONL format varies, handle common patterns
-    let obj = json.as_object()?;
-
-    // Skip user messages, focus on assistant tool use
-    let msg_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-    // Look for tool_use entries
-    if msg_type == "tool_use" || obj.contains_key("tool_name") {
-        let tool_name = obj
-            .get("tool_name")
-            .or_else(|| obj.get("name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        // Skip common low-value tools
-        if matches!(tool_name.as_str(), "Glob" | "Grep" | "LS") {
+    // Only process assistant messages
+    if msg_type != "assistant" {
+        if let Some(role) = value.get("role").and_then(|r| r.as_str()) {
+            if role != "assistant" {
+                return None;
+            }
+        } else if msg_type != "" {
             return None;
         }
+    }
 
-        // Extract content summary
-        let input = obj.get("tool_input").or_else(|| obj.get("input"));
+    // Shape 1: {"type": "assistant", "message": {"content": [{"type": "text", "text": "..."}]}}
+    if let Some(msg) = value.get("message") {
+        if let Some(content) = msg.get("content") {
+            if let Some(arr) = content.as_array() {
+                let texts: Vec<&str> = arr
+                    .iter()
+                    .filter_map(|block| {
+                        if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            block.get("text").and_then(|t| t.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !texts.is_empty() {
+                    return Some(texts.join("\n"));
+                }
+            }
+            if let Some(text) = content.as_str() {
+                if text.len() > 50 {
+                    return Some(text.to_string());
+                }
+            }
+        }
+    }
 
-        let content = if let Some(input) = input {
-            summarize_input(&tool_name, input)
-        } else {
-            format!("Tool: {}", tool_name)
-        };
-
-        // Importance based on tool type
-        let importance = match tool_name.as_str() {
-            "Edit" | "Write" => 4,
-            "Bash" | "PowerShell" => 3,
-            "Read" => 2,
-            _ => 2,
-        };
-
-        return Some(FileObservation {
-            tool_name,
-            content,
-            importance,
-        });
+    // Shape 2: {"role": "assistant", "content": "..."}
+    if let Some(content) = value.get("content") {
+        if let Some(text) = content.as_str() {
+            if text.len() > 50 {
+                return Some(text.to_string());
+            }
+        }
     }
 
     None
 }
 
-fn summarize_input(tool_name: &str, input: &serde_json::Value) -> String {
-    let obj = match input.as_object() {
-        Some(o) => o,
-        None => return format!("Tool: {}", tool_name),
-    };
-
-    // Extract key fields based on tool type
-    match tool_name {
-        "Read" | "Edit" | "Write" => {
-            let path = obj
-                .get("file_path")
-                .or_else(|| obj.get("filePath"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            format!("{}: {}", tool_name, path)
-        }
-        "Bash" | "PowerShell" => {
-            let cmd = obj
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .chars()
-                .take(100)
-                .collect::<String>();
-            format!("{}: {}", tool_name, cmd)
-        }
-        "Agent" => {
-            let desc = obj
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("subagent");
-            format!("Agent: {}", desc)
-        }
-        _ => {
-            // Generic: just list keys
-            let keys: Vec<&str> = obj.keys().map(|s| s.as_str()).take(3).collect();
-            format!("{}: {}", tool_name, keys.join(", "))
-        }
-    }
-}
-
-async fn store_observations(observations: Vec<FileObservation>, state: &SidecarState) {
-    // R8 S-003: validate kleos_url once per batch so a misconfigured value
-    // cannot redirect observations to an arbitrary host. Sidecar runs in a
-    // trusted env today, but the CLI will expose --kleos-url so we harden
-    // proactively.
-    let url = format!("{}/memory/store", state.kleos_url);
+/// Store gate-approved results to Kleos. Returns count stored.
+async fn store_gate_results(results: &[GateResult], state: &SidecarState) -> usize {
+    let url = format!("{}/store", state.kleos_url);
     if let Err(e) = kleos_lib::net::validate_outbound_url(&url) {
         tracing::warn!(
             kleos_url = %state.kleos_url,
             error = %e,
-            "file-watcher store: kleos_url failed outbound validation; dropping batch"
+            "watcher store: kleos_url failed outbound validation; dropping batch"
         );
-        return;
+        return 0;
     }
-    for obs in observations {
+
+    let mut stored = 0;
+
+    for result in results {
+        if !result.verdict.store {
+            continue;
+        }
+
+        let category = result
+            .verdict
+            .category
+            .as_deref()
+            .unwrap_or("session");
+
+        let importance = result.verdict.importance.unwrap_or(3);
+
+        let content = result
+            .verdict
+            .summary
+            .as_deref()
+            .unwrap_or(&result.original_text);
+
         let req = serde_json::json!({
-            "content": format!("[file-watcher] [{}] {}", obs.tool_name, obs.content),
-            "category": "session",
-            "source": state.source.clone(),
-            "importance": obs.importance,
-            "tags": ["file-watcher", obs.tool_name.clone()],
+            "content": content,
+            "category": category,
+            "source": format!("sidecar-gate:{}", result.project),
+            "importance": importance,
+            "tags": ["sidecar-gate", &result.project, &result.session_id],
             "user_id": state.user_id,
         });
 
@@ -384,14 +415,22 @@ async fn store_observations(observations: Vec<FileObservation>, state: &SidecarS
 
         match request.send().await {
             Ok(resp) if resp.status().is_success() => {
-                tracing::debug!(tool = %obs.tool_name, "file-watcher observation stored");
+                tracing::debug!(
+                    category,
+                    importance,
+                    session = %result.session_id,
+                    "gate-approved memory stored"
+                );
+                stored += 1;
             }
             Ok(resp) => {
-                tracing::warn!(status = %resp.status(), "file-watcher store failed");
+                tracing::warn!(status = %resp.status(), "watcher store failed");
             }
             Err(e) => {
-                tracing::warn!(error = %e, "file-watcher store request failed");
+                tracing::warn!(error = %e, "watcher store request failed");
             }
         }
     }
+
+    stored
 }

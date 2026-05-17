@@ -28,6 +28,7 @@ pub async fn tail_file(
     _config: Arc<Config>,
     ledger: Arc<Ledger>,
     writer: Arc<Mutex<KleosWriter>>,
+    dry_run: bool,
 ) {
     let path_str = path.to_string_lossy().to_string();
     let (project, session_id) = match parse_session_path(&path) {
@@ -72,16 +73,26 @@ pub async fn tail_file(
                     continue;
                 }
 
-                // Parse the JSONL line
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                    // Extract assistant message content
                     let content = extract_content(&parsed);
                     if let Some(text) = content {
                         if let Some(candidate) = extractor.extract(&text, &session_id, &project) {
-                            let mut w = writer.lock().await;
-                            if w.store(candidate).await {
-                                ledger.increment_memories(&session_id);
+                            if dry_run {
+                                let preview: String = candidate.content.chars().take(120).collect();
+                                tracing::info!(
+                                    category = %candidate.category,
+                                    importance = candidate.importance,
+                                    tags = ?candidate.tags,
+                                    session = %candidate.session_id,
+                                    "[DRY-RUN] would store: {preview}"
+                                );
                                 memories_this_pass += 1;
+                            } else {
+                                let mut w = writer.lock().await;
+                                if w.store(candidate).await {
+                                    ledger.increment_memories(&session_id);
+                                    memories_this_pass += 1;
+                                }
                             }
                         }
                     }
@@ -143,7 +154,6 @@ fn extract_content(value: &serde_json::Value) -> Option<String> {
     }
 
     // Shape 3: {"type": "user", "message": {"content": "..."}}
-    // We want user messages too (for preference extraction)
     if value.get("type").and_then(|t| t.as_str()) == Some("user") {
         if let Some(msg) = value.get("message") {
             if let Some(content) = msg.get("content") {

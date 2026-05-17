@@ -17,6 +17,7 @@ pub struct SidecarState {
     pub token: Option<String>,
     pub compress_enabled: bool,
     pub compress_model: Option<String>,
+    pub gate_model: Option<String>,
     pub batch_size: usize,
     pub batch_interval_ms: u64,
     pub max_pending_per_session: usize,
