@@ -1,4 +1,5 @@
 use crate::db::Database;
+use crate::services::axon::publish_internal;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -517,7 +518,17 @@ pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation>
         })
         .await?;
 
-    get_evaluation(db, id).await
+    let eval = get_evaluation(db, id).await?;
+
+    let _ = publish_internal(db, "system", "thymus", "evaluation.completed", serde_json::json!({
+        "evaluation_id": eval.id,
+        "agent": &eval.agent,
+        "subject": &eval.subject,
+        "overall_score": eval.overall_score,
+        "rubric_id": eval.rubric_id,
+    })).await;
+
+    Ok(eval)
 }
 
 #[tracing::instrument(skip(db))]

@@ -6,6 +6,7 @@
 //! callers never touch raw SQL.
 
 use crate::db::Database;
+use crate::services::axon::publish_internal;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -146,7 +147,15 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
         Ok(())
     })
     .await?;
-    get_agent_by_name(db, user_id, &req.name).await
+    let agent = get_agent_by_name(db, user_id, &req.name).await?;
+
+    let _ = publish_internal(db, "system", "soma", "agent.registered", serde_json::json!({
+        "agent_id": agent.id,
+        "name": &agent.name,
+        "type": &agent.type_,
+    })).await;
+
+    Ok(agent)
 }
 
 /// Record a heartbeat for the agent identified by `agent_id`. Updates
@@ -330,7 +339,13 @@ pub async fn delete_agent(db: &Database, id: i64) -> Result<()> {
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })
-    .await
+    .await?;
+
+    let _ = publish_internal(db, "system", "soma", "agent.deregistered", serde_json::json!({
+        "agent_id": id,
+    })).await;
+
+    Ok(())
 }
 
 // --- Group types and functions (P0-0 Phase 27c) ---

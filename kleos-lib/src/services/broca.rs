@@ -12,6 +12,7 @@
 //! the HTTP handlers.
 
 use crate::db::Database;
+use crate::services::axon::publish_internal;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -278,7 +279,16 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
             Ok(conn.last_insert_rowid())
         })
         .await?;
-    get_action(db, id, user_id).await
+    let entry = get_action(db, id, user_id).await?;
+
+    let _ = publish_internal(db, "system", "broca", "broca.action.logged", serde_json::json!({
+        "action_id": entry.id,
+        "agent": &entry.agent,
+        "service": &entry.service,
+        "action": &entry.action,
+    })).await;
+
+    Ok(entry)
 }
 
 /// Query `broca_actions` with optional filters for agent, service, action
