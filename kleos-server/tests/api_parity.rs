@@ -101,6 +101,10 @@ impl TestApp {
             ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
             replay_guard: Arc::new(ReplayGuard::new()),
             session_manager: Arc::new(SessionManager::new([0u8; 32])),
+            axon_broadcast: {
+                let (tx, _) = tokio::sync::broadcast::channel(64);
+                tx
+            },
         };
         let router = build_router(state);
 
@@ -382,6 +386,10 @@ async fn bootstrap_returns_api_key() {
         ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         replay_guard: Arc::new(ReplayGuard::new()),
         session_manager: Arc::new(SessionManager::new([0u8; 32])),
+        axon_broadcast: {
+            let (tx, _) = tokio::sync::broadcast::channel(64);
+            tx
+        },
     };
     let router = build_router(state);
 

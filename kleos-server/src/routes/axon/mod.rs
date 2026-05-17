@@ -10,11 +10,13 @@ use serde_json::{json, Value};
 use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
+use kleos_lib::services::axon::fanout::{deliver_webhooks, get_webhook_targets};
 use kleos_lib::services::axon::{
     consume, delete_subscription, ensure_channel, get_cursor, get_event,
     get_stats as get_axon_stats, list_channels, list_subscriptions_for_agent, publish_event,
     query_events, upsert_subscription, PublishEventRequest, SubscribeRequest,
 };
+use kleos_lib::EngError;
 use types::{
     CreateChannelBody, GetCursorParams, ListSubscriptionsParams, PollBody, PublishBody,
     QueryEventsParams, SubscribeBody, UnsubscribeBody,
@@ -24,6 +26,7 @@ use types::{
 /// `BODY_MAX_BYTES` (64 KB). Override with `AXON_BODY_MAX_BYTES` at startup.
 const DEFAULT_PUBLISH_BODY_BYTES: usize = 64 * 1024;
 
+/// Read the publish body size cap from `AXON_BODY_MAX_BYTES` or fall back to the compiled default.
 fn publish_body_limit() -> usize {
     std::env::var("AXON_BODY_MAX_BYTES")
         .ok()
@@ -57,8 +60,9 @@ pub fn router() -> Router<AppState> {
         .route("/axon/stream", get(sse::stream_handler))
 }
 
-/// Publishes a new event.
+/// Publishes a new event, broadcasts to SSE subscribers, and fans out to webhooks.
 async fn publish_event_handler(
+    State(state): State<AppState>,
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<PublishBody>,
@@ -79,7 +83,29 @@ async fn publish_event_handler(
     };
 
     let event = publish_event(&db, req).await?;
-    Ok((StatusCode::CREATED, Json(json!(event))))
+    let event_json = serde_json::to_value(&event).map_err(EngError::Serialization)?;
+
+    // Broadcast to SSE subscribers (ignore error = no receivers)
+    let _ = state.axon_broadcast.send(event_json.clone());
+
+    // Fan out to webhook subscribers via tracked background task
+    let db_clone = db.clone();
+    let channel = event.channel.clone();
+    let action = event.action.clone();
+    let shutdown = state.shutdown_token.clone();
+    let fanout_json = event_json.clone();
+    state.background_tasks.lock().await.spawn(async move {
+        tokio::select! {
+            _ = shutdown.cancelled() => {}
+            _ = async {
+                if let Ok(targets) = get_webhook_targets(&db_clone, &channel, &action).await {
+                    deliver_webhooks(&targets, &fanout_json);
+                }
+            } => {}
+        }
+    });
+
+    Ok((StatusCode::CREATED, Json(event_json)))
 }
 
 /// Lists events with optional filters.

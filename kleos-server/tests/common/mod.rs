@@ -81,6 +81,10 @@ pub async fn test_app() -> (Router, AppState) {
         ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         replay_guard: Arc::new(ReplayGuard::new()),
         session_manager: Arc::new(SessionManager::new([0u8; 32])),
+        axon_broadcast: {
+            let (tx, _) = tokio::sync::broadcast::channel(64);
+            tx
+        },
     };
     let router = build_router(state.clone());
     (router, state)
@@ -137,6 +141,10 @@ pub async fn test_app_with_sharding() -> (Router, AppState, TempDir) {
         ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         replay_guard: Arc::new(ReplayGuard::new()),
         session_manager: Arc::new(SessionManager::new([0u8; 32])),
+        axon_broadcast: {
+            let (tx, _) = tokio::sync::broadcast::channel(64);
+            tx
+        },
     };
     let router = build_router(state.clone());
     (router, state, tmp)

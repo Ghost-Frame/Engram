@@ -12,6 +12,7 @@
 //! the HTTP handlers.
 
 use crate::db::Database;
+use crate::services::axon::publish_internal;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +66,13 @@ pub struct LogActionRequest {
     pub user_id: Option<i64>,
 }
 
+/// Per-category count breakdown used inside stats responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatBreakdown {
+    pub name: String,
+    pub count: i64,
+}
+
 /// Aggregate statistics returned by [`get_stats`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrocaStats {
@@ -74,6 +82,12 @@ pub struct BrocaStats {
     pub agents: i64,
     /// Number of distinct service names.
     pub services: i64,
+    #[serde(default)]
+    pub by_service: Vec<StatBreakdown>,
+    #[serde(default)]
+    pub by_agent: Vec<StatBreakdown>,
+    #[serde(default)]
+    pub by_action: Vec<StatBreakdown>,
 }
 
 /// Action-type to template lookup. Each template uses `{{key}}` placeholders
@@ -278,7 +292,37 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
             Ok(conn.last_insert_rowid())
         })
         .await?;
-    get_action(db, id, user_id).await
+    let mut entry = get_action(db, id, user_id).await?;
+
+    if let Ok(axon_id) = publish_internal(
+        db,
+        "system",
+        "broca",
+        "broca.action.logged",
+        serde_json::json!({
+            "action_id": entry.id,
+            "agent": &entry.agent,
+            "service": &entry.service,
+            "action": &entry.action,
+        }),
+    )
+    .await
+    {
+        let action_id = entry.id;
+        let _ = db
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE broca_actions SET axon_event_id = ?1 WHERE id = ?2",
+                    rusqlite::params![axon_id, action_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                Ok(())
+            })
+            .await;
+        entry.axon_event_id = Some(axon_id);
+    }
+
+    Ok(entry)
 }
 
 /// Query `broca_actions` with optional filters for agent, service, action
@@ -382,19 +426,83 @@ pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEn
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
     db.read(move |conn| {
-        conn.query_row(
-            "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
-             FROM broca_actions WHERE user_id = ?1",
-            rusqlite::params![user_id],
-            |row| {
-                Ok(BrocaStats {
-                    total_actions: row.get(0)?,
-                    agents: row.get(1)?,
-                    services: row.get(2)?,
-                })
-            },
-        )
-        .map_err(rusqlite_to_eng_error)
+        let (total_actions, agents, services) = conn
+            .query_row(
+                "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
+                 FROM broca_actions WHERE user_id = ?1",
+                rusqlite::params![user_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        // by_service
+        let mut by_service = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT service, COUNT(*) as cnt FROM broca_actions \
+                 WHERE user_id = ?1 GROUP BY service ORDER BY cnt DESC LIMIT 20",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            by_service.push(StatBreakdown {
+                name: row.get(0).map_err(rusqlite_to_eng_error)?,
+                count: row.get(1).map_err(rusqlite_to_eng_error)?,
+            });
+        }
+
+        // by_agent
+        let mut by_agent = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT agent, COUNT(*) as cnt FROM broca_actions \
+                 WHERE user_id = ?1 GROUP BY agent ORDER BY cnt DESC LIMIT 20",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            by_agent.push(StatBreakdown {
+                name: row.get(0).map_err(rusqlite_to_eng_error)?,
+                count: row.get(1).map_err(rusqlite_to_eng_error)?,
+            });
+        }
+
+        // by_action
+        let mut by_action = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT action, COUNT(*) as cnt FROM broca_actions \
+                 WHERE user_id = ?1 GROUP BY action ORDER BY cnt DESC LIMIT 20",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            by_action.push(StatBreakdown {
+                name: row.get(0).map_err(rusqlite_to_eng_error)?,
+                count: row.get(1).map_err(rusqlite_to_eng_error)?,
+            });
+        }
+
+        Ok(BrocaStats {
+            total_actions,
+            agents,
+            services,
+            by_service,
+            by_agent,
+            by_action,
+        })
     })
     .await
 }
@@ -833,37 +941,123 @@ pub async fn ask(db: &Database, user_id: i64, question: &str) -> Result<AskResul
     let plan = ask_plan_call(question).await;
     tracing::debug!(?plan, "ask: query plan resolved");
 
-    // Clamp and default the limit before querying.
-    let limit = plan.limit.unwrap_or(20).min(50) as usize;
-
-    // --- Step 2: query action rows ---
-    // Pass `since` into the DB query so the LIMIT is applied against rows that
-    // actually match the time window, not against the full result set before
-    // in-memory filtering.
-    let agent = plan.agent.as_deref();
-    let service = plan.service.as_deref();
-    let since = plan.since.as_deref();
-
-    let rows = query_actions(db, agent, service, None, since, limit, 0, user_id).await?;
-
-    // Convert to the narrower AskRow shape for the response.
-    let raw: Vec<AskRow> = rows
-        .iter()
-        .map(|e| AskRow {
-            id: e.id,
-            agent: e.agent.clone(),
-            service: e.service.clone(),
-            action: e.action.clone(),
-            narrative: e.narrative.clone(),
-            created_at: e.created_at.clone(),
-        })
-        .collect();
+    // --- Step 2: dispatch to appropriate service ---
+    let raw = ask_dispatch(db, &plan, user_id).await?;
 
     // --- Step 3: summarize ---
     let answer = ask_summarize_call(question, &raw).await;
     tracing::debug!(answer_len = answer.len(), "ask: summary resolved");
 
     Ok(AskResult { answer, plan, raw })
+}
+
+/// Dispatch to the appropriate service based on the plan's service field.
+/// Returns a vec of AskRow -- a common format all services are projected into.
+async fn ask_dispatch(db: &Database, plan: &AskPlan, user_id: i64) -> Result<Vec<AskRow>> {
+    let limit = plan.limit.unwrap_or(20).min(50) as usize;
+    let agent = plan.agent.as_deref();
+
+    match plan.service.as_deref() {
+        Some("soma") => {
+            let agents = crate::services::soma::list_agents(db, user_id, None, None, limit).await?;
+            Ok(agents
+                .iter()
+                .map(|a| AskRow {
+                    id: a.id,
+                    agent: a.name.clone(),
+                    service: "soma".to_string(),
+                    action: format!("agent.{}", a.status),
+                    narrative: a.description.clone(),
+                    created_at: a.created_at.clone(),
+                })
+                .collect())
+        }
+        Some("chiasm") => {
+            let tasks =
+                crate::services::chiasm::list_tasks(db, user_id, None, agent, None, limit, 0)
+                    .await?;
+            Ok(tasks
+                .iter()
+                .map(|t| AskRow {
+                    id: t.id,
+                    agent: t.agent.clone(),
+                    service: "chiasm".to_string(),
+                    action: format!("task.{}", t.status),
+                    narrative: Some(t.title.clone()),
+                    created_at: t.created_at.clone(),
+                })
+                .collect())
+        }
+        Some("thymus") => {
+            let evals = crate::services::thymus::list_evaluations(db, agent, None, limit).await?;
+            Ok(evals
+                .iter()
+                .map(|e| AskRow {
+                    id: e.id,
+                    agent: e.agent.clone(),
+                    service: "thymus".to_string(),
+                    action: "evaluation.completed".to_string(),
+                    narrative: Some(format!("{} scored {:.2}", e.subject, e.overall_score)),
+                    created_at: e.created_at.clone(),
+                })
+                .collect())
+        }
+        Some("axon") => {
+            let events =
+                crate::services::axon::query_events(db, None, None, None, limit, 0, user_id)
+                    .await?;
+            Ok(events
+                .iter()
+                .map(|ev| AskRow {
+                    id: ev.id,
+                    agent: ev.agent.clone().unwrap_or_default(),
+                    service: "axon".to_string(),
+                    action: ev.action.clone(),
+                    narrative: Some(format!("[{}] {}", ev.channel, ev.action)),
+                    created_at: ev.created_at.clone(),
+                })
+                .collect())
+        }
+        Some("loom") => {
+            let runs = crate::services::loom::list_runs(db, None, None, limit).await?;
+            Ok(runs
+                .iter()
+                .map(|r| AskRow {
+                    id: r.id,
+                    agent: String::new(),
+                    service: "loom".to_string(),
+                    action: format!("workflow.run.{}", r.status),
+                    narrative: Some(format!("run {} (workflow {})", r.id, r.workflow_id)),
+                    created_at: r.created_at.clone(),
+                })
+                .collect())
+        }
+        _ => {
+            // Default: query broca_actions
+            let rows = query_actions(
+                db,
+                agent,
+                plan.service.as_deref(),
+                None,
+                plan.since.as_deref(),
+                limit,
+                0,
+                user_id,
+            )
+            .await?;
+            Ok(rows
+                .iter()
+                .map(|e| AskRow {
+                    id: e.id,
+                    agent: e.agent.clone(),
+                    service: e.service.clone(),
+                    action: e.action.clone(),
+                    narrative: e.narrative.clone(),
+                    created_at: e.created_at.clone(),
+                })
+                .collect())
+        }
+    }
 }
 
 /// Map an LLM error string to a coarse `&'static str` category for logging.
@@ -899,18 +1093,26 @@ async fn ask_plan_call(question: &str) -> AskPlan {
         return ask_keyword_heuristic(question);
     };
 
-    let system =
-        "You translate a user question about an agent activity log into a JSON query plan. \
+    let system = "You translate a user question about an agent system into a JSON query plan. \
         Return ONLY a JSON object with these optional fields and nothing else -- no explanation, \
         no markdown, no code fences:\n\
         {\"agent\":\"<agent-name>\",\"service\":\"<service-name>\",\
         \"since\":\"<ISO-8601-datetime>\",\"limit\":<integer 1-50>}\n\n\
+        SERVICE CATALOG (set `service` to route to the right data source):\n\
+        - broca: action logs, what agents did, activity history (DEFAULT)\n\
+        - soma: agent registry, who is online, agent status, capabilities\n\
+        - chiasm: task coordination, assignments, task status, blockers\n\
+        - thymus: evaluations, quality scores, rubrics, drift detection\n\
+        - axon: events, channels, pub/sub activity\n\
+        - loom: workflows, runs, step execution, orchestration\n\n\
         Rules:\n\
         - Omit fields that are not implied by the question.\n\
+        - Set `service` to the most relevant data source for the question.\n\
+        - If the question is about agent activity or \"what did X do\", use broca (default).\n\
         - For time-based questions (\"today\", \"last hour\", \"recent\") omit `since` and use a \
           reasonable limit instead.\n\
         - Default limit is 20. Maximum is 50.\n\
-        - service values are short names like \"kleos\", \"chiasm\", \"axon\", \"loom\", \"soma\".";
+        - If unsure which service, omit `service` (defaults to broca).";
 
     let model = broca_llm_model();
 

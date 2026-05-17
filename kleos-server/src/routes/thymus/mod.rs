@@ -232,8 +232,12 @@ async fn get_metric_summary_handler(
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<MetricSummaryParams>,
 ) -> Result<Json<Value>, AppError> {
-    let agent = params.agent.as_deref().unwrap_or("*");
-    let metric = params.metric.as_deref().unwrap_or("*");
+    let agent = params.agent.as_deref().ok_or_else(|| {
+        kleos_lib::EngError::InvalidInput("agent query parameter is required".into())
+    })?;
+    let metric = params.metric.as_deref().ok_or_else(|| {
+        kleos_lib::EngError::InvalidInput("metric query parameter is required".into())
+    })?;
 
     let summary = get_metric_summary(&db, agent, metric, params.since.as_deref()).await?;
     Ok(Json(summary))

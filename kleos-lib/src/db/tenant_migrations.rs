@@ -1008,6 +1008,9 @@ fn apply_schema_v53_chiasm_agent_keys(conn: &Connection) -> Result<()> {
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v53 failed: {e}")))
 }
 
+/// Tenant v54: handoff atoms (extracted decision/constraint/task fragments)
+/// and their entity links. CREATE TABLE IF NOT EXISTS keeps the migration
+/// idempotent.
 fn apply_schema_v54_handoff_atoms(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS handoff_atoms (

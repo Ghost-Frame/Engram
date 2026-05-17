@@ -92,6 +92,9 @@ pub struct AppState {
     pub ingest_sem: Arc<Semaphore>,
     pub replay_guard: Arc<kleos_lib::auth_piv::ReplayGuard>,
     pub session_manager: Arc<kleos_lib::auth_piv::SessionManager>,
+    /// Broadcast channel for real-time Axon event delivery to SSE subscribers.
+    /// The sender is cloned cheaply into each SSE connection via `subscribe()`.
+    pub axon_broadcast: broadcast::Sender<serde_json::Value>,
 }
 
 impl AppState {

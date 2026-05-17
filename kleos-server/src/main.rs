@@ -310,6 +310,10 @@ async fn main() {
             kleos_lib::auth_piv::SessionManager::from_env_or_generate()
                 .expect("failed to initialize session manager"),
         ),
+        axon_broadcast: {
+            let (tx, _) = tokio::sync::broadcast::channel(4096);
+            tx
+        },
     };
 
     // R8 R-008: every background task is described by a factory so the
