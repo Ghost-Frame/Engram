@@ -401,7 +401,7 @@ fn extract_assistant_text(value: &serde_json::Value) -> Option<String> {
             if role != "assistant" {
                 return None;
             }
-        } else if msg_type != "" {
+        } else if !msg_type.is_empty() {
             return None;
         }
     }
