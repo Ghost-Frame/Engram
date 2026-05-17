@@ -1352,7 +1352,7 @@ async fn main() {
         }
 
         Commands::Admin(admin_cmd) => {
-            handle_admin_command(&client, &admin_cmd).await;
+            handle_admin_command(&client, admin_cmd).await;
         }
     }
 }
