@@ -54,6 +54,10 @@ pub struct Channel {
     pub description: Option<String>,
     pub retain_hours: i64,
     pub created_at: String,
+    #[serde(default)]
+    pub event_count: i64,
+    #[serde(default)]
+    pub subscriber_count: i64,
 }
 
 /// An agent's subscription to a channel.
@@ -225,8 +229,10 @@ pub async fn query_events(
 /// Lists all Axon channels.
 #[tracing::instrument(skip(db))]
 pub async fn list_channels(db: &Database) -> Result<Vec<Channel>> {
-    let sql = "SELECT id, name, description, retain_hours, created_at
-               FROM axon_channels ORDER BY name ASC";
+    let sql = "SELECT c.id, c.name, c.description, c.retain_hours, c.created_at,
+                      (SELECT COUNT(*) FROM axon_events WHERE channel = c.name) as event_count,
+                      (SELECT COUNT(*) FROM axon_subscriptions WHERE channel = c.name) as subscriber_count
+               FROM axon_channels c ORDER BY c.name ASC";
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
@@ -239,6 +245,8 @@ pub async fn list_channels(db: &Database) -> Result<Vec<Channel>> {
                 description: row.get(2).map_err(rusqlite_to_eng_error)?,
                 retain_hours: row.get(3).map_err(rusqlite_to_eng_error)?,
                 created_at: row.get(4).map_err(rusqlite_to_eng_error)?,
+                event_count: row.get(5).map_err(rusqlite_to_eng_error)?,
+                subscriber_count: row.get(6).map_err(rusqlite_to_eng_error)?,
             });
         }
         Ok(results)
@@ -516,6 +524,28 @@ pub async fn get_stats(db: &Database) -> Result<AxonStats> {
         })
     })
     .await
+}
+
+/// Publishes an event internally (no HTTP). Used by other services (Loom, Soma, etc.)
+/// to emit lifecycle events into the Axon bus.
+#[tracing::instrument(skip(db, payload), fields(%channel, %action))]
+pub async fn publish_internal(
+    db: &Database,
+    channel: &str,
+    source: &str,
+    action: &str,
+    payload: serde_json::Value,
+) -> Result<i64> {
+    let req = PublishEventRequest {
+        channel: channel.to_string(),
+        action: action.to_string(),
+        payload: Some(payload),
+        source: Some(source.to_string()),
+        agent: None,
+        user_id: Some(1), // system user for internal events
+    };
+    let event = publish_event(db, req).await?;
+    Ok(event.id)
 }
 
 /// Unit tests.

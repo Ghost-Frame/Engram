@@ -965,7 +965,7 @@ pub async fn complete_step(
     step_id: i64,
     output: serde_json::Value,
     _user_id: i64,
-) -> Result<()> {
+) -> Result<Step> {
     let step = get_step(db, step_id).await?;
     // Verify run ownership
     get_run(db, step.run_id).await?;
@@ -1004,11 +1004,11 @@ pub async fn complete_step(
 
     // Advance the run after completing this step
     advance_run(db, step.run_id).await?;
-    Ok(())
+    get_step(db, step_id).await
 }
 
 #[tracing::instrument(skip(db, error), fields(step_id, user_id))]
-pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) -> Result<()> {
+pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) -> Result<Step> {
     let step = get_step(db, step_id).await?;
     // Verify run ownership
     get_run(db, step.run_id).await?;
@@ -1098,7 +1098,7 @@ pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) 
         );
     }
 
-    Ok(())
+    get_step(db, step_id).await
 }
 
 // ---------------------------------------------------------------------------

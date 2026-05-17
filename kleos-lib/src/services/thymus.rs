@@ -162,12 +162,22 @@ pub struct AgentScores {
 // Stats
 // ---------------------------------------------------------------------------
 
+/// Per-rubric evaluation summary returned inside [`ThymusStats`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RubricStat {
+    pub name: String,
+    pub evaluation_count: i64,
+    pub avg_score: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThymusStats {
     pub rubrics: i64,
     pub evaluations: i64,
     pub metrics: i64,
     pub agent_count: i64,
+    #[serde(default)]
+    pub by_rubric: Vec<RubricStat>,
 }
 
 // ---------------------------------------------------------------------------
@@ -950,7 +960,7 @@ pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> 
         )));
     }
 
-    let severity = req.severity.unwrap_or_else(|| "low".to_string());
+    let severity = req.severity.unwrap_or_else(|| "medium".to_string());
 
     // Validate severity
     if !VALID_SEVERITIES.contains(&severity.as_str()) {
@@ -1066,11 +1076,30 @@ pub async fn get_stats(db: &Database) -> Result<ThymusStats> {
             })
             .map_err(rusqlite_to_eng_error)?;
 
+        let mut by_rubric = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.name, COUNT(e.id) as evaluation_count, \
+                 COALESCE(AVG(e.overall_score), 0.0) as avg_score \
+                 FROM rubrics r LEFT JOIN evaluations e ON r.id = e.rubric_id \
+                 GROUP BY r.id ORDER BY evaluation_count DESC",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+        while let Some(r) = rows.next().map_err(rusqlite_to_eng_error)? {
+            by_rubric.push(RubricStat {
+                name: r.get(0).map_err(rusqlite_to_eng_error)?,
+                evaluation_count: r.get(1).map_err(rusqlite_to_eng_error)?,
+                avg_score: r.get(2).map_err(rusqlite_to_eng_error)?,
+            });
+        }
+
         Ok(ThymusStats {
             rubrics,
             evaluations,
             metrics,
             agent_count,
+            by_rubric,
         })
     })
     .await

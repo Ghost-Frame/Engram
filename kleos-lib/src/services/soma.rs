@@ -50,12 +50,23 @@ pub struct RegisterAgentRequest {
     pub user_id: Option<i64>,
 }
 
+/// Per-category count breakdown used inside stats responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatBreakdown {
+    pub name: String,
+    pub count: i64,
+}
+
 /// Aggregate statistics returned by [`get_stats`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SomaStats {
     pub total_agents: i64,
     pub online_agents: i64,
     pub types: i64,
+    #[serde(default)]
+    pub by_type: Vec<StatBreakdown>,
+    #[serde(default)]
+    pub by_status: Vec<StatBreakdown>,
 }
 
 /// Ordered column list shared by every SELECT on `soma_agents`. Positional
@@ -706,10 +717,45 @@ pub async fn get_stats(db: &Database) -> Result<SomaStats> {
                 },
             )
             .map_err(rusqlite_to_eng_error)?;
+
+        // by_type
+        let mut by_type = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT type, COUNT(*) as cnt FROM soma_agents \
+                 GROUP BY type ORDER BY cnt DESC",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+        while let Some(r) = rows.next().map_err(rusqlite_to_eng_error)? {
+            by_type.push(StatBreakdown {
+                name: r.get(0).map_err(rusqlite_to_eng_error)?,
+                count: r.get(1).map_err(rusqlite_to_eng_error)?,
+            });
+        }
+
+        // by_status
+        let mut by_status = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT status, COUNT(*) as cnt FROM soma_agents \
+                 GROUP BY status ORDER BY cnt DESC",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+        while let Some(r) = rows.next().map_err(rusqlite_to_eng_error)? {
+            by_status.push(StatBreakdown {
+                name: r.get(0).map_err(rusqlite_to_eng_error)?,
+                count: r.get(1).map_err(rusqlite_to_eng_error)?,
+            });
+        }
+
         Ok(SomaStats {
             total_agents: row.0,
             online_agents: row.1,
             types: row.2,
+            by_type,
+            by_status,
         })
     })
     .await
