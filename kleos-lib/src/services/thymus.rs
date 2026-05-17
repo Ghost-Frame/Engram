@@ -18,6 +18,7 @@ pub struct Rubric {
     pub updated_at: String,
 }
 
+/// Request payload for creating an evaluation rubric.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRubricRequest {
     pub name: String,
@@ -26,6 +27,7 @@ pub struct CreateRubricRequest {
     pub user_id: Option<i64>,
 }
 
+/// Request payload for updating a rubric's fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateRubricRequest {
     pub name: Option<String>,
@@ -53,6 +55,7 @@ pub struct Evaluation {
     pub created_at: String,
 }
 
+/// Request payload for running an evaluation against a rubric.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluateRequest {
     pub rubric_id: i64,
@@ -81,6 +84,7 @@ pub struct QualityMetric {
     pub recorded_at: String,
 }
 
+/// Request payload for recording a quality metric data point.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordMetricRequest {
     pub agent: String,
@@ -108,6 +112,7 @@ pub struct SessionQuality {
     pub created_at: String,
 }
 
+/// Request payload for recording session-level quality scores.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordSessionQualityRequest {
     pub session_id: String,
@@ -136,6 +141,7 @@ pub struct DriftEvent {
     pub created_at: String,
 }
 
+/// Request payload for logging a drift/degradation event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordDriftEventRequest {
     pub agent: String,
@@ -170,6 +176,7 @@ pub struct RubricStat {
     pub avg_score: f64,
 }
 
+/// Aggregate statistics for the Thymus evaluation subsystem.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThymusStats {
     pub rubrics: i64,
@@ -218,6 +225,7 @@ fn row_to_rubric(row: &rusqlite::Row<'_>) -> Result<Rubric> {
     })
 }
 
+/// Map a SQLite row to an Evaluation struct.
 fn row_to_evaluation(row: &rusqlite::Row<'_>) -> Result<Evaluation> {
     let input_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let output_str: String = row.get(5).map_err(rusqlite_to_eng_error)?;
@@ -246,6 +254,7 @@ fn row_to_evaluation(row: &rusqlite::Row<'_>) -> Result<Evaluation> {
     })
 }
 
+/// Map a SQLite row to a QualityMetric struct.
 fn row_to_metric(row: &rusqlite::Row<'_>) -> Result<QualityMetric> {
     let tags_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let tags: serde_json::Value = serde_json::from_str(&tags_str)
@@ -261,6 +270,7 @@ fn row_to_metric(row: &rusqlite::Row<'_>) -> Result<QualityMetric> {
     })
 }
 
+/// Map a SQLite row to a SessionQuality struct.
 fn row_to_session_quality(row: &rusqlite::Row<'_>) -> Result<SessionQuality> {
     let rules_followed_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let rules_drifted_str: String = row.get(5).map_err(rusqlite_to_eng_error)?;
@@ -284,6 +294,7 @@ fn row_to_session_quality(row: &rusqlite::Row<'_>) -> Result<SessionQuality> {
     })
 }
 
+/// Map a SQLite row to a DriftEvent struct.
 fn row_to_drift_event(row: &rusqlite::Row<'_>) -> Result<DriftEvent> {
     Ok(DriftEvent {
         id: row.get(0).map_err(rusqlite_to_eng_error)?,
@@ -321,6 +332,7 @@ pub async fn create_rubric(db: &Database, req: CreateRubricRequest) -> Result<Ru
     get_rubric(db, id).await
 }
 
+/// Fetch a single rubric by ID.
 #[tracing::instrument(skip(db))]
 pub async fn get_rubric(db: &Database, id: i64) -> Result<Rubric> {
     db.read(move |conn| {
@@ -342,6 +354,7 @@ pub async fn get_rubric(db: &Database, id: i64) -> Result<Rubric> {
     .await
 }
 
+/// List all rubric definitions.
 #[tracing::instrument(skip(db))]
 pub async fn list_rubrics(db: &Database) -> Result<Vec<Rubric>> {
     db.read(move |conn| {
@@ -361,6 +374,7 @@ pub async fn list_rubrics(db: &Database) -> Result<Vec<Rubric>> {
     .await
 }
 
+/// Apply partial updates to a rubric.
 #[tracing::instrument(skip(db, req))]
 pub async fn update_rubric(db: &Database, id: i64, req: UpdateRubricRequest) -> Result<Rubric> {
     // Verify existence
@@ -406,6 +420,7 @@ pub async fn update_rubric(db: &Database, id: i64, req: UpdateRubricRequest) -> 
     get_rubric(db, id).await
 }
 
+/// Delete a rubric by ID.
 #[tracing::instrument(skip(db))]
 pub async fn delete_rubric(db: &Database, id: i64) -> Result<bool> {
     db.write(move |conn| {
@@ -486,6 +501,7 @@ fn compute_weighted_score(criteria: &serde_json::Value, scores: &serde_json::Val
     Ok(weighted_sum / total_weight)
 }
 
+/// Run an evaluation scoring an agent against a rubric.
 #[tracing::instrument(skip(db, req), fields(rubric_id = req.rubric_id))]
 pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation> {
     let _user_id = req.user_id;
@@ -548,6 +564,7 @@ pub async fn evaluate(db: &Database, req: EvaluateRequest) -> Result<Evaluation>
     Ok(eval)
 }
 
+/// Fetch a single evaluation by ID.
 #[tracing::instrument(skip(db))]
 pub async fn get_evaluation(db: &Database, id: i64) -> Result<Evaluation> {
     db.read(move |conn| {
@@ -570,6 +587,7 @@ pub async fn get_evaluation(db: &Database, id: i64) -> Result<Evaluation> {
     .await
 }
 
+/// List evaluations with optional agent/rubric filters.
 #[tracing::instrument(skip(db))]
 pub async fn list_evaluations(
     db: &Database,
@@ -613,6 +631,7 @@ pub async fn list_evaluations(
     .await
 }
 
+/// Get aggregated scores for an agent across evaluations.
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_agent_scores(
     db: &Database,
@@ -753,6 +772,7 @@ pub async fn record_metric(db: &Database, req: RecordMetricRequest) -> Result<Qu
     .await
 }
 
+/// Query quality metrics with agent/metric name filters.
 #[tracing::instrument(skip(db))]
 pub async fn get_metrics(
     db: &Database,
@@ -801,6 +821,7 @@ pub async fn get_metrics(
     .await
 }
 
+/// Compute summary statistics for a specific metric.
 #[tracing::instrument(skip(db), fields(agent = %agent, metric = %metric))]
 pub async fn get_metric_summary(
     db: &Database,
@@ -897,6 +918,7 @@ pub async fn record_session_quality(
     .await
 }
 
+/// Query session quality records for an agent.
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_session_quality(
     db: &Database,
@@ -954,6 +976,7 @@ const VALID_DRIFT_TYPES: &[&str] = &[
 
 const VALID_SEVERITIES: &[&str] = &["low", "medium", "high", "critical"];
 
+/// Insert a new drift event record.
 #[tracing::instrument(skip(db, req))]
 pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> Result<DriftEvent> {
     let _user_id = req.user_id;
@@ -1004,6 +1027,7 @@ pub async fn record_drift_event(db: &Database, req: RecordDriftEventRequest) -> 
     .await
 }
 
+/// List drift events for an agent.
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_drift_events(db: &Database, agent: &str, limit: usize) -> Result<Vec<DriftEvent>> {
     let capped = limit.min(1_000);
@@ -1029,6 +1053,7 @@ pub async fn get_drift_events(db: &Database, agent: &str, limit: usize) -> Resul
     .await
 }
 
+/// Compute drift statistics for an agent.
 #[tracing::instrument(skip(db), fields(agent = %agent))]
 pub async fn get_drift_summary(db: &Database, agent: &str) -> Result<Vec<DriftSummaryEntry>> {
     let agent_owned = agent.to_string();

@@ -26,6 +26,7 @@ use types::{
 /// `BODY_MAX_BYTES` (64 KB). Override with `AXON_BODY_MAX_BYTES` at startup.
 const DEFAULT_PUBLISH_BODY_BYTES: usize = 64 * 1024;
 
+/// Read the publish body size cap from `AXON_BODY_MAX_BYTES` or fall back to the compiled default.
 fn publish_body_limit() -> usize {
     std::env::var("AXON_BODY_MAX_BYTES")
         .ok()

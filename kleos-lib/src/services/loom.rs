@@ -46,6 +46,7 @@ pub struct Workflow {
     pub updated_at: String,
 }
 
+/// Request payload for creating a workflow definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateWorkflowRequest {
     pub name: String,
@@ -54,6 +55,7 @@ pub struct CreateWorkflowRequest {
     pub user_id: Option<i64>,
 }
 
+/// Request payload for updating a workflow definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateWorkflowRequest {
     pub name: Option<String>,
@@ -80,6 +82,7 @@ pub struct Run {
     pub updated_at: String,
 }
 
+/// Request payload for starting a new workflow run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRunRequest {
     pub workflow_id: i64,
@@ -139,6 +142,7 @@ pub struct StatBreakdown {
     pub count: i64,
 }
 
+/// Aggregate statistics for the Loom subsystem.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoomStats {
     pub workflows: i64,
@@ -175,6 +179,7 @@ fn row_to_workflow(row: &rusqlite::Row<'_>) -> Result<Workflow> {
     })
 }
 
+/// Map a SQLite row to a Run struct.
 fn row_to_run(row: &rusqlite::Row<'_>) -> Result<Run> {
     let input_str: String = row.get(3).map_err(rusqlite_to_eng_error)?;
     let output_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
@@ -195,6 +200,7 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> Result<Run> {
     })
 }
 
+/// Map a SQLite row to a Step struct.
 fn row_to_step(row: &rusqlite::Row<'_>) -> Result<Step> {
     let config_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let input_str: String = row.get(6).map_err(rusqlite_to_eng_error)?;
@@ -224,6 +230,7 @@ fn row_to_step(row: &rusqlite::Row<'_>) -> Result<Step> {
     })
 }
 
+/// Map a SQLite row to a LogEntry struct.
 fn row_to_log_entry(row: &rusqlite::Row<'_>) -> Result<LogEntry> {
     let data_str: String = row.get(5).map_err(rusqlite_to_eng_error)?;
     let data: serde_json::Value = serde_json::from_str(&data_str)?;
@@ -334,6 +341,7 @@ pub async fn add_log(
     .await
 }
 
+/// Retrieve log entries for a workflow run, with optional step and level filters.
 #[tracing::instrument(skip(db))]
 pub async fn get_logs(
     db: &Database,
@@ -464,6 +472,7 @@ pub async fn create_workflow(db: &Database, req: CreateWorkflowRequest) -> Resul
     .await
 }
 
+/// Fetch a single workflow by ID.
 #[tracing::instrument(skip(db))]
 pub async fn get_workflow(db: &Database, id: i64) -> Result<Workflow> {
     db.read(move |conn| {
@@ -487,6 +496,7 @@ pub async fn get_workflow(db: &Database, id: i64) -> Result<Workflow> {
     .await
 }
 
+/// Fetch a workflow by its unique name.
 #[tracing::instrument(skip(db), fields(name = %name))]
 pub async fn get_workflow_by_name(db: &Database, name: &str) -> Result<Workflow> {
     let name = name.to_string();
@@ -511,6 +521,7 @@ pub async fn get_workflow_by_name(db: &Database, name: &str) -> Result<Workflow>
     .await
 }
 
+/// List all workflow definitions.
 #[tracing::instrument(skip(db))]
 pub async fn list_workflows(db: &Database) -> Result<Vec<Workflow>> {
     db.read(move |conn| {
@@ -532,6 +543,7 @@ pub async fn list_workflows(db: &Database) -> Result<Vec<Workflow>> {
     .await
 }
 
+/// Update mutable fields on an existing workflow.
 #[tracing::instrument(skip(db, req))]
 pub async fn update_workflow(
     db: &Database,
@@ -612,6 +624,7 @@ pub async fn update_workflow(
     get_workflow(db, id).await
 }
 
+/// Delete a workflow and its associated runs and steps.
 #[tracing::instrument(skip(db))]
 pub async fn delete_workflow(db: &Database, id: i64) -> Result<bool> {
     db.write(move |conn| {
@@ -764,6 +777,7 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
     Ok(run)
 }
 
+/// Fetch a single run by ID.
 #[tracing::instrument(skip(db), fields(run_id = id, user_id))]
 pub async fn get_run(db: &Database, id: i64) -> Result<Run> {
     db.read(move |conn| {
@@ -788,6 +802,7 @@ pub async fn get_run(db: &Database, id: i64) -> Result<Run> {
     .await
 }
 
+/// List runs with optional status and workflow filters.
 #[tracing::instrument(skip(db), fields(workflow_id = ?workflow_id, status = ?status, limit))]
 pub async fn list_runs(
     db: &Database,
@@ -868,6 +883,7 @@ pub async fn list_runs(
     .await
 }
 
+/// Mark a running workflow run as cancelled.
 #[tracing::instrument(skip(db), fields(run_id = id, user_id))]
 pub async fn cancel_run(db: &Database, id: i64, _user_id: i64) -> Result<bool> {
     let run = get_run(db, id).await?;
@@ -948,6 +964,7 @@ pub async fn get_steps(db: &Database, run_id: i64, _user_id: i64) -> Result<Vec<
     .await
 }
 
+/// Fetch a single step by ID.
 #[tracing::instrument(skip(db), fields(step_id = id))]
 pub async fn get_step(db: &Database, id: i64) -> Result<Step> {
     db.read(move |conn| {
@@ -973,6 +990,7 @@ pub async fn get_step(db: &Database, id: i64) -> Result<Step> {
     .await
 }
 
+/// Mark a step as completed and advance the run.
 #[tracing::instrument(skip(db, output), fields(step_id, user_id))]
 pub async fn complete_step(
     db: &Database,
@@ -1021,6 +1039,7 @@ pub async fn complete_step(
     get_step(db, step_id).await
 }
 
+/// Mark a step as failed and handle retry or run failure.
 #[tracing::instrument(skip(db, error), fields(step_id, user_id))]
 pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) -> Result<Step> {
     let step = get_step(db, step_id).await?;
