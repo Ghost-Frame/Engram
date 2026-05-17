@@ -2,6 +2,7 @@ mod hook;
 mod import_plugins;
 use hook::{run_hook, HookCommands};
 use kleos_client::{truncate, Client};
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -173,6 +174,32 @@ enum Commands {
     /// Artifact storage management
     #[command(subcommand)]
     Artifact(ArtifactCommands),
+    /// Admin operations (require admin role, signed request, long timeouts)
+    #[command(subcommand)]
+    Admin(AdminCommands),
+}
+
+/// Subcommands for `kleos-cli admin` -- long-running admin operations.
+#[derive(Subcommand)]
+enum AdminCommands {
+    /// Backfill missing primary + chunk embeddings across all tenants. Long-running.
+    BackfillChunks,
+    /// Rebuild the FTS5 index on every tenant DB. Cheap.
+    RebuildFts,
+    /// Rebuild the Lance ANN index (IVF_HNSW_PQ) over current vectors.
+    VectorRebuildIndex {
+        /// Drop and recreate the existing index instead of skipping when present.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Report Lance / FTS / per-tenant vector health.
+    VectorHealth,
+    /// Drain the vector_sync_pending ledger.
+    VectorSyncReplay {
+        /// Max pending rows to drain in this call.
+        #[arg(short, long, default_value = "5000")]
+        limit: usize,
+    },
 }
 
 /// Subcommands for `kleos-cli identity` -- PIV YubiKey and software Ed25519 key management.
@@ -748,6 +775,8 @@ enum HandoffCommands {
     },
 }
 
+/// Subcommands for `kleos-cli handoff atoms` -- list, pack, supersede, and
+/// decay handoff atoms extracted from session dumps.
 #[derive(Subcommand)]
 enum AtomCommands {
     /// List active atoms for a project
@@ -1320,6 +1349,73 @@ async fn main() {
 
         Commands::Artifact(artifact_cmd) => {
             handle_artifact_command(&client, artifact_cmd).await;
+        }
+
+        Commands::Admin(admin_cmd) => {
+            handle_admin_command(&client, &admin_cmd).await;
+        }
+    }
+}
+
+/// Dispatch an `kleos-cli admin <op>` invocation. Cheap operations
+/// (rebuild_fts, vector_rebuild_index, vector_health, vector_sync_replay)
+/// use a 120s timeout; `backfill_chunks` uses a 7200s (2 hour) timeout to
+/// survive end-to-end re-embedding of ~10k memories with bge-m3.
+async fn handle_admin_command(client: &Client, cmd: &AdminCommands) {
+    // Generous timeout for long-running admin work (backfill can run 30+ min on
+    // ~10k memories with bge-m3). Falls back to default for the cheap calls.
+    let long_timeout = Duration::from_secs(7200);
+    let short_timeout = Duration::from_secs(120);
+    let pretty = |v: Value| println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+    let err = |label: &str, e: String| eprintln!("{label} failed: {e}");
+    match cmd {
+        AdminCommands::BackfillChunks => {
+            match client
+                .post_with_timeout("/admin/backfill_chunks", json!({}), long_timeout)
+                .await
+            {
+                Ok(v) => pretty(v),
+                Err(e) => err("backfill_chunks", e),
+            }
+        }
+        AdminCommands::RebuildFts => {
+            match client
+                .post_with_timeout("/admin/rebuild-fts", json!({}), short_timeout)
+                .await
+            {
+                Ok(v) => pretty(v),
+                Err(e) => err("rebuild-fts", e),
+            }
+        }
+        AdminCommands::VectorRebuildIndex { replace } => {
+            match client
+                .post_with_timeout(
+                    "/admin/vector/rebuild-index",
+                    json!({ "replace": *replace }),
+                    short_timeout,
+                )
+                .await
+            {
+                Ok(v) => pretty(v),
+                Err(e) => err("vector/rebuild-index", e),
+            }
+        }
+        AdminCommands::VectorHealth => match client.get("/admin/vector_health").await {
+            Ok(v) => pretty(v),
+            Err(e) => err("vector_health", e),
+        },
+        AdminCommands::VectorSyncReplay { limit } => {
+            match client
+                .post_with_timeout(
+                    "/admin/vector/sync-replay",
+                    json!({ "limit": *limit }),
+                    short_timeout,
+                )
+                .await
+            {
+                Ok(v) => pretty(v),
+                Err(e) => err("vector/sync-replay", e),
+            }
         }
     }
 }
@@ -3217,6 +3313,8 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
     }
 }
 
+/// Dispatch an `kleos-cli handoff atoms <op>` invocation against the server's
+/// `/handoff/atoms/*` endpoints.
 async fn handle_atom_command(client: &Client, cmd: &AtomCommands) {
     match cmd {
         AtomCommands::List {
