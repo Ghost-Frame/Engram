@@ -310,6 +310,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "chiasm_agent_keys",
         up: apply_schema_v53_chiasm_agent_keys,
     },
+    TenantMigration {
+        version: 54,
+        description: "handoff_atoms",
+        up: apply_schema_v54_handoff_atoms,
+    },
 ];
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
@@ -1003,6 +1008,49 @@ fn apply_schema_v53_chiasm_agent_keys(conn: &Connection) -> Result<()> {
         "../tenant/schema_v53_chiasm_agent_keys.sql"
     ))
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v53 failed: {e}")))
+}
+
+fn apply_schema_v54_handoff_atoms(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS handoff_atoms (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            atom_id         TEXT NOT NULL,
+            handoff_id      INTEGER NOT NULL REFERENCES handoffs(id) ON DELETE CASCADE,
+            user_id         INTEGER NOT NULL,
+            project         TEXT NOT NULL,
+            atom_type       TEXT NOT NULL,
+            content         TEXT NOT NULL,
+            canonical_form  TEXT NOT NULL,
+            salience        REAL NOT NULL DEFAULT 1.0,
+            confidence      REAL NOT NULL DEFAULT 0.5,
+            status          TEXT NOT NULL DEFAULT 'active',
+            created_at      TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            last_seen_at    TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            seen_count      INTEGER NOT NULL DEFAULT 1,
+            decay_immune    INTEGER NOT NULL DEFAULT 0,
+            superseded_by   TEXT,
+            metadata        TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_atoms_project_type ON handoff_atoms(project, atom_type, status);
+        CREATE INDEX IF NOT EXISTS idx_atoms_salience ON handoff_atoms(project, salience DESC);
+        CREATE INDEX IF NOT EXISTS idx_atoms_atom_id ON handoff_atoms(atom_id);
+        CREATE INDEX IF NOT EXISTS idx_atoms_handoff ON handoff_atoms(handoff_id);
+        CREATE INDEX IF NOT EXISTS idx_atoms_last_seen ON handoff_atoms(last_seen_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_atoms_user_project ON handoff_atoms(user_id, project, status);
+        CREATE INDEX IF NOT EXISTS idx_atoms_status ON handoff_atoms(status, atom_type);
+
+        CREATE TABLE IF NOT EXISTS atom_entity_links (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            atom_id     TEXT NOT NULL,
+            entity_id   INTEGER NOT NULL,
+            user_id     INTEGER NOT NULL,
+            linked_at   TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            UNIQUE(atom_id, entity_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ael_atom ON atom_entity_links(atom_id);
+        CREATE INDEX IF NOT EXISTS idx_ael_entity ON atom_entity_links(entity_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v54 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
