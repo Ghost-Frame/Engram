@@ -1,5 +1,10 @@
 pub mod atoms;
 
+pub use atoms::{
+    Atom, AtomStatus, AtomType, BudgetPacker, ExtractedAtom, extract, extract_heuristic,
+    make_atom_id,
+};
+
 use crate::db::Database;
 use crate::{EngError, Result};
 use deadpool_sqlite::Pool;
@@ -672,6 +677,293 @@ impl HandoffsDb {
         })
         .await
         .map_err(|e| EngError::Internal(format!("handoffs delete interact failed: {e}")))?
+        .map_err(|e: rusqlite::Error| EngError::Database(e))
+    }
+
+    /// Persists a batch of extracted atoms for a handoff.
+    ///
+    /// For each atom the stable `atom_id` is derived via [`make_atom_id`]. If
+    /// an atom with that id already exists for this user, it is updated
+    /// (bump `seen_count`, refresh `last_seen_at`, increase salience by 0.1
+    /// capped at 1.0). Otherwise a new row is inserted. All writes run inside
+    /// a single transaction. Returns the `atom_id` strings for every atom in
+    /// the input slice.
+    pub async fn store_atoms(
+        &self,
+        handoff_id: i64,
+        project: &str,
+        extracted: &[atoms::ExtractedAtom],
+        user_id: i64,
+    ) -> Result<Vec<String>> {
+        let conn = self.writer().get().await.map_err(|e| {
+            EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
+        })?;
+
+        // Clone everything needed to move into interact closure.
+        let project = project.to_string();
+        let extracted: Vec<atoms::ExtractedAtom> = extracted.to_vec();
+
+        conn.interact(move |conn| {
+            let tx = conn.transaction()?;
+
+            let mut ids: Vec<String> = Vec::with_capacity(extracted.len());
+
+            for ea in &extracted {
+                let atom_id = make_atom_id(ea.atom_type.clone(), &ea.canonical_form);
+                let decay_immune = ea.atom_type.is_decay_immune();
+
+                // Check if the atom already exists for this user.
+                let exists: bool = tx.query_row(
+                    "SELECT COUNT(*) FROM handoff_atoms WHERE atom_id = ?1 AND user_id = ?2",
+                    rusqlite::params![atom_id, user_id],
+                    |row| row.get::<_, i64>(0),
+                )? > 0;
+
+                if exists {
+                    tx.execute(
+                        "UPDATE handoff_atoms
+                         SET seen_count  = seen_count + 1,
+                             last_seen_at = datetime('now'),
+                             salience     = MIN(1.0, salience + 0.1)
+                         WHERE atom_id = ?1 AND user_id = ?2",
+                        rusqlite::params![atom_id, user_id],
+                    )?;
+                } else {
+                    tx.execute(
+                        "INSERT INTO handoff_atoms
+                             (atom_id, handoff_id, user_id, project, atom_type,
+                              content, canonical_form, salience, confidence,
+                              status, decay_immune)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', ?10)",
+                        rusqlite::params![
+                            atom_id,
+                            handoff_id,
+                            user_id,
+                            project,
+                            ea.atom_type.as_str(),
+                            ea.content,
+                            ea.canonical_form,
+                            ea.confidence,
+                            ea.confidence,
+                            decay_immune,
+                        ],
+                    )?;
+                }
+
+                ids.push(atom_id);
+            }
+
+            tx.commit()?;
+            Ok::<Vec<String>, rusqlite::Error>(ids)
+        })
+        .await
+        .map_err(|e| EngError::Internal(format!("store_atoms interact failed: {e}")))?
+        .map_err(|e: rusqlite::Error| EngError::Database(e))
+    }
+
+    /// Lists atoms for a project, optionally filtered by type and status.
+    ///
+    /// Results are ordered by salience descending. When `status` is `None` the
+    /// query defaults to active atoms only.
+    pub async fn list_atoms(
+        &self,
+        project: &str,
+        atom_type: Option<&str>,
+        status: Option<&str>,
+        limit: i64,
+        user_id: i64,
+    ) -> Result<Vec<atoms::Atom>> {
+        let conn = self.reader().get().await.map_err(|e| {
+            EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
+        })?;
+
+        let project = project.to_string();
+        let atom_type = atom_type.map(|s| s.to_string());
+        let status = status.map(|s| s.to_string());
+
+        conn.interact(move |conn| {
+            let mut conditions: Vec<String> = vec![
+                "user_id = ?1".to_string(),
+                "project = ?2".to_string(),
+            ];
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+                Box::new(user_id) as Box<dyn rusqlite::types::ToSql>,
+                Box::new(project),
+            ];
+
+            if let Some(ref t) = atom_type {
+                conditions.push(format!("atom_type = ?{}", params.len() + 1));
+                params.push(Box::new(t.clone()));
+            }
+
+            // Default to 'active' when the caller does not specify a status.
+            let status_val = status.unwrap_or_else(|| "active".to_string());
+            conditions.push(format!("status = ?{}", params.len() + 1));
+            params.push(Box::new(status_val));
+
+            let where_clause = conditions.join(" AND ");
+            let sql = format!(
+                "SELECT id, atom_id, handoff_id, user_id, project, atom_type,
+                        content, canonical_form, salience, confidence, status,
+                        created_at, last_seen_at, seen_count, decay_immune,
+                        superseded_by, metadata
+                 FROM handoff_atoms
+                 WHERE {}
+                 ORDER BY salience DESC
+                 LIMIT {}",
+                where_clause, limit
+            );
+
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_refs.as_slice(), |row| {
+                let atom_type_str: String = row.get(5)?;
+                let status_str: String = row.get(10)?;
+                let metadata_str: Option<String> = row.get(16)?;
+                let metadata = metadata_str
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok());
+
+                // Default to Entity if the stored value is somehow unknown.
+                let atom_type = atoms::AtomType::parse(&atom_type_str)
+                    .unwrap_or(atoms::AtomType::Entity);
+
+                let status = match status_str.as_str() {
+                    "resolved"   => atoms::AtomStatus::Resolved,
+                    "superseded" => atoms::AtomStatus::Superseded,
+                    "contested"  => atoms::AtomStatus::Contested,
+                    _            => atoms::AtomStatus::Active,
+                };
+
+                Ok(atoms::Atom {
+                    id:             Some(row.get(0)?),
+                    atom_id:        row.get(1)?,
+                    handoff_id:     row.get(2)?,
+                    user_id:        row.get(3)?,
+                    project:        row.get(4)?,
+                    atom_type,
+                    content:        row.get(6)?,
+                    canonical_form: row.get(7)?,
+                    salience:       row.get(8)?,
+                    confidence:     row.get(9)?,
+                    status,
+                    created_at:     row.get(11)?,
+                    last_seen_at:   row.get(12)?,
+                    seen_count:     row.get(13)?,
+                    decay_immune:   row.get(14)?,
+                    superseded_by:  row.get(15)?,
+                    metadata,
+                })
+            })?;
+
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row?);
+            }
+            Ok::<Vec<atoms::Atom>, rusqlite::Error>(results)
+        })
+        .await
+        .map_err(|e| EngError::Internal(format!("list_atoms interact failed: {e}")))?
+        .map_err(|e: rusqlite::Error| EngError::Database(e))
+    }
+
+    /// Returns a packed context string for the project within a token budget.
+    ///
+    /// Fetches up to 200 active atoms, runs them through [`BudgetPacker`], and
+    /// renders the result as a grouped markdown string via
+    /// [`BudgetPacker::to_context_string`].
+    pub async fn get_packed_context(
+        &self,
+        project: &str,
+        max_tokens: usize,
+        user_id: i64,
+    ) -> Result<String> {
+        let atom_list = self.list_atoms(project, None, None, 200, user_id).await?;
+        let packer = atoms::BudgetPacker::new(max_tokens, 5);
+        let packed = packer.pack(&atom_list);
+        Ok(packer.to_context_string(&packed))
+    }
+
+    /// Marks an active atom as superseded by a newer atom.
+    ///
+    /// Only the owning user's active atom is updated. If the atom is already
+    /// resolved, superseded, or belongs to another user this is a no-op.
+    pub async fn supersede_atom(
+        &self,
+        old_atom_id: &str,
+        new_atom_id: &str,
+        user_id: i64,
+    ) -> Result<()> {
+        let conn = self.writer().get().await.map_err(|e| {
+            EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
+        })?;
+
+        let old_atom_id = old_atom_id.to_string();
+        let new_atom_id = new_atom_id.to_string();
+
+        conn.interact(move |conn| {
+            conn.execute(
+                "UPDATE handoff_atoms
+                 SET status = 'superseded', superseded_by = ?2
+                 WHERE atom_id = ?1 AND user_id = ?3 AND status = 'active'",
+                rusqlite::params![old_atom_id, new_atom_id, user_id],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .map_err(|e| EngError::Internal(format!("supersede_atom interact failed: {e}")))?
+        .map_err(|e: rusqlite::Error| EngError::Database(e))
+    }
+
+    /// Applies exponential salience decay to non-immune atoms in a project.
+    ///
+    /// Salience is updated to `MAX(0.01, salience * 0.9^sessions_elapsed)` for
+    /// every non-immune active atom. Atoms whose salience drops below 0.05 are
+    /// then transitioned to `resolved`. Returns the total number of rows
+    /// affected across both statements.
+    pub async fn apply_session_decay(
+        &self,
+        project: &str,
+        sessions_elapsed: u32,
+        user_id: i64,
+    ) -> Result<u64> {
+        let conn = self.writer().get().await.map_err(|e| {
+            EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
+        })?;
+
+        let project = project.to_string();
+
+        conn.interact(move |conn| {
+            // Compute the decay factor once and pass it as a parameter so that
+            // SQLite does not have to evaluate a power function per row.
+            let factor = 0.9_f64.powi(sessions_elapsed as i32);
+
+            let decay_affected = conn.execute(
+                "UPDATE handoff_atoms
+                 SET salience = MAX(0.01, salience * ?1)
+                 WHERE user_id = ?2
+                   AND project = ?3
+                   AND status  = 'active'
+                   AND decay_immune = 0",
+                rusqlite::params![factor, user_id, project],
+            )? as u64;
+
+            let resolve_affected = conn.execute(
+                "UPDATE handoff_atoms
+                 SET status = 'resolved'
+                 WHERE user_id = ?1
+                   AND project = ?2
+                   AND status  = 'active'
+                   AND decay_immune = 0
+                   AND salience < 0.05",
+                rusqlite::params![user_id, project],
+            )? as u64;
+
+            Ok::<u64, rusqlite::Error>(decay_affected + resolve_affected)
+        })
+        .await
+        .map_err(|e| EngError::Internal(format!("apply_session_decay interact failed: {e}")))?
         .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 }
