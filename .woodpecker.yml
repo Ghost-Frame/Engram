@@ -13,6 +13,7 @@ variables:
     && rm -rf /var/lib/apt/lists/*
   - &ci_env
     CARGO_TARGET_DIR: target
+    CARGO_BUILD_JOBS: "4"
     CARGO_BUILD_RUSTC_WRAPPER: ""
   - &ci_env_windows
     CARGO_TARGET_DIR: target-windows
