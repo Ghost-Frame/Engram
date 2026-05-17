@@ -34,6 +34,7 @@ use tempfile::TempDir;
 // Test harness
 // ---------------------------------------------------------------------------
 
+/// Test harness wrapping a bootstrapped router with an admin API key and tenant registry.
 struct TestApp {
     router: Router,
     api_key: String,
@@ -41,11 +42,14 @@ struct TestApp {
     _tmp: TempDir,
 }
 
+/// HTTP request helpers for driving the test router with the admin API key.
 impl TestApp {
+    /// Creates a TestApp with default configuration.
     async fn new() -> Self {
         Self::with_config(Config::default()).await
     }
 
+    /// Creates a TestApp with custom configuration; bootstraps an in-memory DB, tenant registry, and admin API key.
     async fn with_config(config: Config) -> Self {
         // Ensure auth is enabled regardless of dev environment
         std::env::set_var("ENGRAM_OPEN_ACCESS", "0");
@@ -138,10 +142,12 @@ impl TestApp {
         }
     }
 
+    /// Returns the Authorization header value for the admin API key.
     fn bearer(&self) -> String {
         format!("Bearer {}", self.api_key)
     }
 
+    /// Sends an authenticated GET request and returns (status, body).
     async fn get(&self, path: &str) -> (StatusCode, Value) {
         let res = self
             .router
@@ -161,6 +167,7 @@ impl TestApp {
         (status, body)
     }
 
+    /// Sends an authenticated POST request with a JSON payload and returns (status, body).
     async fn post(&self, path: &str, payload: Value) -> (StatusCode, Value) {
         let res = self
             .router
@@ -181,6 +188,7 @@ impl TestApp {
         (status, body)
     }
 
+    /// Sends an authenticated PUT request with a JSON payload and returns (status, body).
     async fn put(&self, path: &str, payload: Value) -> (StatusCode, Value) {
         let res = self
             .router
@@ -201,6 +209,7 @@ impl TestApp {
         (status, body)
     }
 
+    /// Sends an authenticated DELETE request and returns (status, body).
     async fn delete(&self, path: &str) -> (StatusCode, Value) {
         let res = self
             .router
@@ -240,6 +249,7 @@ impl TestApp {
         (status, body)
     }
 
+    /// Sends a POST request with a custom bearer token instead of the admin key.
     async fn post_as(&self, path: &str, payload: Value, key: &str) -> (StatusCode, Value) {
         let res = self
             .router
@@ -260,6 +270,7 @@ impl TestApp {
         (status, body)
     }
 
+    /// Sends a DELETE request with a custom bearer token instead of the admin key.
     async fn delete_as(&self, path: &str, key: &str) -> (StatusCode, Value) {
         let res = self
             .router
@@ -280,6 +291,7 @@ impl TestApp {
     }
 }
 
+/// Reads an axum response body to completion and deserializes it as a `serde_json::Value`.
 async fn body_json(res: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
@@ -287,6 +299,7 @@ async fn body_json(res: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(json!(null))
 }
 
+/// Reads an axum response body to completion and returns the raw bytes.
 async fn body_bytes(res: axum::response::Response) -> Vec<u8> {
     axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
@@ -294,6 +307,7 @@ async fn body_bytes(res: axum::response::Response) -> Vec<u8> {
         .to_vec()
 }
 
+/// Counts the total number of rows in the `memory_pagerank` cache table for the given database.
 async fn pagerank_count_for_user(db: &Database, _user_id: i64) -> i64 {
     db.read(move |conn| {
         conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))
@@ -307,6 +321,7 @@ async fn pagerank_count_for_user(db: &Database, _user_id: i64) -> i64 {
 // HEALTH
 // ---------------------------------------------------------------------------
 
+/// Verifies that GET /health returns a 2xx status with `status: "ok"`.
 #[tokio::test]
 async fn health_returns_ok_status() {
     let app = TestApp::new().await;
@@ -318,6 +333,7 @@ async fn health_returns_ok_status() {
     assert_eq!(body["status"], "ok");
 }
 
+/// Verifies that GET /health includes a `version` field in the response.
 #[tokio::test]
 async fn health_returns_version_field() {
     let app = TestApp::new().await;
@@ -328,6 +344,7 @@ async fn health_returns_version_field() {
     );
 }
 
+/// Verifies that GET /health/ready returns 200 with a passing database check when optional components are absent.
 #[tokio::test]
 async fn health_ready_returns_200_when_db_ok_and_optional_components_absent() {
     let app = TestApp::new().await;
@@ -341,6 +358,7 @@ async fn health_ready_returns_200_when_db_ok_and_optional_components_absent() {
     assert!(body["failing"].as_array().unwrap().is_empty());
 }
 
+/// Verifies that GET /health/live returns 200 with a minimal `status: "ok"` payload.
 #[tokio::test]
 async fn health_live_returns_minimal_payload() {
     let app = TestApp::new().await;
@@ -353,6 +371,7 @@ async fn health_live_returns_minimal_payload() {
 // AUTH / BOOTSTRAP
 // ---------------------------------------------------------------------------
 
+/// Verifies that POST /bootstrap with the correct secret returns both `api_key` and `key` fields.
 #[tokio::test]
 async fn bootstrap_returns_api_key() {
     std::env::set_var("ENGRAM_BOOTSTRAP_SECRET", "test-bootstrap-secret");
@@ -423,6 +442,7 @@ async fn bootstrap_returns_api_key() {
     );
 }
 
+/// Verifies that a second POST /bootstrap call after the server is already initialized returns 403.
 #[tokio::test]
 async fn bootstrap_is_idempotent_returns_forbidden() {
     let app = TestApp::new().await; // already bootstrapped
@@ -448,6 +468,7 @@ async fn bootstrap_is_idempotent_returns_forbidden() {
     );
 }
 
+/// Verifies that a request without an Authorization header returns 401.
 #[tokio::test]
 async fn unauthenticated_request_returns_401() {
     let app = TestApp::new().await;
@@ -470,6 +491,7 @@ async fn unauthenticated_request_returns_401() {
 // MEMORY -- STORE
 // ---------------------------------------------------------------------------
 
+/// Verifies that POST /store returns `stored: true` and a numeric `id` field.
 #[tokio::test]
 async fn store_memory_returns_stored_true_with_id() {
     let app = TestApp::new().await;
@@ -490,6 +512,7 @@ async fn store_memory_returns_stored_true_with_id() {
     );
 }
 
+/// Verifies that POST /store returns all expected top-level fields in the response shape.
 #[tokio::test]
 async fn store_memory_response_shape() {
     let app = TestApp::new().await;
@@ -507,6 +530,7 @@ async fn store_memory_response_shape() {
     assert!(body.get("tags").is_some(), "missing tags");
 }
 
+/// Verifies that POST /store with an empty content string returns 400.
 #[tokio::test]
 async fn store_empty_content_returns_400() {
     let app = TestApp::new().await;
@@ -520,6 +544,7 @@ async fn store_empty_content_returns_400() {
     );
 }
 
+/// Verifies that POST /store with whitespace-only content returns 400.
 #[tokio::test]
 async fn store_whitespace_only_returns_400() {
     let app = TestApp::new().await;
@@ -537,6 +562,7 @@ async fn store_whitespace_only_returns_400() {
 // MEMORY -- GET / DELETE / UPDATE
 // ---------------------------------------------------------------------------
 
+/// Verifies that GET /memory/{id} returns the memory with the correct id and content.
 #[tokio::test]
 async fn get_memory_by_id_returns_correct_id() {
     let app = TestApp::new().await;
@@ -557,6 +583,7 @@ async fn get_memory_by_id_returns_correct_id() {
     assert_eq!(body["content"], "get test");
 }
 
+/// Verifies that GET /memory/{id} for an unknown id returns 404.
 #[tokio::test]
 async fn get_nonexistent_memory_returns_404() {
     let app = TestApp::new().await;
@@ -564,6 +591,7 @@ async fn get_nonexistent_memory_returns_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// Verifies that DELETE /memory/{id} returns `deleted: true`.
 #[tokio::test]
 async fn delete_memory_returns_deleted_true() {
     let app = TestApp::new().await;
@@ -583,6 +611,7 @@ async fn delete_memory_returns_deleted_true() {
     assert_eq!(body["deleted"], true);
 }
 
+/// Verifies that POST /memory/{id}/update returns a response containing an id or new_id field.
 #[tokio::test]
 async fn update_memory_returns_updated_memory() {
     let app = TestApp::new().await;
@@ -613,6 +642,7 @@ async fn update_memory_returns_updated_memory() {
     );
 }
 
+/// Verifies that GET /list returns a `results` array containing stored memories.
 #[tokio::test]
 async fn list_memories_returns_results_array() {
     let app = TestApp::new().await;
@@ -635,6 +665,7 @@ async fn list_memories_returns_results_array() {
     assert!(body["results"].is_array(), "results should be an array");
 }
 
+/// Verifies that GET /tags, POST /tags/search, and PUT /memory/{id}/tags all return correct shapes.
 #[tokio::test]
 async fn tags_endpoints_list_search_and_update() {
     let app = TestApp::new().await;
@@ -688,6 +719,7 @@ async fn tags_endpoints_list_search_and_update() {
     assert_eq!(update_body["tags"], json!(["updated", "fresh"]));
 }
 
+/// Verifies that GET /profile returns a combined shape with user_id, memory_count, top_categories, top_tags, and personality_traits.
 #[tokio::test]
 async fn profile_endpoint_returns_combined_profile_shape() {
     let app = TestApp::new().await;
@@ -712,6 +744,7 @@ async fn profile_endpoint_returns_combined_profile_shape() {
     );
 }
 
+/// Verifies that POST /profile/synthesize returns a non-empty personality_summary string.
 #[tokio::test]
 #[ignore = "personality synthesis requires Brain backend or stable rule-based extraction"]
 async fn profile_synthesize_returns_summary() {
@@ -736,6 +769,7 @@ async fn profile_synthesize_returns_summary() {
     );
 }
 
+/// Verifies that GET /me/stats returns user-scoped memory and category counts.
 #[tokio::test]
 async fn user_stats_endpoint_returns_user_scoped_counts() {
     let app = TestApp::new().await;
@@ -754,6 +788,7 @@ async fn user_stats_endpoint_returns_user_scoped_counts() {
     );
 }
 
+/// Verifies that archive, unarchive, and forget endpoints transition a memory through its lifecycle and make it unreadable after forget.
 #[tokio::test]
 async fn archive_unarchive_and_forget_endpoints_work() {
     let app = TestApp::new().await;
@@ -793,6 +828,7 @@ async fn archive_unarchive_and_forget_endpoints_work() {
     );
 }
 
+/// Verifies that GET /links/{id} and GET /versions/{id} return arrays with the expected version chain.
 #[tokio::test]
 async fn links_and_versions_endpoints_return_arrays() {
     let app = TestApp::new().await;
@@ -838,6 +874,7 @@ async fn links_and_versions_endpoints_return_arrays() {
 // SEARCH
 // ---------------------------------------------------------------------------
 
+/// Verifies that POST /search returns a `results` array.
 #[tokio::test]
 async fn search_returns_results_array() {
     let app = TestApp::new().await;
@@ -857,6 +894,7 @@ async fn search_returns_results_array() {
     assert!(body["results"].is_array(), "results should be an array");
 }
 
+/// Verifies that POST /search returns all required top-level fields including results, abstained, and top_score.
 #[tokio::test]
 async fn search_response_shape() {
     let app = TestApp::new().await;
@@ -872,6 +910,7 @@ async fn search_response_shape() {
     assert!(body.get("top_score").is_some(), "missing top_score");
 }
 
+/// Verifies that GET /schema, /schema/memory, /schema/services, and /schema/graph return the expected document shapes.
 #[tokio::test]
 async fn schema_endpoints_return_expected_shapes() {
     let app = TestApp::new().await;
@@ -910,6 +949,7 @@ async fn schema_endpoints_return_expected_shapes() {
     assert!(graph["endpoints"].as_array().is_some_and(|a| !a.is_empty()));
 }
 
+/// Verifies that POST /search/explain returns per-result score breakdowns and pipeline timing fields.
 #[tokio::test]
 async fn search_explain_returns_score_breakdown_and_timings() {
     let app = TestApp::new().await;
@@ -960,6 +1000,7 @@ async fn search_explain_returns_score_breakdown_and_timings() {
     assert!(pipeline.contains_key("reranker_applied"));
 }
 
+/// Verifies that search returns correct results even when the pagerank background job is disabled.
 #[tokio::test]
 async fn search_still_works_when_pagerank_job_is_disabled() {
     let config = Config {
@@ -990,6 +1031,7 @@ async fn search_still_works_when_pagerank_job_is_disabled() {
     }));
 }
 
+/// Verifies that POST /admin/pagerank/rebuild?user_id=1 populates the pagerank cache for that user.
 #[tokio::test]
 async fn admin_pagerank_rebuild_single_user_populates_cache() {
     let app = TestApp::new().await;
@@ -1028,6 +1070,7 @@ async fn admin_pagerank_rebuild_single_user_populates_cache() {
 
 // Phase 5.1: user_id dropped from memories. rebuild_all_users now runs one
 // single-tenant pass instead of per-user passes.
+/// Verifies that POST /admin/pagerank/rebuild without a user_id performs a single-tenant rebuild and returns success.
 #[tokio::test]
 async fn admin_pagerank_rebuild_all_users_populates_each_users_cache() {
     let app = TestApp::new().await;
@@ -1055,6 +1098,7 @@ async fn admin_pagerank_rebuild_all_users_populates_each_users_cache() {
 // RECALL
 // ---------------------------------------------------------------------------
 
+/// Verifies that POST /recall returns a memories or results array.
 #[tokio::test]
 async fn recall_returns_memories_array() {
     let app = TestApp::new().await;
@@ -1081,6 +1125,7 @@ async fn recall_returns_memories_array() {
 // CONVERSATIONS
 // ---------------------------------------------------------------------------
 
+/// Verifies that POST /conversations returns a numeric `id` for the newly created conversation.
 #[tokio::test]
 async fn create_conversation_returns_id() {
     let app = TestApp::new().await;
@@ -1100,6 +1145,7 @@ async fn create_conversation_returns_id() {
     );
 }
 
+/// Verifies that GET /conversations returns a conversations or results array.
 #[tokio::test]
 async fn list_conversations_returns_array() {
     let app = TestApp::new().await;
@@ -1121,6 +1167,7 @@ async fn list_conversations_returns_array() {
     );
 }
 
+/// Verifies that GET /conversations/{id} returns the conversation object or an id field.
 #[tokio::test]
 async fn get_conversation_by_id() {
     let app = TestApp::new().await;
@@ -1145,6 +1192,7 @@ async fn get_conversation_by_id() {
     );
 }
 
+/// Verifies that POST /conversations/{id}/messages returns a 2xx status when adding a message.
 #[tokio::test]
 async fn add_message_to_conversation() {
     let app = TestApp::new().await;
@@ -1168,6 +1216,7 @@ async fn add_message_to_conversation() {
     );
 }
 
+/// Verifies that POST /admin/cred/resolve substitutes `{{secret:...}}` placeholders with the resolved credd values.
 #[tokio::test]
 async fn admin_cred_resolve_substitutes_secret() {
     let (credd_url, _handle) = spawn_mock_credd().await;
@@ -1187,6 +1236,7 @@ async fn admin_cred_resolve_substitutes_secret() {
     assert_eq!(body["text"], "value=alpha-secret");
 }
 
+/// Verifies that POST /gate/check blocks a command when it matches a blocked pattern resolved from credd.
 #[tokio::test]
 async fn gate_check_blocks_on_resolved_secret_pattern() {
     let (credd_url, _handle) = spawn_mock_credd().await;
@@ -1214,6 +1264,7 @@ async fn gate_check_blocks_on_resolved_secret_pattern() {
         .contains("blocked pattern"));
 }
 
+/// Verifies that conversation messages containing known credd secret values are scrubbed to [REDACTED] before storage.
 #[tokio::test]
 async fn conversations_scrub_known_credd_secret_before_store() {
     let (credd_url, _handle) = spawn_mock_credd().await;
@@ -1245,6 +1296,7 @@ async fn conversations_scrub_known_credd_secret_before_store() {
     assert_eq!(content, "token=[REDACTED]");
 }
 
+/// Verifies that DELETE /conversations/{id} returns `deleted: true`.
 #[tokio::test]
 async fn delete_conversation_returns_deleted_true() {
     let app = TestApp::new().await;
@@ -1264,6 +1316,7 @@ async fn delete_conversation_returns_deleted_true() {
     assert_eq!(body["deleted"], true);
 }
 
+/// Verifies that POST /conversations/bulk creates a conversation with all provided messages and returns an id.
 #[tokio::test]
 async fn bulk_insert_conversation_returns_id_and_message_count() {
     let app = TestApp::new().await;
@@ -1293,6 +1346,7 @@ async fn bulk_insert_conversation_returns_id_and_message_count() {
 // SCRATCHPAD
 // ---------------------------------------------------------------------------
 
+/// Verifies that PUT /scratch stores entries and echoes back the session identifier.
 #[tokio::test]
 async fn scratchpad_put_stores_entries_and_returns_session() {
     let app = TestApp::new().await;
@@ -1321,6 +1375,7 @@ async fn scratchpad_put_stores_entries_and_returns_session() {
     assert!(body.get("stored").is_some(), "should have stored field");
 }
 
+/// Verifies that GET /scratch?session=... returns an entries array including previously stored keys.
 #[tokio::test]
 async fn scratchpad_get_returns_entries_array() {
     let app = TestApp::new().await;
@@ -1348,6 +1403,7 @@ async fn scratchpad_get_returns_entries_array() {
     );
 }
 
+/// Verifies that DELETE /scratch/{session}/{key} removes only the targeted entry and returns the deleted key.
 #[tokio::test]
 async fn scratchpad_delete_key_removes_entry() {
     let app = TestApp::new().await;
@@ -1377,6 +1433,7 @@ async fn scratchpad_delete_key_removes_entry() {
     assert!(body.get("key").is_some(), "should return deleted key");
 }
 
+/// Verifies that DELETE /scratch/{session} removes all entries for the session and leaves a count of zero.
 #[tokio::test]
 async fn scratchpad_delete_session_removes_all_entries() {
     let app = TestApp::new().await;
@@ -1413,6 +1470,7 @@ async fn scratchpad_delete_session_removes_all_entries() {
 // GRAPH -- ENTITIES
 // ---------------------------------------------------------------------------
 
+/// Verifies that POST /entities returns a numeric `id` for the newly created entity.
 #[tokio::test]
 async fn create_entity_returns_id() {
     let app = TestApp::new().await;
@@ -1432,6 +1490,7 @@ async fn create_entity_returns_id() {
     );
 }
 
+/// Verifies that GET /entities/{id} returns the entity with the correct id and name.
 #[tokio::test]
 async fn get_entity_by_id_returns_entity() {
     let app = TestApp::new().await;
@@ -1452,6 +1511,7 @@ async fn get_entity_by_id_returns_entity() {
     assert_eq!(body["id"], id);
 }
 
+/// Verifies that DELETE /entities/{id} returns `deleted: true`.
 #[tokio::test]
 async fn delete_entity_returns_deleted_true() {
     let app = TestApp::new().await;
@@ -1475,6 +1535,7 @@ async fn delete_entity_returns_deleted_true() {
 // FSRS
 // ---------------------------------------------------------------------------
 
+/// Verifies that GET /fsrs/state?id={id} returns a response containing the `fsrs_stability` field.
 #[tokio::test]
 async fn fsrs_state_has_stability_key() {
     let app = TestApp::new().await;
@@ -1497,6 +1558,7 @@ async fn fsrs_state_has_stability_key() {
     );
 }
 
+/// Verifies that POST /fsrs/review records the review and echoes back the memory id.
 #[tokio::test]
 async fn fsrs_review_records_review_and_returns_id() {
     let app = TestApp::new().await;
@@ -1569,6 +1631,7 @@ async fn create_user2_key(app: &TestApp) -> String {
 // test harness (common::test_app_with_tenants) that spins per-tenant shards.
 // Re-enable them then; the assertions remain the correct contract.
 
+/// Verifies that user B cannot read a memory belonging to user A.
 #[tokio::test]
 #[ignore = "Phase 5.1: shared-DB isolation removed; needs tenant harness (restore in Phase 4.2)"]
 async fn multi_tenant_user_b_cannot_read_user_a_memory() {
@@ -1591,6 +1654,7 @@ async fn multi_tenant_user_b_cannot_read_user_a_memory() {
     );
 }
 
+/// Verifies that a delete attempt by user B leaves user A's memory intact and readable.
 #[tokio::test]
 #[ignore = "Phase 5.1: shared-DB isolation removed; needs tenant harness (restore in Phase 4.2)"]
 async fn multi_tenant_user_b_cannot_delete_user_a_memory() {
@@ -1615,6 +1679,7 @@ async fn multi_tenant_user_b_cannot_delete_user_a_memory() {
     let _ = del_status;
 }
 
+/// Verifies that search results for user B do not include memories stored by user A.
 #[tokio::test]
 #[ignore = "Phase 5.1: shared-DB isolation removed; needs tenant harness (restore in Phase 4.2)"]
 async fn multi_tenant_search_is_scoped_to_user() {
@@ -1650,6 +1715,7 @@ async fn multi_tenant_search_is_scoped_to_user() {
     );
 }
 
+/// Verifies that the list endpoint for user B does not include memories belonging to user A.
 #[tokio::test]
 #[ignore = "Phase 5.1: shared-DB isolation removed; needs tenant harness (restore in Phase 4.2)"]
 async fn multi_tenant_list_is_scoped_to_user() {
@@ -1678,6 +1744,7 @@ async fn multi_tenant_list_is_scoped_to_user() {
     );
 }
 
+/// Verifies that the tags endpoint for user B does not expose tags created by user A.
 #[tokio::test]
 #[ignore = "Phase 5.1: shared-DB isolation removed; needs tenant harness (restore in Phase 4.2)"]
 async fn multi_tenant_tags_are_scoped_to_user() {
@@ -1700,6 +1767,7 @@ async fn multi_tenant_tags_are_scoped_to_user() {
     assert!(!cross_tenant, "user B should not see user A's tags");
 }
 
+/// Verifies that user B cannot access a conversation created by user A.
 #[tokio::test]
 #[ignore = "Phase 5 Stage 8: user_id dropped from conversations; isolation needs tenant harness"]
 async fn multi_tenant_conversations_are_scoped() {
@@ -1727,7 +1795,9 @@ async fn multi_tenant_conversations_are_scoped() {
     );
 }
 
+/// Spawns an in-process mock credd HTTP server and returns its base URL and join handle.
 async fn spawn_mock_credd() -> (String, tokio::task::JoinHandle<()>) {
+    /// Handles GET /secret/{service}/{key} and returns a hard-coded credential payload for test fixtures.
     async fn secret_handler(
         axum::extract::Path((service, key)): axum::extract::Path<(String, String)>,
     ) -> Json<Value> {
@@ -1755,6 +1825,7 @@ async fn spawn_mock_credd() -> (String, tokio::task::JoinHandle<()>) {
         Json(payload)
     }
 
+    /// Handles GET /secrets and returns the list of available test fixture secrets.
     async fn list_handler() -> Json<Value> {
         Json(json!({
             "secrets": [
@@ -1782,6 +1853,7 @@ async fn spawn_mock_credd() -> (String, tokio::task::JoinHandle<()>) {
 // SSE streaming: /ingest/stream (Part 3.7)
 // ---------------------------------------------------------------------------
 
+/// Verifies that POST /ingest/stream with Accept: text/event-stream emits SSE progress events and at least one pipeline phase event.
 #[tokio::test]
 async fn ingest_stream_emits_sse_progress_and_result() {
     let app = TestApp::new().await;
@@ -1828,6 +1900,7 @@ async fn ingest_stream_emits_sse_progress_and_result() {
     );
 }
 
+/// Verifies that POST /ingest/stream without an SSE Accept header still returns a framed result event.
 #[tokio::test]
 async fn ingest_stream_falls_back_to_json_without_accept_header() {
     let app = TestApp::new().await;
@@ -1856,6 +1929,7 @@ async fn ingest_stream_falls_back_to_json_without_accept_header() {
     );
 }
 
+/// Verifies that POST /ingest/stream with an empty body returns 400.
 #[tokio::test]
 async fn ingest_stream_rejects_empty_body() {
     let app = TestApp::new().await;
@@ -1876,6 +1950,7 @@ async fn ingest_stream_rejects_empty_body() {
 // C2 wire: ingestion must enqueue an `ingestion.fact_extract` job for each
 // memory it persists. Without a worker the server tests don't run the job,
 // but the row in `jobs` proves the producer side of the pipeline is live.
+/// Verifies that POST /ingest enqueues an `ingestion.fact_extract` job with the required payload fields.
 #[tokio::test]
 async fn ingest_enqueues_fact_extract_job() {
     let app = TestApp::new().await;
@@ -1946,6 +2021,7 @@ async fn ingest_enqueues_fact_extract_job() {
 // 3.8 Resumable chunked upload
 // ---------------------------------------------------------------------------
 
+/// Returns the SHA-256 digest of `data` as a lowercase hex string.
 fn sha256_hex_test(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -1953,11 +2029,13 @@ fn sha256_hex_test(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Returns the standard base64 encoding of `data`.
 fn b64_test(data: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
+/// Verifies the full resumable chunked upload flow: init, upload chunks, re-upload idempotently, then complete.
 #[tokio::test]
 async fn upload_init_chunk_complete_end_to_end() {
     let app = TestApp::new().await;
@@ -2033,6 +2111,7 @@ async fn upload_init_chunk_complete_end_to_end() {
     assert!(fb["ingested_memories"].as_i64().unwrap() >= 1);
 }
 
+/// Verifies that uploading a chunk with a mismatched hash returns 400.
 #[tokio::test]
 async fn upload_chunk_rejects_bad_hash() {
     let app = TestApp::new().await;
@@ -2054,6 +2133,7 @@ async fn upload_chunk_rejects_bad_hash() {
     assert_eq!(cs, StatusCode::BAD_REQUEST, "body: {cb}");
 }
 
+/// Verifies that completing an upload with a missing chunk returns 400.
 #[tokio::test]
 async fn upload_complete_rejects_missing_chunk() {
     let app = TestApp::new().await;
@@ -2085,6 +2165,7 @@ async fn upload_complete_rejects_missing_chunk() {
     assert_eq!(fs, StatusCode::BAD_REQUEST, "body: {fb}");
 }
 
+/// Verifies that GET /ingest/upload/{id}/status reports the correct received chunk indices and count.
 #[tokio::test]
 async fn upload_status_reports_received_indices() {
     let app = TestApp::new().await;
@@ -2118,6 +2199,7 @@ async fn upload_status_reports_received_indices() {
     assert_eq!(sb["status"], "active");
 }
 
+/// Verifies that POST /ingest/upload/abort clears the session and subsequent chunk uploads are rejected.
 #[tokio::test]
 async fn upload_abort_clears_chunks() {
     let app = TestApp::new().await;
@@ -2161,6 +2243,7 @@ async fn upload_abort_clears_chunks() {
 // rejected anything non-UTF-8 with HTTP 400. A synthetic %PDF header followed
 // by non-UTF-8 bytes won't parse to a real document, but the response must be
 // a 200 with Failed/empty results rather than a 400 UTF-8 rejection.
+/// Verifies that a PDF upload is dispatched to the binary ingest path and does not produce a UTF-8 rejection error.
 #[tokio::test]
 async fn upload_complete_dispatches_binary_format_to_ingest_binary() {
     let app = TestApp::new().await;
@@ -2231,11 +2314,7 @@ async fn upload_complete_dispatches_binary_format_to_ingest_binary() {
 // GATE -- ResolvedDb extractor (Stage 14)
 // ---------------------------------------------------------------------------
 
-/// Verifies that check_handler queries the agents table via ResolvedDb.
-/// Registers an agent, links an API key to it, then makes two /gate/check
-/// calls:
-///   1. Correct agent name -> allowed (no block from allowlist).
-///   2. Wrong agent name -> rejected 403 (allowlist enforced).
+/// Verifies that /gate/check allows a request when the API key's bound agent matches and rejects it with 403 when the agent name is wrong.
 #[tokio::test]
 async fn gate_check_resolves_agent_via_tenant_shard() {
     let app = TestApp::new().await;

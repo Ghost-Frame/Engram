@@ -16,6 +16,7 @@ use kleos_lib::services::loom::{
 mod types;
 use types::{CompleteStepBody, FailStepBody, GetLogsParams, ListRunsParams};
 
+/// Builds the Loom workflow engine sub-router with all workflow, run, step, and stats routes.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -45,6 +46,9 @@ pub fn router() -> Router<AppState> {
 // Workflow handlers
 // ---------------------------------------------------------------------------
 
+/// Handler for `GET /loom/workflows`.
+///
+/// Returns all workflows in the tenant's shard as `{ workflows: [...] }`.
 async fn list_workflows_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -53,6 +57,9 @@ async fn list_workflows_handler(
     Ok(Json(json!({ "workflows": workflows })))
 }
 
+/// Handler for `POST /loom/workflows`.
+///
+/// Creates a new workflow definition; injects the authenticated user's id and returns HTTP 201.
 async fn create_workflow_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -66,6 +73,9 @@ async fn create_workflow_handler(
     Ok((StatusCode::CREATED, Json(json!(workflow))))
 }
 
+/// Handler for `GET /loom/workflows/{id}`.
+///
+/// Returns the workflow row for the given numeric `id`, or 404 if not found.
 async fn get_workflow_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -75,6 +85,9 @@ async fn get_workflow_handler(
     Ok(Json(json!(workflow)))
 }
 
+/// Handler for `PATCH /loom/workflows/{id}`.
+///
+/// Partially updates a workflow definition and returns the updated row.
 async fn update_workflow_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -85,6 +98,9 @@ async fn update_workflow_handler(
     Ok(Json(json!(workflow)))
 }
 
+/// Handler for `DELETE /loom/workflows/{id}`.
+///
+/// Permanently removes a workflow definition and returns `{ "ok": true }`.
 async fn delete_workflow_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -98,6 +114,9 @@ async fn delete_workflow_handler(
 // Run handlers
 // ---------------------------------------------------------------------------
 
+/// Handler for `POST /loom/runs`.
+///
+/// Starts a new workflow run; injects the authenticated user's id and returns HTTP 201.
 async fn create_run_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -111,6 +130,9 @@ async fn create_run_handler(
     Ok((StatusCode::CREATED, Json(json!(run))))
 }
 
+/// Handler for `GET /loom/runs`.
+///
+/// Lists runs with optional `workflow_id`, `status`, and `limit` filters; returns `{ runs: [...] }`.
 async fn list_runs_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -121,6 +143,9 @@ async fn list_runs_handler(
     Ok(Json(json!({ "runs": runs })))
 }
 
+/// Handler for `GET /loom/runs/{id}`.
+///
+/// Returns the full run row for the given numeric `id`, or 404 if not found.
 async fn get_run_handler(
     Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -130,6 +155,9 @@ async fn get_run_handler(
     Ok(Json(json!(run)))
 }
 
+/// Handler for `POST /loom/runs/{id}/cancel`.
+///
+/// Cancels an active run and returns `{ "ok": bool }` indicating whether the run was cancelled.
 async fn cancel_run_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -139,6 +167,9 @@ async fn cancel_run_handler(
     Ok(Json(json!({ "ok": cancelled })))
 }
 
+/// Handler for `GET /loom/runs/{id}/steps`.
+///
+/// Returns all steps for a run, scoped to the authenticated user, as `{ steps: [...] }`.
 async fn get_steps_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -148,6 +179,9 @@ async fn get_steps_handler(
     Ok(Json(json!({ "steps": steps })))
 }
 
+/// Handler for `GET /loom/runs/{id}/logs`.
+///
+/// Returns log entries for a run with optional `step_id`, `level`, and `limit` filters.
 async fn get_logs_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -171,6 +205,9 @@ async fn get_logs_handler(
 // Step handlers
 // ---------------------------------------------------------------------------
 
+/// Handler for `POST /loom/steps/{id}/complete`.
+///
+/// Marks a step as completed, stores its output payload, and returns the updated step row.
 async fn complete_step_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -181,6 +218,9 @@ async fn complete_step_handler(
     Ok(Json(json!(step)))
 }
 
+/// Handler for `POST /loom/steps/{id}/fail`.
+///
+/// Marks a step as failed with the provided error message and returns the updated step row.
 async fn fail_step_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -195,6 +235,9 @@ async fn fail_step_handler(
 // Stats
 // ---------------------------------------------------------------------------
 
+/// Handler for `GET /loom/stats`.
+///
+/// Returns aggregate workflow and run statistics scoped to the authenticated user.
 async fn get_stats_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,

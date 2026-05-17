@@ -146,12 +146,11 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
             "INSERT INTO soma_agents
                 (name, type, description, capabilities, config)
              VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(name) DO UPDATE SET
-                type = excluded.type,
-                description = excluded.description,
-                capabilities = excluded.capabilities,
-                config = excluded.config,
-                updated_at = datetime('now')",
+             ON CONFLICT(name) DO UPDATE SET type = excluded.type,
+                 description = excluded.description,
+                 capabilities = excluded.capabilities,
+                 config = excluded.config,
+                 updated_at = datetime('now')",
             rusqlite::params![name, type_, description, capabilities_str, config_str],
         )
         .map_err(rusqlite_to_eng_error)?;

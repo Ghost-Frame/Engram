@@ -14,6 +14,7 @@ use tokio::sync::{broadcast, watch, Mutex, RwLock, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+/// Holds a broadcast channel and ring buffer for streaming session events to SSE subscribers.
 pub struct SessionBroadcast {
     pub buffer: VecDeque<String>,
     pub tx: broadcast::Sender<String>,
@@ -22,7 +23,9 @@ pub struct SessionBroadcast {
     pub last_activity: Arc<AtomicU64>,
 }
 
+/// Constructor and helper methods for [`SessionBroadcast`].
 impl SessionBroadcast {
+    /// Creates a `SessionBroadcast` with a 1024-slot broadcast channel and an empty ring buffer.
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(1024);
         SessionBroadcast {
@@ -33,7 +36,9 @@ impl SessionBroadcast {
     }
 }
 
+/// Provides a default [`SessionBroadcast`] by delegating to [`SessionBroadcast::new`].
 impl Default for SessionBroadcast {
+    /// Delegates to [`SessionBroadcast::new`].
     fn default() -> Self {
         Self::new()
     }
@@ -44,6 +49,9 @@ impl Default for SessionBroadcast {
 pub type SessionMap =
     Arc<RwLock<HashMap<(i64, String), Arc<tokio::sync::Mutex<SessionBroadcast>>>>>;
 
+/// Central Axum application state shared across all request handlers.
+///
+/// Every field is `Arc`-wrapped (or cheaply `Clone`) so the derived `Clone` is shallow.
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Database>,
@@ -97,6 +105,7 @@ pub struct AppState {
     pub axon_broadcast: broadcast::Sender<serde_json::Value>,
 }
 
+/// Accessor methods that clone `Arc`'d providers without holding locks across awaits.
 impl AppState {
     /// Clone out the currently-loaded embedder without holding the RwLock
     /// across an await. The inner value is an `Arc` so the clone is cheap,
