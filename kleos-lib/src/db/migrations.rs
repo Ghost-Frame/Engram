@@ -550,6 +550,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: true,
     },
+    Migration {
+        version: 63,
+        description: "handoff_atoms",
+        up: run_migration_handoff_atoms,
+        down: None,
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -680,6 +687,8 @@ const MIGRATION_CHIASM_EXTENDED_FIELDS: i64 = 60;
 /// Version number for creating chiasm path claims and task dependencies tables.
 const MIGRATION_CHIASM_PATH_CLAIMS: i64 = 61;
 const MIGRATION_CHIASM_AGENT_KEYS: i64 = 62;
+/// Version number for creating handoff_atoms and atom_entity_links tables.
+const MIGRATION_HANDOFF_ATOMS: i64 = 63;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1176,6 +1185,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 62: chiasm_agent_keys");
         run_migration_chiasm_agent_keys(conn)?;
         record_migration(conn, MIGRATION_CHIASM_AGENT_KEYS, "chiasm_agent_keys")?;
+    }
+
+    if current_version < MIGRATION_HANDOFF_ATOMS {
+        info!("Running migration 63: handoff_atoms");
+        run_migration_handoff_atoms(conn)?;
+        record_migration(conn, MIGRATION_HANDOFF_ATOMS, "handoff_atoms")?;
     }
 
     Ok(())
@@ -4150,6 +4165,55 @@ fn run_migration_chiasm_agent_keys(conn: &rusqlite::Connection) -> Result<()> {
     )
     .map_err(|e| EngError::DatabaseMessage(format!("migration 62 chiasm_agent_keys: {e}")))?;
     info!("Migration 62 complete: chiasm_agent_keys created");
+    Ok(())
+}
+
+/// Migration 63: create `handoff_atoms` and `atom_entity_links` tables.
+///
+/// `handoff_atoms` stores extracted knowledge atoms from session handoffs,
+/// with salience and confidence scores for decay-based pruning.
+/// `atom_entity_links` associates atoms with Kleos memory entities.
+fn run_migration_handoff_atoms(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS handoff_atoms (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            atom_id         TEXT NOT NULL,
+            handoff_id      INTEGER NOT NULL,
+            user_id         INTEGER NOT NULL DEFAULT 1,
+            project         TEXT NOT NULL,
+            atom_type       TEXT NOT NULL,
+            content         TEXT NOT NULL,
+            canonical_form  TEXT NOT NULL,
+            salience        REAL NOT NULL DEFAULT 0.5,
+            confidence      REAL NOT NULL DEFAULT 0.5,
+            status          TEXT NOT NULL DEFAULT 'active',
+            created_at      TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            last_seen_at    TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            seen_count      INTEGER NOT NULL DEFAULT 1,
+            decay_immune    INTEGER NOT NULL DEFAULT 0,
+            superseded_by   TEXT,
+            metadata        TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_atoms_project_type ON handoff_atoms(project, atom_type, status);
+        CREATE INDEX IF NOT EXISTS idx_atoms_salience ON handoff_atoms(project, salience DESC);
+        CREATE INDEX IF NOT EXISTS idx_atoms_atom_id ON handoff_atoms(atom_id);
+        CREATE INDEX IF NOT EXISTS idx_atoms_handoff ON handoff_atoms(handoff_id);
+        CREATE INDEX IF NOT EXISTS idx_atoms_last_seen ON handoff_atoms(last_seen_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_atoms_user_project ON handoff_atoms(user_id, project, status);
+        CREATE INDEX IF NOT EXISTS idx_atoms_status ON handoff_atoms(status, atom_type);
+        CREATE TABLE IF NOT EXISTS atom_entity_links (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            atom_id     TEXT NOT NULL,
+            entity_id   INTEGER NOT NULL,
+            user_id     INTEGER NOT NULL,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            UNIQUE(atom_id, entity_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ael_atom ON atom_entity_links(atom_id);
+        CREATE INDEX IF NOT EXISTS idx_ael_entity ON atom_entity_links(entity_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("migration 63 handoff_atoms: {e}")))?;
+    info!("Migration 63 complete: handoff_atoms and atom_entity_links created");
     Ok(())
 }
 
