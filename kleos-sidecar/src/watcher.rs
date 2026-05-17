@@ -18,6 +18,8 @@ use tokio::sync::RwLock;
 use crate::gate::{GateResult, MemoryGate, PendingTurn};
 use crate::SidecarState;
 
+/// Per-file byte offset map, persisted so the watcher resumes from where it
+/// left off after a restart instead of re-extracting historic turns.
 type FilePositions = Arc<RwLock<HashMap<PathBuf, u64>>>;
 
 const CHECKPOINT_FLUSH_EVERY: usize = 10;
@@ -29,6 +31,17 @@ const BATCH_IDLE_SECS: u64 = 5;
 /// Flush when pending turns exceed this count regardless of idle time.
 const BATCH_MAX_PENDING: usize = 20;
 
+/// Hard cap on how many turns a single file-extract pass will emit.
+/// Defends against giant files (recovered state, fresh attach, etc.)
+/// queueing hundreds of LLM calls in one batch.
+const MAX_TURNS_PER_EXTRACT: usize = 10;
+
+/// Minimum delay between gate LLM calls. Spaces out GPU work so a
+/// long batch can't pin the device at 100% for minutes on end.
+const GATE_PACE_MS: u64 = 1500;
+
+/// Read the watcher checkpoint JSON from `path`, returning an empty map if the
+/// file is missing or corrupt so the watcher can keep running without history.
 fn load_checkpoint(path: &Path) -> HashMap<PathBuf, u64> {
     match std::fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<HashMap<PathBuf, u64>>(&text) {
@@ -49,6 +62,8 @@ fn load_checkpoint(path: &Path) -> HashMap<PathBuf, u64> {
     }
 }
 
+/// Atomically write the current per-file positions to `path` via temp-then-rename
+/// so a crash mid-write cannot leave a partial checkpoint.
 pub fn flush_checkpoint(path: &Path, positions: &HashMap<PathBuf, u64>) {
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -74,6 +89,9 @@ pub fn flush_checkpoint(path: &Path, positions: &HashMap<PathBuf, u64>) {
     }
 }
 
+/// Resolve the on-disk path for the watcher checkpoint. Honours
+/// `ENGRAM_SIDECAR_WATCHER_STATE_PATH` if set; otherwise defaults to
+/// `~/.kleos/sidecar-watcher-state.json`.
 pub fn checkpoint_path() -> PathBuf {
     if let Ok(p) = std::env::var("ENGRAM_SIDECAR_WATCHER_STATE_PATH") {
         return PathBuf::from(p);
@@ -84,6 +102,8 @@ pub fn checkpoint_path() -> PathBuf {
         .join("sidecar-watcher-state.json")
 }
 
+/// Spawn the watcher loop on the Tokio runtime. Returns the join handle so the
+/// caller can await shutdown or detach.
 pub fn start(state: SidecarState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = run_watcher(state).await {
@@ -92,6 +112,9 @@ pub fn start(state: SidecarState) -> tokio::task::JoinHandle<()> {
     })
 }
 
+/// Main watcher loop: subscribes to JSONL file changes via notify, batches new
+/// turns, feeds them through the LLM gate, and stores curated memories to Kleos.
+/// Returns Ok on graceful shutdown; propagates any fatal initialisation errors.
 async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let watch_dir = get_watch_dir();
 
@@ -113,6 +136,7 @@ async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Erro
                 .gate_model
                 .clone()
                 .or_else(|| state.compress_model.clone()),
+            GATE_PACE_MS,
         )),
         None => {
             tracing::warn!(
@@ -235,6 +259,8 @@ async fn run_watcher(state: SidecarState) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// Resolve the directory that contains Claude Code session JSONL files.
+/// Honours `CLAUDE_SESSIONS_DIR`; otherwise defaults to `~/.claude/projects`.
 fn get_watch_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("CLAUDE_SESSIONS_DIR") {
         return PathBuf::from(dir);
@@ -257,6 +283,9 @@ fn parse_session_path(path: &Path) -> Option<(String, String)> {
     Some((project, stem))
 }
 
+/// Read new assistant turns from `path` starting at the saved offset, advance
+/// the offset, and return up to `MAX_TURNS_PER_EXTRACT` turns. First-seen files
+/// are checkpointed at EOF so historic content is not replayed.
 async fn extract_turns_from_file(
     path: &Path,
     positions: &FilePositions,
@@ -266,14 +295,26 @@ async fn extract_turns_from_file(
     let (project, session_id) =
         parse_session_path(path).unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
 
-    let last_pos = {
-        let pos_map = positions.read().await;
-        pos_map.get(&path_buf).copied().unwrap_or(0)
-    };
-
     let file = File::open(path)?;
     let file_len = file.metadata()?.len();
-    let start_pos = if file_len < last_pos { 0 } else { last_pos };
+
+    // First-time-seen files: skip to EOF. We do NOT replay history; only new
+    // turns written after the sidecar starts get evaluated. This is the
+    // critical guardrail against GPU-melting backfills.
+    let last_pos = {
+        let pos_map = positions.read().await;
+        pos_map.get(&path_buf).copied()
+    };
+    let start_pos = match last_pos {
+        Some(p) if p <= file_len => p,
+        Some(_) => 0, // file was truncated, restart
+        None => {
+            // Unknown file: persist EOF as the starting point and skip parsing.
+            let mut pos_map = positions.write().await;
+            pos_map.insert(path_buf, file_len);
+            return Ok(Vec::new());
+        }
+    };
 
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::Start(start_pos))?;
@@ -304,6 +345,10 @@ async fn extract_turns_from_file(
                         session_id: session_id.clone(),
                         project: project.clone(),
                     });
+                    if turns.len() >= MAX_TURNS_PER_EXTRACT {
+                        // Don't advance past this line; we'll resume here next event.
+                        break;
+                    }
                 }
             }
         }
@@ -394,11 +439,18 @@ async fn store_gate_results(results: &[GateResult], state: &SidecarState) -> usi
 
         let importance = result.verdict.importance.unwrap_or(3);
 
-        let content = result
-            .verdict
-            .summary
-            .as_deref()
-            .unwrap_or(&result.original_text);
+        // Store the full original assistant turn as content so specific
+        // entities (tool names, hostnames, paths, ports) survive into the FTS
+        // and embedding indexes. The LLM's one-line summary is prepended as a
+        // header -- it gives a clean preview in search lists without throwing
+        // away the searchable body underneath.
+        let owned_content = match result.verdict.summary.as_deref() {
+            Some(summary) if !summary.trim().is_empty() => {
+                format!("{}\n\n{}", summary.trim(), result.original_text)
+            }
+            _ => result.original_text.clone(),
+        };
+        let content = owned_content.as_str();
 
         let req = serde_json::json!({
             "content": content,
