@@ -31,6 +31,7 @@ pub mod ingestion;
 pub mod intelligence;
 pub mod jobs;
 pub mod loom;
+pub mod mcp;
 pub mod mcp_schema;
 pub mod memory;
 pub mod onboard;

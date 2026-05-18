@@ -108,11 +108,12 @@ use crate::middleware::safe_mode::safe_mode_middleware;
 use crate::routes;
 use crate::state::AppState;
 
-/// Build the Axum router with all routes and middleware applied.
-/// Exposed as a public function so integration tests can build an in-process app.
-pub fn build_router(state: AppState) -> Router {
-    // API routes that require bearer token auth
-    let api_routes = Router::new()
+/// Merges all API route modules into a single router. Shared between the
+/// public router (with auth/rate-limit/audit middleware) and the internal
+/// MCP dispatch router (bare, no middleware). Adding a route module here
+/// automatically makes it available via both HTTP and MCP.
+fn merge_api_routes() -> Router<AppState> {
+    Router::new()
         .merge(routes::health::router())
         .merge(routes::handoffs::router())
         .merge(routes::docs::router())
@@ -169,6 +170,24 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::policy::router())
         .merge(routes::users::router())
         .merge(routes::mcp_schema::router())
+}
+
+/// Build the Axum router with all routes and middleware applied.
+/// Exposed as a public function so integration tests can build an in-process app.
+pub fn build_router(state: AppState) -> Router {
+    let bare_routes = merge_api_routes();
+
+    // Internal router for MCP dispatch: same routes, NO middleware.
+    // The MCP handler injects a pre-validated AuthContext into request
+    // extensions before calling oneshot(), so handler extractors work
+    // normally. Auth, rate limiting, and audit run once on the outer
+    // POST /mcp request -- inner dispatch is free.
+    let internal_router = bare_routes.clone().with_state(state.clone());
+    let mcp_route = routes::mcp::router(internal_router);
+
+    // API routes that require bearer token auth
+    let api_routes = bare_routes
+        .merge(mcp_route)
         // Rate limit runs after auth (inner layer), then auth sets context (outer layer)
         .layer(axum_mw::from_fn_with_state(
             state.clone(),

@@ -43,7 +43,7 @@ fn too_many_requests(retry_after: i64) -> Response {
 
 /// Return the cost multiplier for a given request path and method.
 /// Default cost is 1 for reads, 2 for writes.
-fn endpoint_cost(path: &str, method: &axum::http::Method) -> i64 {
+pub(crate) fn endpoint_cost(path: &str, method: &axum::http::Method) -> i64 {
     // Admin table-scale operations. These walk the entire corpus or
     // rebuild an ANN index; a single call can cost minutes of CPU +
     // embedding + vector-index work. Charging the full budget prevents

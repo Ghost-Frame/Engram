@@ -23,13 +23,15 @@ piv = ["kleos-mcp/piv"]
 [dependencies]
 kleos-lib = { path = "../kleos-lib", version = "1.1.2", features = ["sqlcipher"] }
 kleos-cred = { path = "../kleos-cred", version = "1.1.2" }
+kleos-client = { path = "../kleos-client", version = "1.1.2", default-features = false }
 kleos-mcp = { path = "../kleos-mcp", version = "1.1.2", default-features = false }
+percent-encoding = "2.3"
 axum = { workspace = true, features = ["ws"] }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 subtle = { workspace = true }
-tower = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 tower-http = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
