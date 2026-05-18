@@ -263,6 +263,58 @@ impl VectorIndex for LanceIndex {
         Ok(())
     }
 
+    /// Batched upsert. One delete (`memory_id IN (...)`) + one add per call
+    /// amortises Lance's per-row manifest rewrite across the whole batch,
+    /// which dominates cost during /admin/backfill_chunks once the table is
+    /// non-trivially populated. The single-row `insert` path stays in place
+    /// for normal store traffic where there is nothing to batch.
+    async fn insert_many(&self, items: &[(i64, Vec<f32>)]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        for (_, emb) in items {
+            if emb.len() != self.dimensions {
+                return Err(EngError::InvalidInput(format!(
+                    "embedding dimension mismatch: expected {}, got {}",
+                    self.dimensions,
+                    emb.len()
+                )));
+            }
+        }
+
+        let table = self.ensure_table().await?;
+        let schema = vector_schema(self.dimensions);
+
+        let ids: Vec<i64> = items.iter().map(|(id, _)| *id).collect();
+        let embeddings: Vec<Option<Vec<Option<f32>>>> = items
+            .iter()
+            .map(|(_, e)| Some(e.iter().copied().map(Some).collect()))
+            .collect();
+        let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            embeddings,
+            self.dimensions as i32,
+        );
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(ids.clone())), Arc::new(vectors)],
+        )
+        .map_err(|e| lance_err("build LanceDB batch record batch", e))?;
+
+        let id_list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        table
+            .delete(&format!("memory_id IN ({})", id_list))
+            .await
+            .map_err(|e| lance_err("delete previous LanceDB vector rows (batch)", e))?;
+        table
+            .add(vec![batch])
+            .execute()
+            .await
+            .map_err(|e| lance_err("insert LanceDB vector rows (batch)", e))?;
+
+        self.ensure_vector_index(&table).await;
+        Ok(())
+    }
+
     async fn search(&self, embedding: &[f32], limit: usize) -> Result<Vec<VectorHit>> {
         if embedding.len() != self.dimensions {
             return Err(EngError::InvalidInput(format!(

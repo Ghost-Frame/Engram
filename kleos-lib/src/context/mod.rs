@@ -593,6 +593,7 @@ async fn assemble_context_inner(
         source_filter: None,
         include_archived: None,
         include_noise: None,
+        exclude_consolidated: Some(true),
     };
     let semantic_results = hybrid_search(db, search_req).await.unwrap_or_default();
     timing.search_ms = Some(t_search.elapsed().as_millis() as u64);

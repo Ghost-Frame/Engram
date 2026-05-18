@@ -1,6 +1,7 @@
 use crate::memory::types::{QuestionType, SearchStrategy};
 use chrono::Utc;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 pub use crate::validation::RERANKER_TOP_K;
 pub const AUTO_LINK_THRESHOLD: f64 = 0.55;
@@ -16,7 +17,16 @@ pub const SEARCH_PERSONALITY_MIN_SCORE: f64 = 0.30;
 /// dynamic range now spans an order of magnitude per memory rather than
 /// a third, which keeps relevant-but-old memories rankable while still
 /// letting fresh memories outscore them.
-pub const DECAY_FLOOR: f64 = 0.1;
+const DEFAULT_DECAY_FLOOR: f64 = 0.1;
+static DECAY_FLOOR_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
+    std::env::var("KLEOS_DECAY_FLOOR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_DECAY_FLOOR)
+});
+pub fn decay_floor() -> f64 {
+    *DECAY_FLOOR_OVERRIDE
+}
 pub const PAGERANK_WEIGHT: f64 = 0.15;
 pub const DEFAULT_VECTOR_FLOOR: f64 = 0.15;
 pub const RRF_K: f64 = 60.0;
@@ -613,12 +623,15 @@ pub fn contradiction_penalty(content: &str, is_latest: bool) -> f64 {
     }
 }
 
-pub fn source_count_boost(source_count: i32) -> f64 {
+pub fn source_count_boost(source_count: i32, is_consolidated: bool) -> f64 {
+    if is_consolidated {
+        return 1.0;
+    }
     1.0 + (source_count as f64 / 10.0).min(1.0) * 0.05
 }
 
-pub fn static_boost(is_static: bool) -> f64 {
-    if is_static {
+pub fn static_boost(is_static: bool, is_consolidated: bool) -> f64 {
+    if is_static && !is_consolidated {
         1.03
     } else {
         1.0

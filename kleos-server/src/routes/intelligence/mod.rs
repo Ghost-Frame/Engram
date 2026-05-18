@@ -204,10 +204,16 @@ async fn dreamer_stats_handler(
 
 #[tracing::instrument(skip_all)]
 async fn consolidate_handler(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<ConsolidateBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    if !state.config.consolidation_enabled {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "consolidation is disabled; set KLEOS_CONSOLIDATION_ENABLED=1 to re-enable".into(),
+        )));
+    }
     let ids: Vec<String> = body
         .memory_ids
         .into_iter()
@@ -220,10 +226,16 @@ async fn consolidate_handler(
 /// GET /intelligence/candidates -- list memory candidates for further intelligence processing.
 #[tracing::instrument(skip_all)]
 async fn candidates_handler(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<CandidatesBody>,
 ) -> Result<Json<Value>, AppError> {
+    if !state.config.consolidation_enabled {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "consolidation is disabled; set KLEOS_CONSOLIDATION_ENABLED=1 to re-enable".into(),
+        )));
+    }
     let threshold = body.threshold.unwrap_or(0.7);
     let groups = find_consolidation_candidates(&db, threshold, auth.user_id).await?;
     Ok(Json(json!({ "groups": groups })))
@@ -748,10 +760,16 @@ async fn time_travel_handler(
 
 #[tracing::instrument(skip_all)]
 async fn sweep_handler(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<SweepBody>,
 ) -> Result<Json<Value>, AppError> {
+    if !state.config.consolidation_enabled {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "consolidation is disabled; set KLEOS_CONSOLIDATION_ENABLED=1 to re-enable".into(),
+        )));
+    }
     let threshold = body.threshold.unwrap_or(0.85);
     let result = sweep(&db, auth.user_id, threshold).await?;
     Ok(Json(json!(result)))

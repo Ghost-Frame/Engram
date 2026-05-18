@@ -345,6 +345,7 @@ async fn recall_due(
         source_filter: None,
         include_archived: None,
         include_noise: None,
+        exclude_consolidated: None,
     };
 
     let arc_results = hybrid_search(&db, req).await?;

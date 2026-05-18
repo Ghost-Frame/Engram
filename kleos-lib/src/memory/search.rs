@@ -3,7 +3,7 @@ use super::vector::{chunk_vector_search, vector_search};
 use super::{row_to_memory, rusqlite_to_eng_error, MEMORY_COLUMNS};
 use crate::db::Database;
 use crate::memory::scoring::{
-    self, blend_strategies, classify_question_mixed, question_strategy, rrf_score, DECAY_FLOOR,
+    self, blend_strategies, classify_question_mixed, question_strategy, rrf_score,
 };
 use crate::memory::types::{
     FacetBucket, FacetedSearchRequest, FacetedSearchResponse, LinkedMemory, QuestionType,
@@ -76,6 +76,7 @@ fn hash_search_params(req: &SearchRequest) -> u64 {
     req.question_type.hash(&mut h);
     req.space_id.hash(&mut h);
     req.include_forgotten.hash(&mut h);
+    req.exclude_consolidated.hash(&mut h);
     h.finish()
 }
 
@@ -165,6 +166,7 @@ struct Candidate {
     verbose_stat_boost: Option<f64>,
     verbose_contradiction: Option<f64>,
     is_archived: bool,
+    is_consolidated: bool,
 }
 
 struct HydratedCandidateRow {
@@ -183,6 +185,7 @@ struct HydratedCandidateRow {
     content: String,
     category: String,
     is_archived: bool,
+    is_consolidated: bool,
 }
 
 struct GraphExpansionRow {
@@ -214,7 +217,7 @@ async fn hydrate_candidates(
     let sql = format!(
         "SELECT id, created_at, importance, is_static, source_count, \
          version, is_latest, source, model, access_count, pagerank_score, \
-         fsrs_stability, content, category, is_archived \
+         fsrs_stability, content, category, is_archived, is_consolidated \
          FROM memories WHERE id IN ({})",
         placeholders
     );
@@ -255,6 +258,7 @@ async fn hydrate_candidates(
                 content: row.get(12).map_err(rusqlite_to_eng_error)?,
                 category: row.get(13).map_err(rusqlite_to_eng_error)?,
                 is_archived: row.get::<_, i32>(14).map_err(rusqlite_to_eng_error)? != 0,
+                is_consolidated: row.get::<_, i32>(15).map_err(rusqlite_to_eng_error)? != 0,
             });
         }
         Ok(hydrated)
@@ -319,8 +323,7 @@ async fn fetch_memory_for_search(
 ) -> Result<Option<crate::memory::types::Memory>> {
     let fetch_sql = format!(
         "SELECT {} FROM memories \
-         WHERE id = ?1 AND is_forgotten = 0 AND is_latest = 1 \
-           AND is_consolidated = 0",
+         WHERE id = ?1 AND is_forgotten = 0 AND is_latest = 1",
         MEMORY_COLUMNS
     );
 
@@ -352,8 +355,7 @@ async fn fetch_memories_batch(
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let fetch_sql = format!(
         "SELECT {} FROM memories \
-         WHERE id IN ({}) AND is_forgotten = 0 AND is_latest = 1 \
-           AND is_consolidated = 0",
+         WHERE id IN ({}) AND is_forgotten = 0 AND is_latest = 1",
         MEMORY_COLUMNS, placeholders
     );
 
@@ -573,6 +575,7 @@ async fn centroid_or_sqlite_vector(
                     memory_id: hit.memory_id,
                     distance: hit.distance,
                     rank: hit.rank,
+                    matching_chunk_text: None,
                 })
                 .collect()),
             Err(e) => {
@@ -623,6 +626,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     // Ranked lists for RRF fusion
     let mut vector_ranked: Vec<(i64, f64)> = Vec::new();
     let mut fts_ranked: Vec<(i64, f64)> = Vec::new();
+    let mut chunk_text_map: HashMap<i64, String> = HashMap::new();
     let mut results: HashMap<i64, Candidate> = HashMap::new();
 
     // Channel 1: Vector ANN search
@@ -652,6 +656,9 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
         match vector_hits {
             Ok(hits) => {
                 for hit in &hits {
+                    if let Some(ref text) = hit.matching_chunk_text {
+                        chunk_text_map.insert(hit.memory_id, text.clone());
+                    }
                     vector_ranked.push((hit.memory_id, hit.rank as f64));
                     let semantic = hit.distance.map(|d| 1.0 - d as f64);
                     let entry = results.entry(hit.memory_id).or_insert_with(|| Candidate {
@@ -683,6 +690,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                         verbose_stat_boost: None,
                         verbose_contradiction: None,
                         is_archived: false,
+                        is_consolidated: false,
                     });
                     // If the candidate already existed (e.g. from FTS), prefer
                     // the most recent semantic_score we have. LanceDB hits only
@@ -732,6 +740,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                     verbose_stat_boost: None,
                     verbose_contradiction: None,
                     is_archived: false,
+                    is_consolidated: false,
                 });
                 // FTS provides content we can use
                 let _ = entry;
@@ -808,6 +817,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                             c.category = row.category;
                         }
                         c.is_archived = row.is_archived;
+                        c.is_consolidated = row.is_consolidated;
                     }
                 }
             }
@@ -817,11 +827,15 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     // Exclude noise categories and archived rows unless explicitly requested
     let include_noise = req.include_noise.unwrap_or(false);
     let include_archived = req.include_archived.unwrap_or(false);
+    let exclude_consolidated = req.exclude_consolidated.unwrap_or(false);
     results.retain(|_id, c| {
         if !include_noise && (c.category == "activity" || c.category == "growth") {
             return false;
         }
         if !include_archived && c.is_archived {
+            return false;
+        }
+        if exclude_consolidated && c.is_consolidated {
             return false;
         }
         true
@@ -867,10 +881,11 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
         let decay_factor = if c.is_static {
             1.0
         } else {
-            DECAY_FLOOR + (1.0 - DECAY_FLOOR) * retrievability
+            let floor = scoring::decay_floor();
+            floor + (1.0 - floor) * retrievability
         };
-        let src_boost = scoring::source_count_boost(c.source_count);
-        let stat_boost = scoring::static_boost(c.is_static);
+        let src_boost = scoring::source_count_boost(c.source_count, c.is_consolidated);
+        let stat_boost = scoring::static_boost(c.is_static, c.is_consolidated);
 
         let temp_boost = if let Some(ref qd) = query_date {
             if !c.created_at.is_empty() {
@@ -975,6 +990,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                             verbose_stat_boost: None,
                             verbose_contradiction: None,
                             is_archived: false,
+                            is_consolidated: false,
                         });
                         added += 1;
                     }
@@ -1103,6 +1119,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
             src_boost: c.verbose_src_boost,
             stat_boost: c.verbose_stat_boost,
             contradiction: c.verbose_contradiction,
+            matching_chunk: chunk_text_map.get(&c.id).cloned(),
             linked: None,
             version_chain: None,
         });
@@ -1390,6 +1407,7 @@ pub async fn faceted_search(
             source_filter: None,
             include_archived: None,
             include_noise: None,
+            exclude_consolidated: None,
         };
         let arc = hybrid_search(db, search_req).await?;
         let mut candidates = (*arc).clone();
@@ -1467,11 +1485,7 @@ async fn faceted_db_scan(
     limit: usize,
 ) -> Result<Vec<SearchResult>> {
     // Build SQL with applicable WHERE clauses pushed to DB level.
-    let mut conditions = vec![
-        "is_forgotten = 0".to_string(),
-        "is_latest = 1".to_string(),
-        "is_consolidated = 0".to_string(),
-    ];
+    let mut conditions = vec!["is_forgotten = 0".to_string(), "is_latest = 1".to_string()];
     let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql + Send>> = vec![];
     let mut idx = 1usize;
 
@@ -1557,6 +1571,7 @@ async fn faceted_db_scan(
                 src_boost: None,
                 stat_boost: None,
                 contradiction: None,
+                matching_chunk: None,
                 linked: None,
                 version_chain: None,
             })

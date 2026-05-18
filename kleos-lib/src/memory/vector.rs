@@ -53,7 +53,6 @@ pub async fn vector_search(
         JOIN memories ON memories.rowid = id
         WHERE memories.is_forgotten = 0
           AND memories.is_latest = 1
-          AND memories.is_consolidated = 0
     ";
 
     match db
@@ -79,6 +78,7 @@ pub async fn vector_search(
                     memory_id,
                     distance: None,
                     rank,
+                    matching_chunk_text: None,
                 });
                 rank += 1;
             }
@@ -118,22 +118,68 @@ pub async fn chunk_vector_search(
 
     let mut seen: HashSet<i64> = HashSet::with_capacity(limit);
     let mut out: Vec<VectorHit> = Vec::with_capacity(limit);
+    let mut winners: Vec<(i64, usize)> = Vec::with_capacity(limit);
     let mut rank: usize = 0;
     for hit in raw_hits {
         let memory_id = super::lance_key_to_memory_id(hit.memory_id);
+        let chunk_idx = (hit.memory_id % 1000) as usize;
         if seen.insert(memory_id) {
             out.push(VectorHit {
                 memory_id,
                 distance: hit.distance,
                 rank,
+                matching_chunk_text: None,
             });
+            winners.push((memory_id, chunk_idx));
             rank += 1;
             if out.len() >= limit {
                 break;
             }
         }
     }
+
+    if let Ok(texts) = fetch_chunk_texts_batch(db, &winners).await {
+        for hit in &mut out {
+            if let Some(text) = texts.get(&hit.memory_id) {
+                hit.matching_chunk_text = Some(text.clone());
+            }
+        }
+    }
+
     Ok(out)
+}
+
+async fn fetch_chunk_texts_batch(
+    db: &Database,
+    winners: &[(i64, usize)],
+) -> Result<std::collections::HashMap<i64, String>> {
+    use crate::EngError;
+
+    if winners.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    let winners_owned: Vec<(i64, usize)> = winners.to_vec();
+    db.read(move |conn| {
+        let mut map = std::collections::HashMap::with_capacity(winners_owned.len());
+        let mut stmt = conn
+            .prepare(
+                "SELECT content FROM memory_chunks \
+                 WHERE memory_id = ?1 AND chunk_idx = ?2",
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        for (memory_id, chunk_idx) in &winners_owned {
+            if let Ok(text) = stmt
+                .query_row(rusqlite::params![memory_id, *chunk_idx as i64], |row| {
+                    row.get::<_, String>(0)
+                })
+            {
+                map.insert(*memory_id, text);
+            }
+        }
+        Ok(map)
+    })
+    .await
 }
 
 #[cfg(test)]

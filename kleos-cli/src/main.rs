@@ -192,6 +192,8 @@ enum AdminCommands {
         #[arg(long)]
         replace: bool,
     },
+    /// Rebuild the per-chunk LanceDB index from existing SQLite rows.
+    VectorChunkSync,
     /// Report Lance / FTS / per-tenant vector health.
     VectorHealth,
     /// Drain the vector_sync_pending ledger.
@@ -1398,6 +1400,15 @@ async fn handle_admin_command(client: &Client, cmd: &AdminCommands) {
             {
                 Ok(v) => pretty(v),
                 Err(e) => err("vector/rebuild-index", e),
+            }
+        }
+        AdminCommands::VectorChunkSync => {
+            match client
+                .post_with_timeout("/admin/vector/chunk-sync", json!({}), long_timeout)
+                .await
+            {
+                Ok(v) => pretty(v),
+                Err(e) => err("vector/chunk-sync", e),
             }
         }
         AdminCommands::VectorHealth => match client.get("/admin/vector_health").await {

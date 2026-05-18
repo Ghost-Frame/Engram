@@ -105,7 +105,22 @@ pub fn chunk_text_with_limit(
 
         let step = (actual_end - start).saturating_sub(overlap);
         let min_step = chunk_size * 3 / 10;
-        start += step.max(min_step);
+        // Snap the next `start` to a char boundary -- raw byte arithmetic
+        // can land mid-codepoint when the previous chunk ended with a
+        // multi-byte char, which would panic on the next `&text[start..end]`.
+        let raw_next = start + step.max(min_step);
+        let next = floor_char_boundary(text, raw_next);
+        if next <= start {
+            // Floor collapsed back onto start; force at least one codepoint
+            // of forward progress so the loop can't stall on dense unicode.
+            let mut forced = start + 1;
+            while forced < text.len() && !text.is_char_boundary(forced) {
+                forced += 1;
+            }
+            start = forced.min(text.len());
+        } else {
+            start = next;
+        }
     }
 
     chunks
@@ -139,6 +154,27 @@ mod tests {
     fn all_emoji_chunks_safely() {
         let text = "🎸".repeat(500); // 500 * 4 bytes = 2000
         let chunks = chunk_text(&text, 200, 40);
+        assert!(!chunks.is_empty());
+        for chunk in &chunks {
+            assert!(std::str::from_utf8(chunk.as_bytes()).is_ok());
+        }
+    }
+
+    /// Regression for the May 18 prod panic at `chunking.rs:74`:
+    /// after the first iteration the stepped `start` landed inside a
+    /// 3-byte em dash, then the next `&text[start..end]` panicked.
+    /// Construct a corpus dense with em dashes so wherever the step
+    /// lands, it has a high probability of hitting one. With the
+    /// pre-fix code this panics; with `floor_char_boundary` applied
+    /// to the next `start`, it completes.
+    #[test]
+    fn em_dash_at_iteration_boundary_does_not_panic() {
+        // Pattern: 7 ASCII bytes + 3-byte em dash, repeated. Period = 10
+        // bytes, so any step that is not a multiple of 10 has high odds
+        // of landing inside an em dash.
+        let unit = "abcdefg—";
+        let text = unit.repeat(2000); // 20_000 bytes, mixed multi-byte
+        let chunks = chunk_text_with_limit(&text, 1440, 160, 6);
         assert!(!chunks.is_empty());
         for chunk in &chunks {
             assert!(std::str::from_utf8(chunk.as_bytes()).is_ok());

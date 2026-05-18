@@ -317,6 +317,7 @@ pub struct SearchRequest {
     pub source_filter: Option<String>,
     pub include_archived: Option<bool>,
     pub include_noise: Option<bool>,
+    pub exclude_consolidated: Option<bool>,
 }
 fn default_true() -> bool {
     true
@@ -363,6 +364,8 @@ pub struct SearchResult {
     pub stat_boost: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contradiction: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matching_chunk: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked: Option<Vec<LinkedMemory>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -555,4 +558,5 @@ pub struct VectorHit {
     pub memory_id: i64,
     pub distance: Option<f32>,
     pub rank: usize,
+    pub matching_chunk_text: Option<String>,
 }

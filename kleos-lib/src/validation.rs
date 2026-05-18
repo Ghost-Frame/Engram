@@ -25,7 +25,7 @@ pub const DEFAULT_SEARCH_LIMIT: usize = 10;
 pub const MAX_FTS_QUERY_LEN: usize = 4096;
 
 /// Top-K candidates passed to the reranker.
-pub const RERANKER_TOP_K: usize = 12;
+pub const RERANKER_TOP_K: usize = 24;
 
 // ---------------------------------------------------------------------------
 // Context

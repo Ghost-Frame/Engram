@@ -1,11 +1,13 @@
 //! Background tasks that run on a timer for the duration of the server process.
 
 use kleos_lib::db::Database;
+use kleos_lib::embeddings::EmbeddingProvider;
 use kleos_lib::tenant::TenantRegistry;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -206,6 +208,7 @@ pub fn start_job_cleanup_task(
 pub fn start_vector_sync_replay_task(
     db: Arc<Database>,
     registry: Option<Arc<TenantRegistry>>,
+    embedder: Arc<RwLock<Option<Arc<dyn EmbeddingProvider>>>>,
 ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let token = CancellationToken::new();
     let cancel = token.clone();
@@ -322,6 +325,38 @@ pub fn start_vector_sync_replay_task(
                                 );
                             }
                         }
+
+                        // Bounded backfill of intelligence/scratchpad-created memories
+                        // that were written without an embedding (memory::store path).
+                        // 50 per tick keeps a steady-state stream from piling up
+                        // without monopolising the sweeper.
+                        let embedder_ref = embedder.read().await.as_ref().cloned();
+                        if let Some(emb) = embedder_ref {
+                            match kleos_lib::memory::backfill_missing_embeddings_limited(
+                                &tenant_db,
+                                emb.as_ref(),
+                                Some(50),
+                            )
+                            .await
+                            {
+                                Ok(report) if report.scanned > 0 => info!(
+                                    tenant = %tenant_id,
+                                    user_id,
+                                    scanned = report.scanned,
+                                    primary = report.primary_embeddings_filled,
+                                    chunks = report.chunk_rows_written,
+                                    failures = report.failures,
+                                    "background backfill swept"
+                                ),
+                                Ok(_) => {}
+                                Err(e) => warn!(
+                                    error = %e,
+                                    tenant = %tenant_id,
+                                    user_id,
+                                    "background backfill sweep failed"
+                                ),
+                            }
+                        }
                     } else {
                         // Single-DB (monolith) mode: query pending users from the monolith db.
                         let user_ids = match kleos_lib::memory::vector_sync_pending_users(&db).await {
@@ -375,6 +410,32 @@ pub fn start_vector_sync_replay_task(
                                     consecutive_failures,
                                     "vector sync replay failed"
                                 );
+                            }
+                        }
+
+                        let embedder_ref = embedder.read().await.as_ref().cloned();
+                        if let Some(emb) = embedder_ref {
+                            match kleos_lib::memory::backfill_missing_embeddings_limited(
+                                &db,
+                                emb.as_ref(),
+                                Some(50),
+                            )
+                            .await
+                            {
+                                Ok(report) if report.scanned > 0 => info!(
+                                    user_id = next_user,
+                                    scanned = report.scanned,
+                                    primary = report.primary_embeddings_filled,
+                                    chunks = report.chunk_rows_written,
+                                    failures = report.failures,
+                                    "background backfill swept (monolith)"
+                                ),
+                                Ok(_) => {}
+                                Err(e) => warn!(
+                                    error = %e,
+                                    user_id = next_user,
+                                    "background backfill sweep failed (monolith)"
+                                ),
                             }
                         }
                     }

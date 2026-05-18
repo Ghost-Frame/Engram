@@ -114,6 +114,7 @@ async fn post_prompt_generate(
             source_filter: None,
             include_archived: None,
             include_noise: None,
+            exclude_consolidated: None,
         };
         if let Ok(results) = hybrid_search(&db, personality_req).await {
             if !results.is_empty() {
@@ -153,6 +154,7 @@ async fn post_prompt_generate(
             source_filter: None,
             include_archived: None,
             include_noise: None,
+            exclude_consolidated: None,
         };
         let results = hybrid_search(&db, memory_req).await?;
         if !results.is_empty() {

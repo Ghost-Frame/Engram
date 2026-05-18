@@ -37,9 +37,10 @@ use types::{
 
 pub use types::VectorSyncReplayReport;
 pub use vector_sync::{
-    backfill_missing_embeddings, build_lance_chunk_index_from_existing,
-    build_lance_index_from_existing, replay_vector_sync_pending,
-    replay_vector_sync_pending_for_user, vector_sync_pending_users, BackfillReport,
+    backfill_missing_embeddings, backfill_missing_embeddings_limited,
+    build_lance_chunk_index_from_existing, build_lance_index_from_existing,
+    replay_vector_sync_pending, replay_vector_sync_pending_for_user, vector_sync_pending_users,
+    BackfillReport,
 };
 
 // -- Constants ---
@@ -143,14 +144,16 @@ pub async fn write_chunks(db: &Database, memory_id: i64, chunks: &[(String, Vec<
     }
 
     if let Some(index) = db.chunk_vector_index.as_ref() {
-        for (idx, (_, emb)) in chunks.iter().enumerate() {
-            let chunk_key = chunk_lance_key(memory_id, idx);
-            if let Err(e) = index.insert(chunk_key, emb).await {
-                warn!(
-                    "LanceDB chunk vector insert failed for memory {} chunk {}: {}",
-                    memory_id, idx, e
-                );
-            }
+        let batch: Vec<(i64, Vec<f32>)> = chunks
+            .iter()
+            .enumerate()
+            .map(|(idx, (_, emb))| (chunk_lance_key(memory_id, idx), emb.clone()))
+            .collect();
+        if let Err(e) = index.insert_many(&batch).await {
+            warn!(
+                "LanceDB chunk vector batch insert failed for memory {}: {}",
+                memory_id, e
+            );
         }
     }
 }
@@ -228,14 +231,15 @@ async fn carry_forward_chunks(db: &Database, old_memory_id: i64, new_memory_id: 
             }
         };
 
-        for (idx, emb) in &chunks {
-            let key = chunk_lance_key(new_memory_id, *idx);
-            if let Err(e) = index.insert(key, emb).await {
-                warn!(
-                    "LanceDB chunk carry-forward insert failed for memory {} chunk {}: {}",
-                    new_memory_id, idx, e
-                );
-            }
+        let batch: Vec<(i64, Vec<f32>)> = chunks
+            .iter()
+            .map(|(idx, emb)| (chunk_lance_key(new_memory_id, *idx), emb.clone()))
+            .collect();
+        if let Err(e) = index.insert_many(&batch).await {
+            warn!(
+                "LanceDB chunk carry-forward batch insert failed for memory {}: {}",
+                new_memory_id, e
+            );
         }
 
         // Clean up old memory's chunk vectors

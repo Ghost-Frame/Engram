@@ -2756,6 +2756,15 @@ pub static ROUTES: &[Route] = &[
         input_schema: r#"{"type":"object","additionalProperties":true}"#,
     },
     Route {
+        name: "admin.vector_chunk_sync",
+        aliases: &[],
+        method: Method::Post,
+        path: "/admin/vector/chunk-sync",
+        scope: Scope::Admin,
+        description: "Auto: POST /admin/vector/chunk-sync.",
+        input_schema: r#"{"type":"object","additionalProperties":true}"#,
+    },
+    Route {
         name: "admin.vector_health",
         aliases: &[],
         method: Method::Get,

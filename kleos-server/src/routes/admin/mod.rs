@@ -109,6 +109,8 @@ pub fn router() -> Router<AppState> {
         .route("/admin/vector_health", get(admin_vector_health))
         // Chunk + embedding backfill (Phase 2 rollout)
         .route("/admin/backfill_chunks", post(admin_backfill_chunks))
+        // Per-chunk LanceDB vector index rebuild from existing SQLite rows
+        .route("/admin/vector/chunk-sync", post(admin_vector_chunk_sync))
         // Point-in-time recovery
         .route("/admin/pitr/snapshots", get(admin_pitr_snapshots))
         .route("/admin/pitr/prepare-restore", post(admin_pitr_prepare))
@@ -1446,6 +1448,66 @@ async fn admin_backfill_chunks(
         "primary_embeddings_filled": total_primary,
         "chunk_rows_written": total_chunks,
         "failures": total_failures,
+        "per_tenant": per_tenant,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Per-chunk LanceDB vector index rebuild from existing SQLite rows
+// ---------------------------------------------------------------------------
+
+#[tracing::instrument(skip_all)]
+async fn admin_vector_chunk_sync(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::Internal(
+            "tenant sharding disabled; chunk-sync requires tenant registry".into(),
+        ))
+    })?;
+
+    let tenants = registry.list().map_err(AppError)?;
+    let mut total = 0usize;
+    let mut per_tenant = Vec::new();
+
+    for row in &tenants {
+        if row.status != kleos_lib::tenant::TenantStatus::Active {
+            continue;
+        }
+        let handle = match registry.get(&row.user_id).await {
+            Ok(Some(h)) => h,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(tenant = %row.tenant_id, error = %e, "chunk-sync: failed to load tenant");
+                continue;
+            }
+        };
+        let db = handle.database();
+        match kleos_lib::memory::build_lance_chunk_index_from_existing(&db).await {
+            Ok(count) => {
+                if count > 0 {
+                    per_tenant.push(json!({
+                        "tenant_id": row.tenant_id,
+                        "rows_synced": count,
+                    }));
+                }
+                total += count;
+            }
+            Err(e) => {
+                tracing::warn!(tenant = %row.tenant_id, error = %e, "chunk-sync: rebuild failed");
+                per_tenant.push(json!({
+                    "tenant_id": row.tenant_id,
+                    "error": e.to_string(),
+                }));
+            }
+        }
+    }
+
+    Ok(Json(json!({
+        "total_rows_synced": total,
         "per_tenant": per_tenant,
     })))
 }

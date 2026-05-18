@@ -392,8 +392,9 @@ async fn main() {
     {
         let db = Arc::clone(&state.db);
         let registry = state.tenant_registry.clone();
+        let embedder = state.embedder.clone();
         supervised.push(Supervised::spawn("vector-sync-replay", move || {
-            start_vector_sync_replay_task(Arc::clone(&db), registry.clone())
+            start_vector_sync_replay_task(Arc::clone(&db), registry.clone(), embedder.clone())
         }));
         tracing::info!("vector-sync-replay background task started");
     }

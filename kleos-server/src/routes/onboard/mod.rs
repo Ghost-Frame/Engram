@@ -110,6 +110,7 @@ async fn onboard(
                 source_filter: None,
                 include_archived: None,
                 include_noise: None,
+                exclude_consolidated: None,
             },
         )
         .await;

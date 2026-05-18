@@ -64,7 +64,6 @@ pub async fn fts_search(
         WHERE memories_fts MATCH ?1
           AND m.is_forgotten = 0
           AND m.is_latest = 1
-          AND m.is_consolidated = 0
         ORDER BY memories_fts.rank
         LIMIT ?2
     ";
