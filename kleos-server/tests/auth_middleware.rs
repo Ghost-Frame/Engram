@@ -1,8 +1,9 @@
 //! Integration tests for the auth middleware.
 //!
-//! Tests all four auth paths: Bearer, Soft (Ed25519 signature), Session
-//! (cached from prior signed auth), and no-auth rejection. PIV (YubiKey)
-//! auth requires hardware and is covered by unit tests in auth_piv.rs.
+//! Tests all four auth paths end-to-end: Bearer, Soft (Ed25519 signature),
+//! Session (cached from prior signed auth), and PIV (YubiKey P256). The PIV
+//! test is gated behind `cfg(feature = "piv")` + `KLEOS_TEST_PIV=1` so it
+//! only runs on machines with a YubiKey inserted.
 
 mod common;
 
@@ -325,4 +326,104 @@ async fn enrollment_rejected_when_keys_exist() {
         StatusCode::UNAUTHORIZED,
         "second enrollment via bootstrap should be rejected"
     );
+}
+
+// ---- PIV (YubiKey) auth tests ----
+
+/// End-to-end PIV auth: enroll a YubiKey P256 key, sign a request with
+/// hardware, verify the tier resolves to "piv" in the identities table.
+///
+/// Requires a YubiKey with a cert in slot 9A and `PIV_PIN` set. Gated
+/// behind `KLEOS_TEST_PIV=1` so it skips silently in CI or on machines
+/// without hardware.
+#[cfg(feature = "piv")]
+#[tokio::test]
+async fn piv_yubikey_auth_end_to_end() {
+    if std::env::var("KLEOS_TEST_PIV").as_deref() != Ok("1") {
+        eprintln!("skipping PIV test: set KLEOS_TEST_PIV=1 + PIV_PIN with a YubiKey inserted");
+        return;
+    }
+    if std::env::var("PIV_PIN").is_err() {
+        eprintln!("skipping PIV test: PIV_PIN must be set for YubiKey signing");
+        return;
+    }
+
+    let (app, _state) = test_app().await;
+
+    // Create a PIV signer from the inserted YubiKey's slot 9A certificate.
+    let signer = RequestSigner::from_yubikey("test-piv-host", "test-piv-agent", "test-piv-model")
+        .expect("YubiKey must be accessible with a cert in slot 9A");
+    assert_eq!(signer.tier(), "piv", "YubiKey signer must report piv tier");
+    assert_eq!(
+        signer.algo().as_str(),
+        "ecdsa-p256",
+        "YubiKey slot 9A uses P256"
+    );
+
+    // Enroll the PIV key (bootstrap -- no existing keys).
+    let sig_hex = signer
+        .sign_enrollment_proof()
+        .expect("PIV enrollment proof signing");
+    let enroll_body = json!({
+        "algo": "ecdsa-p256",
+        "tier": "piv",
+        "pubkey_pem": signer.pubkey_pem(),
+        "host_label": "test-piv-host",
+        "sig_hex": sig_hex,
+    });
+    let enroll_req = Request::builder()
+        .method("POST")
+        .uri("/identity-keys/enroll")
+        .header("Content-Type", "application/json")
+        .body(Body::from(enroll_body.to_string()))
+        .unwrap();
+    let (enroll_status, enroll_resp) = send(&app, enroll_req).await;
+    assert!(
+        enroll_status.is_success(),
+        "PIV enrollment should succeed: {enroll_status}: {enroll_resp}"
+    );
+
+    // Make a signed request with the YubiKey -- this exercises the full
+    // P256 signature path through the middleware.
+    let signed = signer
+        .sign_request("GET", "/identities", "", b"")
+        .expect("PIV request signing");
+    let request = Request::builder()
+        .method("GET")
+        .uri("/identities")
+        .header("X-Kleos-Sig", &signed.sig_hex)
+        .header("X-Kleos-Algo", signed.algo.as_str())
+        .header("X-Kleos-Identity", &signed.identity_hash)
+        .header("X-Kleos-Ts", signed.ts_ms.to_string())
+        .header("X-Kleos-Nonce", &signed.nonce)
+        .header("X-Kleos-Key-Fp", &signed.key_fp)
+        .header("X-Kleos-Host", &signed.host_label)
+        .header("X-Kleos-Agent", &signed.agent_label)
+        .header("X-Kleos-Model", &signed.model_label)
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(request).await.expect("oneshot");
+    let status = res.status();
+    let session_header = res.headers().get("x-kleos-session-issued").cloned();
+    let body = body_json(res).await;
+
+    assert!(status.is_success(), "PIV signed request should succeed: {status}: {body}");
+    assert!(
+        session_header.is_some(),
+        "PIV signed auth must issue a session token"
+    );
+
+    // Verify the auto-registered identity has tier = "piv".
+    let identities = body["identities"]
+        .as_array()
+        .expect("identities array in response");
+    let piv_identity = identities
+        .iter()
+        .find(|i| i["host_label"] == "test-piv-host")
+        .expect("identity with test-piv-host should exist");
+    assert_eq!(
+        piv_identity["tier"], "piv",
+        "identity tier must be 'piv' for YubiKey-enrolled key"
+    );
+    assert_eq!(piv_identity["algo"], "ecdsa-p256");
 }
