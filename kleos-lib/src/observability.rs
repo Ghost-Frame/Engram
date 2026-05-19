@@ -53,7 +53,7 @@ pub fn init_tracing(service_name: &str, default_filter: &str) -> OtelGuard {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
-    let fmt_layer = tracing_subscriber::fmt::layer();
+    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
 
     let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .ok()
