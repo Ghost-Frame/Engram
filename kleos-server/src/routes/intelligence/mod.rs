@@ -868,10 +868,11 @@ async fn deduplicate_handler(
 
 #[tracing::instrument(skip_all)]
 async fn run_pipeline_handler(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let report = default_pipeline().run(&db, auth.user_id).await?;
+    let report = default_pipeline(state.config.consolidation_enabled).run(&db, auth.user_id).await?;
     Ok(Json(json!(report)))
 }
 

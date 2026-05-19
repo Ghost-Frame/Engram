@@ -286,11 +286,34 @@ impl IntelligenceTask for ReflectionsGenerateTask {
     }
 }
 
+struct NoopConsolidateSweepTask;
+#[async_trait]
+impl IntelligenceTask for NoopConsolidateSweepTask {
+    fn name(&self) -> &'static str {
+        "consolidate_sweep"
+    }
+    fn dependencies(&self) -> &'static [&'static str] {
+        &["deduplicate"]
+    }
+    async fn run(&self, _db: &Database, _user_id: i64) -> Result<Value> {
+        Ok(json!({ "skipped": true, "reason": "consolidation_disabled" }))
+    }
+}
+
 /// Build the canonical intelligence pipeline used by `POST /intelligence/run`.
-pub fn default_pipeline() -> Scheduler {
+///
+/// When `consolidation_enabled` is false the consolidate_sweep slot is filled
+/// by a no-op task so downstream tasks (contradiction scan, temporal detect,
+/// reconsolidation, reflections) still run normally.
+pub fn default_pipeline(consolidation_enabled: bool) -> Scheduler {
+    let consolidate: Arc<dyn IntelligenceTask> = if consolidation_enabled {
+        Arc::new(ConsolidateSweepTask)
+    } else {
+        Arc::new(NoopConsolidateSweepTask)
+    };
     Scheduler::new()
         .add_task(Arc::new(DeduplicateTask))
-        .add_task(Arc::new(ConsolidateSweepTask))
+        .add_task(consolidate)
         .add_task(Arc::new(ContradictionScanTask))
         .add_task(Arc::new(TemporalDetectTask))
         .add_task(Arc::new(ReconsolidationSweepTask))
@@ -454,7 +477,7 @@ mod tests {
     #[tokio::test]
     async fn default_pipeline_runs_on_empty_db() {
         let db = setup_db().await;
-        let report = default_pipeline().run(&db, 1).await.expect("run");
+        let report = default_pipeline(true).run(&db, 1).await.expect("run");
         assert_eq!(report.reports.len(), 6);
         let names: Vec<&str> = report.reports.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"deduplicate"));
