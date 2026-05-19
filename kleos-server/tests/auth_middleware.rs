@@ -9,7 +9,7 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{bootstrap_admin_key, body_json, send, test_app};
+use common::{body_json, bootstrap_admin_key, send, test_app};
 use kleos_lib::auth_piv::RequestSigner;
 use serde_json::json;
 use tower::ServiceExt;
@@ -19,8 +19,7 @@ use tower::ServiceExt;
 /// Returns the `RequestSigner` for signing subsequent requests. Requires no
 /// existing keys in the database and no `KLEOS_BOOTSTRAP_SECRET` env var.
 async fn enroll_soft_key(app: &axum::Router) -> RequestSigner {
-    let signer =
-        RequestSigner::from_key_bytes([42u8; 32], "test-host", "test-agent", "test-model");
+    let signer = RequestSigner::from_key_bytes([42u8; 32], "test-host", "test-agent", "test-model");
     let sig_hex = signer
         .sign_enrollment_proof()
         .expect("sign enrollment proof");
@@ -96,7 +95,10 @@ async fn bearer_auth_succeeds() {
         .body(Body::empty())
         .unwrap();
     let (status, _body) = send(&app, request).await;
-    assert!(status.is_success(), "bearer auth should succeed for /keys: {status}");
+    assert!(
+        status.is_success(),
+        "bearer auth should succeed for /keys: {status}"
+    );
 }
 
 /// Invalid bearer token returns 401.
@@ -144,11 +146,7 @@ async fn soft_key_signed_request_succeeds_and_issues_session() {
 
     // Signed request to /stats (bootstrap identity gets admin scopes).
     let request = signed_request(&signer, "GET", "/stats", b"");
-    let res = app
-        .clone()
-        .oneshot(request)
-        .await
-        .expect("oneshot request");
+    let res = app.clone().oneshot(request).await.expect("oneshot request");
     let status = res.status();
     let session_header = res.headers().get("x-kleos-session-issued").cloned();
     let _body = body_json(res).await;
@@ -170,9 +168,7 @@ async fn soft_key_bad_signature_returns_401() {
     let signer = enroll_soft_key(&app).await;
 
     // Build a valid signed request, then swap in a bogus signature.
-    let signed = signer
-        .sign_request("GET", "/stats", "", b"")
-        .expect("sign");
+    let signed = signer.sign_request("GET", "/stats", "", b"").expect("sign");
     let bad_sig = "00".repeat(32); // 64 hex chars, wrong value
     let request = Request::builder()
         .method("GET")
@@ -209,11 +205,7 @@ async fn session_auth_from_signed_request_succeeds() {
 
     // First request: signed, gets a session token back.
     let request = signed_request(&signer, "GET", "/stats", b"");
-    let res = app
-        .clone()
-        .oneshot(request)
-        .await
-        .expect("oneshot request");
+    let res = app.clone().oneshot(request).await.expect("oneshot request");
     assert!(res.status().is_success());
     let session_token = res
         .headers()
@@ -263,11 +255,8 @@ async fn session_auth_invalid_token_returns_401() {
 #[tokio::test]
 async fn enrollment_bootstrap_succeeds_with_no_existing_keys() {
     let (app, _state) = test_app().await;
-    let signer =
-        RequestSigner::from_key_bytes([99u8; 32], "ci-host", "ci-agent", "ci-model");
-    let sig_hex = signer
-        .sign_enrollment_proof()
-        .expect("sign enrollment");
+    let signer = RequestSigner::from_key_bytes([99u8; 32], "ci-host", "ci-agent", "ci-model");
+    let sig_hex = signer.sign_enrollment_proof().expect("sign enrollment");
 
     let body = json!({
         "algo": "ed25519",
@@ -302,9 +291,7 @@ async fn enrollment_rejected_when_keys_exist() {
     // Attempt to enroll a second key via the same unauthenticated bootstrap path.
     let signer2 =
         RequestSigner::from_key_bytes([77u8; 32], "other-host", "other-agent", "other-model");
-    let sig_hex = signer2
-        .sign_enrollment_proof()
-        .expect("sign enrollment");
+    let sig_hex = signer2.sign_enrollment_proof().expect("sign enrollment");
 
     let body = json!({
         "algo": "ed25519",
@@ -407,7 +394,10 @@ async fn piv_yubikey_auth_end_to_end() {
     let session_header = res.headers().get("x-kleos-session-issued").cloned();
     let body = body_json(res).await;
 
-    assert!(status.is_success(), "PIV signed request should succeed: {status}: {body}");
+    assert!(
+        status.is_success(),
+        "PIV signed request should succeed: {status}: {body}"
+    );
     assert!(
         session_header.is_some(),
         "PIV signed auth must issue a session token"

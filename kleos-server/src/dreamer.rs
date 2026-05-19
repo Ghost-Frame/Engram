@@ -248,7 +248,10 @@ async fn run_cycle(
     let mut last_report: Option<Value> = None;
 
     for user_id in &users {
-        match default_pipeline(config.consolidation_enabled).run(db, *user_id).await {
+        match default_pipeline(config.consolidation_enabled)
+            .run(db, *user_id)
+            .await
+        {
             Ok(report) => {
                 total_ok += report.ok_count;
                 total_failed += report.failed_count;
@@ -628,7 +631,10 @@ async fn run_cycle_tenants(
         };
 
         for user_id in &users {
-            if let Err(e) = default_pipeline(config.consolidation_enabled).run(&tenant_db, *user_id).await {
+            if let Err(e) = default_pipeline(config.consolidation_enabled)
+                .run(&tenant_db, *user_id)
+                .await
+            {
                 warn!(
                     tenant = %tenant_row.tenant_id,
                     user_id = *user_id,

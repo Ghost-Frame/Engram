@@ -142,7 +142,13 @@ impl Client {
     pub async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
         let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
         let resp = self
-            .execute(&self.http, "POST", path, Some(&body_bytes), Some("application/json"))
+            .execute(
+                &self.http,
+                "POST",
+                path,
+                Some(&body_bytes),
+                Some("application/json"),
+            )
             .await?;
         self.capture_session(&resp);
         self.handle_response("POST", path, resp).await
@@ -152,7 +158,13 @@ impl Client {
     pub async fn put(&self, path: &str, body: Value) -> Result<Value, String> {
         let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
         let resp = self
-            .execute(&self.http, "PUT", path, Some(&body_bytes), Some("application/json"))
+            .execute(
+                &self.http,
+                "PUT",
+                path,
+                Some(&body_bytes),
+                Some("application/json"),
+            )
             .await?;
         self.capture_session(&resp);
         self.handle_response("PUT", path, resp).await
@@ -162,7 +174,13 @@ impl Client {
     pub async fn patch(&self, path: &str, body: Value) -> Result<Value, String> {
         let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
         let resp = self
-            .execute(&self.http, "PATCH", path, Some(&body_bytes), Some("application/json"))
+            .execute(
+                &self.http,
+                "PATCH",
+                path,
+                Some(&body_bytes),
+                Some("application/json"),
+            )
             .await?;
         self.capture_session(&resp);
         self.handle_response("PATCH", path, resp).await
@@ -297,7 +315,13 @@ impl Client {
             .build()
             .map_err(|e| format!("http client build failed: {e}"))?;
         let resp = self
-            .execute(&http, "POST", path, Some(&body_bytes), Some("application/json"))
+            .execute(
+                &http,
+                "POST",
+                path,
+                Some(&body_bytes),
+                Some("application/json"),
+            )
             .await?;
         self.capture_session(&resp);
         let status = resp.status();
@@ -352,9 +376,10 @@ impl Client {
         if status.as_u16() == 202 || status.as_u16() == 204 {
             return Ok(None);
         }
-        let bytes = resp.bytes().await.map_err(|e| {
-            format!("POST /mcp: reading response body failed: {e}")
-        })?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("POST /mcp: reading response body failed: {e}"))?;
         if status.is_success() {
             let parsed: Value = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("POST /mcp: invalid JSON: {e}"))?;
