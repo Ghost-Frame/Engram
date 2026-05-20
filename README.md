@@ -384,3 +384,7 @@ The `dist/install.sh` script supports three profiles:
 Elastic License 2.0
 
 </div>
+
+### Commercial licensing
+
+The Elastic License 2.0 prohibits offering this software to third parties as a hosted or managed service. To sell, host, or distribute it on your own platform, contact us for a commercial license: support@syntheos.dev.
