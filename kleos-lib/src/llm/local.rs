@@ -121,6 +121,21 @@ impl LocalModelClient {
 
     /// Probe Ollama availability by hitting /api/tags.
     pub async fn probe(&self) -> bool {
+        // Non-Ollama endpoints (e.g. Manifest, OpenRouter, cloud providers) don't
+        // expose /api/tags. When an API key is configured, assume the endpoint is
+        // reachable and let the circuit breaker handle actual failures.
+        if self.config.api_key.is_some() {
+            self.probe_result.store(1, Ordering::Relaxed);
+            tracing::info!(
+                msg = "ollama_probe",
+                reachable = true,
+                url = %self.config.url,
+                model = %self.config.model,
+                note = "api_key set, skipping /api/tags probe"
+            );
+            return true;
+        }
+
         let tags_url = self
             .config
             .url
