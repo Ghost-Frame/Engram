@@ -271,16 +271,16 @@ pub fn build_router(state: AppState) -> Router {
                 "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
             ),
         ))
-        // R7-006 / H-013: baseline CSP. Login page inline style/script were
-        // externalised to /_app/login.css and /_app/login.js, so 'unsafe-inline'
-        // is no longer required. 'wasm-unsafe-eval' is kept for the ONNX WASM
-        // runtime. frame-ancestors 'none' hard-locks clickjacking.
+        // R7-006 / H-013: baseline CSP. 'unsafe-inline' is required for the
+        // SvelteKit GUI which generates inline scripts and style attributes.
+        // 'wasm-unsafe-eval' is kept for the ONNX WASM runtime.
+        // frame-ancestors 'none' hard-locks clickjacking.
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("content-security-policy"),
             HeaderValue::from_static(
                 "default-src 'self'; \
-                 script-src 'self' 'wasm-unsafe-eval'; \
-                 style-src 'self'; \
+                 script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'; \
+                 style-src 'self' 'unsafe-inline'; \
                  img-src 'self' data: blob:; \
                  font-src 'self' data:; \
                  connect-src 'self'; \
