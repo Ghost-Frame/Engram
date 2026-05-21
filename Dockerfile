@@ -38,10 +38,14 @@ COPY . .
 # Build only the two required binaries; the rest of the workspace is skipped.
 # Cache mounts keep the Cargo registry and incremental build artifacts between
 # builds so only changed crates are recompiled.
+# The binaries are copied to /out/ so they survive outside the cache mount.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --release -p kleos-server -p kleos-cli
+    cargo build --release -p kleos-server -p kleos-cli && \
+    mkdir -p /out && \
+    cp /build/target/release/kleos-server /out/ && \
+    cp /build/target/release/kleos-cli /out/
 
 # =============================================================================
 # Stage 2 -- runtime
@@ -68,8 +72,8 @@ RUN groupadd --system --gid 1000 kleos \
 # Persistent data lives here.  A named volume or bind-mount should be attached.
 RUN mkdir -p /data && chown kleos:kleos /data
 
-COPY --from=builder /build/target/release/kleos-server /usr/local/bin/kleos-server
-COPY --from=builder /build/target/release/kleos-cli     /usr/local/bin/kleos-cli
+COPY --from=builder /out/kleos-server /usr/local/bin/kleos-server
+COPY --from=builder /out/kleos-cli   /usr/local/bin/kleos-cli
 COPY --from=gui-builder /gui/build /gui/build
 
 RUN chmod 755 /usr/local/bin/kleos-server /usr/local/bin/kleos-cli
