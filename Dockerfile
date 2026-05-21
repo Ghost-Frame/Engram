@@ -1,7 +1,19 @@
 # syntax=docker/dockerfile:1
 
 # =============================================================================
-# Stage 1 -- builder
+# Stage 1a -- GUI builder
+# Builds the SvelteKit frontend; output lands in gui/build/.
+# =============================================================================
+FROM node:22-bookworm-slim AS gui-builder
+
+WORKDIR /gui
+COPY gui/package.json gui/package-lock.json ./
+RUN npm ci
+COPY gui/ ./
+RUN npm run build
+
+# =============================================================================
+# Stage 1b -- Rust builder
 # Compiles kleos-server and kleos-cli in release mode.
 # SQLCipher is vendored at compile time via the "sqlcipher" feature so no
 # system libsqlcipher is needed at runtime.
@@ -53,6 +65,7 @@ RUN mkdir -p /data && chown kleos:kleos /data
 
 COPY --from=builder /build/target/release/kleos-server /usr/local/bin/kleos-server
 COPY --from=builder /build/target/release/kleos-cli     /usr/local/bin/kleos-cli
+COPY --from=gui-builder /gui/build /gui/build
 
 RUN chmod 755 /usr/local/bin/kleos-server /usr/local/bin/kleos-cli
 
@@ -67,6 +80,7 @@ USER kleos
 ENV KLEOS_HOST=0.0.0.0
 ENV KLEOS_DATA_DIR=/data
 ENV KLEOS_DB_PATH=/data/kleos.db
+ENV KLEOS_GUI_BUILD_DIR=/gui/build
 
 VOLUME ["/data"]
 
