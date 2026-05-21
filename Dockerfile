@@ -36,7 +36,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . .
 
 # Build only the two required binaries; the rest of the workspace is skipped.
-RUN cargo build --release -p kleos-server -p kleos-cli
+# Cache mounts keep the Cargo registry and incremental build artifacts between
+# builds so only changed crates are recompiled.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p kleos-server -p kleos-cli
 
 # =============================================================================
 # Stage 2 -- runtime
