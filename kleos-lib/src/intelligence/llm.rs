@@ -16,37 +16,50 @@ static LLM_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::n
         .expect("safe_client_builder failed at LLM client startup")
 });
 
-/// Check whether a local LLM endpoint is configured and reachable.
+/// Check whether an LLM endpoint is configured.
+/// ENGRAM_LLM_URL (legacy) takes precedence; falls back to OLLAMA_URL.
 pub fn is_llm_available() -> bool {
-    std::env::var("ENGRAM_LLM_URL").is_ok()
+    llm_url().is_some()
 }
 
-/// Get the configured LLM URL.
-fn llm_url() -> String {
+/// Resolve the LLM endpoint URL.
+/// ENGRAM_LLM_URL (legacy/undocumented) → OLLAMA_URL (official) → None.
+fn llm_url() -> Option<String> {
     std::env::var("ENGRAM_LLM_URL")
-        .unwrap_or_else(|_| "http://localhost:11434/api/generate".to_string())
+        .ok()
+        .or_else(|| std::env::var("OLLAMA_URL").ok())
 }
 
-/// Ollama-compatible request body.
+/// OpenAI-compatible request body (/v1/chat/completions).
 #[derive(Debug, Serialize)]
-struct OllamaRequest {
+struct OpenAiRequest {
     model: String,
-    system: String,
-    prompt: String,
+    messages: Vec<OpenAiMessage>,
+    temperature: f64,
+    max_tokens: u32,
     stream: bool,
-    options: OllamaOptions,
 }
 
 #[derive(Debug, Serialize)]
-struct OllamaOptions {
-    temperature: f64,
-    num_predict: u32,
+struct OpenAiMessage {
+    role: &'static str,
+    content: String,
 }
 
-/// Ollama-compatible response body.
+/// OpenAI-compatible response body.
 #[derive(Debug, Deserialize)]
-struct OllamaResponse {
-    response: Option<String>,
+struct OpenAiResponse {
+    choices: Option<Vec<OpenAiChoice>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChoice {
+    message: Option<OpenAiChoiceMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChoiceMessage {
+    content: Option<String>,
 }
 
 /// Call the local LLM with a system prompt and user content.
@@ -58,32 +71,35 @@ pub async fn call_llm(
     opts: Option<LlmOptions>,
 ) -> Result<String, String> {
     let opts = opts.unwrap_or_default();
-    let url = llm_url();
-    let model = std::env::var("ENGRAM_LLM_MODEL").unwrap_or_else(|_| "llama3.2:3b".to_string());
+    let url = llm_url().ok_or_else(|| "No LLM URL configured (set OLLAMA_URL)".to_string())?;
+    let model = std::env::var("OLLAMA_MODEL")
+        .or_else(|_| std::env::var("ENGRAM_LLM_MODEL"))
+        .unwrap_or_else(|_| "llama3.2:3b".to_string());
+    let api_key = std::env::var("LLM_API_KEY").ok();
 
-    let body = OllamaRequest {
+    let body = OpenAiRequest {
         model,
-        system: system.to_string(),
-        prompt: user.to_string(),
+        messages: vec![
+            OpenAiMessage { role: "system", content: system.to_string() },
+            OpenAiMessage { role: "user", content: user.to_string() },
+        ],
+        temperature: opts.temperature,
+        max_tokens: opts.max_tokens,
         stream: false,
-        options: OllamaOptions {
-            temperature: opts.temperature,
-            num_predict: opts.max_tokens,
-        },
     };
 
-    let resp = LLM_CLIENT
-        .post(&url)
-        .json(&body)
+    let mut req = LLM_CLIENT.post(&url).json(&body);
+    if let Some(key) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", key));
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("LLM request failed: {}", e))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        // R8 R-007: surface body-read errors instead of silently
-        // returning an empty string -- the caller needs to know the
-        // error bucket (network vs decode) to pick a retry policy.
         let body_text = match resp.text().await {
             Ok(t) => t,
             Err(e) => format!("<failed to read body: {e}>"),
@@ -91,14 +107,17 @@ pub async fn call_llm(
         return Err(format!("LLM returned {}: {}", status, body_text));
     }
 
-    let parsed: OllamaResponse = resp
+    let parsed: OpenAiResponse = resp
         .json()
         .await
         .map_err(|e| format!("LLM response parse error: {}", e))?;
 
     parsed
-        .response
-        .ok_or_else(|| "LLM response missing 'response' field".to_string())
+        .choices
+        .and_then(|c| c.into_iter().next())
+        .and_then(|c| c.message)
+        .and_then(|m| m.content)
+        .ok_or_else(|| "LLM response missing content".to_string())
 }
 
 /// Attempt to parse a JSON value from raw LLM output.
