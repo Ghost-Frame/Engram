@@ -80,59 +80,24 @@ pub fn is_indexable_mime_type(mime: &str) -> bool {
     INDEXABLE_APP_TYPES.contains(&mime)
 }
 
-/// Add an artifact's text content to the FTS index.
-#[tracing::instrument(skip(db, data), fields(artifact_id, mime_type = %mime_type, data_len = data.len()))]
-pub async fn index_artifact(db: &Database, artifact_id: i64, mime_type: &str, data: &[u8]) -> bool {
+/// Truncate `data` to the FTS indexing cap, decode as UTF-8, and trim. Returns
+/// `None` if the bytes aren't valid UTF-8 or the trimmed result is empty.
+///
+/// Used to compute the `content` column value for indexable artifacts. The FTS
+/// triggers in `schema_sql.rs` populate `artifacts_fts` directly from that
+/// column on INSERT/UPDATE, so the application no longer maintains the FTS
+/// index manually.
+pub fn extract_indexable_content(mime_type: &str, data: &[u8]) -> Option<String> {
     if !is_indexable_mime_type(mime_type) {
-        return false;
+        return None;
     }
-    let text = match std::str::from_utf8(&data[..data.len().min(ARTIFACT_FTS_MAX_SIZE)]) {
-        Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
-        _ => return false,
-    };
-
-    let exists = db
-        .read(move |conn| {
-            let found = conn
-                .query_row(
-                    "SELECT 1 FROM artifacts WHERE id = ?1",
-                    params![artifact_id],
-                    |_| Ok(()),
-                )
-                .optional()
-                .map_err(rusqlite_to_eng_error)?;
-            Ok(found.is_some())
-        })
-        .await
-        .unwrap_or(false);
-
-    if !exists {
-        tracing::warn!(artifact_id, "artifact FTS index rejected: not found");
-        return false;
+    let head = &data[..data.len().min(ARTIFACT_FTS_MAX_SIZE)];
+    let text = std::str::from_utf8(head).ok()?.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
     }
-
-    let indexed = db
-        .write(move |conn| {
-            conn.execute(
-                "INSERT INTO artifacts_fts (rowid, content) VALUES (?1, ?2)",
-                params![artifact_id, text],
-            )
-            .map_err(rusqlite_to_eng_error)?;
-            conn.execute(
-                "UPDATE artifacts SET is_indexed = 1 WHERE id = ?1",
-                params![artifact_id],
-            )
-            .map_err(rusqlite_to_eng_error)?;
-            Ok(())
-        })
-        .await;
-
-    if indexed.is_err() {
-        tracing::warn!(artifact_id, "artifact FTS index failed");
-        return false;
-    }
-
-    true
 }
 
 /// Options for storing an artifact, beyond the required fields.
@@ -197,12 +162,17 @@ pub async fn store_artifact(
             return Err(crate::EngError::NotFound("memory not found".into()));
         }
 
+        // is_indexed reflects whether the `content` column carries indexable
+        // text -- the FTS triggers in schema_sql.rs use that column verbatim,
+        // so populated content == searchable artifact.
+        let is_indexed = content.is_some() as i64;
+
         conn.query_row(
             "INSERT INTO artifacts \
              (name, memory_id, filename, artifact_type, content, mime_type, \
               size_bytes, sha256, storage_mode, data, disk_path, is_encrypted, \
-              source_url, agent, session_id, metadata) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
+              is_indexed, source_url, agent, session_id, metadata) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
              RETURNING id",
             params![
                 name,
@@ -217,6 +187,7 @@ pub async fn store_artifact(
                 data,
                 disk_path,
                 is_encrypted as i64,
+                is_indexed,
                 source_url,
                 agent,
                 session_id,

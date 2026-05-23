@@ -1,0 +1,199 @@
+//! Regression tests for the artifact FTS indexing path.
+//!
+//! Background: `artifacts_fts` is an external-content FTS5 virtual table
+//! (`content='artifacts' content_rowid='id'`) maintained by AFTER
+//! INSERT/UPDATE/DELETE triggers on the `artifacts` table. The application
+//! must therefore NOT issue its own INSERTs against `artifacts_fts`; doing so
+//! produces duplicate rows for the same `rowid`. These tests pin that
+//! invariant so the bug fixed in `feat/artifact-completion` C1 cannot regress.
+
+use std::sync::Arc;
+
+use kleos_lib::artifacts::{store_artifact, StoreArtifactOpts};
+use kleos_lib::tenant::{TenantConfig, TenantHandle, TenantRegistry};
+use rusqlite::params;
+use tempfile::tempdir;
+
+/// Spin up a single tenant against a fresh temp dir; leaks the dir so the
+/// handle outlives the helper (matches `tenant_isolation.rs::two_tenants`).
+async fn one_tenant() -> Arc<TenantHandle> {
+    let dir = tempdir().expect("tempdir");
+    let registry = TenantRegistry::new(dir.path(), TenantConfig::default(), 128, false, None)
+        .expect("registry");
+    let handle = registry.get_or_create("fts_tenant").await.expect("tenant");
+    std::mem::forget(dir);
+    handle
+}
+
+/// Insert a minimal memory row directly via SQL so artifacts have a parent to
+/// reference (memory_id FK with ON DELETE CASCADE).
+async fn insert_memory(db: &kleos_lib::db::Database, content: &str) -> i64 {
+    let content = content.to_string();
+    db.write(move |conn| {
+        conn.query_row(
+            "INSERT INTO memories (content, category, importance, embedding) \
+             VALUES (?1, 'test', 5, zeroblob(4)) RETURNING id",
+            params![content],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+    })
+    .await
+    .expect("insert memory")
+}
+
+/// Count rows in `artifacts_fts` for a given rowid. With the C1 fix in place
+/// this must be exactly 1 for an indexable artifact; without the fix the old
+/// `index_artifact()` call produced 2.
+async fn fts_rowid_count(db: &kleos_lib::db::Database, rowid: i64) -> i64 {
+    db.read(move |conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM artifacts_fts WHERE rowid = ?1",
+            params![rowid],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+    })
+    .await
+    .expect("count fts rows")
+}
+
+/// Regression for the C1 bug: storing an indexable artifact must produce
+/// exactly one row in `artifacts_fts`. Pre-fix, the AFTER INSERT trigger plus
+/// the now-deleted `index_artifact()` call yielded two rows per upload.
+#[tokio::test]
+async fn indexable_artifact_creates_single_fts_row() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let memory_id = insert_memory(&db, "host for fts test").await;
+
+    let content = "server { listen 80; upstream backend { server 127.0.0.1; } }";
+    let data = content.as_bytes().to_vec();
+    let opts = StoreArtifactOpts {
+        artifact_type: Some("file".into()),
+        content: Some(content.to_string()),
+        source_url: None,
+        agent: None,
+        session_id: None,
+        metadata: None,
+    };
+
+    let artifact_id = store_artifact(
+        &db,
+        memory_id,
+        "nginx.conf",
+        "nginx.conf",
+        "text/plain",
+        data.len() as i64,
+        "deadbeef",
+        "inline",
+        Some(data),
+        None,
+        false,
+        &opts,
+    )
+    .await
+    .expect("store artifact");
+
+    let count = fts_rowid_count(&db, artifact_id).await;
+    assert_eq!(
+        count, 1,
+        "exactly one artifacts_fts row per artifact (got {count})"
+    );
+}
+
+/// End-to-end FTS path: an indexable artifact's content must be reachable
+/// via `MATCH` against `artifacts_fts`. Catches both trigger regressions and
+/// migration ordering bugs that leave `artifacts_fts` absent in a tenant DB.
+#[tokio::test]
+async fn indexable_artifact_is_searchable_by_content() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let memory_id = insert_memory(&db, "host for fts search").await;
+    let content = "configuration directive: upstream backend pool";
+    let opts = StoreArtifactOpts {
+        artifact_type: Some("file".into()),
+        content: Some(content.to_string()),
+        ..StoreArtifactOpts::default()
+    };
+
+    let artifact_id = store_artifact(
+        &db,
+        memory_id,
+        "config.txt",
+        "config.txt",
+        "text/plain",
+        content.len() as i64,
+        "cafef00d",
+        "inline",
+        Some(content.as_bytes().to_vec()),
+        None,
+        false,
+        &opts,
+    )
+    .await
+    .expect("store artifact");
+
+    let hit_rowid: Option<i64> = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT rowid FROM artifacts_fts WHERE artifacts_fts MATCH 'upstream'",
+                params![],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(kleos_lib::EngError::DatabaseMessage(other.to_string())),
+            })
+        })
+        .await
+        .expect("fts query");
+
+    assert_eq!(hit_rowid, Some(artifact_id));
+}
+
+/// Non-indexable MIME types (e.g. image/png) must NOT set `is_indexed=1`.
+/// Pins the inline-default behavior of `store_artifact` after the
+/// post-insert UPDATE in `index_artifact()` was removed.
+#[tokio::test]
+async fn binary_artifact_has_no_indexable_content() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let memory_id = insert_memory(&db, "host for binary artifact").await;
+    let png_header = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+    let artifact_id = store_artifact(
+        &db,
+        memory_id,
+        "logo.png",
+        "logo.png",
+        "image/png",
+        png_header.len() as i64,
+        "feedface",
+        "inline",
+        Some(png_header),
+        None,
+        false,
+        &StoreArtifactOpts::default(),
+    )
+    .await
+    .expect("store artifact");
+
+    let is_indexed: i64 = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT is_indexed FROM artifacts WHERE id = ?1",
+                params![artifact_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .expect("read is_indexed");
+
+    assert_eq!(is_indexed, 0, "binary artifact must not set is_indexed=1");
+}

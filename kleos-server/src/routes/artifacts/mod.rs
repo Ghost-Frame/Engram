@@ -183,12 +183,10 @@ async fn upload_artifact(
     let size_bytes = data.len() as i64;
     let sha256 = artifacts::sha256_hex(&data);
 
-    // Extract text content for indexable types
-    let content = if artifacts::is_indexable_mime_type(&mime_type) {
-        std::str::from_utf8(&data).ok().map(|s| s.to_string())
-    } else {
-        None
-    };
+    // Extract indexable text once; the artifacts_fts triggers in schema_sql.rs
+    // copy `content` into the FTS index on INSERT, so no manual indexing call
+    // is needed downstream.
+    let content = artifacts::extract_indexable_content(&mime_type, &data);
 
     let opts = StoreArtifactOpts {
         artifact_type,
@@ -208,15 +206,12 @@ async fn upload_artifact(
         size_bytes,
         &sha256,
         "inline",
-        Some(data.clone()),
+        Some(data),
         None,
         false,
         &opts,
     )
     .await?;
-
-    // Index for FTS if applicable
-    artifacts::index_artifact(&db, artifact_id, &mime_type, &data).await;
 
     Ok(Json(json!({
         "id": artifact_id,
