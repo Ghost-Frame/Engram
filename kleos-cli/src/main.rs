@@ -1548,8 +1548,8 @@ async fn main() {
                     Ok(v) => match v.get("tokens").and_then(|k| k.as_array()) {
                         Some(tokens) if !tokens.is_empty() => {
                             println!(
-                                "{:<10} {:<20} {:<12} {:<8} {:<22} {}",
-                                "JTI", "NAME", "SCOPES", "ACTIVE", "EXPIRES", "LAST USED"
+                                "{:<10} {:<20} {:<12} {:<8} {:<22} LAST USED",
+                                "JTI", "NAME", "SCOPES", "ACTIVE", "EXPIRES"
                             );
                             for t in tokens {
                                 let jti = t["jti"].as_str().unwrap_or("?");
