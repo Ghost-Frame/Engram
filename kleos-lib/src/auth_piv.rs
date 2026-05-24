@@ -207,6 +207,15 @@ fn pem_to_ed25519_pubkey(pem: &str) -> Result<[u8; 32]> {
     Ok(key)
 }
 
+/// Parse a PEM-encoded Ed25519 public key into a VerifyingKey.
+/// Used by MCP token verification to check signatures against enrolled keys.
+pub fn pem_to_ed25519_verifying_key(pem: &str) -> Result<ed25519_dalek::VerifyingKey> {
+    let bytes = pem_to_ed25519_pubkey(pem)?;
+    ed25519_dalek::VerifyingKey::from_bytes(&bytes).map_err(|e| {
+        EngError::InvalidInput(format!("invalid Ed25519 public key bytes: {}", e))
+    })
+}
+
 fn decode_pem_der(pem: &str, expected_label: &str) -> Result<Vec<u8>> {
     let begin = format!("-----BEGIN {expected_label}-----");
     let end = format!("-----END {expected_label}-----");

@@ -3,8 +3,10 @@ use axum::extract::State;
 use axum::http::{Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
+use dashmap::DashMap;
 use kleos_lib::auth::{validate_key, ApiKey, AuthContext, IdentityCtx, Scope};
 use kleos_lib::auth_piv::{self, AuthTier, CanonicalEnvelope, SignatureAlgo};
+use kleos_lib::mcp_token;
 use rusqlite::{params, OptionalExtension};
 use std::sync::OnceLock;
 use tracing::Instrument;
@@ -161,6 +163,192 @@ fn signature_required_for_user(user_id: i64) -> bool {
             .unwrap_or_default()
     });
     users.contains(&user_id)
+}
+
+/// Debounce map for mcp_tokens.last_used_at updates.
+/// Key: jti, Value: last write instant. Writes only if > 60s since last.
+static MCP_TOKEN_LAST_USED: std::sync::LazyLock<DashMap<String, std::time::Instant>> =
+    std::sync::LazyLock::new(DashMap::new);
+
+/// Validate an MCP direct-auth token (kleos. prefix bearer).
+///
+/// Verification flow: decode -> expiry check -> identity key lookup ->
+/// Ed25519 sig verify -> scope cap -> revocation check (DB) -> build AuthContext.
+/// Invalid tokens never touch the revocation table (sig verify gates DB access).
+async fn validate_mcp_token(
+    state: &AppState,
+    raw_token: &str,
+    method: &Method,
+    path: &str,
+) -> Result<AuthContext, String> {
+    // Step 1: Decode token (format + version check).
+    let decoded = mcp_token::decode(raw_token).map_err(|e| e.to_string())?;
+    let payload = &decoded.payload;
+
+    // Step 2: Reject wildcard scopes.
+    let token_scopes =
+        mcp_token::parse_scopes_strict(&payload.scopes).map_err(|e| e.to_string())?;
+
+    // Step 3: Expiry check (no DB hit).
+    mcp_token::check_expiry(payload).map_err(|e| e.to_string())?;
+
+    // Step 4: Look up identity key by kid (fingerprint).
+    let kid = payload.kid.clone();
+    let key_row = state
+        .db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, user_id, pubkey_pem, scopes
+                     FROM identity_keys
+                     WHERE pubkey_fingerprint = ?1 AND is_active = 1",
+                )
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            let row = stmt
+                .query_row(rusqlite::params![kid], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .optional()
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            Ok(row)
+        })
+        .await
+        .map_err(|e| format!("database error: {}", e))?;
+
+    let (_ik_id, ik_user_id, pubkey_pem, ik_scopes_csv) =
+        key_row.ok_or_else(|| "identity key not found or revoked".to_string())?;
+
+    // Step 5: Ed25519 signature verification over raw payload bytes.
+    let vk = kleos_lib::auth_piv::pem_to_ed25519_verifying_key(&pubkey_pem)
+        .map_err(|e| format!("invalid pubkey: {}", e))?;
+    mcp_token::verify_signature(&vk, &decoded)
+        .map_err(|_| "invalid signature".to_string())?;
+
+    // --- Signature valid past this point ---
+
+    // Step 6: uid must match identity key owner.
+    if payload.uid != ik_user_id {
+        return Err(format!(
+            "token uid {} does not match key owner {}",
+            payload.uid, ik_user_id
+        ));
+    }
+
+    // Step 7: Scope cap -- token scopes must be subset of identity key scopes.
+    let ik_scopes = match ik_scopes_csv.as_deref() {
+        Some(csv) => kleos_lib::auth::parse_scopes(csv),
+        None => vec![Scope::Read, Scope::Write, Scope::Admin],
+    };
+    mcp_token::scopes_within_cap(&token_scopes, &ik_scopes)
+        .map_err(|e| e.to_string())?;
+
+    // Step 8: Revocation check (DB). Fail closed on error.
+    let jti = payload.jti.clone();
+    let uid = payload.uid;
+    let revocation_row = state
+        .db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT id, is_active, name FROM mcp_tokens
+                 WHERE jti = ?1 AND user_id = ?2",
+                rusqlite::params![jti, uid],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .map_err(|e| format!("revocation check failed (fail closed): {}", e))?;
+
+    let (_token_id, is_active, token_name) =
+        revocation_row.ok_or_else(|| "token not registered".to_string())?;
+
+    if !is_active {
+        return Err("token revoked".to_string());
+    }
+
+    // Step 9: Scope enforcement for this request.
+    if requires_write_scope(method)
+        && !is_read_only_post(path)
+        && !token_scopes.contains(&Scope::Write)
+        && !token_scopes.contains(&Scope::Admin)
+    {
+        return Err("write scope required for this method".to_string());
+    }
+    if !requires_write_scope(method)
+        && !token_scopes.contains(&Scope::Read)
+        && !token_scopes.contains(&Scope::Admin)
+    {
+        return Err("read scope required for this method".to_string());
+    }
+
+    // Step 10: Debounced last_used_at update.
+    let jti_for_update = payload.jti.clone();
+    let should_write = {
+        let now = std::time::Instant::now();
+        let entry = MCP_TOKEN_LAST_USED.entry(jti_for_update.clone());
+        match entry {
+            dashmap::mapref::entry::Entry::Occupied(mut e) => {
+                if now.duration_since(*e.get()).as_secs() >= 60 {
+                    e.insert(now);
+                    true
+                } else {
+                    false
+                }
+            }
+            dashmap::mapref::entry::Entry::Vacant(e) => {
+                e.insert(now);
+                true
+            }
+        }
+    };
+    if should_write {
+        let jti_w = jti_for_update;
+        let _ = state
+            .db
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE mcp_tokens SET last_used_at = datetime('now') WHERE jti = ?1",
+                    rusqlite::params![jti_w],
+                )
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                Ok(())
+            })
+            .await;
+    }
+
+    // Step 11: Build AuthContext (identity = None, same as API keys).
+    let key = ApiKey {
+        id: 0,
+        user_id: payload.uid,
+        key_prefix: "mcp".into(),
+        name: token_name,
+        scopes: token_scopes,
+        rate_limit: 1000,
+        is_active: true,
+        agent_id: None,
+        last_used_at: None,
+        expires_at: None,
+        created_at: String::new(),
+        hash_version: 0,
+    };
+
+    Ok(AuthContext {
+        key,
+        user_id: payload.uid,
+        identity: None,
+    })
 }
 
 fn header_str<'a>(req: &'a Request<Body>, name: &str) -> Option<&'a str> {
@@ -611,7 +799,7 @@ pub async fn auth_middleware(
     }
 
     // ---------------------------------------------------------------
-    // Path 3: Bearer token (existing flow)
+    // Path 3: Bearer token
     // ---------------------------------------------------------------
     let token = header_str(&request, "authorization")
         .and_then(|v| v.strip_prefix("Bearer "))
@@ -619,6 +807,26 @@ pub async fn auth_middleware(
 
     let mut request = request;
     if let Some(raw_key) = token {
+        // --- Path 3a: MCP direct-auth token (kleos. prefix) ---
+        if raw_key.starts_with(mcp_token::TOKEN_PREFIX) {
+            match validate_mcp_token(&state, &raw_key, &method, &path).await {
+                Ok(auth_ctx) => {
+                    let user_id = auth_ctx.user_id;
+                    request.extensions_mut().insert(auth_ctx);
+                    let span = tracing::info_span!("request",
+                        user_id = user_id, method = %method, path = %path,
+                        tier = "mcp-token");
+                    return next.run(request).instrument(span).await;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, client_ip = %req_client_ip,
+                        path = %path, method = %method, "mcp token auth failed");
+                    return unauthorized(&e);
+                }
+            }
+        }
+
+        // --- Path 3b: API key bearer (existing) ---
         match validate_key(&state.db, &raw_key).await {
             Ok(auth_ctx) => {
                 if signature_required_for_user(auth_ctx.user_id) {
