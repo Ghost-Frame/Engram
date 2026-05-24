@@ -96,6 +96,9 @@ pub struct ContextBlockSummary {
     pub origin: Option<String>,
     pub score: f64,
     pub tokens: usize,
+    /// Artifact attachments for this memory (empty when none).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub artifacts: Vec<crate::artifacts::ArtifactSummary>,
 }
 
 /// Per-source layer counts in the breakdown.

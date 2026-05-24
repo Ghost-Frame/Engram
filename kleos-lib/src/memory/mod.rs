@@ -393,11 +393,24 @@ pub async fn store_with_chunks(
             Err(e) => tracing::warn!("chunk embedding failed in store_with_chunks: {}", e),
         }
     }
-    store(db, req).await
+    store(db, req, None, false).await
 }
 
+/// Store a single memory entry, enforcing content constraints and optional tenant quota.
+///
+/// `tenant_quota` -- when `Some`, the write is gated by an atomic in-transaction
+/// quota check (E2 disk-quota path). Pass `None` for internal/background callers
+/// that are not subject to per-tenant limits.
+///
+/// `shard_read_only` -- when `true` the function returns `EngError::QuotaExceeded`
+/// immediately (E2 fast-path: shard has already exceeded disk quota).
 #[tracing::instrument(skip(db, req), fields(user_id = req.user_id.unwrap_or(0), content_len = req.content.len()))]
-pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> {
+pub async fn store(
+    db: &Database,
+    mut req: StoreRequest,
+    tenant_quota: Option<std::sync::Arc<crate::tenant::types::QuotaConfig>>,
+    shard_read_only: bool,
+) -> Result<StoreResult> {
     // 1. Validate content
     let content = req.content.trim().to_string();
     if content.is_empty() {
@@ -410,6 +423,13 @@ pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> 
             "content exceeds maximum size of {} bytes",
             MAX_CONTENT_SIZE
         )));
+    }
+
+    // E2: disk quota fast-path -- shard is in read-only mode.
+    if shard_read_only {
+        return Err(EngError::QuotaExceeded(
+            "tenant shard is in read-only mode (disk quota exceeded)".into(),
+        ));
     }
 
     // SEC-recall-1.8: L2-normalize the embedding before any downstream use so
@@ -427,10 +447,10 @@ pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> 
         .user_id
         .ok_or_else(|| EngError::InvalidInput("user_id required".into()))?;
 
-    // SECURITY (MT-F20): enforce tenant memory quota on every write path.
-    crate::quota::enforce_memory_quota(db, user_id).await?;
-
     let importance = clamp_importance(req.importance);
+
+    // Byte length of the trimmed content, used for E2 quota counter updates.
+    let content_bytes = content.len() as i64;
 
     // 2. Compute simhash of content
     let content_hash = simhash::simhash(&content);
@@ -496,10 +516,16 @@ pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> 
     let req_for_tx = req.clone();
     let tags_json_for_tx = tags_json.clone();
     let category_for_tx = category.clone();
+    let quota_for_tx = tenant_quota.clone();
+    let content_bytes_for_tx = content_bytes;
 
     let new_id = db
         .transaction(move |tx| {
-            store_transactional_rusqlite(
+            // E2: atomic content quota check inside the writer-serialized transaction.
+            if let Some(ref q) = quota_for_tx {
+                crate::quota::enforce_quota_in_tx(tx, q, content_bytes_for_tx)?;
+            }
+            let id = store_transactional_rusqlite(
                 tx,
                 &content_for_tx,
                 &req_for_tx,
@@ -507,7 +533,29 @@ pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> 
                 importance,
                 tags_json_for_tx,
                 &category_for_tx,
-            )
+            )?;
+            // E2: increment counters atomically in the same transaction.
+            if quota_for_tx.is_some() {
+                tx.execute(
+                    "UPDATE tenant_state SET value = value + ?1, \
+                     updated_at = datetime('now') \
+                     WHERE key = 'content_bytes'",
+                    rusqlite::params![content_bytes_for_tx],
+                )
+                .map_err(|e| {
+                    crate::EngError::DatabaseMessage(format!("counter update failed: {e}"))
+                })?;
+                tx.execute(
+                    "UPDATE tenant_state SET value = value + 1, \
+                     updated_at = datetime('now') \
+                     WHERE key = 'memory_count'",
+                    [],
+                )
+                .map_err(|e| {
+                    crate::EngError::DatabaseMessage(format!("counter update failed: {e}"))
+                })?;
+            }
+            Ok(id)
         })
         .await?;
 
@@ -881,27 +929,83 @@ pub async fn restore(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
 
 /// Permanently delete memories that have been in the trash longer than the
 /// retention window (default 30 days). Returns the number of purged rows.
+///
+/// When `update_counters` is true (tenant shard mode), reads the total
+/// content size and count of rows to be deleted, then decrements
+/// tenant_state counters in the same write closure.
 #[tracing::instrument(skip(db))]
-pub async fn purge_trashed(db: &Database, retention_days: i64) -> Result<usize> {
+pub async fn purge_trashed(
+    db: &Database,
+    retention_days: i64,
+    update_counters: bool,
+) -> Result<usize> {
     db.write(move |conn| {
-        conn.execute(
-            "DELETE FROM memories \
-             WHERE is_forgotten = 1 \
-               AND forget_reason = 'user_deleted' \
-               AND updated_at < datetime('now', ?1)",
-            rusqlite::params![format!("-{} days", retention_days)],
-        )
-        .map_err(rusqlite_to_eng_error)
+        let cutoff = format!("-{} days", retention_days);
+
+        if update_counters {
+            let (del_bytes, del_count): (i64, i64) = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(length(content)), 0), COUNT(*) \
+                     FROM memories \
+                     WHERE is_forgotten = 1 \
+                       AND forget_reason = 'user_deleted' \
+                       AND updated_at < datetime('now', ?1)",
+                    rusqlite::params![cutoff],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            let n = conn
+                .execute(
+                    "DELETE FROM memories \
+                     WHERE is_forgotten = 1 \
+                       AND forget_reason = 'user_deleted' \
+                       AND updated_at < datetime('now', ?1)",
+                    rusqlite::params![cutoff],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+
+            if del_bytes > 0 || del_count > 0 {
+                conn.execute(
+                    "UPDATE tenant_state SET value = MAX(0, value - ?1), \
+                     updated_at = datetime('now') WHERE key = 'content_bytes'",
+                    rusqlite::params![del_bytes],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+                conn.execute(
+                    "UPDATE tenant_state SET value = MAX(0, value - ?1), \
+                     updated_at = datetime('now') WHERE key = 'memory_count'",
+                    rusqlite::params![del_count],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            }
+            Ok(n)
+        } else {
+            conn.execute(
+                "DELETE FROM memories \
+                 WHERE is_forgotten = 1 \
+                   AND forget_reason = 'user_deleted' \
+                   AND updated_at < datetime('now', ?1)",
+                rusqlite::params![cutoff],
+            )
+            .map_err(rusqlite_to_eng_error)
+        }
     })
     .await
 }
 
+/// Update an existing memory by id, creating a new versioned row.
+///
+/// When `update_counters` is true (tenant shard mode), applies the
+/// content-bytes delta to the tenant_state counter inside the write
+/// transaction to keep quota tracking consistent.
 #[tracing::instrument(skip(db, req))]
 pub async fn update(
     db: &Database,
     id: i64,
     mut req: UpdateRequest,
     user_id: i64,
+    update_counters: bool,
 ) -> Result<Memory> {
     // SEC-recall-1.8: L2-normalize a supplied embedding so cosine semantics
     // hold regardless of provider. Mirrors the same step in `store`.
@@ -961,16 +1065,20 @@ pub async fn update(
     let new_root_memory_id = old.root_memory_id.unwrap_or(old.id);
     let new_version = old.version + 1;
 
+    // Capture old content length before the transaction for counter delta.
+    let old_content_len = old.content.len() as i64;
+
     let old_for_tx = old.clone();
     let embedding_for_tx = req.embedding.clone();
     let new_content_for_tx = new_content.clone();
     let new_category_for_tx = new_category.clone();
     let new_status_for_tx = new_status.clone();
     let new_tags_json_for_tx = new_tags_json.clone();
+    let old_content_len_for_tx = old_content_len;
 
     let new_id = db
         .transaction(move |tx| {
-            update_transactional_rusqlite(
+            let result = update_transactional_rusqlite(
                 tx,
                 id,
                 user_id,
@@ -984,7 +1092,24 @@ pub async fn update(
                 new_root_memory_id,
                 new_version,
                 embedding_for_tx.as_ref(),
-            )
+            )?;
+
+            // E2: update content_bytes counter with the delta.
+            if update_counters {
+                let delta_bytes = new_content_for_tx.len() as i64 - old_content_len_for_tx;
+                if delta_bytes != 0 {
+                    tx.execute(
+                        "UPDATE tenant_state SET value = MAX(0, value + ?1), \
+                         updated_at = datetime('now') WHERE key = 'content_bytes'",
+                        rusqlite::params![delta_bytes],
+                    )
+                    .map_err(|e| {
+                        crate::EngError::DatabaseMessage(format!("counter update failed: {e}"))
+                    })?;
+                }
+            }
+
+            Ok(result)
         })
         .await?;
 
@@ -1886,6 +2011,7 @@ mod tests {
             parent_memory_id: None,
             chunk_embeddings: None,
             sync_id: None,
+            artifacts: None,
         }
     }
 
@@ -1909,6 +2035,8 @@ mod tests {
         let stored = store(
             &db,
             valence_store_request("I am ecstatic and thrilled about this release", user_id),
+            None,
+            false,
         )
         .await
         .expect("store");
@@ -1924,6 +2052,8 @@ mod tests {
         let stored = store(
             &db,
             valence_store_request("I am furious and everything crashed", user_id),
+            None,
+            false,
         )
         .await
         .expect("store");
@@ -1939,6 +2069,8 @@ mod tests {
         let stored = store(
             &db,
             valence_store_request("The meeting is at 3pm tomorrow", user_id),
+            None,
+            false,
         )
         .await
         .expect("store");

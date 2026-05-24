@@ -42,6 +42,7 @@ fn base_store(content: &str) -> StoreRequest {
         parent_memory_id: None,
         chunk_embeddings: None,
         sync_id: None,
+        artifacts: None,
     }
 }
 
@@ -65,7 +66,7 @@ async fn update_preserves_lifecycle_fields() {
     let tenant = single_tenant().await;
     let db = tenant.database();
 
-    let stored = memory::store(&db, base_store("original content"))
+    let stored = memory::store(&db, base_store("original content"), None, false)
         .await
         .expect("store");
     let id = stored.id;
@@ -83,7 +84,7 @@ async fn update_preserves_lifecycle_fields() {
     .await
     .expect("seed lifecycle fields");
 
-    let new = memory::update(&db, id, content_update("updated content"), 1)
+    let new = memory::update(&db, id, content_update("updated content"), 1, false)
         .await
         .expect("update");
     let new_id = new.id;
@@ -140,13 +141,13 @@ async fn store_with_superseded_parent_does_not_fork() {
     let tenant = single_tenant().await;
     let db = tenant.database();
 
-    let a = memory::store(&db, base_store("A v1"))
+    let a = memory::store(&db, base_store("A v1"), None, false)
         .await
         .expect("store A");
     let a_id = a.id;
 
     // Update A -> A' so A is no longer the latest version.
-    let a_prime = memory::update(&db, a_id, content_update("A v2"), 1)
+    let a_prime = memory::update(&db, a_id, content_update("A v2"), 1, false)
         .await
         .expect("update A");
     let root_id = a_prime.root_memory_id.unwrap_or(a_id);
@@ -154,7 +155,7 @@ async fn store_with_superseded_parent_does_not_fork() {
     // Storing a child whose parent is the now-stale original A must error.
     let mut child = base_store("child of stale parent");
     child.parent_memory_id = Some(a_id);
-    let res = memory::store(&db, child).await;
+    let res = memory::store(&db, child, None, false).await;
     assert!(
         res.is_err(),
         "storing against a superseded parent must be refused, not forked"

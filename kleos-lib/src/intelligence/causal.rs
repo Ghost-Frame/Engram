@@ -327,11 +327,12 @@ mod tests {
             parent_memory_id: None,
             chunk_embeddings: None,
             sync_id: None,
+            artifacts: None,
         }
     }
 
     async fn seed(db: &Database, content: &str, user_id: i64) -> i64 {
-        crate::memory::store(db, req(content, user_id))
+        crate::memory::store(db, req(content, user_id), None, false)
             .await
             .expect("store")
             .id

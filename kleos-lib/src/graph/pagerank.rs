@@ -921,6 +921,7 @@ mod tests {
             parent_memory_id: None,
             chunk_embeddings: None,
             sync_id: None,
+            artifacts: None,
         }
     }
 
@@ -1026,9 +1027,14 @@ mod tests {
         let db = Database::connect_memory().await.expect("in-memory db");
         let user_id = 1;
 
-        let stored = memory::store(&db, store_request("dirty counter alpha 001", user_id))
-            .await
-            .expect("store memory");
+        let stored = memory::store(
+            &db,
+            store_request("dirty counter alpha 001", user_id),
+            None,
+            false,
+        )
+        .await
+        .expect("store memory");
         assert_eq!(dirty_state(&db, user_id).await, (1, 0));
 
         memory::delete(&db, stored.id, user_id)
@@ -1042,9 +1048,14 @@ mod tests {
         let db = Database::connect_memory().await.expect("in-memory db");
         let user_id = 1;
 
-        let stored = memory::store(&db, store_request("persist pagerank alpha 002", user_id))
-            .await
-            .expect("store memory");
+        let stored = memory::store(
+            &db,
+            store_request("persist pagerank alpha 002", user_id),
+            None,
+            false,
+        )
+        .await
+        .expect("store memory");
         assert_eq!(dirty_state(&db, user_id).await, (1, 0));
 
         persist_pagerank(&db, &[(stored.id, 0.25)])
@@ -1081,15 +1092,24 @@ mod tests {
         let center = memory::store(
             &db,
             store_request("alpha common hub signal center", user_id),
+            None,
+            false,
         )
         .await
         .expect("store center memory");
-        let left = memory::store(&db, store_request("alpha common leaf signal left", user_id))
-            .await
-            .expect("store left memory");
+        let left = memory::store(
+            &db,
+            store_request("alpha common leaf signal left", user_id),
+            None,
+            false,
+        )
+        .await
+        .expect("store left memory");
         let right = memory::store(
             &db,
             store_request("alpha common leaf signal right", user_id),
+            None,
+            false,
         )
         .await
         .expect("store right memory");
@@ -1132,7 +1152,7 @@ mod tests {
                 i * 31,
                 i * 43
             );
-            memory::store(&db, store_request(&content, user_id))
+            memory::store(&db, store_request(&content, user_id), None, false)
                 .await
                 .expect("store memory for warm search");
         }

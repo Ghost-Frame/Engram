@@ -66,8 +66,11 @@ async fn extract_and_link_entities_populates_tables() {
         parent_memory_id: None,
         chunk_embeddings: None,
         sync_id: None,
+        artifacts: None,
     };
-    let stored = memory::store(&db, store_req).await.expect("store memory");
+    let stored = memory::store(&db, store_req, None, false)
+        .await
+        .expect("store memory");
     let memory_id = stored.id;
 
     // Call the function under test directly (no spawn indirection needed here).
@@ -151,8 +154,11 @@ async fn extract_and_link_entities_skips_lowercase_content() {
         parent_memory_id: None,
         chunk_embeddings: None,
         sync_id: None,
+        artifacts: None,
     };
-    let stored = memory::store(&db, store_req).await.expect("store memory");
+    let stored = memory::store(&db, store_req, None, false)
+        .await
+        .expect("store memory");
     let memory_id = stored.id;
 
     let entities = extract_and_link_entities(&db, memory_id, "the cat sat on the mat", 1)

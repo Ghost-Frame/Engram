@@ -101,6 +101,11 @@ impl IntoResponse for AppError {
                 tracing::warn!("Resource limit: {}", msg);
                 (StatusCode::SERVICE_UNAVAILABLE, msg.clone())
             }
+            // E2: content or disk quota exceeded -- 507 Insufficient Storage.
+            EngError::QuotaExceeded(msg) => {
+                tracing::warn!("Quota exceeded: {}", msg);
+                (StatusCode::INSUFFICIENT_STORAGE, msg.clone())
+            }
         };
         (status, Json(json!({ "error": message }))).into_response()
     }

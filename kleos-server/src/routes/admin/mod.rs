@@ -1,4 +1,4 @@
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -17,9 +17,10 @@ use kleos_lib::graph::{communities, cooccurrence};
 
 mod types;
 use types::{
-    AdminCredProxyBody, AdminCredResolveBody, AdminPageRankQuery, BackfillEntitiesBody,
-    BootstrapBody, ColdStorageParams, DeprovisionBody, GcBody, MaintenanceBody, MigrateDownBody,
-    PitrPrepareBody, ProvisionBody, ReembedBody, ResetBody, VectorRebuildIndexBody,
+    AdminCredProxyBody, AdminCredResolveBody, AdminPageRankQuery, AsyncDeprovisionBody,
+    BackfillEntitiesBody, BootstrapBody, ColdStorageParams, DeprovisionBody, GcBody,
+    MaintenanceBody, MigrateDownBody, PitrPrepareBody, ProvisionBody, RecentDeprovisionQuery,
+    ReembedBody, ResetBody, SetQuotaBody, SkipShardBody, VectorRebuildIndexBody,
     VectorSyncReplayBody,
 };
 
@@ -79,6 +80,25 @@ pub fn router() -> Router<AppState> {
         .route("/admin/tenants", get(admin_tenants))
         .route("/tenants/provision", post(provision_tenant))
         .route("/tenants/deprovision", post(deprovision_tenant))
+        // E1 async deprovision
+        .route("/admin/deprovisions/stuck", get(list_stuck_deprovisions))
+        .route("/admin/deprovisions/recent", get(list_recent_deprovisions))
+        .route(
+            "/admin/deprovision/{id}/status",
+            get(get_deprovision_status),
+        )
+        .route(
+            "/admin/deprovision/{id}/force-retry",
+            post(force_retry_deprovision),
+        )
+        .route(
+            "/admin/deprovision/{id}/skip-shard",
+            post(skip_shard_deprovision),
+        )
+        .route(
+            "/admin/deprovision/{user_id}",
+            post(deprovision_tenant_async),
+        )
         // Data management
         .route("/admin/export", get(export_handler))
         .route("/admin/reset", post(reset_user))
@@ -125,6 +145,12 @@ pub fn router() -> Router<AppState> {
             "/admin/brain/instincts/reapply",
             post(admin_reapply_instincts),
         )
+        // E2 shard quota management
+        .route(
+            "/admin/quota/{user_id}",
+            get(get_quota_status).put(set_quota),
+        )
+        .route("/admin/quota/{user_id}/recompute", post(recompute_quota))
 }
 
 // ---------------------------------------------------------------------------
@@ -864,6 +890,25 @@ async fn provision_tenant(
     Json(body): Json<ProvisionBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     require_admin(&auth)?;
+    // E1: check tombstone hold before allowing re-provisioning of a deleted username.
+    // Query deletions_log by target_username since the user_id doesn't exist yet.
+    if let Some(ref registry) = state.tenant_registry {
+        let hold_days: i64 = std::env::var("KLEOS_TOMBSTONE_HOLD_DAYS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(90);
+        if hold_days > 0 {
+            if let Some(hold_until) = registry
+                .registry_db()
+                .check_tombstone_hold_by_username(&body.username, hold_days)?
+            {
+                return Err(AppError(kleos_lib::EngError::Conflict(format!(
+                    "username '{}' is under tombstone hold until {}",
+                    body.username, hold_until
+                ))));
+            }
+        }
+    }
     let result = kleos_lib::admin::provision_tenant(
         &state.db,
         &body.username,
@@ -875,7 +920,8 @@ async fn provision_tenant(
     Ok((StatusCode::CREATED, json_result))
 }
 
-/// POST /admin/deprovision -- tear down a tenant's per-shard database and remove the row.
+/// POST /tenants/deprovision -- legacy sync handler; routes to async E1 teardown
+/// when tenant registry is present, falls back to monolith-only cleanup otherwise.
 #[tracing::instrument(skip_all)]
 async fn deprovision_tenant(
     State(state): State<AppState>,
@@ -883,6 +929,22 @@ async fn deprovision_tenant(
     Json(body): Json<DeprovisionBody>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
+    if let Some(ref registry) = state.tenant_registry {
+        let dep_id = kleos_lib::tenant::teardown::begin_deprovision(
+            registry,
+            &state.db,
+            body.user_id,
+            auth.user_id,
+            String::new(),
+        )
+        .await?;
+        return Ok(Json(json!({
+            "removed": true,
+            "user_id": body.user_id,
+            "deprovision_id": dep_id.as_str(),
+            "async": true,
+        })));
+    }
     let removed = kleos_lib::admin::deprovision_tenant(&state.db, body.user_id).await?;
     Ok(Json(json!({ "removed": removed, "user_id": body.user_id })))
 }
@@ -1918,6 +1980,294 @@ async fn admin_monolith_drain(
         "total_errors": total_errors,
         "per_user": per_user,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// E1 Async Deprovision (cross-store teardown)
+// ---------------------------------------------------------------------------
+
+/// POST /admin/deprovision/{user_id} -- initiate async two-phase teardown.
+#[tracing::instrument(skip_all)]
+async fn deprovision_tenant_async(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(user_id): Path<i64>,
+    Json(body): Json<AsyncDeprovisionBody>,
+) -> Result<impl IntoResponse, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant registry not configured".into(),
+        ))
+    })?;
+    let dep_id = kleos_lib::tenant::teardown::begin_deprovision(
+        registry,
+        &state.db,
+        user_id,
+        auth.user_id,
+        body.reason,
+    )
+    .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "deprovision_id": dep_id.as_str(),
+            "user_id": user_id,
+        })),
+    ))
+}
+
+/// GET /admin/deprovision/{id}/status -- get deprovision log status.
+#[tracing::instrument(skip_all)]
+async fn get_deprovision_status(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(dep_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant registry not configured".into(),
+        ))
+    })?;
+    let row = registry
+        .registry_db()
+        .get_deletion_log(&dep_id)?
+        .ok_or_else(|| {
+            AppError(kleos_lib::EngError::NotFound(format!(
+                "deprovision {dep_id} not found"
+            )))
+        })?;
+    Ok(Json(json!({
+        "deprovision_id": row.deprovision_id,
+        "target_user_id": row.target_user_id,
+        "target_username": row.target_username,
+        "deleted_at": row.deleted_at,
+        "reason": row.reason,
+        "archive_path": row.archive_path,
+        "shard_skipped": row.shard_skipped,
+    })))
+}
+
+/// GET /admin/deprovisions/stuck -- list tenants in Stuck state.
+#[tracing::instrument(skip_all)]
+async fn list_stuck_deprovisions(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant registry not configured".into(),
+        ))
+    })?;
+    let rows = registry
+        .registry_db()
+        .list_by_status(kleos_lib::tenant::types::TenantStatus::Stuck)?;
+    let items: Vec<_> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "tenant_id": r.tenant_id,
+                "user_id": r.user_id,
+                "status": r.status.as_str(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "stuck": items, "count": items.len() })))
+}
+
+/// POST /admin/deprovision/{id}/force-retry -- re-enqueue a Stuck teardown.
+///
+/// Resets the tenant status back to Deleting and enqueues a new teardown job.
+#[tracing::instrument(skip_all)]
+async fn force_retry_deprovision(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(dep_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant registry not configured".into(),
+        ))
+    })?;
+    let log = registry
+        .registry_db()
+        .get_deletion_log(&dep_id)?
+        .ok_or_else(|| {
+            AppError(kleos_lib::EngError::NotFound(format!(
+                "deprovision {dep_id} not found"
+            )))
+        })?;
+    let tenant_row = registry
+        .registry_db()
+        .get_by_user_id(&log.target_user_id.to_string())?;
+    // Extract tenant_id before consuming tenant_row in the if-let to avoid borrow-after-move.
+    let tenant_id = tenant_row
+        .as_ref()
+        .map(|r| r.tenant_id.clone())
+        .unwrap_or_default();
+    if let Some(row) = tenant_row {
+        registry.registry_db().update_status(
+            &row.tenant_id,
+            kleos_lib::tenant::types::TenantStatus::Deleting,
+        )?;
+    }
+    let payload = serde_json::json!({
+        "deprovision_id": dep_id,
+        "user_id": log.target_user_id,
+        "tenant_id": tenant_id,
+    })
+    .to_string();
+    kleos_lib::jobs::enqueue_job(&state.db, "deprovision_teardown", &payload, 5).await?;
+    Ok(Json(json!({
+        "re_enqueued": true,
+        "deprovision_id": dep_id,
+    })))
+}
+
+/// GET /admin/deprovisions/recent -- list recent deprovision log entries.
+#[tracing::instrument(skip_all)]
+async fn list_recent_deprovisions(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(q): Query<RecentDeprovisionQuery>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant registry not configured".into(),
+        ))
+    })?;
+    let rows = registry.registry_db().list_deletions_recent(q.limit)?;
+    let items: Vec<_> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "deprovision_id": r.deprovision_id,
+                "target_user_id": r.target_user_id,
+                "target_username": r.target_username,
+                "deleted_at": r.deleted_at,
+                "reason": r.reason,
+                "archive_path": r.archive_path,
+                "shard_skipped": r.shard_skipped,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "deprovisions": items, "count": items.len() })))
+}
+
+/// POST /admin/deprovision/{id}/skip-shard -- skip shard removal for a Stuck teardown.
+///
+/// Marks the shard step as skipped in `deletions_log`, then runs the remaining
+/// steps (monolith row deletion + tombstone) directly.
+#[tracing::instrument(skip_all)]
+async fn skip_shard_deprovision(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(dep_id): Path<String>,
+    Json(body): Json<SkipShardBody>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant registry not configured".into(),
+        ))
+    })?;
+    let log = registry
+        .registry_db()
+        .get_deletion_log(&dep_id)?
+        .ok_or_else(|| {
+            AppError(kleos_lib::EngError::NotFound(format!(
+                "deprovision {dep_id} not found"
+            )))
+        })?;
+
+    let note = body.note.as_deref().unwrap_or("admin skip-shard");
+    registry
+        .registry_db()
+        .update_deletion_log_shard_skipped(&dep_id, note)?;
+
+    let tenant_row = registry
+        .registry_db()
+        .get_by_user_id(&log.target_user_id.to_string())?;
+    if let Some(row) = &tenant_row {
+        kleos_lib::tenant::teardown::delete_monolith_rows(&state.db, log.target_user_id).await?;
+        registry.registry_db().mark_tombstone(&row.tenant_id)?;
+    }
+
+    Ok(Json(json!({
+        "skipped": true,
+        "deprovision_id": dep_id,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// E2 shard quota management
+// ---------------------------------------------------------------------------
+
+/// GET /admin/quota/{user_id} -- return current quota limits and shadow usage.
+async fn get_quota_status(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    axum::extract::Path(user_id): axum::extract::Path<String>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant sharding not enabled".into(),
+        ))
+    })?;
+    let row = registry.get_quota_row(&user_id)?;
+    to_json(row)
+}
+
+/// PUT /admin/quota/{user_id} -- set quota limits for a tenant.
+///
+/// Writes limits to the registry and refreshes the ArcSwap on the loaded
+/// handle (if resident) so the next write sees the new limits immediately.
+async fn set_quota(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    axum::extract::Path(user_id): axum::extract::Path<String>,
+    Json(body): Json<SetQuotaBody>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant sharding not enabled".into(),
+        ))
+    })?;
+    registry
+        .update_quota(
+            &user_id,
+            body.content_bytes,
+            body.memory_count,
+            body.disk_bytes,
+        )
+        .await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// POST /admin/quota/{user_id}/recompute -- re-run the seed query to repair counters.
+///
+/// Overwrites tenant_state with a fresh scan of the memories table.
+async fn recompute_quota(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    axum::extract::Path(user_id): axum::extract::Path<String>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant sharding not enabled".into(),
+        ))
+    })?;
+    let (bytes, count) = registry.recompute_usage(&user_id).await?;
+    Ok(Json(
+        json!({ "ok": true, "content_bytes": bytes, "memory_count": count }),
+    ))
 }
 
 /// Unit tests for the PITR sandbox-path validator that gates `POST /admin/pitr/prepare`.

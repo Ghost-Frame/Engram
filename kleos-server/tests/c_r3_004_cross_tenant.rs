@@ -82,6 +82,9 @@ async fn test_app_with_sharding() -> (axum::Router, AppState, TempDir) {
             let (tx, _) = tokio::sync::broadcast::channel(64);
             tx
         },
+        artifact_encryption: Arc::new(
+            kleos_lib::artifacts_crypto::ArtifactEncryption::new("").expect("disabled encryption"),
+        ),
     };
 
     let router = build_router(state.clone());

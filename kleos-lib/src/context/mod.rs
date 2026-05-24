@@ -1269,6 +1269,12 @@ async fn assemble_context_inner(
         personality: if personality_block_tokens > 0 { 1 } else { 0 },
     };
 
+    // Batch-load artifact summaries for context blocks.
+    let ctx_mem_ids: Vec<i64> = blocks.iter().map(|b| b.id).collect();
+    let ctx_art_map = crate::artifacts::enrich_with_artifacts(db, &ctx_mem_ids)
+        .await
+        .unwrap_or_default();
+
     let block_summaries: Vec<ContextBlockSummary> = blocks
         .iter()
         .map(|b| ContextBlockSummary {
@@ -1279,6 +1285,7 @@ async fn assemble_context_inner(
             origin: b.origin.clone(),
             score: (b.score * 100.0).round() / 100.0,
             tokens: b.tokens,
+            artifacts: ctx_art_map.get(&b.id).cloned().unwrap_or_default(),
         })
         .collect();
 

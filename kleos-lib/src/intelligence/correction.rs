@@ -42,7 +42,10 @@ pub async fn correct_memory(
             parent_memory_id: None,
             chunk_embeddings: None,
             sync_id: None,
+            artifacts: None,
         },
+        None,
+        false,
     )
     .await?;
 

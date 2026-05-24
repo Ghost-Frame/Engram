@@ -773,7 +773,10 @@ async fn gui_create_memory(
             parent_memory_id: None,
             chunk_embeddings: None,
             sync_id: None,
+            artifacts: None,
         },
+        None,
+        false,
     )
     .await?;
 
@@ -803,7 +806,7 @@ async fn gui_update_memory(
     };
 
     let db = crate::extractors::resolve_db_for_user(&state, user_id).await?;
-    memory::update(&db, id, req, user_id).await?;
+    memory::update(&db, id, req, user_id, false).await?;
     Ok(Json(json!({ "updated": true, "id": id })))
 }
 

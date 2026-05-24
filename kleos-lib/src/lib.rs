@@ -3,6 +3,7 @@ pub mod admin;
 pub mod agents;
 pub mod approvals;
 pub mod artifacts;
+pub mod artifacts_crypto;
 pub mod audit;
 pub mod auth;
 pub mod auth_piv;
@@ -96,6 +97,24 @@ pub enum EngError {
     /// M-015: resource limit hit (e.g. brain pending queue full, spawn cap).
     #[error("resource limit: {0}")]
     Resource(String),
+
+    /// E2: shard quota exceeded (content bytes or memory count).
+    /// Maps to HTTP 507 Insufficient Storage.
+    #[error("quota exceeded: {0}")]
+    QuotaExceeded(String),
 }
 
 pub type Result<T> = std::result::Result<T, EngError>;
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    /// Confirm QuotaExceeded carries its message and displays correctly.
+    #[test]
+    fn quota_exceeded_display() {
+        let e = EngError::QuotaExceeded("content quota: 100 + 50 > 100".to_string());
+        assert!(e.to_string().contains("quota exceeded"));
+        assert!(e.to_string().contains("content quota"));
+    }
+}

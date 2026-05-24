@@ -65,6 +65,8 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 futures = { workspace = true }
 lru = { workspace = true }
+arc-swap = { workspace = true }
+walkdir = { workspace = true }
 lancedb = { workspace = true }
 flate2 = { workspace = true }
 hex = { workspace = true }

@@ -223,6 +223,7 @@ mod tests {
             parent_memory_id: None,
             chunk_embeddings: None,
             sync_id: None,
+            artifacts: None,
         }
     }
 
@@ -248,7 +249,7 @@ mod tests {
                 i * 29,
                 i * 37
             );
-            let stored = memory::store(db.as_ref(), store_request(&content, user_id))
+            let stored = memory::store(db.as_ref(), store_request(&content, user_id), None, false)
                 .await
                 .expect("store memory");
             if stored.created {

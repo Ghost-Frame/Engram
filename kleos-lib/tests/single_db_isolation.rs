@@ -50,6 +50,7 @@ fn store_req(content: &str, user_id: i64) -> StoreRequest {
         space_id: None,
         parent_memory_id: None,
         sync_id: None,
+        artifacts: None,
     }
 }
 
@@ -60,11 +61,11 @@ fn store_req(content: &str, user_id: i64) -> StoreRequest {
 async fn memories_isolated_between_users_single_db() {
     let db = monolith().await;
 
-    let alice = memory::store(&db, store_req("alice secret", 10))
+    let alice = memory::store(&db, store_req("alice secret", 10), None, false)
         .await
         .expect("store alice")
         .id;
-    memory::store(&db, store_req("bob secret", 20))
+    memory::store(&db, store_req("bob secret", 20), None, false)
         .await
         .expect("store bob");
 
@@ -450,11 +451,11 @@ async fn consolidations_isolated_between_users_single_db() {
     let db = monolith().await;
 
     // User 10 owns two memories and consolidates them.
-    let m1 = memory::store(&db, store_req("alice fact one", 10))
+    let m1 = memory::store(&db, store_req("alice fact one", 10), None, false)
         .await
         .expect("store m1")
         .id;
-    let m2 = memory::store(&db, store_req("alice fact two", 10))
+    let m2 = memory::store(&db, store_req("alice fact two", 10), None, false)
         .await
         .expect("store m2")
         .id;
@@ -497,11 +498,11 @@ async fn consolidations_isolated_between_users_single_db() {
 async fn causal_chains_isolated_between_users_single_db() {
     let db = monolith().await;
 
-    let cause = memory::store(&db, store_req("alice cause", 10))
+    let cause = memory::store(&db, store_req("alice cause", 10), None, false)
         .await
         .expect("store cause")
         .id;
-    let effect = memory::store(&db, store_req("alice effect", 10))
+    let effect = memory::store(&db, store_req("alice effect", 10), None, false)
         .await
         .expect("store effect")
         .id;
@@ -706,7 +707,7 @@ async fn memory_feedback_isolated_between_users_single_db() {
     let db = monolith().await;
 
     // User 10 stores a memory and rates it.
-    let mid = memory::store(&db, store_req("alice recall memory", 10))
+    let mid = memory::store(&db, store_req("alice recall memory", 10), None, false)
         .await
         .expect("store memory")
         .id;

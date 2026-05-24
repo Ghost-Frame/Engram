@@ -62,7 +62,10 @@ async fn onboard(
             parent_memory_id: None,
             chunk_embeddings: None,
             sync_id: None,
+            artifacts: None,
         },
+        None,
+        false,
     )
     .await;
 
@@ -318,6 +321,7 @@ async fn fetch_url(
             parent_memory_id: None,
             chunk_embeddings: None,
             sync_id: None,
+            artifacts: None,
         };
 
         if let Some(embedder) = state.current_embedder().await {
@@ -332,7 +336,7 @@ async fn fetch_url(
             }
         }
 
-        if let Ok(result) = memory::store(&db, req).await {
+        if let Ok(result) = memory::store(&db, req, None, false).await {
             cached_id = Some(result.id);
         }
     }

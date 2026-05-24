@@ -374,6 +374,19 @@ enum ArtifactCommands {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Delete an artifact by ID
+    Delete {
+        /// Artifact ID
+        id: i64,
+    },
+    /// Full-text search across artifact name and content
+    Search {
+        /// FTS query string
+        query: String,
+        /// Maximum results to return
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
     /// Show artifact storage statistics
     Stats,
 }
@@ -3931,6 +3944,21 @@ async fn handle_artifact_command(client: &Client, cmd: &ArtifactCommands) {
                         Err(e) => eprintln!("Error writing file: {}", e),
                     }
                 }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ArtifactCommands::Delete { id } => {
+            match client.delete(&format!("/artifact/{}", id)).await {
+                Ok(_) => println!("Deleted artifact #{}", id),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ArtifactCommands::Search { query, limit } => {
+            let body = serde_json::json!({ "query": query, "limit": limit });
+            match client.post("/artifacts/search", body).await {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
                 Err(e) => eprintln!("Error: {}", e),
             }
         }

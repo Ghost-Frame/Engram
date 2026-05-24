@@ -212,6 +212,7 @@ fn store_request(content: &str, user_id: i64) -> StoreRequest {
         parent_memory_id: None,
         chunk_embeddings: None,
         sync_id: None,
+        artifacts: None,
     }
 }
 
@@ -252,7 +253,7 @@ async fn bench_store_throughput(
     let start = Instant::now();
     for i in 0..args.memories {
         let content = make_content(i, &args.query);
-        let result = memory::store(db, store_request(&content, args.user_id)).await?;
+        let result = memory::store(db, store_request(&content, args.user_id), None, false).await?;
         if result.created {
             ids.push(result.id);
         }

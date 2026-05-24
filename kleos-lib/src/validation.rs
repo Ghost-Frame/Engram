@@ -150,6 +150,10 @@ pub const MAX_PATTERN_CHARS: usize = 4_096;
 /// Maximum bytes of artifact content indexed for FTS.
 pub const ARTIFACT_FTS_MAX_SIZE: usize = 1_048_576;
 
+/// Artifacts larger than this threshold are stored on disk rather than inline
+/// in SQLite. 1 MiB aligns with the D2 decision in the artifacts design doc.
+pub const ARTIFACT_DISK_TIER_THRESHOLD: usize = 1_048_576;
+
 // ---------------------------------------------------------------------------
 // Tenant
 // ---------------------------------------------------------------------------

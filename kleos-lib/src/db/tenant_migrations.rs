@@ -434,6 +434,21 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "skills_user_id_readd",
         up: apply_schema_v69_skills_readd,
     },
+    TenantMigration {
+        version: 70,
+        description: "tenant_state_counters",
+        up: apply_schema_v70_tenant_state,
+    },
+    // Tenant artifacts gained an FTS index. The legacy main-DB schema carried
+    // `artifacts_fts` but no tenant migration ever created it, so artifact
+    // search has been silently non-functional on per-tenant shards since the
+    // tenant split. v71 adds the virtual table + triggers and rebuilds the
+    // index from any artifacts already in the shard.
+    TenantMigration {
+        version: 71,
+        description: "artifacts_fts",
+        up: apply_schema_v71_artifacts_fts,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -1213,6 +1228,16 @@ fn apply_schema_v53_chiasm_agent_keys(conn: &Connection) -> Result<()> {
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v53 failed: {e}")))
 }
 
+/// Tenant v71: artifacts FTS5 index. Adds the `artifacts_fts` virtual table,
+/// the AFTER INSERT/UPDATE/DELETE triggers that keep it in sync with
+/// `artifacts.content`, and a `rebuild` backfill for any rows already in the
+/// shard. Idempotent under re-run: IF NOT EXISTS guards the schema objects
+/// and FTS5's `rebuild` rewrites the index in place.
+fn apply_schema_v71_artifacts_fts(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v55_artifacts_fts.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v71 failed: {e}")))
+}
+
 /// Tenant v54: handoff atoms (extracted decision/constraint/task fragments)
 /// and their entity links. CREATE TABLE IF NOT EXISTS keeps the migration
 /// idempotent.
@@ -1466,6 +1491,55 @@ fn apply_schema_v68_user_preferences_readd(conn: &Connection) -> Result<()> {
 fn apply_schema_v69_skills_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v69_skills_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v69 failed: {e}")))
+}
+
+/// Tenant v70: shard-local counter table for E2 quota enforcement.
+///
+/// Creates `tenant_state` with five rows tracking content size, memory count,
+/// disk usage, disk sample timestamp, and read-only flag. Seeds content_bytes
+/// and memory_count by scanning the memories table.
+fn apply_schema_v70_tenant_state(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tenant_state (
+            key        TEXT PRIMARY KEY,
+            value      INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT OR IGNORE INTO tenant_state(key, value) VALUES
+            ('content_bytes', 0),
+            ('memory_count', 0),
+            ('disk_bytes_estimate', 0),
+            ('disk_sampled_at', 0),
+            ('read_only', 0);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant v70 create failed: {e}")))?;
+
+    // Seed content_bytes and memory_count from existing rows.
+    // is_latest = 1 so we only count the current version of each memory.
+    let (bytes, count): (i64, i64) = conn
+        .query_row(
+            "SELECT COALESCE(SUM(length(content)), 0), COUNT(*)
+             FROM memories WHERE is_latest = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant v70 seed query failed: {e}")))?;
+
+    conn.execute(
+        "UPDATE tenant_state SET value = ?1, updated_at = datetime('now')
+         WHERE key = 'content_bytes'",
+        rusqlite::params![bytes],
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant v70 seed content_bytes failed: {e}")))?;
+
+    conn.execute(
+        "UPDATE tenant_state SET value = ?1, updated_at = datetime('now')
+         WHERE key = 'memory_count'",
+        rusqlite::params![count],
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant v70 seed memory_count failed: {e}")))?;
+
+    Ok(())
 }
 
 /// Latest declared tenant schema version.
@@ -7418,5 +7492,44 @@ mod tests {
             summary_hits, 1,
             "episodes_fts summary not indexed after v40"
         );
+    }
+
+    /// Confirms tenant_state is created and seeded with zero counters on a
+    /// fresh in-memory shard (no pre-existing memories to seed from).
+    #[test]
+    fn test_v70_tenant_state_created_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tenant_state", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 5, "tenant_state must have 5 sentinel rows");
+
+        let bytes: i64 = conn
+            .query_row(
+                "SELECT value FROM tenant_state WHERE key = 'content_bytes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bytes, 0);
+
+        let mem_count: i64 = conn
+            .query_row(
+                "SELECT value FROM tenant_state WHERE key = 'memory_count'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mem_count, 0);
+    }
+
+    /// Confirms that v70 migration is idempotent (safe to run twice).
+    #[test]
+    fn test_v70_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
+        apply_schema_v70_tenant_state(&conn).unwrap();
     }
 }

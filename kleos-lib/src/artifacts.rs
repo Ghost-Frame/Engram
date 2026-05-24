@@ -1,15 +1,15 @@
-//! Artifact storage, encryption, and full-text indexing.
+//! Artifact storage, retrieval, deletion, and full-text search.
 //!
-//! Ports: artifacts/encryption.ts, artifacts/fts.ts, artifacts/storage.ts
+//! Each tenant DB has an `artifacts` table (inline BLOB or disk-tier) and an
+//! `artifacts_fts` FTS5 virtual table maintained by AFTER triggers. Encryption
+//! primitives live in the sibling `artifacts_crypto` module.
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
+use crate::validation::ARTIFACT_FTS_MAX_SIZE;
 use crate::{EngError, Result};
-
-/// Maximum byte size of artifact content that will be submitted to the FTS index.
-const ARTIFACT_FTS_MAX_SIZE: usize = 1_048_576;
 
 /// Converts a rusqlite error into an EngError for uniform error propagation.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
@@ -26,6 +26,8 @@ pub struct ArtifactRow {
     pub size_bytes: i64,
     pub sha256: Option<String>,
     pub storage_mode: String,
+    /// Filesystem path for disk-tier artifacts (None for inline storage).
+    pub disk_path: Option<String>,
     pub is_encrypted: bool,
     pub is_indexed: bool,
     pub created_at: String,
@@ -59,6 +61,19 @@ pub fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Compute the sharded blob path for a given SHA-256 hash.
+///
+/// Format: `{blobs_dir}/{sha[0:2]}/{sha[2:4]}/{sha}.bin` (or `.enc` if
+/// encrypted). The two-level fan-out keeps per-directory inode counts
+/// manageable even at scale (max 256 dirs per level).
+pub fn blob_path(blobs_dir: &std::path::Path, sha256: &str, encrypted: bool) -> std::path::PathBuf {
+    let ext = if encrypted { "enc" } else { "bin" };
+    blobs_dir
+        .join(&sha256[..2])
+        .join(&sha256[2..4])
+        .join(format!("{}.{}", sha256, ext))
+}
+
 /// Application MIME type subtypes that are eligible for FTS indexing.
 const INDEXABLE_APP_TYPES: &[&str] = &[
     "application/json",
@@ -80,59 +95,24 @@ pub fn is_indexable_mime_type(mime: &str) -> bool {
     INDEXABLE_APP_TYPES.contains(&mime)
 }
 
-/// Add an artifact's text content to the FTS index.
-#[tracing::instrument(skip(db, data), fields(artifact_id, mime_type = %mime_type, data_len = data.len()))]
-pub async fn index_artifact(db: &Database, artifact_id: i64, mime_type: &str, data: &[u8]) -> bool {
+/// Truncate `data` to the FTS indexing cap, decode as UTF-8, and trim. Returns
+/// `None` if the bytes aren't valid UTF-8 or the trimmed result is empty.
+///
+/// Used to compute the `content` column value for indexable artifacts. The FTS
+/// triggers in `schema_sql.rs` populate `artifacts_fts` directly from that
+/// column on INSERT/UPDATE, so the application no longer maintains the FTS
+/// index manually.
+pub fn extract_indexable_content(mime_type: &str, data: &[u8]) -> Option<String> {
     if !is_indexable_mime_type(mime_type) {
-        return false;
+        return None;
     }
-    let text = match std::str::from_utf8(&data[..data.len().min(ARTIFACT_FTS_MAX_SIZE)]) {
-        Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
-        _ => return false,
-    };
-
-    let exists = db
-        .read(move |conn| {
-            let found = conn
-                .query_row(
-                    "SELECT 1 FROM artifacts WHERE id = ?1",
-                    params![artifact_id],
-                    |_| Ok(()),
-                )
-                .optional()
-                .map_err(rusqlite_to_eng_error)?;
-            Ok(found.is_some())
-        })
-        .await
-        .unwrap_or(false);
-
-    if !exists {
-        tracing::warn!(artifact_id, "artifact FTS index rejected: not found");
-        return false;
+    let head = &data[..data.len().min(ARTIFACT_FTS_MAX_SIZE)];
+    let text = std::str::from_utf8(head).ok()?.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
     }
-
-    let indexed = db
-        .write(move |conn| {
-            conn.execute(
-                "INSERT INTO artifacts_fts (rowid, content) VALUES (?1, ?2)",
-                params![artifact_id, text],
-            )
-            .map_err(rusqlite_to_eng_error)?;
-            conn.execute(
-                "UPDATE artifacts SET is_indexed = 1 WHERE id = ?1",
-                params![artifact_id],
-            )
-            .map_err(rusqlite_to_eng_error)?;
-            Ok(())
-        })
-        .await;
-
-    if indexed.is_err() {
-        tracing::warn!(artifact_id, "artifact FTS index failed");
-        return false;
-    }
-
-    true
 }
 
 /// Options for storing an artifact, beyond the required fields.
@@ -197,12 +177,17 @@ pub async fn store_artifact(
             return Err(crate::EngError::NotFound("memory not found".into()));
         }
 
+        // is_indexed reflects whether the `content` column carries indexable
+        // text -- the FTS triggers in schema_sql.rs use that column verbatim,
+        // so populated content == searchable artifact.
+        let is_indexed = content.is_some() as i64;
+
         conn.query_row(
             "INSERT INTO artifacts \
              (name, memory_id, filename, artifact_type, content, mime_type, \
               size_bytes, sha256, storage_mode, data, disk_path, is_encrypted, \
-              source_url, agent, session_id, metadata) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
+              is_indexed, source_url, agent, session_id, metadata) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
              RETURNING id",
             params![
                 name,
@@ -217,6 +202,7 @@ pub async fn store_artifact(
                 data,
                 disk_path,
                 is_encrypted as i64,
+                is_indexed,
                 source_url,
                 agent,
                 session_id,
@@ -236,7 +222,7 @@ pub async fn get_artifacts_by_memory(db: &Database, memory_id: i64) -> Result<Ve
         let mut stmt = conn
             .prepare(
                 "SELECT id, memory_id, filename, mime_type, size_bytes, \
-                        sha256, storage_mode, is_encrypted, is_indexed, created_at \
+                        sha256, storage_mode, disk_path, is_encrypted, is_indexed, created_at \
                  FROM artifacts \
                  WHERE memory_id = ?1",
             )
@@ -258,7 +244,7 @@ pub async fn get_artifact_by_id(db: &Database, artifact_id: i64) -> Result<Optio
     db.read(move |conn| {
         conn.query_row(
             "SELECT id, memory_id, filename, mime_type, size_bytes, \
-                    sha256, storage_mode, is_encrypted, is_indexed, created_at \
+                    sha256, storage_mode, disk_path, is_encrypted, is_indexed, created_at \
              FROM artifacts \
              WHERE id = ?1",
             params![artifact_id],
@@ -334,6 +320,87 @@ pub async fn get_artifact_data(db: &Database, artifact_id: i64) -> Result<Option
     .await
 }
 
+/// Delete a single artifact by ID.
+///
+/// The `artifacts_fts_delete` trigger fires automatically on DELETE, so no
+/// manual FTS cleanup is needed. Returns `Ok(None)` when no artifact with
+/// that ID exists (idempotent). Returns `Ok(Some(path))` when the deleted
+/// row carried a `disk_path` that the caller should unlink from the
+/// filesystem.
+#[tracing::instrument(skip(db), fields(artifact_id))]
+pub async fn delete_artifact(db: &Database, artifact_id: i64) -> Result<Option<String>> {
+    db.write(move |conn| {
+        let disk_path: Option<String> = conn
+            .query_row(
+                "SELECT disk_path FROM artifacts WHERE id = ?1",
+                params![artifact_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(rusqlite_to_eng_error)?
+            .flatten();
+
+        let rows_deleted = conn
+            .execute("DELETE FROM artifacts WHERE id = ?1", params![artifact_id])
+            .map_err(rusqlite_to_eng_error)?;
+
+        if rows_deleted == 0 {
+            Ok(None)
+        } else {
+            Ok(disk_path)
+        }
+    })
+    .await
+}
+
+/// Full-text search across artifact name and content via the `artifacts_fts`
+/// FTS5 virtual table. Returns matching rows ordered by BM25 rank (best match
+/// first). An optional `memory_id` narrows the search to a single memory's
+/// attachments.
+///
+/// The caller is responsible for capping `limit` to a sane upper bound before
+/// calling this function (the server layer caps at 100).
+#[tracing::instrument(skip(db), fields(%query, limit, memory_id))]
+pub async fn search_artifacts(
+    db: &Database,
+    query: &str,
+    limit: usize,
+    memory_id: Option<i64>,
+) -> Result<Vec<ArtifactRow>> {
+    if query.trim().is_empty() {
+        return Err(crate::EngError::InvalidInput(
+            "artifact search query must not be empty".into(),
+        ));
+    }
+
+    let query = query.to_string();
+    let limit = limit as i64;
+
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.id, a.memory_id, a.filename, a.mime_type, a.size_bytes, \
+                        a.sha256, a.storage_mode, a.disk_path, a.is_encrypted, \
+                        a.is_indexed, a.created_at \
+                 FROM artifacts a \
+                 JOIN artifacts_fts ON artifacts_fts.rowid = a.id \
+                 WHERE artifacts_fts MATCH ?1 \
+                   AND (?2 IS NULL OR a.memory_id = ?2) \
+                 ORDER BY bm25(artifacts_fts) \
+                 LIMIT ?3",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        let rows = stmt
+            .query_map(params![query, memory_id, limit], row_to_artifact)
+            .map_err(rusqlite_to_eng_error)?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(rusqlite_to_eng_error)
+    })
+    .await
+}
+
 /// Maps a rusqlite row to an ArtifactStats value.
 fn stats_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactStats> {
     Ok(ArtifactStats {
@@ -356,9 +423,10 @@ fn row_to_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactRow> {
         size_bytes: row.get(4)?,
         sha256: row.get(5)?,
         storage_mode: row.get(6)?,
-        is_encrypted: row.get::<_, i64>(7).unwrap_or(0) != 0,
-        is_indexed: row.get::<_, i64>(8).unwrap_or(0) != 0,
-        created_at: row.get(9)?,
+        disk_path: row.get(7)?,
+        is_encrypted: row.get::<_, i64>(8).unwrap_or(0) != 0,
+        is_indexed: row.get::<_, i64>(9).unwrap_or(0) != 0,
+        created_at: row.get(10)?,
     })
 }
 

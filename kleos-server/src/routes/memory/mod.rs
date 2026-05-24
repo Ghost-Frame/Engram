@@ -4,6 +4,8 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use base64::Engine;
+use kleos_lib::artifacts::{self, ArtifactSummary, StoreArtifactOpts};
 use kleos_lib::graph::entities::extract_and_link_entities;
 use kleos_lib::intelligence::extraction::fast_extract_facts;
 use kleos_lib::memory::{
@@ -111,12 +113,13 @@ async fn store_memory(
 
     req.user_id = Some(auth.user_id);
     let content = req.content.clone();
+    let inline_artifacts = req.artifacts.take();
     let embedder = state.current_embedder().await;
     let pre_embedded = req.embedding.is_some();
     let result = if let Some(ref e) = embedder {
         memory::store_with_chunks(&db, e.as_ref(), req).await?
     } else {
-        memory::store(&db, req).await?
+        memory::store(&db, req, None, false).await?
     };
     let embedded = pre_embedded || embedder.is_some();
     if let Some(existing_id) = result.duplicate_of {
@@ -128,6 +131,68 @@ async fn store_memory(
                 "distance": Value::Null,
             })),
         ));
+    }
+
+    // Process inline artifact attachments (max 10 per store call).
+    let mut artifact_summaries: Vec<ArtifactSummary> = Vec::new();
+    if let Some(ref inline_arts) = inline_artifacts {
+        if inline_arts.len() > 10 {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(
+                "at most 10 inline artifacts per store call".into(),
+            )));
+        }
+        for art in inline_arts {
+            if art.filename.is_empty() {
+                return Err(AppError(kleos_lib::EngError::InvalidInput(
+                    "inline artifact filename must not be empty".into(),
+                )));
+            }
+            if art.data_base64.is_empty() {
+                return Err(AppError(kleos_lib::EngError::InvalidInput(
+                    "inline artifact data_base64 must not be empty".into(),
+                )));
+            }
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(&art.data_base64)
+                .map_err(|e| {
+                    AppError(kleos_lib::EngError::InvalidInput(format!(
+                        "invalid base64 in artifact '{}': {e}",
+                        art.filename
+                    )))
+                })?;
+            let mime = art
+                .mime_type
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let size_bytes = data.len() as i64;
+            let sha256 = artifacts::sha256_hex(&data);
+            let indexable_content = artifacts::extract_indexable_content(&mime, &data);
+            let opts = StoreArtifactOpts {
+                content: indexable_content,
+                ..StoreArtifactOpts::default()
+            };
+            let art_id = artifacts::store_artifact(
+                &db,
+                result.id,
+                &art.filename,
+                &art.filename,
+                &mime,
+                size_bytes,
+                &sha256,
+                "inline",
+                Some(data),
+                None,
+                false,
+                &opts,
+            )
+            .await?;
+            artifact_summaries.push(ArtifactSummary {
+                id: art_id,
+                filename: art.filename.clone(),
+                mime_type: mime,
+                size_bytes,
+            });
+        }
     }
 
     // Background: extract facts, preferences, and state from the new memory.
@@ -239,15 +304,16 @@ async fn store_memory(
     }
 
     let mem = memory::get(&db, result.id, auth.user_id).await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "stored": true, "id": result.id, "created_at": mem.created_at,
-            "importance": mem.importance, "embedded": embedded,
-            "tags": parse_tags(&mem.tags),
-            "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
-        })),
-    ))
+    let mut response = json!({
+        "stored": true, "id": result.id, "created_at": mem.created_at,
+        "importance": mem.importance, "embedded": embedded,
+        "tags": parse_tags(&mem.tags),
+        "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
+    });
+    if !artifact_summaries.is_empty() {
+        response["artifacts"] = json!(artifact_summaries);
+    }
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// POST /search -- hybrid keyword + semantic memory search.
@@ -310,6 +376,12 @@ async fn search_memories(
     let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
     let abstained = results.is_empty();
 
+    // Batch-load artifact summaries for all returned memories.
+    let memory_ids: Vec<i64> = results.iter().map(|r| r.memory.id).collect();
+    let artifact_map = artifacts::enrich_with_artifacts(&db, &memory_ids)
+        .await
+        .unwrap_or_default();
+
     let result_items: Vec<Value> = results
         .iter()
         .map(|r| {
@@ -355,6 +427,7 @@ async fn search_memories(
             if let Some(ref vc) = r.version_chain {
                 item["version_chain"] = json!(vc);
             }
+            item["artifacts"] = json!(artifact_map.get(&r.memory.id).cloned().unwrap_or_default());
             item
         })
         .collect();
@@ -631,6 +704,18 @@ async fn recall(
     }
 
     output.truncate(limit);
+
+    // Batch-load artifact summaries for all recalled memories.
+    let recall_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
+    let recall_art_map = artifacts::enrich_with_artifacts(&db, &recall_ids)
+        .await
+        .unwrap_or_default();
+    for item in &mut output {
+        if let Some(mid) = item["id"].as_i64() {
+            item["artifacts"] = json!(recall_art_map.get(&mid).cloned().unwrap_or_default());
+        }
+    }
+
     let count = output.len();
 
     // Build compat profile from static memories for legacy clients
@@ -723,7 +808,7 @@ async fn update_memory(
     Path(id): Path<i64>,
     Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let updated = memory::update(&db, id, req, auth.user_id).await?;
+    let updated = memory::update(&db, id, req, auth.user_id, false).await?;
     Ok(Json(memory_to_json(&updated)))
 }
 

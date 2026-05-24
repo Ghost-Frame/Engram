@@ -461,13 +461,14 @@ mod tests {
             parent_memory_id: None,
             chunk_embeddings: None,
             sync_id: None,
+            artifacts: None,
         }
     }
 
     /// Test helper: insert a memory through the canonical `memory::store`
     /// path and return its new id.
     async fn seed(db: &Database, content: &str, category: &str, user_id: i64) -> i64 {
-        crate::memory::store(db, req(content, category, user_id))
+        crate::memory::store(db, req(content, category, user_id), None, false)
             .await
             .expect("store")
             .id
