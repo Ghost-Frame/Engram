@@ -226,8 +226,7 @@ async fn validate_mcp_token(
     // Step 5: Ed25519 signature verification over raw payload bytes.
     let vk = kleos_lib::auth_piv::pem_to_ed25519_verifying_key(&pubkey_pem)
         .map_err(|e| format!("invalid pubkey: {}", e))?;
-    mcp_token::verify_signature(&vk, &decoded)
-        .map_err(|_| "invalid signature".to_string())?;
+    mcp_token::verify_signature(&vk, &decoded).map_err(|_| "invalid signature".to_string())?;
 
     // --- Signature valid past this point ---
 
@@ -244,8 +243,7 @@ async fn validate_mcp_token(
         Some(csv) => kleos_lib::auth::parse_scopes(csv),
         None => vec![Scope::Read, Scope::Write, Scope::Admin],
     };
-    mcp_token::scopes_within_cap(&token_scopes, &ik_scopes)
-        .map_err(|e| e.to_string())?;
+    mcp_token::scopes_within_cap(&token_scopes, &ik_scopes).map_err(|e| e.to_string())?;
 
     // Step 8: Revocation check (DB). Fail closed on error.
     let jti = payload.jti.clone();

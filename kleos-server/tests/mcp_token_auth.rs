@@ -15,8 +15,7 @@ use serde_json::json;
 
 /// Enroll an Ed25519 soft key and return the signer.
 async fn enroll_soft_key(app: &axum::Router) -> RequestSigner {
-    let signer =
-        RequestSigner::from_key_bytes([42u8; 32], "test-host", "test-agent", "test-model");
+    let signer = RequestSigner::from_key_bytes([42u8; 32], "test-host", "test-agent", "test-model");
     let sig_hex = signer
         .sign_enrollment_proof()
         .expect("sign enrollment proof");
@@ -77,7 +76,16 @@ fn mint_token(
 ) -> (String, mcp_token::McpTokenPayload) {
     let sk = SigningKey::from_bytes(&[42u8; 32]);
     let kid = signer.fingerprint().to_string();
-    mcp_token::mint(&sk, &kid, 1, None, scopes, ttl, mcp_token::DEFAULT_MAX_TTL_SECS).unwrap()
+    mcp_token::mint(
+        &sk,
+        &kid,
+        1,
+        None,
+        scopes,
+        ttl,
+        mcp_token::DEFAULT_MAX_TTL_SECS,
+    )
+    .unwrap()
 }
 
 /// Register a minted token via POST /mcp-tokens (PIV-envelope auth).
@@ -280,8 +288,7 @@ async fn list_and_info_routes() {
     let signer = enroll_soft_key(&app).await;
 
     let (token, payload) = mint_token(&signer, "read,write", 3600);
-    let (status, _) =
-        register_token(&app, &signer, &token, "list-test", "read,write", 3600).await;
+    let (status, _) = register_token(&app, &signer, &token, "list-test", "read,write", 3600).await;
     assert_eq!(status, StatusCode::CREATED);
 
     // List tokens.
@@ -291,12 +298,7 @@ async fn list_and_info_routes() {
     assert_eq!(body["count"].as_u64(), Some(1));
 
     // Get single token info.
-    let req = signed_request(
-        &signer,
-        "GET",
-        &format!("/mcp-tokens/{}", payload.jti),
-        b"",
-    );
+    let req = signed_request(&signer, "GET", &format!("/mcp-tokens/{}", payload.jti), b"");
     let (status, body) = send(&app, req).await;
     assert!(status.is_success(), "info should succeed: {body}");
     assert_eq!(body["name"], "list-test");

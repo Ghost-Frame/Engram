@@ -73,9 +73,8 @@ async fn register_token(
     }
 
     // Strict scope validation.
-    let requested_scopes = mcp_token::parse_scopes_strict(&body.scopes).map_err(|e| {
-        AppError(kleos_lib::EngError::InvalidInput(e.to_string()))
-    })?;
+    let requested_scopes = mcp_token::parse_scopes_strict(&body.scopes)
+        .map_err(|e| AppError(kleos_lib::EngError::InvalidInput(e.to_string())))?;
 
     // Scope cap: requested must be subset of caller's scopes.
     for scope in &requested_scopes {
