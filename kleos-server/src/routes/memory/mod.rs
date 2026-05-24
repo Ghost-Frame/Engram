@@ -376,6 +376,12 @@ async fn search_memories(
     let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
     let abstained = results.is_empty();
 
+    // Batch-load artifact summaries for all returned memories.
+    let memory_ids: Vec<i64> = results.iter().map(|r| r.memory.id).collect();
+    let artifact_map = artifacts::enrich_with_artifacts(&db, &memory_ids)
+        .await
+        .unwrap_or_default();
+
     let result_items: Vec<Value> = results
         .iter()
         .map(|r| {
@@ -421,6 +427,7 @@ async fn search_memories(
             if let Some(ref vc) = r.version_chain {
                 item["version_chain"] = json!(vc);
             }
+            item["artifacts"] = json!(artifact_map.get(&r.memory.id).cloned().unwrap_or_default());
             item
         })
         .collect();
@@ -697,6 +704,18 @@ async fn recall(
     }
 
     output.truncate(limit);
+
+    // Batch-load artifact summaries for all recalled memories.
+    let recall_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
+    let recall_art_map = artifacts::enrich_with_artifacts(&db, &recall_ids)
+        .await
+        .unwrap_or_default();
+    for item in &mut output {
+        if let Some(mid) = item["id"].as_i64() {
+            item["artifacts"] = json!(recall_art_map.get(&mid).cloned().unwrap_or_default());
+        }
+    }
+
     let count = output.len();
 
     // Build compat profile from static memories for legacy clients
