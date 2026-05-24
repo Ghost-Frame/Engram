@@ -28,7 +28,10 @@ pub fn router() -> Router<AppState> {
             "/artifacts/{memory_id}",
             get(list_for_memory).post(upload_artifact),
         )
-        .route("/artifact/{id}", get(download_artifact))
+        .route(
+            "/artifact/{id}",
+            get(download_artifact).delete(delete_artifact_handler),
+        )
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES))
 }
 
@@ -285,4 +288,26 @@ async fn download_artifact(
         data,
     )
         .into_response())
+}
+
+/// DELETE /artifact/{id} -- permanently remove an artifact.
+///
+/// If the artifact lived on disk, unlinks the blob file after the DB row is
+/// removed. The FTS cleanup happens automatically via the `artifacts_fts_delete`
+/// trigger. Returns 204 No Content on success (idempotent -- 204 even when the
+/// artifact did not exist).
+async fn delete_artifact_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, AppError> {
+    let disk_path = artifacts::delete_artifact(&db, id).await?;
+
+    if let Some(path) = disk_path {
+        if let Err(e) = tokio::fs::remove_file(&path).await {
+            tracing::warn!(artifact_id = id, path = %path, "failed to unlink disk blob: {e}");
+        }
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }

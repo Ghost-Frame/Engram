@@ -197,3 +197,74 @@ async fn binary_artifact_has_no_indexable_content() {
 
     assert_eq!(is_indexed, 0, "binary artifact must not set is_indexed=1");
 }
+
+/// Deleting an indexable artifact must remove its FTS row (via the
+/// `artifacts_fts_delete` trigger) and make the artifact unreachable via
+/// `get_artifact_by_id`.
+#[tokio::test]
+async fn delete_artifact_removes_fts_row() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let memory_id = insert_memory(&db, "host for delete test").await;
+    let content = "removable configuration directive";
+    let data = content.as_bytes().to_vec();
+    let opts = StoreArtifactOpts {
+        artifact_type: Some("file".into()),
+        content: Some(content.to_string()),
+        ..StoreArtifactOpts::default()
+    };
+
+    let artifact_id = store_artifact(
+        &db,
+        memory_id,
+        "delete-me.conf",
+        "delete-me.conf",
+        "text/plain",
+        data.len() as i64,
+        "aabbccdd",
+        "inline",
+        Some(data),
+        None,
+        false,
+        &opts,
+    )
+    .await
+    .expect("store artifact");
+
+    // Sanity: FTS row exists before deletion.
+    assert_eq!(fts_rowid_count(&db, artifact_id).await, 1);
+
+    let disk_path = kleos_lib::artifacts::delete_artifact(&db, artifact_id)
+        .await
+        .expect("delete artifact");
+    assert!(disk_path.is_none(), "inline artifact has no disk path");
+
+    // FTS row must be gone.
+    assert_eq!(
+        fts_rowid_count(&db, artifact_id).await,
+        0,
+        "FTS row must be removed after delete"
+    );
+
+    // Artifact must be unreachable.
+    let gone = kleos_lib::artifacts::get_artifact_by_id(&db, artifact_id)
+        .await
+        .expect("get after delete");
+    assert!(gone.is_none(), "artifact must be gone after delete");
+}
+
+/// Deleting a nonexistent artifact is idempotent -- returns Ok(None).
+#[tokio::test]
+async fn delete_nonexistent_artifact_returns_none() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let result = kleos_lib::artifacts::delete_artifact(&db, 999999)
+        .await
+        .expect("delete nonexistent");
+    assert!(
+        result.is_none(),
+        "deleting nonexistent artifact should return None"
+    );
+}

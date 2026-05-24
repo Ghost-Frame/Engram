@@ -1955,6 +1955,15 @@ pub static ROUTES: &[Route] = &[
         description: "Download an artifact by id.",
         input_schema: r#"{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"#,
     },
+    Route {
+        name: "artifacts.delete",
+        aliases: &[],
+        method: Method::Delete,
+        path: "/artifact/{id}",
+        scope: Scope::Write,
+        description: "Delete an artifact by id.",
+        input_schema: r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#,
+    },
     // -- axon (events) ----------------------------------------------------
     Route {
         name: "axon.publish",

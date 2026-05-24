@@ -323,6 +323,11 @@ enum ArtifactCommands {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Delete an artifact by ID
+    Delete {
+        /// Artifact ID
+        id: i64,
+    },
     /// Show artifact storage statistics
     Stats,
 }
@@ -1371,7 +1376,10 @@ async fn main() {
                             })
                             .unwrap_or_default();
                         if !full_key.is_empty() {
-                            println!("Created API key: id={} name=\"{}\" scopes={}", id, name, scopes);
+                            println!(
+                                "Created API key: id={} name=\"{}\" scopes={}",
+                                id, name, scopes
+                            );
                             println!();
                             println!("  {}", full_key);
                             println!();
@@ -3745,6 +3753,13 @@ async fn handle_artifact_command(client: &Client, cmd: &ArtifactCommands) {
             }
         }
 
+        ArtifactCommands::Delete { id } => {
+            match client.delete(&format!("/artifact/{}", id)).await {
+                Ok(_) => println!("Deleted artifact #{}", id),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
         ArtifactCommands::Stats => match client.get("/artifacts/stats").await {
             Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
             Err(e) => eprintln!("Error: {}", e),
@@ -3779,7 +3794,10 @@ mod tests {
         );
         // A plain name is unchanged.
         assert_eq!(
-            sanitize_download_name("report.pdf").unwrap().to_str().unwrap(),
+            sanitize_download_name("report.pdf")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "report.pdf"
         );
         // Names with no usable final component are refused.

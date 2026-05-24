@@ -26,6 +26,8 @@ pub struct ArtifactRow {
     pub size_bytes: i64,
     pub sha256: Option<String>,
     pub storage_mode: String,
+    /// Filesystem path for disk-tier artifacts (None for inline storage).
+    pub disk_path: Option<String>,
     pub is_encrypted: bool,
     pub is_indexed: bool,
     pub created_at: String,
@@ -207,7 +209,7 @@ pub async fn get_artifacts_by_memory(db: &Database, memory_id: i64) -> Result<Ve
         let mut stmt = conn
             .prepare(
                 "SELECT id, memory_id, filename, mime_type, size_bytes, \
-                        sha256, storage_mode, is_encrypted, is_indexed, created_at \
+                        sha256, storage_mode, disk_path, is_encrypted, is_indexed, created_at \
                  FROM artifacts \
                  WHERE memory_id = ?1",
             )
@@ -305,6 +307,39 @@ pub async fn get_artifact_data(db: &Database, artifact_id: i64) -> Result<Option
     .await
 }
 
+/// Delete a single artifact by ID.
+///
+/// The `artifacts_fts_delete` trigger fires automatically on DELETE, so no
+/// manual FTS cleanup is needed. Returns `Ok(None)` when no artifact with
+/// that ID exists (idempotent). Returns `Ok(Some(path))` when the deleted
+/// row carried a `disk_path` that the caller should unlink from the
+/// filesystem.
+#[tracing::instrument(skip(db), fields(artifact_id))]
+pub async fn delete_artifact(db: &Database, artifact_id: i64) -> Result<Option<String>> {
+    db.write(move |conn| {
+        let disk_path: Option<String> = conn
+            .query_row(
+                "SELECT disk_path FROM artifacts WHERE id = ?1",
+                params![artifact_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(rusqlite_to_eng_error)?
+            .flatten();
+
+        let rows_deleted = conn
+            .execute("DELETE FROM artifacts WHERE id = ?1", params![artifact_id])
+            .map_err(rusqlite_to_eng_error)?;
+
+        if rows_deleted == 0 {
+            Ok(None)
+        } else {
+            Ok(disk_path)
+        }
+    })
+    .await
+}
+
 /// Maps a rusqlite row to an ArtifactStats value.
 fn stats_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactStats> {
     Ok(ArtifactStats {
@@ -327,9 +362,10 @@ fn row_to_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactRow> {
         size_bytes: row.get(4)?,
         sha256: row.get(5)?,
         storage_mode: row.get(6)?,
-        is_encrypted: row.get::<_, i64>(7).unwrap_or(0) != 0,
-        is_indexed: row.get::<_, i64>(8).unwrap_or(0) != 0,
-        created_at: row.get(9)?,
+        disk_path: row.get(7)?,
+        is_encrypted: row.get::<_, i64>(8).unwrap_or(0) != 0,
+        is_indexed: row.get::<_, i64>(9).unwrap_or(0) != 0,
+        created_at: row.get(10)?,
     })
 }
 
