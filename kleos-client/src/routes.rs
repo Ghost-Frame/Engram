@@ -1964,6 +1964,15 @@ pub static ROUTES: &[Route] = &[
         description: "Delete an artifact by id.",
         input_schema: r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#,
     },
+    Route {
+        name: "artifacts.search",
+        aliases: &[],
+        method: Method::Post,
+        path: "/artifacts/search",
+        scope: Scope::Read,
+        description: "Full-text search across artifact name and content.",
+        input_schema: r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"},"memory_id":{"type":"integer"}},"required":["query"]}"#,
+    },
     // -- axon (events) ----------------------------------------------------
     Route {
         name: "axon.publish",

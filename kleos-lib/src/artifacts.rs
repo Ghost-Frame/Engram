@@ -1,6 +1,8 @@
-//! Artifact storage, encryption, and full-text indexing.
+//! Artifact storage, retrieval, deletion, and full-text search.
 //!
-//! Ports: artifacts/encryption.ts, artifacts/fts.ts, artifacts/storage.ts
+//! Each tenant DB has an `artifacts` table (inline BLOB or disk-tier) and an
+//! `artifacts_fts` FTS5 virtual table maintained by AFTER triggers. Encryption
+//! primitives live in the sibling `artifacts_crypto` module.
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -336,6 +338,54 @@ pub async fn delete_artifact(db: &Database, artifact_id: i64) -> Result<Option<S
         } else {
             Ok(disk_path)
         }
+    })
+    .await
+}
+
+/// Full-text search across artifact name and content via the `artifacts_fts`
+/// FTS5 virtual table. Returns matching rows ordered by BM25 rank (best match
+/// first). An optional `memory_id` narrows the search to a single memory's
+/// attachments.
+///
+/// The caller is responsible for capping `limit` to a sane upper bound before
+/// calling this function (the server layer caps at 100).
+#[tracing::instrument(skip(db), fields(%query, limit, memory_id))]
+pub async fn search_artifacts(
+    db: &Database,
+    query: &str,
+    limit: usize,
+    memory_id: Option<i64>,
+) -> Result<Vec<ArtifactRow>> {
+    if query.trim().is_empty() {
+        return Err(crate::EngError::InvalidInput(
+            "artifact search query must not be empty".into(),
+        ));
+    }
+
+    let query = query.to_string();
+    let limit = limit as i64;
+
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.id, a.memory_id, a.filename, a.mime_type, a.size_bytes, \
+                        a.sha256, a.storage_mode, a.disk_path, a.is_encrypted, \
+                        a.is_indexed, a.created_at \
+                 FROM artifacts a \
+                 JOIN artifacts_fts ON artifacts_fts.rowid = a.id \
+                 WHERE artifacts_fts MATCH ?1 \
+                   AND (?2 IS NULL OR a.memory_id = ?2) \
+                 ORDER BY bm25(artifacts_fts) \
+                 LIMIT ?3",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        let rows = stmt
+            .query_map(params![query, memory_id, limit], row_to_artifact)
+            .map_err(rusqlite_to_eng_error)?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(rusqlite_to_eng_error)
     })
     .await
 }

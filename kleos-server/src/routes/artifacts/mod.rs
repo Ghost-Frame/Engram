@@ -2,7 +2,7 @@ use axum::{
     extract::{DefaultBodyLimit, Multipart, Path},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use kleos_lib::artifacts::{self, StoreArtifactOpts};
@@ -16,7 +16,6 @@ use crate::{
 };
 use kleos_lib::validation::MAX_ARTIFACT_UPLOAD_BYTES as MAX_UPLOAD_BYTES;
 
-#[allow(dead_code)]
 mod types;
 
 /// Build the artifact route tree.
@@ -24,6 +23,7 @@ mod types;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/artifacts/stats", get(get_stats))
+        .route("/artifacts/search", post(search_artifacts_handler))
         .route(
             "/artifacts/{memory_id}",
             get(list_for_memory).post(upload_artifact),
@@ -310,4 +310,20 @@ async fn delete_artifact_handler(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /artifacts/search -- full-text search across artifact name and content.
+///
+/// Uses the `artifacts_fts` FTS5 virtual table. Results are ordered by BM25
+/// rank (best match first). The limit is capped at 100 to prevent unbounded
+/// result sets.
+async fn search_artifacts_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Json(body): Json<types::ArtifactSearchBody>,
+) -> Result<Json<Value>, AppError> {
+    let limit = body.limit.map(|l| l.min(100)).unwrap_or(20);
+    let results = artifacts::search_artifacts(&db, &body.query, limit, body.memory_id).await?;
+    let total = results.len();
+    Ok(Json(json!({ "results": results, "total": total })))
 }

@@ -268,3 +268,153 @@ async fn delete_nonexistent_artifact_returns_none() {
         "deleting nonexistent artifact should return None"
     );
 }
+
+/// `search_artifacts` must find an artifact by a token present in its
+/// indexed content and return the correct artifact ID.
+#[tokio::test]
+async fn search_artifacts_finds_by_content() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let memory_id = insert_memory(&db, "host for search test").await;
+    let content = "quantum entanglement protocol specification";
+    let data = content.as_bytes().to_vec();
+    let opts = StoreArtifactOpts {
+        artifact_type: Some("file".into()),
+        content: Some(content.to_string()),
+        ..StoreArtifactOpts::default()
+    };
+
+    let artifact_id = store_artifact(
+        &db,
+        memory_id,
+        "quantum.txt",
+        "quantum.txt",
+        "text/plain",
+        data.len() as i64,
+        "1111aaaa",
+        "inline",
+        Some(data),
+        None,
+        false,
+        &opts,
+    )
+    .await
+    .expect("store artifact");
+
+    let results = kleos_lib::artifacts::search_artifacts(&db, "entanglement", 10, None)
+        .await
+        .expect("search artifacts");
+
+    assert_eq!(results.len(), 1, "expected exactly one search hit");
+    assert_eq!(results[0].id, artifact_id);
+}
+
+/// Searching for a term that matches no indexed content returns an empty vec.
+#[tokio::test]
+async fn search_artifacts_empty_result() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let memory_id = insert_memory(&db, "host for empty search test").await;
+    let content = "ordinary configuration data";
+    let data = content.as_bytes().to_vec();
+    let opts = StoreArtifactOpts {
+        artifact_type: Some("file".into()),
+        content: Some(content.to_string()),
+        ..StoreArtifactOpts::default()
+    };
+
+    store_artifact(
+        &db,
+        memory_id,
+        "normal.txt",
+        "normal.txt",
+        "text/plain",
+        data.len() as i64,
+        "2222bbbb",
+        "inline",
+        Some(data),
+        None,
+        false,
+        &opts,
+    )
+    .await
+    .expect("store artifact");
+
+    let results = kleos_lib::artifacts::search_artifacts(&db, "xylophone", 10, None)
+        .await
+        .expect("search artifacts");
+
+    assert!(results.is_empty(), "nonexistent term should yield no hits");
+}
+
+/// When `memory_id` is provided, `search_artifacts` must only return
+/// artifacts attached to that specific memory.
+#[tokio::test]
+async fn search_artifacts_respects_memory_filter() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let mem_a = insert_memory(&db, "memory alpha").await;
+    let mem_b = insert_memory(&db, "memory beta").await;
+
+    let content = "shared keyword: synchronization protocol";
+    let data = content.as_bytes().to_vec();
+    let opts = StoreArtifactOpts {
+        artifact_type: Some("file".into()),
+        content: Some(content.to_string()),
+        ..StoreArtifactOpts::default()
+    };
+
+    let id_a = store_artifact(
+        &db,
+        mem_a,
+        "sync-a.txt",
+        "sync-a.txt",
+        "text/plain",
+        data.len() as i64,
+        "3333cccc",
+        "inline",
+        Some(data.clone()),
+        None,
+        false,
+        &opts,
+    )
+    .await
+    .expect("store artifact on mem_a");
+
+    let _id_b = store_artifact(
+        &db,
+        mem_b,
+        "sync-b.txt",
+        "sync-b.txt",
+        "text/plain",
+        data.len() as i64,
+        "4444dddd",
+        "inline",
+        Some(data),
+        None,
+        false,
+        &opts,
+    )
+    .await
+    .expect("store artifact on mem_b");
+
+    // Unfiltered search should find both.
+    let all = kleos_lib::artifacts::search_artifacts(&db, "synchronization", 10, None)
+        .await
+        .expect("unfiltered search");
+    assert_eq!(all.len(), 2, "unfiltered search should find both artifacts");
+
+    // Filtered search should find only mem_a's artifact.
+    let filtered = kleos_lib::artifacts::search_artifacts(&db, "synchronization", 10, Some(mem_a))
+        .await
+        .expect("filtered search");
+    assert_eq!(
+        filtered.len(),
+        1,
+        "filtered search should find one artifact"
+    );
+    assert_eq!(filtered[0].id, id_a);
+}
