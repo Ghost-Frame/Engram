@@ -418,3 +418,83 @@ async fn search_artifacts_respects_memory_filter() {
     );
     assert_eq!(filtered[0].id, id_a);
 }
+
+// ---------------------------------------------------------------------------
+// Storage quota enforcement (C4)
+// ---------------------------------------------------------------------------
+
+/// `enforce_storage_quota` must allow an upload when total usage plus the
+/// new upload stays under the default 1 GiB limit.
+#[tokio::test]
+async fn storage_quota_allows_within_limit() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let memory_id = insert_memory(&db, "host for quota allow test").await;
+    let data = vec![0u8; 5000];
+    let opts = StoreArtifactOpts::default();
+
+    store_artifact(
+        &db,
+        memory_id,
+        "small.bin",
+        "small.bin",
+        "application/octet-stream",
+        data.len() as i64,
+        "aaaa1111",
+        "inline",
+        Some(data),
+        None,
+        false,
+        &opts,
+    )
+    .await
+    .expect("store artifact");
+
+    // Adding another 5000 bytes should pass (well under 1 GiB).
+    let result = kleos_lib::quota::enforce_storage_quota(&db, 5000).await;
+    assert!(result.is_ok(), "upload within limit should succeed");
+}
+
+/// `enforce_storage_quota` must reject an upload when total usage plus the
+/// new upload would exceed the default 1 GiB limit.
+#[tokio::test]
+async fn storage_quota_rejects_over_limit() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let memory_id = insert_memory(&db, "host for quota reject test").await;
+
+    // Fake a large existing artifact by inserting directly (we can't allocate
+    // 1 GiB in a test, so we insert a row with a large size_bytes value).
+    let limit = kleos_lib::quota::DEFAULT_STORAGE_BYTES_LIMIT;
+    db.write(move |conn| {
+        conn.execute(
+            "INSERT INTO artifacts (name, memory_id, filename, artifact_type, mime_type, \
+             size_bytes, sha256, storage_mode, is_encrypted, is_indexed) \
+             VALUES ('big.bin', ?1, 'big.bin', 'file', 'application/octet-stream', \
+             ?2, 'ffff0000', 'inline', 0, 0)",
+            rusqlite::params![memory_id, limit - 100],
+        )
+        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+    })
+    .await
+    .expect("insert large artifact row");
+
+    // Attempting to upload 200 more bytes should exceed the limit.
+    let result = kleos_lib::quota::enforce_storage_quota(&db, 200).await;
+    assert!(result.is_err(), "upload exceeding limit should fail");
+
+    let err = result.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("storage quota exceeded"),
+        "error should mention storage quota: {msg}"
+    );
+}
+
+/// The default storage limit is 1 GiB (1073741824 bytes).
+#[test]
+fn storage_quota_default_is_1gib() {
+    assert_eq!(kleos_lib::quota::DEFAULT_STORAGE_BYTES_LIMIT, 1_073_741_824);
+}

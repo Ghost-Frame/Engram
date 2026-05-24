@@ -9,7 +9,16 @@ use crate::{EngError, Result};
 // this constant in sync (MT-F22).
 pub const DEFAULT_MAX_MEMORIES: i64 = 100_000;
 pub const DEFAULT_MAX_SPACES: i64 = 10;
+/// Default storage byte limit per tenant (1 GiB), matching the DDL default
+/// on `tenant_quotas.storage_bytes_limit`.
+pub const DEFAULT_STORAGE_BYTES_LIMIT: i64 = 1_073_741_824;
 
+/// Serde default for `TenantQuota.storage_bytes_limit`.
+fn default_storage_bytes_limit() -> i64 {
+    DEFAULT_STORAGE_BYTES_LIMIT
+}
+
+/// Converts a rusqlite error into an EngError for uniform error propagation.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
@@ -27,6 +36,9 @@ pub struct TenantQuota {
     pub max_api_keys: i64,
     pub max_spaces: i64,
     pub max_memory_size_bytes: i64,
+    /// Maximum total bytes across all artifacts for this tenant.
+    #[serde(default = "default_storage_bytes_limit")]
+    pub storage_bytes_limit: i64,
     pub rate_limit_override: Option<i64>,
 }
 
@@ -39,6 +51,7 @@ impl Default for TenantQuota {
             max_api_keys: 10,
             max_spaces: 5,
             max_memory_size_bytes: 102400,
+            storage_bytes_limit: DEFAULT_STORAGE_BYTES_LIMIT,
             rate_limit_override: None,
         }
     }
@@ -52,6 +65,10 @@ pub struct QuotaStatus {
     pub memory_limit: i64,
     pub spaces_count: i64,
     pub spaces_limit: i64,
+    /// Total bytes consumed by artifacts in this tenant's shard.
+    pub storage_bytes_used: i64,
+    /// Configured storage byte limit from tenant_quotas (or default).
+    pub storage_bytes_limit: i64,
     pub within_limits: bool,
 }
 
@@ -59,13 +76,14 @@ pub struct QuotaStatus {
 // Admin CRUD -- tenant_quotas table
 // ---------------------------------------------------------------------------
 
+/// Fetch the quota row for a specific user, or None if no row exists.
 #[tracing::instrument(skip(db))]
 pub async fn get_quota(db: &Database, user_id: i64) -> Result<Option<TenantQuota>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT user_id, max_memories, max_conversations, max_api_keys, max_spaces, \
-                 max_memory_size_bytes, rate_limit_override \
+                 max_memory_size_bytes, storage_bytes_limit, rate_limit_override \
                  FROM tenant_quotas WHERE user_id = ?1",
             )
             .map_err(rusqlite_to_eng_error)?;
@@ -82,7 +100,8 @@ pub async fn get_quota(db: &Database, user_id: i64) -> Result<Option<TenantQuota
                 max_api_keys: row.get(3).unwrap_or(10),
                 max_spaces: row.get(4).unwrap_or(5),
                 max_memory_size_bytes: row.get(5).unwrap_or(102400),
-                rate_limit_override: row.get(6).ok(),
+                storage_bytes_limit: row.get(6).unwrap_or(DEFAULT_STORAGE_BYTES_LIMIT),
+                rate_limit_override: row.get(7).ok(),
             })),
             None => Ok(None),
         }
@@ -90,6 +109,7 @@ pub async fn get_quota(db: &Database, user_id: i64) -> Result<Option<TenantQuota
     .await
 }
 
+/// Insert or update the quota row for a user.
 #[tracing::instrument(skip(db, quota), fields(user_id = quota.user_id))]
 pub async fn upsert_quota(db: &Database, quota: &TenantQuota) -> Result<()> {
     let user_id = quota.user_id;
@@ -98,20 +118,22 @@ pub async fn upsert_quota(db: &Database, quota: &TenantQuota) -> Result<()> {
     let max_api_keys = quota.max_api_keys;
     let max_spaces = quota.max_spaces;
     let max_memory_size_bytes = quota.max_memory_size_bytes;
+    let storage_bytes_limit = quota.storage_bytes_limit;
     let rate_limit_override = quota.rate_limit_override;
 
     db.write(move |conn| {
         conn.execute(
             "INSERT INTO tenant_quotas \
                  (user_id, max_memories, max_conversations, max_api_keys, max_spaces, \
-                  max_memory_size_bytes, rate_limit_override) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                  max_memory_size_bytes, storage_bytes_limit, rate_limit_override) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
              ON CONFLICT(user_id) DO UPDATE SET \
                  max_memories = excluded.max_memories, \
                  max_conversations = excluded.max_conversations, \
                  max_api_keys = excluded.max_api_keys, \
                  max_spaces = excluded.max_spaces, \
                  max_memory_size_bytes = excluded.max_memory_size_bytes, \
+                 storage_bytes_limit = excluded.storage_bytes_limit, \
                  rate_limit_override = excluded.rate_limit_override",
             params![
                 user_id,
@@ -120,6 +142,7 @@ pub async fn upsert_quota(db: &Database, quota: &TenantQuota) -> Result<()> {
                 max_api_keys,
                 max_spaces,
                 max_memory_size_bytes,
+                storage_bytes_limit,
                 rate_limit_override,
             ],
         )
@@ -129,13 +152,15 @@ pub async fn upsert_quota(db: &Database, quota: &TenantQuota) -> Result<()> {
     .await
 }
 
+/// List all quota rows joined with usernames.
 #[tracing::instrument(skip(db))]
 pub async fn list_quotas(db: &Database) -> Result<Vec<(TenantQuota, String)>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT tq.user_id, tq.max_memories, tq.max_conversations, tq.max_api_keys, \
-                 tq.max_spaces, tq.max_memory_size_bytes, tq.rate_limit_override, u.username \
+                 tq.max_spaces, tq.max_memory_size_bytes, tq.storage_bytes_limit, \
+                 tq.rate_limit_override, u.username \
                  FROM tenant_quotas tq \
                  JOIN users u ON tq.user_id = u.id",
             )
@@ -151,9 +176,10 @@ pub async fn list_quotas(db: &Database) -> Result<Vec<(TenantQuota, String)>> {
                         max_api_keys: row.get(3).unwrap_or(10),
                         max_spaces: row.get(4).unwrap_or(5),
                         max_memory_size_bytes: row.get(5).unwrap_or(102400),
-                        rate_limit_override: row.get(6).ok(),
+                        storage_bytes_limit: row.get(6).unwrap_or(DEFAULT_STORAGE_BYTES_LIMIT),
+                        rate_limit_override: row.get(7).ok(),
                     },
-                    row.get::<_, String>(7).unwrap_or_default(),
+                    row.get::<_, String>(8).unwrap_or_default(),
                 ))
             })
             .map_err(rusqlite_to_eng_error)?;
@@ -171,14 +197,17 @@ pub async fn list_quotas(db: &Database) -> Result<Vec<(TenantQuota, String)>> {
 /// Check current usage against tenant_quotas for the given user.
 ///
 /// If no quota row exists for the user, a default quota is synthesised
-/// (100 000 memories, 10 spaces) without writing to the DB.
+/// (100 000 memories, 10 spaces, 1 GiB storage) without writing to the DB.
 #[tracing::instrument(skip(db))]
 pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
     db.read(move |conn| {
         // Fetch quota limits (or use defaults).
-        let (memory_limit, spaces_limit): (i64, i64) = {
+        let (memory_limit, spaces_limit, stor_limit): (i64, i64, i64) = {
             let mut stmt = conn
-                .prepare("SELECT max_memories, max_spaces FROM tenant_quotas WHERE user_id = ?1")
+                .prepare(
+                    "SELECT max_memories, max_spaces, storage_bytes_limit \
+                     FROM tenant_quotas WHERE user_id = ?1",
+                )
                 .map_err(rusqlite_to_eng_error)?;
 
             let mut rows = stmt
@@ -189,9 +218,14 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
                 Some(row) => {
                     let ml: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
                     let sl: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
-                    (ml, sl)
+                    let stl: i64 = row.get(2).map_err(rusqlite_to_eng_error)?;
+                    (ml, sl, stl)
                 }
-                None => (DEFAULT_MAX_MEMORIES, DEFAULT_MAX_SPACES),
+                None => (
+                    DEFAULT_MAX_MEMORIES,
+                    DEFAULT_MAX_SPACES,
+                    DEFAULT_STORAGE_BYTES_LIMIT,
+                ),
             }
         };
 
@@ -214,7 +248,18 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
             )
             .map_err(rusqlite_to_eng_error)?;
 
-        let within_limits = memory_count < memory_limit && spaces_count <= spaces_limit;
+        // Sum artifact storage bytes.
+        let storage_bytes_used: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(size_bytes), 0) FROM artifacts",
+                params![],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)?;
+
+        let within_limits = memory_count < memory_limit
+            && spaces_count <= spaces_limit
+            && storage_bytes_used < stor_limit;
 
         Ok(QuotaStatus {
             user_id,
@@ -222,6 +267,8 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
             memory_limit,
             spaces_count,
             spaces_limit,
+            storage_bytes_used,
+            storage_bytes_limit: stor_limit,
             within_limits,
         })
     })
@@ -250,6 +297,37 @@ pub async fn enforce_memory_quota(db: &Database, user_id: i64) -> Result<()> {
         return Err(EngError::Forbidden(format!(
             "quota exceeded: {} of {} memories used",
             status.memory_count, status.memory_limit
+        )));
+    }
+    Ok(())
+}
+
+/// Gate an artifact upload on the tenant's storage byte limit.
+///
+/// Queries the artifact table in the tenant shard for current usage, then
+/// checks against `DEFAULT_STORAGE_BYTES_LIMIT` (tenant shards lack the
+/// `tenant_quotas` table -- the limit is admin-configurable in the main DB
+/// but the default applies uniformly here).
+///
+/// Returns `Err(EngError::Forbidden)` if `current_usage + upload_bytes`
+/// would exceed the limit.
+#[tracing::instrument(skip(db), fields(upload_bytes))]
+pub async fn enforce_storage_quota(db: &Database, upload_bytes: i64) -> Result<()> {
+    let current_usage: i64 = db
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT COALESCE(SUM(size_bytes), 0) FROM artifacts",
+                params![],
+                |row| row.get(0),
+            )
+            .map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+
+    if current_usage + upload_bytes > DEFAULT_STORAGE_BYTES_LIMIT {
+        return Err(EngError::Forbidden(format!(
+            "storage quota exceeded: {} of {} bytes used, upload of {} would exceed limit",
+            current_usage, DEFAULT_STORAGE_BYTES_LIMIT, upload_bytes
         )));
     }
     Ok(())

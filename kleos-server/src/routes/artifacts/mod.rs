@@ -184,6 +184,10 @@ async fn upload_artifact(
     let mime_type = file_mime.unwrap_or_else(|| "application/octet-stream".to_string());
     let display_name = name.unwrap_or_else(|| filename.clone());
     let size_bytes = data.len() as i64;
+
+    // Enforce per-tenant storage quota before writing.
+    kleos_lib::quota::enforce_storage_quota(&db, size_bytes).await?;
+
     let sha256 = artifacts::sha256_hex(&data);
 
     // Extract indexable text once; the artifacts_fts triggers in schema_sql.rs
