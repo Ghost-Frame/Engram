@@ -66,6 +66,7 @@ async fn extract_and_link_entities_populates_tables() {
         parent_memory_id: None,
         chunk_embeddings: None,
         sync_id: None,
+        artifacts: None,
     };
     let stored = memory::store(&db, store_req).await.expect("store memory");
     let memory_id = stored.id;
@@ -151,6 +152,7 @@ async fn extract_and_link_entities_skips_lowercase_content() {
         parent_memory_id: None,
         chunk_embeddings: None,
         sync_id: None,
+        artifacts: None,
     };
     let stored = memory::store(&db, store_req).await.expect("store memory");
     let memory_id = stored.id;

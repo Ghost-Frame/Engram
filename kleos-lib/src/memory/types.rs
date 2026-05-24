@@ -257,6 +257,17 @@ pub struct UserStats {
     pub categories: BTreeMap<String, i64>,
 }
 
+/// Inline artifact attachment for the /store endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineArtifactInput {
+    /// Display filename for the artifact.
+    pub filename: String,
+    /// MIME type (defaults to application/octet-stream if absent).
+    pub mime_type: Option<String>,
+    /// Base64-encoded file data.
+    pub data_base64: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreRequest {
     pub content: String,
@@ -279,6 +290,9 @@ pub struct StoreRequest {
     /// Externally-assigned sync identifier for cross-device deduplication.
     #[serde(default)]
     pub sync_id: Option<String>,
+    /// Inline artifact attachments (max 10 per store call).
+    #[serde(default)]
+    pub artifacts: Option<Vec<InlineArtifactInput>>,
 }
 fn default_category() -> String {
     "general".to_string()
