@@ -44,10 +44,13 @@ pub struct CurrentState {
 
 const FACT_COLUMNS: &str = "id, memory_id, subject, predicate, object, confidence, created_at";
 
-const STATE_COLUMNS: &str = "id, agent, key, value, created_at, updated_at";
+/// Column list for SELECT queries on current_state. Includes user_id so that
+/// row_to_state can read it from position 4.
+const STATE_COLUMNS: &str = "id, agent, key, value, user_id, created_at, updated_at";
 
 // -- Helpers ---
 
+/// Map a structured_facts SELECT row (FACT_COLUMNS order) to a StructuredFact.
 fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<StructuredFact> {
     Ok(StructuredFact {
         id: row.get(0)?,
@@ -60,32 +63,43 @@ fn row_to_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<StructuredFact> {
     })
 }
 
+/// Map a current_state SELECT row (STATE_COLUMNS order) to a CurrentState.
+/// Column positions must match STATE_COLUMNS exactly.
 fn row_to_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<CurrentState> {
     Ok(CurrentState {
         id: row.get(0)?,
         agent: row.get(1)?,
         key: row.get(2)?,
         value: row.get(3)?,
-        user_id: 1,
-        created_at: row.get(4)?,
-        updated_at: row.get(5)?,
+        user_id: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
     })
 }
 
 // -- Structured facts CRUD ---
 
-/// Create a new structured fact.
-#[tracing::instrument(skip(db, req), fields(subject = %req.subject, predicate = %req.predicate, memory_id = ?req.memory_id))]
-pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<StructuredFact> {
+/// Create a new structured fact scoped to the given user.
+/// The `user_id` is written into the `user_id` column and is used to
+/// scope the post-insert re-fetch so multi-tenant single-DB installs
+/// cannot observe another user's newly inserted rows.
+#[tracing::instrument(skip(db, req), fields(subject = %req.subject, predicate = %req.predicate, memory_id = ?req.memory_id, user_id))]
+pub async fn create_fact(
+    db: &Database,
+    req: CreateFactRequest,
+    user_id: i64,
+) -> Result<StructuredFact> {
     let confidence = req.confidence.unwrap_or(1.0);
 
     if let Some(mid) = req.memory_id {
         let exists = db
             .read(move |conn| {
                 let result = conn
-                    .query_row("SELECT 1 FROM memories WHERE id = ?1", params![mid], |_| {
-                        Ok(())
-                    })
+                    .query_row(
+                        "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+                        params![mid, user_id],
+                        |_| Ok(()),
+                    )
                     .optional()
                     .map_err(rusqlite_to_eng_error)?;
                 Ok(result.is_some())
@@ -108,9 +122,9 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
         .write(move |conn| {
             conn.execute(
                 "INSERT INTO structured_facts \
-                 (memory_id, subject, predicate, object, confidence) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![memory_id, subject, predicate, object, confidence],
+                 (memory_id, subject, predicate, object, confidence, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![memory_id, subject, predicate, object, confidence, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(conn.last_insert_rowid())
@@ -121,11 +135,11 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
     // inserted the row. Defense-in-depth against any future change that
     // moves the insert and select onto separate connections.
     let sql = format!(
-        "SELECT {} FROM structured_facts WHERE id = ?1",
+        "SELECT {} FROM structured_facts WHERE id = ?1 AND user_id = ?2",
         FACT_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![new_id], row_to_fact)
+        conn.query_row(&sql, params![new_id, user_id], row_to_fact)
             .optional()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::Internal("failed to fetch newly created fact".to_string()))
@@ -133,17 +147,20 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
     .await
 }
 
-/// List structured facts, optionally filtered by memory_id.
-#[tracing::instrument(skip(db), fields(memory_id_filter = ?memory_id_filter, limit))]
+/// List structured facts for a user, optionally filtered by memory_id.
+/// The `user_id` predicate enforces single-DB isolation so users sharing
+/// one monolith DB cannot observe each other's facts.
+#[tracing::instrument(skip(db), fields(memory_id_filter = ?memory_id_filter, limit, user_id))]
 pub async fn list_facts(
     db: &Database,
     memory_id_filter: Option<i64>,
     limit: usize,
+    user_id: i64,
 ) -> Result<Vec<StructuredFact>> {
     let sql = if let Some(mid) = memory_id_filter {
         format!(
             "SELECT {cols} FROM structured_facts \
-             WHERE memory_id = {mid} \
+             WHERE memory_id = {mid} AND user_id = ?1 \
              ORDER BY id DESC LIMIT {limit}",
             cols = FACT_COLUMNS,
             mid = mid,
@@ -152,6 +169,7 @@ pub async fn list_facts(
     } else {
         format!(
             "SELECT {cols} FROM structured_facts \
+             WHERE user_id = ?1 \
              ORDER BY id DESC LIMIT {limit}",
             cols = FACT_COLUMNS,
             limit = limit
@@ -161,7 +179,7 @@ pub async fn list_facts(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let rows = stmt
-            .query_map([], row_to_fact)
+            .query_map(params![user_id], row_to_fact)
             .map_err(rusqlite_to_eng_error)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -172,13 +190,18 @@ pub async fn list_facts(
     .await
 }
 
-/// Hard-delete a structured fact by id (tenant-scoped).
-#[tracing::instrument(skip(db), fields(fact_id = id))]
-pub async fn delete_fact(db: &Database, id: i64) -> Result<()> {
+/// Hard-delete a structured fact by id, scoped to the given user.
+/// The `user_id` predicate ensures a user cannot delete another user's
+/// facts in single-DB mode.
+#[tracing::instrument(skip(db), fields(fact_id = id, user_id))]
+pub async fn delete_fact(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute("DELETE FROM structured_facts WHERE id = ?1", params![id])
-                .map_err(rusqlite_to_eng_error)
+            conn.execute(
+                "DELETE FROM structured_facts WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)
         })
         .await?;
 
@@ -194,13 +217,15 @@ pub async fn delete_fact(db: &Database, id: i64) -> Result<()> {
 // -- Current state (per-agent key-value) ---
 
 /// Upsert a state entry for the given agent/key/user combination.
+/// The user_id is included in the UNIQUE constraint (agent, key, user_id) so
+/// each user maintains independent state for the same key.
 #[tracing::instrument(skip(db, value), fields(agent = %agent, key = %key, user_id))]
 pub async fn set_state(
     db: &Database,
     agent: &str,
     key: &str,
     value: &str,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<CurrentState> {
     let agent_owned = agent.to_string();
     let key_owned = key.to_string();
@@ -209,32 +234,38 @@ pub async fn set_state(
     let key_for_get = key_owned.clone();
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO current_state (agent, key, value) \
-             VALUES (?1, ?2, ?3) \
-             ON CONFLICT(agent, key) DO UPDATE SET \
+            "INSERT INTO current_state (agent, key, value, user_id) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(agent, key, user_id) DO UPDATE SET \
                  value = excluded.value, \
                  updated_at = datetime('now')",
-            params![agent_owned, key_owned, value_owned],
+            params![agent_owned, key_owned, value_owned, user_id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })
     .await?;
 
-    get_state(db, &agent_for_get, &key_for_get).await
+    get_state(db, &agent_for_get, &key_for_get, user_id).await
 }
 
 /// Fetch a single state entry for the given agent/key/user.
-#[tracing::instrument(skip(db), fields(agent = %agent, key = %key))]
-pub async fn get_state(db: &Database, agent: &str, key: &str) -> Result<CurrentState> {
+/// The WHERE predicate includes user_id to enforce single-DB isolation.
+#[tracing::instrument(skip(db), fields(agent = %agent, key = %key, user_id))]
+pub async fn get_state(
+    db: &Database,
+    agent: &str,
+    key: &str,
+    user_id: i64,
+) -> Result<CurrentState> {
     let agent = agent.to_string();
     let key = key.to_string();
     let sql = format!(
-        "SELECT {} FROM current_state WHERE agent = ?1 AND key = ?2",
+        "SELECT {} FROM current_state WHERE agent = ?1 AND key = ?2 AND user_id = ?3",
         STATE_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![agent, key], row_to_state)
+        conn.query_row(&sql, params![agent, key, user_id], row_to_state)
             .optional()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::NotFound("state not found".to_string()))
@@ -243,17 +274,18 @@ pub async fn get_state(db: &Database, agent: &str, key: &str) -> Result<CurrentS
 }
 
 /// List all state entries for the given agent and user.
-#[tracing::instrument(skip(db), fields(agent = %agent))]
-pub async fn list_state(db: &Database, agent: &str) -> Result<Vec<CurrentState>> {
+/// The WHERE predicate includes user_id to enforce single-DB isolation.
+#[tracing::instrument(skip(db), fields(agent = %agent, user_id))]
+pub async fn list_state(db: &Database, agent: &str, user_id: i64) -> Result<Vec<CurrentState>> {
     let agent = agent.to_string();
     let sql = format!(
-        "SELECT {} FROM current_state WHERE agent = ?1 ORDER BY key ASC",
+        "SELECT {} FROM current_state WHERE agent = ?1 AND user_id = ?2 ORDER BY key ASC",
         STATE_COLUMNS
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let rows = stmt
-            .query_map(params![agent], row_to_state)
+            .query_map(params![agent, user_id], row_to_state)
             .map_err(rusqlite_to_eng_error)?;
         let mut entries = Vec::new();
         for row in rows {

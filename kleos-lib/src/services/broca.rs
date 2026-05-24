@@ -989,7 +989,8 @@ async fn ask_dispatch(db: &Database, plan: &AskPlan, user_id: i64) -> Result<Vec
                 .collect())
         }
         Some("thymus") => {
-            let evals = crate::services::thymus::list_evaluations(db, agent, None, limit).await?;
+            let evals =
+                crate::services::thymus::list_evaluations(db, user_id, agent, None, limit).await?;
             Ok(evals
                 .iter()
                 .map(|e| AskRow {

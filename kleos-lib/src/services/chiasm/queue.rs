@@ -38,9 +38,9 @@ pub async fn enqueue_task(
         .write(move |conn| {
             conn.execute(
                 "INSERT INTO chiasm_tasks (agent, project, title, status, summary, \
-                 output_format, heartbeat_interval, assigned) \
-                 VALUES ('unassigned', ?1, ?2, 'queued', ?3, 'raw', 300, 0)",
-                rusqlite::params![project_s, title_s, summary_s],
+                 output_format, heartbeat_interval, assigned, user_id) \
+                 VALUES ('unassigned', ?1, ?2, 'queued', ?3, 'raw', 300, 0, ?4)",
+                rusqlite::params![project_s, title_s, summary_s, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(conn.last_insert_rowid())
@@ -84,14 +84,15 @@ pub async fn claim_next_task(
 
     let maybe_id: Option<i64> = db
         .write(move |conn| {
-            // Build SELECT with optional project filter.
+            // Build SELECT with optional project filter. Scoped to user_id so an
+            // agent only claims tasks queued by its own user in single-DB mode.
             let id: Option<i64> = if let Some(ref proj) = project_s {
                 let sql = "SELECT id FROM chiasm_tasks \
-                           WHERE status = 'queued' AND assigned = 0 AND project = ?1 \
+                           WHERE status = 'queued' AND assigned = 0 AND user_id = ?2 AND project = ?1 \
                            ORDER BY created_at ASC LIMIT 1";
                 let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
                 let mut rows = stmt
-                    .query(rusqlite::params![proj])
+                    .query(rusqlite::params![proj, user_id])
                     .map_err(rusqlite_to_eng_error)?;
                 rows.next()
                     .map_err(rusqlite_to_eng_error)?
@@ -99,10 +100,12 @@ pub async fn claim_next_task(
                     .transpose()?
             } else {
                 let sql = "SELECT id FROM chiasm_tasks \
-                           WHERE status = 'queued' AND assigned = 0 \
+                           WHERE status = 'queued' AND assigned = 0 AND user_id = ?1 \
                            ORDER BY created_at ASC LIMIT 1";
                 let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
-                let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![user_id])
+                    .map_err(rusqlite_to_eng_error)?;
                 rows.next()
                     .map_err(rusqlite_to_eng_error)?
                     .map(|row| row.get::<_, i64>(0).map_err(rusqlite_to_eng_error))
@@ -115,8 +118,8 @@ pub async fn claim_next_task(
                     "UPDATE chiasm_tasks \
                      SET agent = ?1, status = 'active', assigned = 1, \
                          last_heartbeat = datetime('now'), updated_at = datetime('now') \
-                     WHERE id = ?2",
-                    rusqlite::params![agent_s, task_id],
+                     WHERE id = ?2 AND user_id = ?3",
+                    rusqlite::params![agent_s, task_id, user_id],
                 )
                 .map_err(rusqlite_to_eng_error)?;
             }

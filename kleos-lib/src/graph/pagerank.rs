@@ -878,12 +878,17 @@ pub async fn ensure_pagerank_for_user(db: &Database, _user_id: i64) -> Result<()
     Ok(())
 }
 
-/// Rebuild pagerank for the database.
-/// Phase 5.1: user_id dropped from memories; rebuild runs once for the single
-/// tenant owner. The user_id used for pagerank metadata is 0 (sentinel).
+/// Rebuild pagerank over the database's whole memory graph in a single pass.
+///
+/// `compute_pagerank` ranks every live memory in the DB and does not filter by
+/// `user_id`, so one pass covers all owners. This is correct in both modes:
+/// in a per-owner shard there is only one owner; in single-DB (shared) mode the
+/// `prevent_cross_tenant_links` trigger keeps `memory_links` within a single
+/// owner, so the graph is a disjoint union of per-owner subgraphs and link
+/// propagation stays within each owner. The `user_id` argument is a metadata
+/// sentinel only (0); pagerank scores are per-memory.
 #[tracing::instrument(skip(db))]
 pub async fn rebuild_all_users(db: &Database) -> Result<usize> {
-    // Single-tenant: run one rebuild pass with user_id=0 as the sentinel owner.
     let scores = compute_pagerank_for_user(db, 0).await?;
     if scores.is_empty() {
         return Ok(0);
@@ -1022,9 +1027,14 @@ mod tests {
         let db = Database::connect_memory().await.expect("in-memory db");
         let user_id = 1;
 
-        let stored = memory::store(&db, store_request("dirty counter alpha 001", user_id))
-            .await
-            .expect("store memory");
+        let stored = memory::store(
+            &db,
+            store_request("dirty counter alpha 001", user_id),
+            None,
+            false,
+        )
+        .await
+        .expect("store memory");
         assert_eq!(dirty_state(&db, user_id).await, (1, 0));
 
         memory::delete(&db, stored.id, user_id)
@@ -1038,9 +1048,14 @@ mod tests {
         let db = Database::connect_memory().await.expect("in-memory db");
         let user_id = 1;
 
-        let stored = memory::store(&db, store_request("persist pagerank alpha 002", user_id))
-            .await
-            .expect("store memory");
+        let stored = memory::store(
+            &db,
+            store_request("persist pagerank alpha 002", user_id),
+            None,
+            false,
+        )
+        .await
+        .expect("store memory");
         assert_eq!(dirty_state(&db, user_id).await, (1, 0));
 
         persist_pagerank(&db, &[(stored.id, 0.25)])
@@ -1077,15 +1092,24 @@ mod tests {
         let center = memory::store(
             &db,
             store_request("alpha common hub signal center", user_id),
+            None,
+            false,
         )
         .await
         .expect("store center memory");
-        let left = memory::store(&db, store_request("alpha common leaf signal left", user_id))
-            .await
-            .expect("store left memory");
+        let left = memory::store(
+            &db,
+            store_request("alpha common leaf signal left", user_id),
+            None,
+            false,
+        )
+        .await
+        .expect("store left memory");
         let right = memory::store(
             &db,
             store_request("alpha common leaf signal right", user_id),
+            None,
+            false,
         )
         .await
         .expect("store right memory");
@@ -1128,7 +1152,7 @@ mod tests {
                 i * 31,
                 i * 43
             );
-            memory::store(&db, store_request(&content, user_id))
+            memory::store(&db, store_request(&content, user_id), None, false)
                 .await
                 .expect("store memory for warm search");
         }

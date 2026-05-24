@@ -34,8 +34,8 @@ pub async fn create_approval(
 
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at, user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 id_clone,
                 action,
@@ -44,6 +44,7 @@ pub async fn create_approval(
                 "pending",
                 created_str,
                 expires_str,
+                user_id,
             ],
         )
         .map_err(rusqlite_to_eng_error)?;
@@ -75,12 +76,12 @@ pub async fn get_approval(db: &Database, id: &str, user_id: i64) -> Result<Optio
             .prepare(
                 "SELECT id, action, context, requester, status, decision_by, decision_reason,
                         created_at, expires_at, decided_at
-                 FROM approvals WHERE id = ?1",
+                 FROM approvals WHERE id = ?1 AND user_id = ?2",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let mut rows = stmt
-            .query(rusqlite::params![id])
+            .query(rusqlite::params![id, user_id])
             .map_err(rusqlite_to_eng_error)?;
 
         match rows.next().map_err(rusqlite_to_eng_error)? {
@@ -100,13 +101,13 @@ pub async fn list_pending(db: &Database, user_id: i64) -> Result<Vec<Approval>> 
                 "SELECT id, action, context, requester, status, decision_by, decision_reason,
                         created_at, expires_at, decided_at
                  FROM approvals
-                 WHERE status = 'pending'
+                 WHERE status = 'pending' AND user_id = ?1
                  ORDER BY expires_at ASC",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params![user_id], |row| {
                 // query_map requires a rusqlite::Result return; we map inside
                 Ok(row_to_approval(row, user_id))
             })
@@ -147,8 +148,8 @@ pub async fn decide(
         let id_str = id.to_string();
         db.write(move |conn| {
             conn.execute(
-                "UPDATE approvals SET status = 'expired' WHERE id = ?1",
-                rusqlite::params![id_str],
+                "UPDATE approvals SET status = 'expired' WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![id_str, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(())
@@ -175,8 +176,8 @@ pub async fn decide(
         conn.execute(
             "UPDATE approvals
              SET status = ?1, decision_by = ?2, decision_reason = ?3, decided_at = ?4
-             WHERE id = ?5",
-            rusqlite::params![new_status, decided_by, reason, decided_str, id_str],
+             WHERE id = ?5 AND user_id = ?6",
+            rusqlite::params![new_status, decided_by, reason, decided_str, id_str, user_id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -398,14 +399,11 @@ mod tests {
         assert_eq!(fetched.status, ApprovalStatus::Expired);
     }
 
-    /// Phase 5.5 dropped user_id from approvals: tenant isolation is
-    /// enforced at the database level (one shard per tenant), so a
-    /// shared in-memory DB no longer separates user 1 and user 2.
-    ///
-    /// The shard-level invariant is now covered by:
-    ///   kleos-lib/tests/tenant_isolation.rs::approvals_isolated_across_tenants
+    /// Single-DB isolation: with user_id restored (monolith migration 66 /
+    /// tenant v57), one shared in-memory DB again separates user 1 and user 2.
+    /// The cross-shard invariant is also covered by
+    /// kleos-lib/tests/tenant_isolation.rs::approvals_isolated_across_tenants.
     #[tokio::test]
-    #[ignore]
     async fn test_tenant_isolation() {
         let db = Database::connect_memory().await.expect("in-memory db");
 

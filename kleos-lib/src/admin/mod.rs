@@ -408,22 +408,22 @@ pub async fn provision_tenant(
     })
 }
 
-/// Remove a tenant's row and tear down its per-shard database. Returns true if a row was removed.
+/// Remove a tenant's monolith rows (keys, spaces, user record). Returns true if a row was removed.
+///
+/// # Deprecation
+/// This function only cleans monolith rows. Use `tenant::teardown::begin_deprovision`
+/// for full cross-store teardown (E1). This stub is retained for the degraded path
+/// when tenant_registry is None.
 #[tracing::instrument(skip(db))]
 pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
     db.write(move |conn| {
-        // Revoke all keys
         conn.execute(
             "UPDATE api_keys SET is_active = 0 WHERE user_id = ?1",
             params![user_id],
         )
         .map_err(rusqlite_to_eng_error)?;
-        // Delete spaces
         conn.execute("DELETE FROM spaces WHERE user_id = ?1", params![user_id])
             .map_err(rusqlite_to_eng_error)?;
-        // TODO(E1): shard teardown via tenant_registry.delete -- the actual
-        // per-shard memory deletion belongs in the cross-store teardown design.
-        // Delete user
         let affected = conn
             .execute("DELETE FROM users WHERE id = ?1", params![user_id])
             .map_err(rusqlite_to_eng_error)?;

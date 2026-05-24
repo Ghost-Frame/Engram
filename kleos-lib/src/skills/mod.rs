@@ -41,15 +41,17 @@ pub use types::{
 // -- Constants --
 
 /// Canonical SELECT column list for `skill_records`; order must match `row_to_skill` indices.
+/// user_id is at index 23 (zero-based), appended after the v50 cloud columns.
 pub(crate) const SKILL_COLUMNS: &str = "id, name, agent, description, code, language, version, \
     parent_skill_id, root_skill_id, trust_score, success_count, failure_count, \
     execution_count, avg_duration_ms, is_active, is_deprecated, metadata, \
     created_at, updated_at, \
-    kind, source_plugin, source_path, content_hash";
+    kind, source_plugin, source_path, content_hash, user_id";
 
 // -- Helpers --
 
 /// Maps a `SELECT SKILL_COLUMNS` row into a `Skill` struct; trailing v50 columns may be NULL.
+/// Column indices must match SKILL_COLUMNS order: 0..18 core, 19..22 cloud, 23 user_id.
 pub(crate) fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
     Ok(Skill {
         id: row.get(0)?,
@@ -69,11 +71,8 @@ pub(crate) fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
         is_active: row.get::<_, i32>(14)? != 0,
         is_deprecated: row.get::<_, i32>(15)? != 0,
         metadata: row.get(16)?,
-        // L13: vestigial. Skills are a global library (not user-scoped) and the
-        // skills table has no user_id column, so this is a constant placeholder,
-        // never an ownership/authorization field -- access control uses the
-        // authenticated `auth.user_id`, not this.
-        user_id: 1,
+        // Index 23: user_id column restored by migration 78 (monolith) / v69 (tenant).
+        user_id: row.get(23)?,
         created_at: row.get(17)?,
         updated_at: row.get(18)?,
         kind: row
@@ -145,8 +144,9 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
         .write(move |conn| {
             conn.execute(
                 "INSERT INTO skill_records (name, agent, description, code, language, version, \
-                 parent_skill_id, root_skill_id, kind, source_plugin, source_path, content_hash) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 parent_skill_id, root_skill_id, kind, source_plugin, source_path, content_hash, \
+                 user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     name,
                     agent,
@@ -160,6 +160,7 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
                     source_plugin,
                     source_path,
                     content_hash,
+                    user_id,
                 ],
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
@@ -203,16 +204,20 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
     get_skill(db, id, user_id).await
 }
 
-/// Fetches a single skill by id; returns `NotFound` if absent.
+/// Fetches a single skill by id scoped to user_id; returns `NotFound` if absent
+/// or if the skill belongs to a different user.
 #[tracing::instrument(skip(db))]
-pub async fn get_skill(db: &Database, id: i64, _user_id: i64) -> Result<Skill> {
-    let sql = format!("SELECT {} FROM skill_records WHERE id = ?1", SKILL_COLUMNS);
+pub async fn get_skill(db: &Database, id: i64, user_id: i64) -> Result<Skill> {
+    let sql = format!(
+        "SELECT {} FROM skill_records WHERE id = ?1 AND user_id = ?2",
+        SKILL_COLUMNS
+    );
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let mut rows = stmt
-            .query(params![id])
+            .query(params![id, user_id])
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         rows.next()
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
@@ -241,31 +246,43 @@ pub async fn list_skills(
         let mut skills = Vec::new();
         if let Some(ref agent_str) = agent_owned {
             let sql = format!(
-                "SELECT {} FROM skill_records WHERE agent = ?1 AND is_active = 1 ORDER BY trust_score DESC LIMIT ?2 OFFSET ?3",
+                "SELECT {} FROM skill_records \
+                 WHERE agent = ?1 AND user_id = ?2 AND is_active = 1 \
+                 ORDER BY trust_score DESC LIMIT ?3 OFFSET ?4",
                 SKILL_COLUMNS
             );
             let mut stmt = conn
                 .prepare(&sql)
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let mut rows = stmt
-                .query(params![agent_str, limit as i64, offset as i64])
+                .query(params![agent_str, user_id, limit as i64, offset as i64])
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            while let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
-                skills.push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            {
+                skills
+                    .push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
             }
         } else {
             let sql = format!(
-                "SELECT {} FROM skill_records WHERE is_active = 1 ORDER BY trust_score DESC LIMIT ?1 OFFSET ?2",
+                "SELECT {} FROM skill_records \
+                 WHERE user_id = ?1 AND is_active = 1 \
+                 ORDER BY trust_score DESC LIMIT ?2 OFFSET ?3",
                 SKILL_COLUMNS
             );
             let mut stmt = conn
                 .prepare(&sql)
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let mut rows = stmt
-                .query(params![limit as i64, offset as i64])
+                .query(params![user_id, limit as i64, offset as i64])
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            while let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
-                skills.push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            {
+                skills
+                    .push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
             }
         };
         Ok(skills)
@@ -395,13 +412,17 @@ pub async fn recompute_skill(db: &Database, id: i64, user_id: i64) -> Result<Ski
     get_skill(db, id, user_id).await
 }
 
-/// Permanently deletes a skill record; returns `NotFound` if absent.
+/// Permanently deletes a skill record scoped to the calling user; returns `NotFound`
+/// if absent or owned by a different user.
 #[tracing::instrument(skip(db))]
 pub async fn delete_skill(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute("DELETE FROM skill_records WHERE id = ?1", params![id])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            conn.execute(
+                "DELETE FROM skill_records WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
         })
         .await?;
     if affected == 0 {

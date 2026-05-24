@@ -229,6 +229,82 @@ async fn session_auth_from_signed_request_succeeds() {
     );
 }
 
+/// Sliding window: an active session-token request gets a refreshed token
+/// back via `x-kleos-session-issued`, and the old token is invalidated.
+/// This is what keeps long-running agents from hitting the 15-minute TTL
+/// boundary every quarter hour.
+#[tokio::test]
+async fn session_auth_refreshes_token_on_successful_request() {
+    let (app, _state) = test_app().await;
+    let signer = enroll_soft_key(&app).await;
+
+    // Sign once to bootstrap a session token.
+    let request = signed_request(&signer, "GET", "/stats", b"");
+    let res = app.clone().oneshot(request).await.expect("oneshot request");
+    assert!(res.status().is_success());
+    let initial_token = res
+        .headers()
+        .get("x-kleos-session-issued")
+        .expect("signed call must issue session token")
+        .to_str()
+        .expect("valid utf8")
+        .to_string();
+
+    // Call again with the session token. Server should refresh and emit
+    // a new token in `x-kleos-session-issued`.
+    let request2 = Request::builder()
+        .method("GET")
+        .uri("/stats")
+        .header("X-Kleos-Session", &initial_token)
+        .body(Body::empty())
+        .unwrap();
+    let res2 = app
+        .clone()
+        .oneshot(request2)
+        .await
+        .expect("oneshot session request");
+    assert!(res2.status().is_success(), "session call should succeed");
+    let refreshed_token = res2
+        .headers()
+        .get("x-kleos-session-issued")
+        .expect("session call must refresh session token")
+        .to_str()
+        .expect("valid utf8")
+        .to_string();
+    assert_ne!(
+        initial_token, refreshed_token,
+        "refresh must mint a distinct token"
+    );
+
+    // The refreshed token works.
+    let request3 = Request::builder()
+        .method("GET")
+        .uri("/stats")
+        .header("X-Kleos-Session", &refreshed_token)
+        .body(Body::empty())
+        .unwrap();
+    let (status3, _) = send(&app, request3).await;
+    assert!(
+        status3.is_success(),
+        "refreshed token must verify: {status3}"
+    );
+
+    // The original token is still valid until its own expires_at fires --
+    // refresh does not pre-emptively invalidate it, so concurrent in-flight
+    // requests with the cached token cannot race into a 401.
+    let request4 = Request::builder()
+        .method("GET")
+        .uri("/stats")
+        .header("X-Kleos-Session", &initial_token)
+        .body(Body::empty())
+        .unwrap();
+    let (status4, _) = send(&app, request4).await;
+    assert!(
+        status4.is_success(),
+        "old token must remain valid until natural expiry: {status4}"
+    );
+}
+
 /// An invalid (fabricated) session token returns 401.
 #[tokio::test]
 async fn session_auth_invalid_token_returns_401() {

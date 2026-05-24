@@ -62,9 +62,9 @@ pub async fn create_reflection(
     let id = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO reflections (content, reflection_type, source_memory_ids, confidence) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![content_owned, reflection_type_owned, ids_json, confidence],
+                "INSERT INTO reflections (content, reflection_type, source_memory_ids, confidence, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![content_owned, reflection_type_owned, ids_json, confidence, user_id],
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             Ok(conn.last_insert_rowid())
@@ -133,6 +133,7 @@ pub async fn generate_reflections(
                        AND is_forgotten = 0 \
                        AND is_archived = 0 \
                        AND recall_hits = 0 \
+                       AND user_id = ?4 \
                        AND importance >= ?1 \
                        AND created_at <= datetime('now', ?2) \
                      ORDER BY importance DESC, created_at ASC \
@@ -140,14 +141,17 @@ pub async fn generate_reflections(
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let rows = stmt
-                .query_map(params![min_importance, age_cutoff, fetch_limit], |row| {
-                    Ok(Candidate {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        category: row.get(2)?,
-                        importance: row.get(3)?,
-                    })
-                })
+                .query_map(
+                    params![min_importance, age_cutoff, fetch_limit, user_id],
+                    |row| {
+                        Ok(Candidate {
+                            id: row.get(0)?,
+                            content: row.get(1)?,
+                            category: row.get(2)?,
+                            importance: row.get(3)?,
+                        })
+                    },
+                )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))
@@ -281,6 +285,7 @@ pub async fn generate_reflections_with_llm(
                        AND is_forgotten = 0 \
                        AND is_archived = 0 \
                        AND recall_hits = 0 \
+                       AND user_id = ?4 \
                        AND importance >= ?1 \
                        AND created_at <= datetime('now', ?2) \
                      ORDER BY importance DESC, created_at ASC \
@@ -288,14 +293,17 @@ pub async fn generate_reflections_with_llm(
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let rows = stmt
-                .query_map(params![min_importance, age_cutoff, fetch_limit], |row| {
-                    Ok(Candidate {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        category: row.get(2)?,
-                        importance: row.get(3)?,
-                    })
-                })
+                .query_map(
+                    params![min_importance, age_cutoff, fetch_limit, user_id],
+                    |row| {
+                        Ok(Candidate {
+                            id: row.get(0)?,
+                            content: row.get(1)?,
+                            category: row.get(2)?,
+                            importance: row.get(3)?,
+                        })
+                    },
+                )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))
@@ -362,11 +370,11 @@ pub async fn list_reflections(
         let mut stmt = conn
             .prepare(
                 "SELECT id, content, reflection_type, source_memory_ids, confidence, created_at \
-                 FROM reflections ORDER BY id DESC LIMIT ?1",
+                 FROM reflections WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let rows = stmt
-            .query_map(params![limit as i64], |row| {
+            .query_map(params![user_id, limit as i64], |row| {
                 let ids_json: Option<String> = row.get(3)?;
                 let source_memory_ids: Vec<i64> = ids_json
                     .as_deref()
@@ -414,7 +422,7 @@ mod tests {
     }
 
     async fn seed(db: &Database, content: &str, importance: i32, user_id: i64) -> i64 {
-        crate::memory::store(db, req(content, importance, user_id))
+        crate::memory::store(db, req(content, importance, user_id), None, false)
             .await
             .expect("store")
             .id
@@ -479,17 +487,20 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    // Phase 5.1: user_id dropped from memories; single-tenant DB means all
-    // callers see the same data regardless of the user_id argument.
+    // Single-DB isolation: candidate memories are scoped by user_id, so a
+    // reflection generated for one user never draws on another user's memories.
     #[tokio::test]
     async fn generate_reflections_isolated_per_user() {
         let db = Database::connect_memory().await.expect("in-mem db");
         let mid = seed(&db, "nu private unused fact", 9, 1).await;
         set_age_days(&db, mid, 30).await;
-        // Single-tenant: both user 1 and user 2 see the same data.
+        // user 2 owns nothing -> no candidates.
         let for_user2 = generate_reflections(&db, 2, 10).await.expect("gen");
-        assert_eq!(for_user2.len(), 1, "single-tenant DB exposes all memories");
-        assert_eq!(for_user2[0].reflection_type, "reconsolidate");
+        assert!(
+            for_user2.is_empty(),
+            "user 2 must not see user 1's memories"
+        );
+        // user 1 owns the memory -> one reflection.
         let for_user1 = generate_reflections(&db, 1, 10).await.expect("gen");
         assert_eq!(for_user1.len(), 1);
         assert_eq!(for_user1[0].reflection_type, "reconsolidate");

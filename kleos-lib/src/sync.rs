@@ -84,7 +84,7 @@ pub async fn receive_sync(
                     sync_id: Some(change.sync_id.clone()),
                     artifacts: None,
                 };
-                memory::store(db, req).await?;
+                memory::store(db, req, None, false).await?;
                 applied += 1;
             }
             "delete" => {

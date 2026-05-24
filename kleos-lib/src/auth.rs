@@ -266,7 +266,7 @@ fn generate_key() -> Result<(String, String, String, i32)> {
 }
 
 /// Parse a comma-separated scopes string into a Vec<Scope>.
-fn parse_scopes(s: &str) -> Vec<Scope> {
+pub fn parse_scopes(s: &str) -> Vec<Scope> {
     // Legacy "*" means "all scopes". Without this translation legacy keys
     // stored before the stricter scope model would parse to an empty Vec and
     // lose all access when scope checks were introduced.
@@ -291,7 +291,7 @@ fn parse_scopes(s: &str) -> Vec<Scope> {
 }
 
 /// Serialize a slice of Scope values to a comma-separated string.
-fn scopes_to_string(scopes: &[Scope]) -> String {
+pub fn scopes_to_string(scopes: &[Scope]) -> String {
     scopes
         .iter()
         .map(|s| s.to_string())

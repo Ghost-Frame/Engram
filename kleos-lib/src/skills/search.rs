@@ -5,20 +5,19 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Search skills using FTS.
+/// Search skills using FTS, scoped to the calling user.
 ///
-/// `_user_id` is retained in the signature for API compatibility with
-/// callers in handlers that have not yet dropped the param. The
-/// `skill_records.user_id` column was removed by migration 42
-/// (drop_user_id_skills) so the query no longer filters on it.
+/// Results are filtered to rows where `skill_records.user_id = user_id` so
+/// that single-DB mode cannot leak one user's skills into another's search
+/// results. Migration 78 (monolith) / v69 (tenant) restored the column.
 #[tracing::instrument(skip(db, query), fields(query_len = query.len(), limit))]
 pub async fn search_skills(
     db: &Database,
     query: &str,
-    _user_id: i64,
+    user_id: i64,
     limit: usize,
 ) -> Result<Vec<Skill>> {
-    // Sanitize query for FTS5
+    // Sanitize query for FTS5.
     let sanitized: String = query
         .chars()
         .map(|c| {
@@ -42,7 +41,7 @@ pub async fn search_skills(
     let sql = format!(
         "SELECT {} FROM skill_records sr \
          JOIN (SELECT rowid FROM skills_fts WHERE skills_fts MATCH ?1) fts ON fts.rowid = sr.id \
-         WHERE sr.is_active = 1 \
+         WHERE sr.is_active = 1 AND sr.user_id = ?3 \
          ORDER BY sr.trust_score DESC LIMIT ?2",
         SKILL_COLUMNS
     );
@@ -52,7 +51,7 @@ pub async fn search_skills(
             .prepare(&sql)
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let skills = stmt
-            .query_map(params![sanitized, limit as i64], row_to_skill)
+            .query_map(params![sanitized, limit as i64, user_id], row_to_skill)
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;

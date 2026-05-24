@@ -194,7 +194,7 @@ async fn update_agent_handler(
     }
 
     if let Some(status) = body.status.as_deref() {
-        set_status(&db, id, status).await?;
+        set_status(&db, id, auth.user_id, status).await?;
     }
 
     let agent = get_agent(&db, id, auth.user_id).await?;
@@ -207,10 +207,10 @@ async fn update_agent_handler(
 /// `{ "ok": true }` on success (idempotent -- does not 404 on missing id).
 async fn delete_agent_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_agent(&db, id).await?;
+    delete_agent(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -223,13 +223,13 @@ async fn delete_agent_handler(
 /// `{ "ok": true }`.
 async fn heartbeat_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
     body: Option<Json<HeartbeatBody>>,
 ) -> Result<Json<Value>, AppError> {
     let status = body.and_then(|Json(b)| b.status);
-    heartbeat(&db, id, status.as_deref()).await?;
-    let agent = get_agent(&db, id, 0).await?;
+    heartbeat(&db, id, auth.user_id, status.as_deref()).await?;
+    let agent = get_agent(&db, id, auth.user_id).await?;
     Ok(Json(json!(agent)))
 }
 
@@ -240,11 +240,12 @@ async fn heartbeat_handler(
 /// Returns the updated agent row.
 async fn update_quality_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
     Json(body): Json<UpdateQualityBody>,
 ) -> Result<Json<Value>, AppError> {
-    let agent = update_agent_quality(&db, id, body.quality_score, body.drift_flags).await?;
+    let agent =
+        update_agent_quality(&db, id, auth.user_id, body.quality_score, body.drift_flags).await?;
     Ok(Json(json!(agent)))
 }
 
@@ -281,10 +282,10 @@ async fn get_group_handler(
 /// `{ members: [...], count: N }`.
 async fn list_group_members_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(group_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let members = get_group_members(&db, group_id).await?;
+    let members = get_group_members(&db, group_id, auth.user_id).await?;
     let count = members.len();
     Ok(Json(json!({ "members": members, "count": count })))
 }
@@ -293,8 +294,8 @@ async fn list_group_members_handler(
 ///
 /// Returns aggregate counts: total agents, online agents, and distinct type
 /// count. Scoped to the caller's tenant shard.
-async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
-    let stats = get_soma_stats(&db).await?;
+async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
+    let stats = get_soma_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -363,11 +364,19 @@ async fn remove_member_handler(
 /// caller's tenant. Do not add `state.db` calls here without re-binding auth.
 async fn log_event_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(agent_id): Path<i64>,
     Json(body): Json<LogEventBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let id = log_event(&db, agent_id, &body.level, &body.message, body.data).await?;
+    let id = log_event(
+        &db,
+        agent_id,
+        auth.user_id,
+        &body.level,
+        &body.message,
+        body.data,
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
 }
 
@@ -378,12 +387,12 @@ async fn log_event_handler(
 /// `{ logs: [...], count: N }`.
 async fn list_logs_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(agent_id): Path<i64>,
     Query(params): Query<ListLogsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
-    let logs = list_agent_logs(&db, agent_id, limit, params.level.as_deref()).await?;
+    let logs = list_agent_logs(&db, agent_id, auth.user_id, limit, params.level.as_deref()).await?;
     Ok(Json(json!({ "logs": logs, "count": logs.len() })))
 }
 
@@ -396,11 +405,11 @@ async fn list_logs_handler(
 /// external sweepers that decide when to mark an agent offline.
 async fn get_stale_agents_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(params): Query<StaleAgentsParams>,
 ) -> Result<Json<Value>, AppError> {
     let minutes = params.minutes.unwrap_or(5);
-    let agents = get_stale_agents(&db, minutes).await?;
+    let agents = get_stale_agents(&db, auth.user_id, minutes).await?;
     Ok(Json(json!(agents)))
 }
 
@@ -411,9 +420,9 @@ async fn get_stale_agents_handler(
 /// substring false positives (e.g. `"code"` does not match `"code-review"`).
 async fn find_by_capability_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let agents = find_by_capability(&db, &name).await?;
+    let agents = find_by_capability(&db, auth.user_id, &name).await?;
     Ok(Json(json!(agents)))
 }

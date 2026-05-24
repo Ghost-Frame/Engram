@@ -156,7 +156,7 @@ async fn execute_store(
     let store_outcome = if let Some(embedder) = state.current_embedder().await {
         memory::store_with_chunks(db, embedder.as_ref(), req).await
     } else {
-        memory::store(db, req).await
+        memory::store(db, req, None, false).await
     };
 
     match store_outcome {
@@ -211,7 +211,7 @@ async fn execute_update(
         chunk_embeddings: None,
     };
 
-    match memory::update(db, body.id, req, user_id).await {
+    match memory::update(db, body.id, req, user_id, false).await {
         Ok(mem) => BatchResult {
             index,
             op: "update".to_string(),

@@ -4999,6 +4999,7 @@ name = "kleos-lib"
 version = "1.2.1"
 dependencies = [
  "aes-gcm",
+ "arc-swap",
  "arrow-array",
  "arrow-schema",
  "async-trait",
@@ -5049,6 +5050,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "walkdir",
  "yubikey",
  "zeroize",
  "zip",

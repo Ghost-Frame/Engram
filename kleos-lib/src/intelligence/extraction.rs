@@ -278,40 +278,44 @@ pub async fn fast_extract_facts(
 
     if fact_count + pref_count + state_count > 0 {
         db.write(move |conn| {
-            // Insert facts
+            // Insert facts scoped to the owning user so single-DB mode
+            // isolates facts per user (user_id column added by monolith v76).
             for fact in &facts {
                 if let Err(e) = conn.execute(
-                    "INSERT INTO structured_facts (memory_id, subject, predicate, object, confidence) \
-                     VALUES (?1, ?2, ?3, ?4, 1.0)",
-                    rusqlite::params![memory_id, fact.subject, fact.verb, fact.object],
+                    "INSERT INTO structured_facts \
+                     (memory_id, subject, predicate, object, confidence, user_id) \
+                     VALUES (?1, ?2, ?3, ?4, 1.0, ?5)",
+                    rusqlite::params![memory_id, fact.subject, fact.verb, fact.object, user_id],
                 ) {
                     warn!(error = %e, "fact_insert_failed");
                 }
             }
 
-            // Upsert preferences
+            // Upsert preferences scoped to the owning user so single-DB mode
+            // isolates preferences per user (user_id column restored by v77).
             for pref in &prefs {
                 if let Err(e) = conn.execute(
-                    "INSERT INTO user_preferences (key, value, created_at, updated_at) \
-                     VALUES (?1, ?2, datetime('now'), datetime('now')) \
-                     ON CONFLICT(key) DO UPDATE SET \
+                    "INSERT INTO user_preferences (user_id, key, value, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, datetime('now'), datetime('now')) \
+                     ON CONFLICT(user_id, key) DO UPDATE SET \
                        value = excluded.value, \
                        updated_at = datetime('now')",
-                    rusqlite::params![pref.key, pref.value],
+                    rusqlite::params![user_id, pref.key, pref.value],
                 ) {
                     warn!(error = %e, "preference_upsert_failed");
                 }
             }
 
-            // Upsert state
+            // Upsert state scoped to the owning user so single-DB mode isolates
+            // state entries per user. UNIQUE constraint is now (agent, key, user_id).
             for state in &states {
                 if let Err(e) = conn.execute(
-                    "INSERT INTO current_state (agent, key, value, created_at, updated_at) \
-                     VALUES ('system', ?1, ?2, datetime('now'), datetime('now')) \
-                     ON CONFLICT(agent, key) DO UPDATE SET \
+                    "INSERT INTO current_state (agent, key, value, user_id, created_at, updated_at) \
+                     VALUES ('system', ?1, ?2, ?3, datetime('now'), datetime('now')) \
+                     ON CONFLICT(agent, key, user_id) DO UPDATE SET \
                        value = excluded.value, \
                        updated_at = datetime('now')",
-                    rusqlite::params![state.key, state.value],
+                    rusqlite::params![state.key, state.value, user_id],
                 ) {
                     warn!(error = %e, "state_upsert_failed");
                 }

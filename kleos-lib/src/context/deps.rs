@@ -69,13 +69,13 @@ pub struct EpisodeSummary {
 #[tracing::instrument(skip(db))]
 pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memory>> {
     let sql = format!(
-        "SELECT {} FROM memories WHERE is_static = 1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 ORDER BY importance DESC",
+        "SELECT {} FROM memories WHERE user_id = ?1 AND is_static = 1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 ORDER BY importance DESC",
         MEMORY_COLUMNS,
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![])
+            .query(rusqlite::params![user_id])
             .map_err(rusqlite_to_eng_error)?;
         // 6.9 capacity hint: static-memory sets are typically small per-user.
         let mut memories = Vec::with_capacity(16);
@@ -93,11 +93,14 @@ pub async fn get_memory_without_embedding(
     id: i64,
     user_id: i64,
 ) -> Result<Option<Memory>> {
-    let sql = format!("SELECT {} FROM memories WHERE id = ?1", MEMORY_COLUMNS);
+    let sql = format!(
+        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2",
+        MEMORY_COLUMNS
+    );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![id])
+            .query(rusqlite::params![id, user_id])
             .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => Ok(Some(row_to_memory(row, user_id)?)),
@@ -111,18 +114,18 @@ pub async fn get_memory_without_embedding(
 pub async fn get_version_chain(
     db: &Database,
     root_id: i64,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Vec<VersionChainEntry>> {
-    // user_id removed: per-tenant shards enforce isolation at the DB level,
-    // and migration 25 dropped the column from shard schemas.
+    // The owner predicate (?2) keeps single-DB (shared) mode from returning
+    // another user's version chain; a no-op in a single-owner shard.
     let sql = "SELECT id, content, category, version, is_latest, created_at \
                FROM memories \
-               WHERE (root_memory_id = ?1 OR id = ?1) \
+               WHERE (root_memory_id = ?1 OR id = ?1) AND user_id = ?2 \
                ORDER BY version ASC";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![root_id])
+            .query(rusqlite::params![root_id, user_id])
             .map_err(rusqlite_to_eng_error)?;
         let mut chain = Vec::with_capacity(8);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -144,13 +147,13 @@ pub async fn get_version_chain(
 pub async fn get_episode_summary(
     db: &Database,
     ep_id: i64,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Option<EpisodeSummary>> {
-    let sql = "SELECT id, summary, started_at FROM episodes WHERE id = ?1";
+    let sql = "SELECT id, summary, started_at FROM episodes WHERE id = ?1 AND user_id = ?2";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![ep_id])
+            .query(rusqlite::params![ep_id, user_id])
             .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => Ok(Some(EpisodeSummary {
@@ -169,18 +172,20 @@ pub async fn get_episode_summary(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_links(db: &Database, mem_id: i64, _user_id: i64) -> Result<Vec<LinkedMemory>> {
-    // user_id removed: per-tenant shards enforce isolation at the DB level.
+pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<LinkedMemory>> {
+    // The joined memory is scoped to the owner (?2) so single-DB mode never
+    // returns a link into another user's memory; a no-op in a single-owner shard.
     let sql = "SELECT m.id, m.content, m.category, ml.similarity, m.is_forgotten, m.model, m.source \
                FROM memory_links ml \
                JOIN memories m ON (m.id = CASE WHEN ml.source_id = ?1 THEN ml.target_id ELSE ml.source_id END) \
                WHERE (ml.source_id = ?1 OR ml.target_id = ?1) \
+                 AND m.user_id = ?2 \
                  AND m.is_latest = 1 AND m.is_consolidated = 0 \
                ORDER BY ml.similarity DESC LIMIT 10";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![mem_id])
+            .query(rusqlite::params![mem_id, user_id])
             .map_err(rusqlite_to_eng_error)?;
         let mut linked = Vec::with_capacity(10);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -207,14 +212,14 @@ pub async fn get_links(db: &Database, mem_id: i64, _user_id: i64) -> Result<Vec<
 pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Result<Vec<Memory>> {
     let sql = format!(
         "SELECT {} FROM memories \
-         WHERE is_static = 0 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
-         ORDER BY created_at DESC LIMIT ?1",
+         WHERE user_id = ?1 AND is_static = 0 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
+         ORDER BY created_at DESC LIMIT ?2",
         MEMORY_COLUMNS,
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![limit as i64])
+            .query(rusqlite::params![user_id, limit as i64])
             .map_err(rusqlite_to_eng_error)?;
         let mut memories = Vec::with_capacity(limit);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -225,14 +230,18 @@ pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Re
     .await
 }
 
-#[tracing::instrument(skip(db))]
-pub async fn get_current_state(db: &Database, _user_id: i64) -> Result<Vec<StateEntry>> {
+/// Retrieve the most recent current_state entries for the given user.
+/// The WHERE user_id = ?1 predicate enforces single-DB isolation: in shared
+/// mode each user sees only their own state entries.
+#[tracing::instrument(skip(db), fields(user_id))]
+pub async fn get_current_state(db: &Database, user_id: i64) -> Result<Vec<StateEntry>> {
     let sql = "SELECT key, value, updated_count FROM current_state \
+               WHERE user_id = ?1 \
                ORDER BY updated_at DESC LIMIT 30";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![])
+            .query(rusqlite::params![user_id])
             .map_err(rusqlite_to_eng_error)?;
         let mut entries = Vec::with_capacity(30);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -250,11 +259,11 @@ pub async fn get_current_state(db: &Database, _user_id: i64) -> Result<Vec<State
 #[tracing::instrument(skip(db))]
 pub async fn get_user_preferences(db: &Database, user_id: i64) -> Result<Vec<PreferenceEntry>> {
     let sql = "SELECT domain, preference, strength FROM user_preferences \
-               WHERE strength >= 1.5 ORDER BY strength DESC LIMIT 15";
+               WHERE user_id = ?1 AND strength >= 1.5 ORDER BY strength DESC LIMIT 15";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![])
+            .query(rusqlite::params![user_id])
             .map_err(rusqlite_to_eng_error)?;
         let mut prefs = Vec::with_capacity(15);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {

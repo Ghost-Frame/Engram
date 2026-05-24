@@ -315,17 +315,213 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "handoff_atoms",
         up: apply_schema_v54_handoff_atoms,
     },
+    // Re-add user_id to shard memory core tables (reverses v22). The runner
+    // backfills existing rows to the shard owner's id after this runs; see
+    // TENANT_MIGRATION_READD_USER_ID and run_tenant_migrations.
+    TenantMigration {
+        version: 55,
+        description: "memories_user_id_readd",
+        up: apply_schema_v55_memories_readd,
+    },
+    // Re-add user_id to the shard webhooks table (reverses v30). The runner
+    // backfills existing webhook rows to the shard owner after this runs; see
+    // backfill_owner_tables_for_version.
+    TenantMigration {
+        version: 56,
+        description: "webhooks_user_id_readd",
+        up: apply_schema_v56_webhooks_readd,
+    },
+    // Re-add user_id to the shard approvals table (reverses v26). The runner
+    // backfills existing approval rows to the shard owner after this runs.
+    TenantMigration {
+        version: 57,
+        description: "approvals_user_id_readd",
+        up: apply_schema_v57_approvals_readd,
+    },
+    // Re-add user_id to the shard soma_agents table with UNIQUE(name, user_id)
+    // via the 12-step rebuild (reverses v29's drop, mirrors monolith v67). The
+    // runner backfills existing rows to the shard owner after this runs.
+    TenantMigration {
+        version: 58,
+        description: "soma_agents_user_id_readd",
+        up: apply_schema_v58_soma_agents_readd,
+    },
+    // Re-add user_id to the shard axon_events table (reverses v29). The runner
+    // backfills existing event rows to the shard owner after this runs.
+    TenantMigration {
+        version: 59,
+        description: "axon_events_user_id_readd",
+        up: apply_schema_v59_axon_events_readd,
+    },
+    // Re-add user_id to the shard chiasm_tasks table (reverses v25). The runner
+    // backfills existing task rows to the shard owner after this runs.
+    TenantMigration {
+        version: 60,
+        description: "chiasm_tasks_user_id_readd",
+        up: apply_schema_v60_chiasm_tasks_readd,
+    },
+    // Re-add user_id to the shard conversations table (reverses v37). The runner
+    // backfills existing conversation rows to the shard owner after this runs.
+    TenantMigration {
+        version: 61,
+        description: "conversations_user_id_readd",
+        up: apply_schema_v61_conversations_readd,
+    },
+    // Re-add user_id to the shard intelligence tables -- reflections,
+    // consolidations, causal_chains (reverses v32 and v38). The runner backfills
+    // existing rows to the shard owner after this runs.
+    TenantMigration {
+        version: 62,
+        description: "intelligence_user_id_readd",
+        up: apply_schema_v62_intelligence_readd,
+    },
+    // Rebuild the shard entities table to re-add user_id with
+    // UNIQUE(name, entity_type, user_id) (reverses v35). The runner backfills
+    // the copied DEFAULT-1 rows to the shard owner after this runs.
+    TenantMigration {
+        version: 63,
+        description: "graph_entities_user_id_readd",
+        up: apply_schema_v63_graph_entities_readd,
+    },
+    // Re-add user_id to the shard episodes table (reverses v40). The runner
+    // backfills existing rows to the shard owner after this runs.
+    TenantMigration {
+        version: 64,
+        description: "episodes_user_id_readd",
+        up: apply_schema_v64_episodes_readd,
+    },
+    // Re-add user_id to the shard intelligence remainder tables -- current_state
+    // (UNIQUE rebuild), reconsolidations, temporal_patterns, digests,
+    // memory_feedback (reverses v38 for these 5 tables). The runner backfills
+    // existing rows to the shard owner after this runs.
+    TenantMigration {
+        version: 65,
+        description: "intelligence_remainder_user_id_readd",
+        up: apply_schema_v65_intelligence_remainder_readd,
+    },
+    // Re-add user_id to the five shard thymus tables -- rubrics (UNIQUE
+    // rebuild from UNIQUE(name) to UNIQUE(user_id, name)), evaluations,
+    // quality_metrics, session_quality, behavioral_drift_events (reverses v36).
+    // The runner backfills existing rows to the shard owner after this runs.
+    TenantMigration {
+        version: 66,
+        description: "thymus_user_id_readd",
+        up: apply_schema_v66_thymus_readd,
+    },
+    // Re-add user_id to entity_cooccurrences and structured_facts in tenant
+    // shards. Both were dropped by tenant v35. structured_facts got user_id
+    // re-added on the monolith side by v64 but never on the tenant side.
+    // entity_cooccurrences never got it re-added on either side.
+    TenantMigration {
+        version: 67,
+        description: "graph_remainder_user_id_readd",
+        up: apply_schema_v67_graph_remainder_readd,
+    },
+    // Re-add user_id to user_preferences in tenant shards via REBUILD.
+    // v37 dropped it; UNIQUE changes from (key) back to (user_id, key).
+    // The runner backfills existing rows to the shard owner.
+    TenantMigration {
+        version: 68,
+        description: "user_preferences_user_id_readd",
+        up: apply_schema_v68_user_preferences_readd,
+    },
+    // Re-add user_id to skill_records in tenant shards via REBUILD.
+    // v39 dropped it; UNIQUE changes from (name, agent, version) back to
+    // (name, agent, version, user_id). Also drops/recreates FTS triggers.
+    // The runner backfills existing rows to the shard owner.
+    TenantMigration {
+        version: 69,
+        description: "skills_user_id_readd",
+        up: apply_schema_v69_skills_readd,
+    },
+    TenantMigration {
+        version: 70,
+        description: "tenant_state_counters",
+        up: apply_schema_v70_tenant_state,
+    },
     // Tenant artifacts gained an FTS index. The legacy main-DB schema carried
     // `artifacts_fts` but no tenant migration ever created it, so artifact
     // search has been silently non-functional on per-tenant shards since the
-    // tenant split. v55 adds the virtual table + triggers and rebuilds the
+    // tenant split. v71 adds the virtual table + triggers and rebuilds the
     // index from any artifacts already in the shard.
     TenantMigration {
-        version: 55,
+        version: 71,
         description: "artifacts_fts",
-        up: apply_schema_v55_artifacts_fts,
+        up: apply_schema_v71_artifacts_fts,
     },
 ];
+
+/// Version of the tenant migration that re-adds `user_id` to the shard memory
+/// core tables. The runner backfills existing rows to the shard owner right
+/// after this migration's SQL runs.
+const TENANT_MIGRATION_READD_USER_ID: i64 = 55;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard webhooks
+/// table. The runner backfills existing webhook rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_WEBHOOKS: i64 = 56;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard approvals
+/// table. The runner backfills existing approval rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_APPROVALS: i64 = 57;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// soma_agents table. The runner backfills existing agent rows to the shard
+/// owner after the rebuild copies them at the DEFAULT.
+const TENANT_MIGRATION_READD_USER_ID_SOMA_AGENTS: i64 = 58;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// axon_events table. The runner backfills existing event rows to the shard
+/// owner.
+const TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS: i64 = 59;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// chiasm_tasks table. The runner backfills existing task rows to the shard
+/// owner.
+const TENANT_MIGRATION_READD_USER_ID_CHIASM_TASKS: i64 = 60;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// conversations table. The runner backfills existing rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_CONVERSATIONS: i64 = 61;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// intelligence tables (reflections, consolidations, causal_chains). The runner
+/// backfills existing rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE: i64 = 62;
+
+/// Version of the tenant migration that rebuilds the shard entities table to
+/// re-add `user_id` with UNIQUE(name, entity_type, user_id). The runner
+/// backfills the copied rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_GRAPH_ENTITIES: i64 = 63;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard episodes
+/// table. The runner backfills existing rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_EPISODES: i64 = 64;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// intelligence remainder tables (current_state, reconsolidations,
+/// temporal_patterns, digests, memory_feedback). The runner backfills existing
+/// rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER: i64 = 65;
+
+/// Version of the tenant migration that re-adds `user_id` to the five shard
+/// thymus tables (rubrics, evaluations, quality_metrics, session_quality,
+/// behavioral_drift_events) that v36 dropped. The runner backfills existing
+/// rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_THYMUS: i64 = 66;
+/// Version of the tenant migration that re-adds `user_id` to `structured_facts`
+/// and `entity_cooccurrences` in tenant shards. Both were dropped by v35 and
+/// never re-added on the tenant side. The runner backfills existing rows to the
+/// shard owner.
+const TENANT_MIGRATION_READD_USER_ID_GRAPH_REMAINDER: i64 = 67;
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// user_preferences table via REBUILD (UNIQUE(user_id, key)). The runner
+/// backfills existing rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES: i64 = 68;
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// skill_records table via REBUILD (UNIQUE(name, agent, version, user_id)).
+/// Also drops and recreates FTS triggers. The runner backfills existing rows
+/// to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_SKILLS: i64 = 69;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -972,7 +1168,15 @@ fn drop_column_if_exists(conn: &Connection, table: &str, column: &str, version: 
 ///
 /// Idempotent: safe to call on every tenant load. A freshly created tenant
 /// database lands at the latest version; an existing one catches up.
-pub fn run_tenant_migrations(conn: &Connection) -> Result<()> {
+///
+/// `owner_user_id` is the integer id of the user that owns this shard, parsed
+/// from the tenant's registry id (which is `auth.user_id.to_string()` for real
+/// user shards). It is `None` for shards whose tenant id is not a plain integer
+/// (the reserved handoffs shard, in-memory test shards). When the memory-core
+/// `user_id` migration (v55) is applied, existing rows are backfilled to this
+/// owner so the always-applied `WHERE user_id = ?` predicate is a no-op on the
+/// shard; with `None` the rows keep the column default.
+pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> Result<()> {
     // Tenant schema uses the `schema_migrations` table (as defined in v1).
     // Ensure it exists so we can read current_version even before v1 runs.
     conn.execute_batch(
@@ -1000,6 +1204,12 @@ pub fn run_tenant_migrations(conn: &Connection) -> Result<()> {
             m.version, m.description
         );
         (m.up)(conn)?;
+        // Migrations that re-add a DEFAULT 1 `user_id` column need their
+        // pre-existing rows backfilled to the shard owner so the uniform
+        // `WHERE user_id = ?` predicate is a no-op on this single-owner shard.
+        if let Some(owner) = owner_user_id {
+            backfill_owner_tables_for_version(conn, m.version, owner)?;
+        }
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
             rusqlite::params![m.version],
@@ -1018,14 +1228,14 @@ fn apply_schema_v53_chiasm_agent_keys(conn: &Connection) -> Result<()> {
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v53 failed: {e}")))
 }
 
-/// Tenant v55: artifacts FTS5 index. Adds the `artifacts_fts` virtual table,
+/// Tenant v71: artifacts FTS5 index. Adds the `artifacts_fts` virtual table,
 /// the AFTER INSERT/UPDATE/DELETE triggers that keep it in sync with
 /// `artifacts.content`, and a `rebuild` backfill for any rows already in the
 /// shard. Idempotent under re-run: IF NOT EXISTS guards the schema objects
 /// and FTS5's `rebuild` rewrites the index in place.
-fn apply_schema_v55_artifacts_fts(conn: &Connection) -> Result<()> {
+fn apply_schema_v71_artifacts_fts(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v55_artifacts_fts.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v55 failed: {e}")))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v71 failed: {e}")))
 }
 
 /// Tenant v54: handoff atoms (extracted decision/constraint/task fragments)
@@ -1074,6 +1284,264 @@ fn apply_schema_v54_handoff_atoms(conn: &Connection) -> Result<()> {
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v54 failed: {e}")))
 }
 
+/// Tenant v55: re-add user_id to the shard memory core tables. The SQL re-adds
+/// the columns (default 1), recreates the indexes v22 dropped, and restores the
+/// cross-tenant-link trigger. Owner backfill of existing rows happens in
+/// `run_tenant_migrations` after this runs, since SQL-only migrations cannot
+/// know the shard owner's id.
+fn apply_schema_v55_memories_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v55_memories_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v55 failed: {e}")))
+}
+
+/// Map a just-applied tenant migration version to the tables whose re-added
+/// `user_id` column must be backfilled to the shard owner, and backfill them.
+///
+/// A `user_id`-re-add migration adds the column with `DEFAULT 1`, so every
+/// pre-existing row lands at 1. A shard is single-owner, so all of its rows
+/// belong to `owner`; setting them to `owner` makes the always-applied
+/// `WHERE user_id = ?` predicate a no-op for that shard (identical behavior to
+/// pre-repair sharded reads). Versions that do not re-add a `user_id` column,
+/// or whose rows are not owner-attributable, map to an empty table list and are
+/// a no-op here. When the shard owner is `None` (e.g. the reserved handoffs
+/// shard, whose tenant id is not numeric, or in-memory test shards) this
+/// function is not called at all and rows are left at the default.
+fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64) -> Result<()> {
+    let tables: &[&str] = match version {
+        TENANT_MIGRATION_READD_USER_ID => &["memories", "artifacts", "vector_sync_pending"],
+        TENANT_MIGRATION_READD_USER_ID_WEBHOOKS => &["webhooks"],
+        TENANT_MIGRATION_READD_USER_ID_APPROVALS => &["approvals"],
+        TENANT_MIGRATION_READD_USER_ID_SOMA_AGENTS => &["soma_agents"],
+        TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS => &["axon_events"],
+        TENANT_MIGRATION_READD_USER_ID_CHIASM_TASKS => &["chiasm_tasks"],
+        TENANT_MIGRATION_READD_USER_ID_CONVERSATIONS => &["conversations"],
+        TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE => {
+            &["reflections", "consolidations", "causal_chains"]
+        }
+        TENANT_MIGRATION_READD_USER_ID_GRAPH_ENTITIES => &["entities"],
+        TENANT_MIGRATION_READD_USER_ID_EPISODES => &["episodes"],
+        TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER => &[
+            "current_state",
+            "reconsolidations",
+            "temporal_patterns",
+            "digests",
+            "memory_feedback",
+        ],
+        TENANT_MIGRATION_READD_USER_ID_THYMUS => &[
+            "rubrics",
+            "evaluations",
+            "quality_metrics",
+            "session_quality",
+            "behavioral_drift_events",
+        ],
+        TENANT_MIGRATION_READD_USER_ID_GRAPH_REMAINDER => {
+            &["structured_facts", "entity_cooccurrences"]
+        }
+        TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES => &["user_preferences"],
+        TENANT_MIGRATION_READD_USER_ID_SKILLS => &["skill_records"],
+        _ => &[],
+    };
+    for table in tables {
+        backfill_tenant_table_user_id(conn, table, owner)?;
+    }
+    Ok(())
+}
+
+/// Set every existing row's `user_id` in one shard table to the shard owner.
+/// Used by [`backfill_owner_tables_for_version`] for each `user_id`-re-add
+/// migration. `table` is a fixed string literal from the version map, never
+/// caller-supplied, so the format interpolation is not an injection vector.
+fn backfill_tenant_table_user_id(conn: &Connection, table: &str, owner: i64) -> Result<()> {
+    conn.execute(
+        &format!("UPDATE {table} SET user_id = ?1"),
+        rusqlite::params![owner],
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("backfilled shard {table}.user_id to owner {owner}");
+    Ok(())
+}
+
+/// Tenant v56: re-add user_id to the shard webhooks table. The SQL re-adds the
+/// column (default 1) and recreates the idx_webhooks_user index. Owner backfill
+/// of existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v56_webhooks_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v56_webhooks_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v56 failed: {e}")))
+}
+
+/// Tenant v57: re-add user_id to the shard approvals table. The SQL re-adds the
+/// column (default 1) and recreates the idx_approvals_user /
+/// idx_approvals_user_status indexes. Owner backfill of existing rows happens in
+/// `run_tenant_migrations` after this runs.
+fn apply_schema_v57_approvals_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v57_approvals_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v57 failed: {e}")))
+}
+
+/// Tenant v58: rebuild the shard soma_agents table to re-add user_id with
+/// UNIQUE(name, user_id). The SQL runs the 12-step rebuild with
+/// PRAGMA foreign_keys = OFF so the soma_agent_groups / soma_agent_logs FK
+/// references survive. Owner backfill of the copied DEFAULT-1 rows happens in
+/// `run_tenant_migrations` after this runs.
+fn apply_schema_v58_soma_agents_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v58_soma_agents_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v58 failed: {e}")))
+}
+
+/// Tenant v59: re-add user_id to the shard axon_events table. The SQL re-adds
+/// the column (default 1) and the idx_axon_events_user index. Owner backfill of
+/// existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v59_axon_events_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v59_axon_events_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v59 failed: {e}")))
+}
+
+/// Tenant v60: re-add user_id to the shard chiasm_tasks table. The SQL re-adds
+/// the column (default 1) and the idx_chiasm_tasks_user index. Owner backfill of
+/// existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v60_chiasm_tasks_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v60_chiasm_tasks_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v60 failed: {e}")))
+}
+
+/// Tenant v61: re-add user_id to the shard conversations table. The SQL re-adds
+/// the column (default 1) and the idx_conversations_user index. Owner backfill
+/// of existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v61_conversations_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v61_conversations_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v61 failed: {e}")))
+}
+
+/// Tenant v62: re-add user_id to the shard intelligence tables -- reflections,
+/// consolidations, and causal_chains. The SQL re-adds each column (default 1)
+/// and recreates the idx_*_user indexes. causal_links is intentionally left
+/// without a user_id column and is scoped through its parent chain. Owner
+/// backfill of existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v62_intelligence_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v62_intelligence_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v62 failed: {e}")))
+}
+
+/// Tenant v63: rebuild the shard entities table to re-add user_id with
+/// UNIQUE(name, entity_type, user_id). The SQL runs the 12-step rebuild with
+/// PRAGMA foreign_keys = OFF so the entity_relationships / memory_entities /
+/// entity_cooccurrences FK references survive. Owner backfill of the copied
+/// DEFAULT-1 rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v63_graph_entities_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!(
+        "../tenant/schema_v63_graph_entities_readd.sql"
+    ))
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v63 failed: {e}")))
+}
+
+/// Tenant v64: re-add user_id to the shard episodes table. The SQL re-adds the
+/// column (default 1) and the idx_episodes_user index. Owner backfill of
+/// existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v64_episodes_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v64_episodes_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v64 failed: {e}")))
+}
+
+/// Tenant v65: re-add user_id to the five intelligence remainder tables
+/// (current_state via UNIQUE rebuild, reconsolidations, temporal_patterns,
+/// digests, memory_feedback). Owner backfill of existing rows happens in
+/// `run_tenant_migrations` after this runs.
+fn apply_schema_v65_intelligence_remainder_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!(
+        "../tenant/schema_v65_intelligence_remainder_readd.sql"
+    ))
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v65 failed: {e}")))
+}
+
+/// Tenant v66: re-add user_id to the five thymus tables that v36 dropped
+/// (rubrics via UNIQUE rebuild from UNIQUE(name) to UNIQUE(user_id, name),
+/// evaluations, quality_metrics, session_quality, behavioral_drift_events).
+/// Owner backfill of existing rows happens in `run_tenant_migrations` after
+/// this runs.
+fn apply_schema_v66_thymus_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v66_thymus_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v66 failed: {e}")))
+}
+
+/// Tenant v67: re-adds `user_id` to `structured_facts` and
+/// `entity_cooccurrences` in tenant shards. Both were dropped by v35 and
+/// never re-added on the tenant side.
+fn apply_schema_v67_graph_remainder_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!(
+        "../tenant/schema_v67_graph_remainder_readd.sql"
+    ))
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v67 failed: {e}")))
+}
+
+/// Tenant v68: re-adds `user_id` to `user_preferences` via 12-step REBUILD.
+/// UNIQUE constraint changes from `(key)` to `(user_id, key)`. The runner
+/// backfills existing rows to the shard owner after this SQL runs.
+fn apply_schema_v68_user_preferences_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!(
+        "../tenant/schema_v68_user_preferences_readd.sql"
+    ))
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v68 failed: {e}")))
+}
+
+/// Tenant v69: re-adds `user_id` to `skill_records` via 12-step REBUILD.
+/// UNIQUE constraint changes from `(name, agent, version)` to
+/// `(name, agent, version, user_id)`. Drops and recreates FTS triggers so
+/// the shadow table stays consistent across the rename. The runner backfills
+/// existing rows to the shard owner after this SQL runs.
+fn apply_schema_v69_skills_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v69_skills_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v69 failed: {e}")))
+}
+
+/// Tenant v70: shard-local counter table for E2 quota enforcement.
+///
+/// Creates `tenant_state` with five rows tracking content size, memory count,
+/// disk usage, disk sample timestamp, and read-only flag. Seeds content_bytes
+/// and memory_count by scanning the memories table.
+fn apply_schema_v70_tenant_state(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tenant_state (
+            key        TEXT PRIMARY KEY,
+            value      INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT OR IGNORE INTO tenant_state(key, value) VALUES
+            ('content_bytes', 0),
+            ('memory_count', 0),
+            ('disk_bytes_estimate', 0),
+            ('disk_sampled_at', 0),
+            ('read_only', 0);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant v70 create failed: {e}")))?;
+
+    // Seed content_bytes and memory_count from existing rows.
+    // is_latest = 1 so we only count the current version of each memory.
+    let (bytes, count): (i64, i64) = conn
+        .query_row(
+            "SELECT COALESCE(SUM(length(content)), 0), COUNT(*)
+             FROM memories WHERE is_latest = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant v70 seed query failed: {e}")))?;
+
+    conn.execute(
+        "UPDATE tenant_state SET value = ?1, updated_at = datetime('now')
+         WHERE key = 'content_bytes'",
+        rusqlite::params![bytes],
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant v70 seed content_bytes failed: {e}")))?;
+
+    conn.execute(
+        "UPDATE tenant_state SET value = ?1, updated_at = datetime('now')
+         WHERE key = 'memory_count'",
+        rusqlite::params![count],
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant v70 seed memory_count failed: {e}")))?;
+
+    Ok(())
+}
+
 /// Latest declared tenant schema version.
 pub fn latest_version() -> i64 {
     TENANT_MIGRATIONS
@@ -1092,7 +1560,7 @@ mod tests {
     #[test]
     fn fresh_db_lands_at_latest() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let v: i64 = conn
             .query_row(
@@ -1108,8 +1576,8 @@ mod tests {
     #[test]
     fn idempotent() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -1125,7 +1593,7 @@ mod tests {
     #[test]
     fn memories_table_exists_after_v1() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let exists: i64 = conn
             .query_row(
@@ -1209,7 +1677,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_scratchpad_after_v23() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -1226,7 +1694,7 @@ mod tests {
     #[test]
     fn scratchpad_constraint_reshaped_after_v23() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         // Two different agents in the same (session, entry_key) coexist.
         conn.execute(
@@ -1363,7 +1831,7 @@ mod tests {
         assert_eq!(pre, 0);
 
         // Run the chain; v2 adds user_id, v23 later drops it. End state: absent.
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -1463,7 +1931,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_sessions_after_v24() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -1481,7 +1949,7 @@ mod tests {
     #[test]
     fn sessions_usable_after_v24() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO sessions (id, agent) VALUES (?1, ?2)",
@@ -1682,32 +2150,39 @@ mod tests {
         assert_eq!(update_count, 1);
     }
 
-    /// v25: chiasm_tasks and chiasm_task_updates must NOT have a user_id
-    /// column after the full migration chain completes.
+    /// After the full chain (v25 dropped chiasm_tasks.user_id, v60 re-added it),
+    /// chiasm_tasks carries user_id again while chiasm_task_updates stays
+    /// user_id-free (scoped via its parent task).
     #[test]
-    fn user_id_absent_from_chiasm_after_v25() {
+    fn user_id_restored_on_chiasm_tasks_after_v60() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
-        for table in &["chiasm_tasks", "chiasm_task_updates"] {
-            let count: i64 = conn
-                .query_row(
-                    &format!(
-                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
-                        table
-                    ),
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            assert_eq!(
-                count, 0,
-                "table '{}' still has user_id column after v25",
-                table
-            );
-        }
+        // v25 dropped chiasm_tasks.user_id; v60 re-added it for single-DB
+        // isolation. chiasm_task_updates is scoped via its parent task and keeps
+        // no user_id of its own.
+        let tasks_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chiasm_tasks') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(tasks_uid, 1, "chiasm_tasks must have user_id after v60");
 
-        // idx_chiasm_tasks_user is gone.
+        let updates_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chiasm_task_updates') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(
+            updates_uid, 0,
+            "chiasm_task_updates must remain user_id-free (scoped via parent task)"
+        );
+
+        // idx_chiasm_tasks_user is restored.
         let idx: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_chiasm_tasks_user'",
@@ -1715,17 +2190,17 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx, 0);
+        assert_eq!(idx, 1, "idx_chiasm_tasks_user must be restored after v60");
     }
 
-    /// v25: the post-drop chiasm tables support the SQL shape kleos-lib
-    /// services/chiasm.rs now uses (no user_id on INSERT, no user_id
-    /// predicate on SELECT/UPDATE/DELETE). FK cascade from
+    /// After the full chain (v25 dropped user_id, v60 re-added it with
+    /// DEFAULT 1), the chiasm tables stay usable: a chiasm_tasks INSERT that
+    /// omits user_id still succeeds via the default, and the FK cascade from
     /// chiasm_tasks.id to chiasm_task_updates.task_id still works.
     #[test]
     fn chiasm_usable_after_v25() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
 
         conn.execute(
@@ -1902,7 +2377,7 @@ mod tests {
         assert_eq!(pre, 0);
 
         // Run chain; v4 catches it up.
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -1987,11 +2462,13 @@ mod tests {
         assert_eq!(pending_count, 1);
     }
 
-    /// v26: approvals must NOT have a user_id column after the full chain.
+    /// v57: approvals must have user_id restored after the full chain (v26
+    /// dropped it; v57 re-adds it for single-DB isolation), with both
+    /// idx_approvals_user and idx_approvals_user_status present again.
     #[test]
-    fn user_id_absent_from_approvals_after_v26() {
+    fn user_id_restored_on_approvals_after_v57() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -2000,9 +2477,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(count, 0, "approvals still has user_id column after v26");
+        assert_eq!(count, 1, "approvals must have user_id restored after v57");
 
-        // Both shim indexes are gone.
+        // Both user_id indexes are restored.
         for idx in &["idx_approvals_user", "idx_approvals_user_status"] {
             let count: i64 = conn
                 .query_row(
@@ -2014,17 +2491,18 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "index '{}' still present after v26", idx);
+            assert_eq!(count, 1, "index '{}' must be restored after v57", idx);
         }
     }
 
-    /// v26: the post-drop approvals table supports the SQL shape kleos-lib
-    /// approvals/mod.rs now uses (no user_id on INSERT, no user_id
-    /// predicate on SELECT/UPDATE).
+    /// After the full chain (v26 dropped user_id, v57 re-added it with
+    /// DEFAULT 1), the approvals table stays usable: an INSERT that omits
+    /// user_id still succeeds via the column default, and lookups/updates by id
+    /// continue to work.
     #[test]
     fn approvals_usable_after_v26() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at) \
@@ -2170,7 +2648,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -2251,7 +2729,7 @@ mod tests {
     #[test]
     fn broca_user_id_present_after_full_chain() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -2277,7 +2755,7 @@ mod tests {
     #[test]
     fn broca_actions_usable_after_v27() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO broca_actions (agent, service, action, payload, narrative, axon_event_id) \
@@ -2419,7 +2897,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -2516,7 +2994,7 @@ mod tests {
     #[test]
     fn projects_user_id_present_after_full_chain() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let col_count: i64 = conn
             .query_row(
@@ -2554,7 +3032,7 @@ mod tests {
     #[test]
     fn projects_usable_after_v28() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
 
         conn.execute(
@@ -2706,7 +3184,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -2819,7 +3297,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -2945,7 +3423,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -3082,7 +3560,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -3215,7 +3693,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -3230,11 +3708,13 @@ mod tests {
     /// Verifies soma family tables are usable after applying v12.
     #[test]
     fn soma_family_usable_after_v12() {
-        // v12 added soma_groups/soma_agent_groups/soma_agent_logs. v29 drops
-        // user_id from soma_agents; after the full chain user_id is absent from
-        // soma_agents but soma_groups / soma_agent_logs retain their own columns.
+        // v12 added soma_groups/soma_agent_groups/soma_agent_logs. v29 dropped
+        // user_id from soma_agents and v58 re-added it (DEFAULT 1) via the
+        // rebuild; after the full chain a soma_agents INSERT that omits user_id
+        // still succeeds via the default, and soma_groups / soma_agent_logs
+        // retain their own columns.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let tables: i64 = conn
             .query_row(
@@ -3334,7 +3814,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -3478,7 +3958,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -3495,7 +3975,7 @@ mod tests {
     #[test]
     fn graph_family_usable_after_v14() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let tables: i64 = conn
             .query_row(
@@ -3688,7 +4168,7 @@ mod tests {
             "new graph tables shouldn't exist before v14"
         );
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post_user_id: i64 = conn
             .query_row(
@@ -3697,10 +4177,11 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        // v14 added user_id; v35 removed it. Full migration chain lands at 0.
+        // v14 added user_id; v35 removed it; v63 re-added it (single-DB
+        // isolation). The full migration chain lands with the column present.
         assert_eq!(
-            post_user_id, 0,
-            "entities.user_id absent after v35 graph drop"
+            post_user_id, 1,
+            "entities.user_id restored after v63 graph re-add"
         );
 
         let post_tables: i64 = conn
@@ -3858,7 +4339,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -4032,7 +4513,7 @@ mod tests {
             "v1 user_preferences should not yet have the KV 'key' column"
         );
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post_conv_app: i64 = conn
             .query_row(
@@ -4533,7 +5014,7 @@ mod tests {
         assert_eq!(pre_output, 0);
 
         // Run chain; v3 adds the shim, v24 later drops it. End state: absent.
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post_user: i64 = conn
             .query_row(
@@ -4554,12 +5035,13 @@ mod tests {
         assert_eq!(post_output, 1);
     }
 
-    /// v22: memories, artifacts, and vector_sync_pending must NOT have a
-    /// user_id column after the full migration chain completes.
+    /// v55 reverses the v22 drop: memories, artifacts, and vector_sync_pending
+    /// must have the user_id column restored after the full migration chain so
+    /// the universal `WHERE user_id = ?` predicate works in single-DB mode.
     #[test]
-    fn user_id_absent_from_memories_after_v22() {
+    fn user_id_restored_on_memory_tables_after_v55() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         for table in &["memories", "artifacts", "vector_sync_pending"] {
             let count: i64 = conn
@@ -4573,8 +5055,8 @@ mod tests {
                 )
                 .unwrap_or(0);
             assert_eq!(
-                count, 0,
-                "table '{}' still has user_id column after v22",
+                count, 1,
+                "table '{}' must have user_id restored after v55",
                 table
             );
         }
@@ -4584,7 +5066,7 @@ mod tests {
     #[test]
     fn memories_constraint_reshaped_after_v22() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO memories (content, category, source, importance, confidence, \
@@ -4605,12 +5087,13 @@ mod tests {
         assert_eq!(hit, 1, "FTS trigger must fire and index the new memory");
     }
 
-    /// v29: axon_events and soma_agents must NOT have a user_id column after
-    /// the full migration chain completes, and their user-indexes must be gone.
+    /// After the full migration chain, soma_agents (v58 rebuild) and axon_events
+    /// (v59) have user_id re-added for single-DB isolation, reversing the v29
+    /// drop, and their idx_*_user indexes are recreated.
     #[test]
     fn user_id_absent_from_activity_after_v29() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         for table in &["axon_events", "soma_agents"] {
             let count: i64 = conn
@@ -4624,8 +5107,8 @@ mod tests {
                 )
                 .unwrap_or(0);
             assert_eq!(
-                count, 0,
-                "table '{}' still has user_id column after v29",
+                count, 1,
+                "table '{}' must have user_id restored after the chain",
                 table
             );
         }
@@ -4641,7 +5124,11 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(idx, 0, "index '{}' still exists after v29", idx_name);
+            assert_eq!(
+                idx, 1,
+                "index '{}' must be restored after the chain",
+                idx_name
+            );
         }
     }
 
@@ -4650,7 +5137,7 @@ mod tests {
     #[test]
     fn activity_tables_usable_after_v29() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO axon_events (channel, source, type, payload) \
@@ -4822,12 +5309,13 @@ mod tests {
         assert_eq!(col_count, 0, "user_id column must be absent after v22");
     }
 
-    /// v30: webhooks must NOT have a user_id column after the full migration
-    /// chain, and idx_webhooks_user must be gone.
+    /// v56: webhooks must have user_id restored after the full migration chain
+    /// (v30 dropped it; v56 re-adds it for single-DB isolation), and
+    /// idx_webhooks_user must be present again.
     #[test]
-    fn user_id_absent_from_webhooks_after_v30() {
+    fn user_id_restored_on_webhooks_after_v56() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -4836,7 +5324,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(count, 0, "webhooks still has user_id column after v30");
+        assert_eq!(count, 1, "webhooks must have user_id restored after v56");
 
         let idx: i64 = conn
             .query_row(
@@ -4845,15 +5333,17 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx, 0, "idx_webhooks_user still exists after v30");
+        assert_eq!(idx, 1, "idx_webhooks_user must be restored after v56");
     }
 
-    /// v30: webhooks supports the SQL shape kleos-lib/src/webhooks.rs now
-    /// uses (no user_id on INSERT or SELECT).
+    /// After the full chain (v30 dropped user_id, v56 re-added it with
+    /// DEFAULT 1), the webhooks/webhook_dead_letters tables remain usable: an
+    /// INSERT that omits user_id still succeeds via the column default, and the
+    /// dead-letter FK relationship holds.
     #[test]
     fn webhooks_usable_after_v30() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO webhooks (url, events) VALUES (?1, ?2)",
@@ -4961,7 +5451,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_axon_after_v31() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         for table in &["axon_subscriptions", "axon_cursors"] {
             let count: i64 = conn
@@ -4997,7 +5487,7 @@ mod tests {
     #[test]
     fn axon_tables_usable_after_v31() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO axon_subscriptions (agent, channel) VALUES (?1, ?2)",
@@ -5112,12 +5602,13 @@ mod tests {
         }
     }
 
-    /// v32: reflections must NOT have a user_id column after the full
-    /// migration chain, and idx_reflections_user must be gone.
+    /// v62 re-adds user_id to reflections (reversing the v32 drop) for
+    /// single-DB isolation, and recreates idx_reflections_user. The full
+    /// migration chain must leave the column and index present.
     #[test]
-    fn user_id_absent_from_reflections_after_v32() {
+    fn user_id_restored_on_reflections_after_v62() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -5126,7 +5617,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(count, 0, "reflections still has user_id column after v32");
+        assert_eq!(count, 1, "reflections must have user_id column after v62");
 
         let idx: i64 = conn
             .query_row(
@@ -5135,7 +5626,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx, 0, "idx_reflections_user still exists after v32");
+        assert_eq!(idx, 1, "idx_reflections_user must be restored after v62");
 
         // idx_reflections_type and idx_reflections_period survive.
         for surviving in &["idx_reflections_type", "idx_reflections_period"] {
@@ -5153,12 +5644,13 @@ mod tests {
         }
     }
 
-    /// v32: reflections supports the SQL shape intelligence/reflections.rs
-    /// now uses (no user_id on INSERT or SELECT).
+    /// After the full chain (v62 re-adds user_id), an INSERT that omits
+    /// user_id still works -- the column defaults to 1 -- so older call shapes
+    /// remain compatible.
     #[test]
     fn reflections_usable_after_v32() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO reflections (content, reflection_type, source_memory_ids, confidence) \
@@ -5238,7 +5730,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_ingestion_hashes_after_v33() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         let cols: Vec<String> = conn
             .prepare("SELECT name FROM pragma_table_info('ingestion_hashes')")
@@ -5268,7 +5760,7 @@ mod tests {
     #[test]
     fn ingestion_hashes_usable_after_v33() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         conn.execute(
             "INSERT OR IGNORE INTO ingestion_hashes (sha256, job_id) VALUES (?1, ?2)",
@@ -5359,7 +5851,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_loom_after_v34() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         let wf_cols: Vec<String> = conn
             .prepare("SELECT name FROM pragma_table_info('loom_workflows')")
@@ -5412,7 +5904,7 @@ mod tests {
     #[test]
     fn loom_usable_after_v34() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         // Insert a workflow without user_id.
         conn.execute(
@@ -5457,21 +5949,42 @@ mod tests {
         );
     }
 
-    /// v35: user_id must be absent from all 6 graph-cluster tables after the
-    /// full migration chain completes. Corresponding user indexes must be gone.
+    /// After the full migration chain: v63 rebuilds entities to re-add user_id
+    /// (single-DB isolation) and recreates idx_entities_user, reversing the v35
+    /// After full migration chain: entities, structured_facts, and
+    /// entity_cooccurrences have user_id restored (v63 + v67).
+    /// memory_pagerank and pagerank_dirty remain user_id-free.
     #[test]
-    fn user_id_absent_from_graph_cluster_after_v35() {
+    fn user_id_state_for_graph_cluster_after_full_chain() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
-        // brain_edges is NOT present on tenant shards (monolith-only table).
-        for table in &[
-            "entities",
-            "structured_facts",
-            "entity_cooccurrences",
-            "memory_pagerank",
-            "pagerank_dirty",
-        ] {
+        // v63 restored user_id on entities.
+        let entities_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            entities_uid, 1,
+            "entities must have user_id restored after v63"
+        );
+        let entities_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_entities_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            entities_idx, 1,
+            "idx_entities_user must be restored after v63"
+        );
+
+        // v67 restored user_id on structured_facts and entity_cooccurrences.
+        for table in &["structured_facts", "entity_cooccurrences"] {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -5482,15 +5995,30 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "user_id still present in {} after v35", table);
+            assert_eq!(count, 1, "user_id must be present in {} after v67", table);
         }
 
-        for idx in &[
-            "idx_entities_user",
-            "idx_ec_user",
-            "idx_pagerank_user",
-            "idx_facts_user",
-        ] {
+        // memory_pagerank and pagerank_dirty remain user_id-free.
+        for table in &["memory_pagerank", "pagerank_dirty"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                count, 0,
+                "user_id must remain absent from {} (no repair needed)",
+                table
+            );
+        }
+
+        // idx_sf_user and idx_ec_user created by v67.
+        for idx in &["idx_sf_user", "idx_ec_user"] {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -5501,8 +6029,18 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "index {} still present after v35", idx);
+            assert_eq!(count, 1, "index {} must be restored after v67", idx);
         }
+
+        // idx_pagerank_user stays absent.
+        let pr_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_pagerank_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pr_idx, 0, "idx_pagerank_user must stay absent");
     }
 
     /// v35: all 6 tables accept inserts using the new schema (no user_id).
@@ -5510,7 +6048,7 @@ mod tests {
     #[test]
     fn graph_cluster_usable_after_v35() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         // entities: insert without user_id
         conn.execute(
@@ -5559,14 +6097,15 @@ mod tests {
             .expect("count pagerank_dirty");
         assert_eq!(pd_count, 1, "pagerank_dirty seed row missing at id=1");
 
-        // entities UNIQUE(name, entity_type) -- duplicate should fail
+        // entities UNIQUE(name, entity_type, user_id) after v63 -- a duplicate
+        // at the same default owner (user_id = 1) should still be rejected.
         let dup = conn.execute(
             "INSERT INTO entities (name, entity_type) VALUES (?1, ?2)",
             rusqlite::params!["TestEntity", "concept"],
         );
         assert!(
             dup.is_err(),
-            "duplicate (name, entity_type) should be rejected"
+            "duplicate (name, entity_type, user_id) should be rejected"
         );
     }
 
@@ -5744,12 +6283,14 @@ mod tests {
         assert_eq!(runs_col, 0, "loom_runs still has user_id after v34");
     }
 
-    /// v36: user_id must be absent from all 5 thymus tables after the full
-    /// migration chain completes. Corresponding user indexes must be gone.
+    /// v36 dropped user_id from all 5 thymus tables; v66 re-adds it. After the
+    /// full migration chain (which now includes v66) user_id must be PRESENT
+    /// in all 5 thymus tables and the user-scoped indexes must exist.
+    /// The old idx_rubrics_name index is replaced by idx_rubrics_user_name.
     #[test]
-    fn user_id_absent_from_thymus_after_v36() {
+    fn user_id_present_in_thymus_after_v66() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         for table in &[
             "rubrics",
@@ -5768,7 +6309,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "user_id still present in {} after v36", table);
+            assert_eq!(count, 1, "user_id must be present in {} after v66", table);
         }
 
         for idx in &[
@@ -5789,80 +6330,91 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "index {} still present after v36", idx);
+            assert_eq!(count, 1, "index {} must be present after v66", idx);
         }
 
-        // New unique index on rubrics.name must exist.
-        let rubrics_idx: i64 = conn
+        // idx_rubrics_name (the v36 per-name unique index) must be gone now
+        // that rubrics.user_id exists and UNIQUE(user_id, name) is used.
+        let old_idx: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_rubrics_name'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(rubrics_idx, 1, "idx_rubrics_name missing after v36");
+        assert_eq!(old_idx, 0, "idx_rubrics_name must be gone after v66");
     }
 
-    /// v36: all 5 thymus tables accept inserts using the new schema (no user_id).
-    /// The new UNIQUE INDEX idx_rubrics_name on rubrics.name is enforced.
+    /// v66: all 5 thymus tables accept inserts with user_id (or via DEFAULT).
+    /// The UNIQUE INDEX idx_rubrics_user_name on (user_id, name) is enforced.
     #[test]
-    fn thymus_usable_after_v36() {
+    fn thymus_usable_after_v66() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
-        // rubrics: insert without user_id
+        // rubrics: insert with explicit user_id
         conn.execute(
-            "INSERT INTO rubrics (name, description, criteria) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["test-rubric", "desc", "[]"],
+            "INSERT INTO rubrics (name, description, criteria, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["test-rubric", "desc", "[]", 1_i64],
         )
         .expect("insert rubric");
         let rubric_id: i64 = conn
             .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
             .unwrap();
 
-        // rubrics: duplicate name must be rejected (new UNIQUE INDEX)
+        // rubrics: duplicate (user_id, name) must be rejected
         let dup = conn.execute(
-            "INSERT INTO rubrics (name, criteria) VALUES (?1, ?2)",
-            rusqlite::params!["test-rubric", "[]"],
+            "INSERT INTO rubrics (name, criteria, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["test-rubric", "[]", 1_i64],
         );
-        assert!(dup.is_err(), "duplicate rubric name should be rejected");
+        assert!(
+            dup.is_err(),
+            "duplicate (user_id, name) in rubrics should be rejected"
+        );
 
-        // evaluations: insert without user_id
+        // rubrics: same name for different user must succeed (isolation)
         conn.execute(
-            "INSERT INTO evaluations (rubric_id, agent, subject, input, output, scores, overall_score, evaluator) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![rubric_id, "test-agent", "subj", "{}", "{}", "{}", 0.9_f64, "tester"],
+            "INSERT INTO rubrics (name, criteria, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["test-rubric", "[]", 2_i64],
+        )
+        .expect("same name for different user must be allowed");
+
+        // evaluations: insert with user_id
+        conn.execute(
+            "INSERT INTO evaluations (rubric_id, agent, subject, input, output, scores, overall_score, evaluator, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![rubric_id, "test-agent", "subj", "{}", "{}", "{}", 0.9_f64, "tester", 1_i64],
         )
         .expect("insert evaluation");
 
-        // quality_metrics: insert without user_id
+        // quality_metrics: insert with user_id
         conn.execute(
-            "INSERT INTO quality_metrics (agent, metric, value, tags) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["test-agent", "accuracy", 0.95_f64, "{}"],
+            "INSERT INTO quality_metrics (agent, metric, value, tags, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["test-agent", "accuracy", 0.95_f64, "{}", 1_i64],
         )
         .expect("insert quality_metric");
 
-        // session_quality: insert without user_id
+        // session_quality: insert with user_id
         conn.execute(
-            "INSERT INTO session_quality (session_id, agent, turn_count, rules_followed, rules_drifted) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["sess-1", "test-agent", 5_i32, "[]", "[]"],
+            "INSERT INTO session_quality (session_id, agent, turn_count, rules_followed, rules_drifted, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["sess-1", "test-agent", 5_i32, "[]", "[]", 1_i64],
         )
         .expect("insert session_quality");
 
-        // behavioral_drift_events: insert without user_id
+        // behavioral_drift_events: insert with user_id
         conn.execute(
-            "INSERT INTO behavioral_drift_events (agent, drift_type, severity, signal) \
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["test-agent", "priority", "low", "test signal"],
+            "INSERT INTO behavioral_drift_events (agent, drift_type, severity, signal, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["test-agent", "priority", "low", "test signal", 1_i64],
         )
         .expect("insert behavioral_drift_event");
 
-        // Verify all rows exist.
+        // Verify all rows exist. Two rubrics were inserted (user 1 and user 2).
         let rubric_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM rubrics", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rubric_count, 1);
+        assert_eq!(rubric_count, 2);
 
         let eval_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM evaluations", [], |r| r.get(0))
@@ -6040,56 +6592,77 @@ mod tests {
         }
     }
 
-    /// v37: user_id must be absent from both user_preferences and conversations
-    /// after the full migration chain. All related user-scoped indexes must be gone
-    /// and the new idx_up_domain_pref must exist.
+    /// After the full chain: conversations.user_id is restored (v37 dropped it,
+    /// v61 re-added it for single-DB isolation) while user_preferences stays
+    /// After full chain: conversations.user_id restored at v61,
+    /// user_preferences.user_id restored at v68 (REBUILD with
+    /// UNIQUE(user_id, key)).
     #[test]
-    fn user_id_absent_from_portability_after_v37() {
+    fn portability_user_id_state_after_full_chain() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
-        for table in &["user_preferences", "conversations"] {
-            let count: i64 = conn
-                .query_row(
-                    &format!(
-                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
-                        table
-                    ),
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(count, 0, "user_id still present in {} after v37", table);
-        }
+        // conversations.user_id restored at v61.
+        let conv_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            conv_uid, 1,
+            "conversations.user_id must be restored after v61"
+        );
 
-        // Old user-scoped indexes must be gone.
-        for idx in &[
-            "idx_conversations_user",
-            "idx_up_domain_pref_user",
-            "idx_user_prefs_user",
-        ] {
-            let count: i64 = conn
-                .query_row(
-                    &format!(
-                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
-                        idx
-                    ),
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(count, 0, "index {} still present after v37", idx);
-        }
+        // user_preferences.user_id restored at v68 (REBUILD).
+        let prefs_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('user_preferences') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            prefs_uid, 1,
+            "user_preferences.user_id must be restored after v68"
+        );
 
-        // New UNIQUE INDEX idx_up_domain_pref must exist.
-        let new_idx: i64 = conn
+        // idx_conversations_user is restored by v61.
+        let conv_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_conversations_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            conv_idx, 1,
+            "idx_conversations_user must be restored after v61"
+        );
+
+        // v68 REBUILD drops idx_up_domain_pref and replaces it with
+        // idx_up_domain_pref_user (includes user_id in UNIQUE constraint).
+        let old_idx: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_up_domain_pref'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(new_idx, 1, "idx_up_domain_pref missing after v37");
+        assert_eq!(
+            old_idx, 0,
+            "idx_up_domain_pref must be replaced by idx_up_domain_pref_user after v68"
+        );
+
+        let new_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_up_domain_pref_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_idx, 1, "idx_up_domain_pref_user must exist after v68");
 
         // idx_up_domain (non-user-scoped) must be preserved.
         let domain_idx: i64 = conn
@@ -6099,16 +6672,17 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(domain_idx, 1, "idx_up_domain missing after v37");
+        assert_eq!(domain_idx, 1, "idx_up_domain must be preserved after v68");
     }
 
-    /// v37: both tables accept inserts using the new schema (no user_id).
-    /// UNIQUE(key) on user_preferences rejects duplicate keys.
-    /// Messages can still be inserted via a parent conversation (FK preserved).
+    /// After the full chain both tables stay usable: user_preferences (still
+    /// user_id-free) enforces UNIQUE(key), and conversations (user_id re-added
+    /// at v61 with DEFAULT 1) accepts an insert that omits user_id. Messages can
+    /// still be inserted via a parent conversation (FK preserved).
     #[test]
     fn portability_usable_after_v37() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         // user_preferences: insert without user_id
         conn.execute(
@@ -6279,23 +6853,17 @@ mod tests {
         }
     }
 
-    /// v38: user_id must be absent from all 7 intelligence tables after the
-    /// full migration chain completes. causal_links never had user_id.
+    /// After the full migration chain: v62 re-adds user_id to consolidations
+    /// and causal_chains (single-DB isolation), so those two must have the
+    /// column and their idx_*_user index back. v65 restores user_id to the
+    /// remaining 5 intelligence tables. causal_links never had user_id.
     #[test]
     fn user_id_absent_from_intelligence_after_v38() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
-        let tables = [
-            "consolidations",
-            "current_state",
-            "causal_chains",
-            "reconsolidations",
-            "temporal_patterns",
-            "digests",
-            "memory_feedback",
-        ];
-        for table in &tables {
+        // v62 restored user_id on these three.
+        for table in &["reflections", "consolidations", "causal_chains"] {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -6306,20 +6874,33 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
-            assert_eq!(count, 0, "{} still has user_id column after v38", table);
+            assert_eq!(count, 1, "{} must have user_id restored after v62", table);
         }
 
-        // Verify dropped indexes are gone.
-        let dropped_indexes = [
-            "idx_current_state_user",
-            "idx_cs_key_user",
-            "idx_consolidations_user",
-            "idx_causal_chains_user",
-            "idx_temporal_patterns_user",
-            "idx_digests_user",
-            "idx_feedback_user",
+        // v65 restored user_id on these five (the remainder after v62).
+        let restored_by_v65 = [
+            "current_state",
+            "reconsolidations",
+            "temporal_patterns",
+            "digests",
+            "memory_feedback",
         ];
-        for idx in &dropped_indexes {
+        for table in &restored_by_v65 {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(count, 1, "{} must have user_id restored after v65", table);
+        }
+
+        // v62 recreated these user-scoped indexes.
+        for idx in &["idx_consolidations_user", "idx_causal_chains_user"] {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -6330,7 +6911,30 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
-            assert_eq!(count, 0, "index {} still present after v38", idx);
+            assert_eq!(count, 1, "index {} must be restored after v62", idx);
+        }
+
+        // v65 recreated these user-scoped indexes for the remainder tables.
+        let restored_indexes_v65 = [
+            "idx_current_state_user",
+            "idx_cs_key_user",
+            "idx_temporal_patterns_user",
+            "idx_digests_user",
+            "idx_feedback_user",
+            "idx_reconsolidations_user",
+        ];
+        for idx in &restored_indexes_v65 {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        idx
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(count, 1, "index {} must be restored after v65", idx);
         }
 
         // Verify preserved indexes still exist.
@@ -6357,13 +6961,15 @@ mod tests {
         }
     }
 
-    /// v38: intelligence tables accept the new-shape INSERTs (no user_id) and
-    /// the in-table UNIQUE(agent, key) on current_state works correctly.
-    /// causal_links.chain_id FK to causal_chains(id) is preserved.
+    /// After v65 all intelligence tables carry user_id. Verify that the
+    /// new UNIQUE(agent, key, user_id) constraint on current_state correctly
+    /// isolates upserts per user, and that the remaining four remainder tables
+    /// accept INSERTs with the user_id column. causal_links.chain_id FK to
+    /// causal_chains(id) must still be preserved.
     #[test]
     fn intelligence_usable_after_v38() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO memories (content, category, source) VALUES (?1, ?2, ?3)",
@@ -6372,31 +6978,32 @@ mod tests {
         .unwrap();
         let mid = conn.last_insert_rowid();
 
-        // consolidations (no user_id)
+        // consolidations (user_id defaults to 1 after v62)
         conn.execute(
             "INSERT INTO consolidations (source_ids, strategy, confidence) VALUES (?1, ?2, ?3)",
             rusqlite::params!["[1,2,3]", "merge", 0.9_f64],
         )
         .unwrap();
 
-        // current_state UNIQUE(agent, key) -- upsert collapses duplicates
+        // current_state UNIQUE(agent, key, user_id) after v65 -- upsert collapses
+        // duplicates for the same (agent, key, user_id) triple.
         conn.execute(
-            "INSERT INTO current_state (agent, key, value) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(agent, key) DO UPDATE SET value = excluded.value",
-            rusqlite::params!["claude", "location", "home"],
+            "INSERT INTO current_state (agent, key, value, user_id) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(agent, key, user_id) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["claude", "location", "home", 1_i64],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO current_state (agent, key, value) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(agent, key) DO UPDATE SET value = excluded.value",
-            rusqlite::params!["claude", "location", "office"],
+            "INSERT INTO current_state (agent, key, value, user_id) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(agent, key, user_id) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["claude", "location", "office", 1_i64],
         )
         .unwrap();
         // Two different agents may share the same key name.
         conn.execute(
-            "INSERT INTO current_state (agent, key, value) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(agent, key) DO UPDATE SET value = excluded.value",
-            rusqlite::params!["test-agent", "location", "dumpster"],
+            "INSERT INTO current_state (agent, key, value, user_id) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(agent, key, user_id) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["test-agent", "location", "dumpster", 1_i64],
         )
         .unwrap();
 
@@ -6405,19 +7012,19 @@ mod tests {
             .unwrap();
         assert_eq!(
             cs_count, 2,
-            "upsert must collapse claude/location to one row; gir/location is separate"
+            "upsert must collapse claude/location/1 to one row; test-agent/location/1 is separate"
         );
 
         let val: String = conn
             .query_row(
-                "SELECT value FROM current_state WHERE agent='claude' AND key='location'",
+                "SELECT value FROM current_state WHERE agent='claude' AND key='location' AND user_id=1",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(val, "office", "last upsert value must win");
 
-        // causal_chains (no user_id) + causal_links FK preserved
+        // causal_chains + causal_links FK preserved
         conn.execute(
             "INSERT INTO causal_chains (root_memory_id, description) VALUES (?1, ?2)",
             rusqlite::params![mid, "v38 chain"],
@@ -6441,29 +7048,29 @@ mod tests {
             .unwrap();
         assert_eq!(link_count, 1, "causal_links FK to causal_chains must work");
 
-        // Shape A tables (no user_id)
+        // Remainder tables now carry user_id (v65).
         conn.execute(
-            "INSERT INTO reconsolidations (memory_id, old_content, new_content) \
-             VALUES (?1, 'old', 'new')",
-            rusqlite::params![mid],
+            "INSERT INTO reconsolidations (memory_id, old_content, new_content, user_id) \
+             VALUES (?1, 'old', 'new', ?2)",
+            rusqlite::params![mid, 1_i64],
         )
         .unwrap();
 
         conn.execute(
-            "INSERT INTO temporal_patterns (pattern_type, description) VALUES (?1, ?2)",
-            rusqlite::params!["daily", "morning routine"],
+            "INSERT INTO temporal_patterns (pattern_type, description, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["daily", "morning routine", 1_i64],
         )
         .unwrap();
 
         conn.execute(
-            "INSERT INTO digests (period, content, memory_count) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["daily", "digest body", 10_i64],
+            "INSERT INTO digests (period, content, memory_count, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["daily", "digest body", 10_i64, 1_i64],
         )
         .unwrap();
 
         conn.execute(
-            "INSERT INTO memory_feedback (memory_id, rating) VALUES (?1, ?2)",
-            rusqlite::params![mid, "helpful"],
+            "INSERT INTO memory_feedback (memory_id, user_id, rating) VALUES (?1, ?2, ?3)",
+            rusqlite::params![mid, 1_i64, "helpful"],
         )
         .unwrap();
 
@@ -6617,12 +7224,13 @@ mod tests {
         }
     }
 
-    /// v39: user_id must be absent from skill_records and
-    /// idx_skill_records_user must be dropped after the full migration chain.
+    /// After full chain: skill_records.user_id restored at v69 (REBUILD
+    /// with UNIQUE(name, agent, version, user_id)). idx_skill_records_user
+    /// is restored by the v69 REBUILD.
     #[test]
-    fn user_id_absent_from_skill_records_after_v39() {
+    fn skill_records_user_id_restored_after_v69() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let col_count: i64 = conn
             .query_row(
@@ -6631,12 +7239,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(
-            col_count, 0,
-            "skill_records still has user_id column after v39"
-        );
+        assert_eq!(col_count, 1, "skill_records must have user_id after v69");
 
-        // Dropped index must be gone.
+        // idx_skill_records_user restored by v69 REBUILD.
         let idx_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
@@ -6646,11 +7251,11 @@ mod tests {
             )
             .unwrap_or(0);
         assert_eq!(
-            idx_count, 0,
-            "idx_skill_records_user still present after v39"
+            idx_count, 1,
+            "idx_skill_records_user must be restored after v69"
         );
 
-        // Preserved indexes must still exist.
+        // Preserved indexes must still exist after REBUILD.
         let preserved = [
             "idx_skill_records_agent",
             "idx_skill_records_name",
@@ -6669,7 +7274,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
-            assert_eq!(count, 1, "preserved index {} missing after v39", idx);
+            assert_eq!(count, 1, "preserved index {} missing after v69", idx);
         }
     }
 
@@ -6678,7 +7283,7 @@ mod tests {
     #[test]
     fn skill_records_usable_after_v39() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         // Insert a skill without user_id -- must succeed.
         conn.execute(
@@ -6730,7 +7335,7 @@ mod tests {
     #[test]
     fn skill_records_fts_works_after_v39() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO skill_records (name, agent, code, description) \
@@ -6768,12 +7373,13 @@ mod tests {
         assert_eq!(desc_hits, 1, "skills_fts description not indexed after v39");
     }
 
-    /// v40: user_id must be absent from episodes and idx_episodes_user must be
-    /// dropped after the full migration chain.
+    /// After the full migration chain, v64 re-adds user_id to episodes
+    /// (single-DB isolation), reversing the v40 drop, and recreates
+    /// idx_episodes_user.
     #[test]
     fn user_id_absent_from_episodes_after_v40() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let col_count: i64 = conn
             .query_row(
@@ -6782,9 +7388,12 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(col_count, 0, "episodes still has user_id column after v40");
+        assert_eq!(
+            col_count, 1,
+            "episodes must have user_id restored after v64"
+        );
 
-        // Dropped index must be gone.
+        // Index must be restored.
         let idx_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
@@ -6793,7 +7402,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(idx_count, 0, "idx_episodes_user still present after v40");
+        assert_eq!(idx_count, 1, "idx_episodes_user must be restored after v64");
 
         // Preserved indexes must still exist.
         let preserved = ["idx_episodes_session", "idx_episodes_agent"];
@@ -6817,7 +7426,7 @@ mod tests {
     #[test]
     fn episodes_usable_after_v40() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         // Insert without user_id must succeed.
         conn.execute(
@@ -6850,7 +7459,7 @@ mod tests {
     #[test]
     fn episodes_fts_works_after_v40() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO episodes (title, agent, summary) VALUES (?1, ?2, ?3)",
@@ -6883,5 +7492,44 @@ mod tests {
             summary_hits, 1,
             "episodes_fts summary not indexed after v40"
         );
+    }
+
+    /// Confirms tenant_state is created and seeded with zero counters on a
+    /// fresh in-memory shard (no pre-existing memories to seed from).
+    #[test]
+    fn test_v70_tenant_state_created_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tenant_state", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 5, "tenant_state must have 5 sentinel rows");
+
+        let bytes: i64 = conn
+            .query_row(
+                "SELECT value FROM tenant_state WHERE key = 'content_bytes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bytes, 0);
+
+        let mem_count: i64 = conn
+            .query_row(
+                "SELECT value FROM tenant_state WHERE key = 'memory_count'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mem_count, 0);
+    }
+
+    /// Confirms that v70 migration is idempotent (safe to run twice).
+    #[test]
+    fn test_v70_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
+        apply_schema_v70_tenant_state(&conn).unwrap();
     }
 }

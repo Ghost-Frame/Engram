@@ -32,7 +32,9 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
         })
         .collect::<Result<Vec<_>>>()?;
 
-    // Fetch all source memories in one read -- MUST belong to caller.
+    // Fetch all source memories in one read -- MUST belong to caller. The
+    // `user_id = ?1` predicate makes that ownership guarantee real in single-DB
+    // (shared) mode; in a single-owner shard it is a no-op.
     let ids_for_read = ids.clone();
     let sources: Vec<(i64, String, String, i32)> = db
         .read(move |conn| {
@@ -43,11 +45,13 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                 .join(",");
             let sql = format!(
                 "SELECT id, content, category, importance \
-                 FROM memories WHERE id IN ({}) AND is_forgotten = 0",
+                 FROM memories WHERE id IN ({}) AND user_id = ?1 AND is_forgotten = 0",
                 placeholders
             );
             let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-            let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(rusqlite::params![user_id])
+                .map_err(rusqlite_to_eng_error)?;
             let mut result = Vec::new();
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 result.push((
@@ -100,19 +104,18 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
     // All writes in a single transaction for atomicity.
     let new_id: i64 = db
         .transaction(move |tx| {
-            // Insert consolidated memory.
-            // N.B.: user_id is intentionally omitted -- tenant-shard DBs dropped
-            // the column in migration v22. The row inherits the shard owner's
-            // identity from the DB path itself.
+            // Insert consolidated memory, owned by the caller so single-DB mode
+            // isolates it like any other memory.
             tx.execute(
                 "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-                 source_count, is_static, is_forgotten, confidence, status, created_at, updated_at) \
-                 VALUES (?1, ?2, 'consolidation', ?3, 1, 1, ?4, 1, 0, 1.0, 'approved', datetime('now'), datetime('now'))",
+                 source_count, is_static, is_forgotten, confidence, status, user_id, created_at, updated_at) \
+                 VALUES (?1, ?2, 'consolidation', ?3, 1, 1, ?4, 1, 0, 1.0, 'approved', ?5, datetime('now'), datetime('now'))",
                 rusqlite::params![
                     merged_content,
                     category,
                     max_importance,
                     source_count,
+                    user_id,
                 ],
             )
             .map_err(rusqlite_to_eng_error)?;
@@ -135,11 +138,11 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                 .map_err(rusqlite_to_eng_error)?;
             }
 
-            // Record consolidation.
+            // Record consolidation, owned by the caller.
             tx.execute(
-                "INSERT INTO consolidations (source_ids, result_memory_id, strategy, confidence) \
-                 VALUES (?1, ?2, 'merge', 1.0)",
-                rusqlite::params![source_ids_json, new_id],
+                "INSERT INTO consolidations (source_ids, result_memory_id, strategy, confidence, user_id) \
+                 VALUES (?1, ?2, 'merge', 1.0, ?3)",
+                rusqlite::params![source_ids_json, new_id, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
 
@@ -308,7 +311,7 @@ pub async fn sweep(db: &Database, user_id: i64, threshold: f64) -> Result<SweepR
 #[tracing::instrument(skip(db), fields(limit))]
 pub async fn list_consolidations(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     limit: usize,
 ) -> Result<Vec<ConsolidationRecord>> {
     db.read(move |conn| {
@@ -317,12 +320,13 @@ pub async fn list_consolidations(
                 "SELECT c.id, m.content \
                  FROM consolidations c \
                  JOIN memories m ON m.id = c.result_memory_id \
+                 WHERE c.user_id = ?1 \
                  ORDER BY c.created_at DESC \
-                 LIMIT ?1",
+                 LIMIT ?2",
             )
             .map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![limit as i64])
+            .query(rusqlite::params![user_id, limit as i64])
             .map_err(rusqlite_to_eng_error)?;
         let mut records = Vec::new();
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {

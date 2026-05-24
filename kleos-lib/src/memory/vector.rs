@@ -43,15 +43,14 @@ pub async fn vector_search(
     // vector_top_k returns rowids ordered by distance (ascending = most similar first).
     // We JOIN on memories.rowid = id to get the full row filters applied.
     // Note: vector_top_k requires sqlite-vec extension.
-    // user_id is accepted for API compatibility but not used as a SQL filter:
-    // tenant isolation is enforced at the database level (one DB per tenant).
-    #[allow(unused_variables)]
-    let _user_id_for_compat = user_id;
+    // The owner predicate (?3) keeps single-DB (shared) mode from returning
+    // another user's nearest-neighbour hits; a no-op in a single-owner shard.
     let sql = "
         SELECT memories.id
         FROM vector_top_k('memories_vec_1024_idx', vector(?1), ?2)
         JOIN memories ON memories.rowid = id
-        WHERE memories.is_forgotten = 0
+        WHERE memories.user_id = ?3
+          AND memories.is_forgotten = 0
           AND memories.is_latest = 1
     ";
 
@@ -61,7 +60,7 @@ pub async fn vector_search(
                 .prepare(sql)
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let mut rows = stmt
-                .query(rusqlite::params![embedding_json, limit as i64])
+                .query(rusqlite::params![embedding_json, limit as i64, user_id])
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
             // 6.9 capacity hint: LIMIT bounds the row count.

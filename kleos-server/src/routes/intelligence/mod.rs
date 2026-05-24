@@ -298,12 +298,15 @@ async fn decompose_handler(
 
 #[tracing::instrument(skip_all)]
 async fn detect_temporal_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let patterns = detect_patterns(&db).await?;
+    let patterns = detect_patterns(&db, auth.user_id).await?;
+    // detect_patterns already stores each pattern; these store calls are
+    // now redundant but kept for backwards-compat with existing routes that
+    // used to call store_pattern separately. They are scoped to auth.user_id.
     for pattern in &patterns {
-        if let Err(e) = store_pattern(&db, pattern).await {
+        if let Err(e) = store_pattern(&db, pattern, auth.user_id).await {
             tracing::warn!("failed to store temporal pattern: {}", e);
         }
     }
@@ -313,12 +316,12 @@ async fn detect_temporal_handler(
 /// GET /intelligence/temporal/patterns -- list previously detected temporal patterns, newest first.
 #[tracing::instrument(skip_all)]
 async fn list_temporal_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).clamp(1, 500) as i64;
-    let patterns = list_patterns(&db, limit).await?;
+    let patterns = list_patterns(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
 
@@ -340,12 +343,12 @@ async fn generate_digest_handler(
 /// GET /intelligence/digests -- list generated periodic digests, newest first.
 #[tracing::instrument(skip_all)]
 async fn list_digests_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(500);
-    let items = list_digests(&db, limit).await?;
+    let items = list_digests(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "digests": items })))
 }
 
@@ -629,13 +632,13 @@ async fn predictive_recall_handler(
 /// GET /intelligence/predictive/patterns -- return persisted temporal patterns used to drive predictions.
 #[tracing::instrument(skip_all)]
 async fn predictive_patterns_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
-    // Return temporal patterns that drive predictions
+    // Return temporal patterns that drive predictions, scoped to the caller.
     let limit = params.limit.unwrap_or(20).clamp(1, 500) as i64;
-    let patterns = list_patterns(&db, limit).await?;
+    let patterns = list_patterns(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
 
@@ -712,6 +715,8 @@ async fn extract_handler(
                 sync_id: None,
                 artifacts: None,
             },
+            None,
+            false,
         )
         .await?;
         (c.clone(), result.id)
@@ -828,10 +833,10 @@ async fn feedback_handler(
 /// GET /intelligence/feedback/stats -- aggregate stats over recorded user feedback events.
 #[tracing::instrument(skip_all)]
 async fn feedback_stats_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = feedback::feedback_stats(&db).await?;
+    let stats = feedback::feedback_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }
 

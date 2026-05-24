@@ -155,15 +155,15 @@ async fn get_event_handler(
 /// Lists all channels.
 async fn list_channels_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let channels = list_channels(&db).await?;
+    let channels = list_channels(&db, auth.user_id).await?;
     Ok(Json(json!({ "channels": channels })))
 }
 
 /// Returns Axon statistics.
-async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
-    let stats = get_axon_stats(&db).await?;
+async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
+    let stats = get_axon_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }
 

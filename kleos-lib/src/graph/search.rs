@@ -43,6 +43,7 @@ pub async fn graph_search(
                             decay_score, community_id \
                      FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                       AND user_id = ?3 \
                        AND content LIKE ?1 \
                      ORDER BY importance DESC \
                      LIMIT ?2",
@@ -50,34 +51,38 @@ pub async fn graph_search(
                 .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
-                .query_map(rusqlite::params![pattern_clone, limit as i64], |row| {
-                    let id: i64 = row.get(0)?;
-                    let content: String = row.get(1)?;
-                    let category: String =
-                        row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
-                    let importance: i64 = row.get(3)?;
-                    let pagerank: f64 = row.get::<_, Option<f64>>(4)?.unwrap_or(0.0);
-                    let source: String =
-                        row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
-                    let created_at: String = row.get::<_, String>(6).unwrap_or_default();
-                    let is_static: bool = row.get::<_, bool>(7).unwrap_or(false);
-                    let source_count: i64 = row.get::<_, i64>(8).unwrap_or(1);
-                    let decay_score: Option<f64> = row.get::<_, f64>(9).ok();
-                    let community_id: Option<u32> = row.get::<_, i64>(10).ok().map(|v| v as u32);
-                    Ok((
-                        id,
-                        content,
-                        category,
-                        importance,
-                        pagerank,
-                        source,
-                        created_at,
-                        is_static,
-                        source_count,
-                        decay_score,
-                        community_id,
-                    ))
-                })
+                .query_map(
+                    rusqlite::params![pattern_clone, limit as i64, user_id],
+                    |row| {
+                        let id: i64 = row.get(0)?;
+                        let content: String = row.get(1)?;
+                        let category: String =
+                            row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
+                        let importance: i64 = row.get(3)?;
+                        let pagerank: f64 = row.get::<_, Option<f64>>(4)?.unwrap_or(0.0);
+                        let source: String =
+                            row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
+                        let created_at: String = row.get::<_, String>(6).unwrap_or_default();
+                        let is_static: bool = row.get::<_, bool>(7).unwrap_or(false);
+                        let source_count: i64 = row.get::<_, i64>(8).unwrap_or(1);
+                        let decay_score: Option<f64> = row.get::<_, f64>(9).ok();
+                        let community_id: Option<u32> =
+                            row.get::<_, i64>(10).ok().map(|v| v as u32);
+                        Ok((
+                            id,
+                            content,
+                            category,
+                            importance,
+                            pagerank,
+                            source,
+                            created_at,
+                            is_static,
+                            source_count,
+                            decay_score,
+                            community_id,
+                        ))
+                    },
+                )
                 .map_err(rusqlite_to_eng_error)?;
 
             let mut nodes = Vec::new();
@@ -143,13 +148,14 @@ pub async fn graph_search(
                     "SELECT id, name, entity_type \
                      FROM entities \
                      WHERE (name LIKE ?1 OR aliases LIKE ?1 OR description LIKE ?1) \
+                       AND user_id = ?3 \
                      ORDER BY occurrence_count DESC \
                      LIMIT ?2",
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
-                .query_map(rusqlite::params![pattern, limit as i64], |row| {
+                .query_map(rusqlite::params![pattern, limit as i64, user_id], |row| {
                     let id: i64 = row.get(0)?;
                     let name: String = row.get(1)?;
                     Ok((id, name))
@@ -266,6 +272,11 @@ pub async fn neighborhood_filtered(
                     .collect::<Vec<_>>()
                     .join(",");
 
+                // The owner predicate binds at the slot right after the frontier
+                // ids; type-filter placeholders start one slot later (the gap the
+                // type-clause offset already reserves).
+                let uid_placeholder = frontier_clone.len() + 1;
+
                 let type_clause = if let Some(ref types) = type_filter_clone {
                     let type_placeholders: String = types
                         .iter()
@@ -278,13 +289,17 @@ pub async fn neighborhood_filtered(
                     String::new()
                 };
 
+                // Only follow links whose endpoints both belong to the caller, so
+                // a foreign start node or cross-user link never surfaces in
+                // single-DB mode.
                 let sql = format!(
                     "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
                      FROM memory_links ml \
                      WHERE (ml.source_id IN ({placeholders}) OR ml.target_id IN ({placeholders})) \
-                       AND EXISTS (SELECT 1 FROM memories WHERE id = ml.source_id) \
-                       AND EXISTS (SELECT 1 FROM memories WHERE id = ml.target_id){type_clause}",
+                       AND EXISTS (SELECT 1 FROM memories WHERE id = ml.source_id AND user_id = ?{uid}) \
+                       AND EXISTS (SELECT 1 FROM memories WHERE id = ml.target_id AND user_id = ?{uid}){type_clause}",
                     placeholders = placeholders,
+                    uid = uid_placeholder,
                     type_clause = type_clause,
                 );
 
@@ -294,11 +309,12 @@ pub async fn neighborhood_filtered(
                 // clone. frontier_clone and type_filter_clone outlive
                 // this block so &i64 / &String refs are stable.
                 let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(
-                    frontier_clone.len() + type_filter_clone.as_ref().map_or(0, |t| t.len()),
+                    frontier_clone.len() + 1 + type_filter_clone.as_ref().map_or(0, |t| t.len()),
                 );
                 for id in &frontier_clone {
                     params.push(id);
                 }
+                params.push(&user_id);
                 if let Some(ref types) = type_filter_clone {
                     for t in types {
                         params.push(t);
@@ -350,7 +366,7 @@ pub async fn neighborhood_filtered(
     }
 
     // Batch fetch node details for all collected IDs in one query
-    let nodes = batch_fetch_memory_nodes(db, &all_node_ids).await?;
+    let nodes = batch_fetch_memory_nodes(db, &all_node_ids, user_id).await?;
 
     // Deduplicate edges
     let mut seen_edges: HashSet<(String, String, String)> = HashSet::new();
@@ -372,8 +388,14 @@ pub async fn neighborhood_filtered(
     Ok((nodes, all_edges, string_hop_map))
 }
 
-/// Batch fetch memory node details for a list of IDs in a single query.
-async fn batch_fetch_memory_nodes(db: &Database, ids: &[i64]) -> Result<Vec<GraphNode>> {
+/// Batch fetch details for the caller's memory nodes from a list of IDs in a
+/// single query. The `user_id` predicate drops any id that is not the caller's,
+/// so a foreign start node or stray id never leaks into the response.
+async fn batch_fetch_memory_nodes(
+    db: &Database,
+    ids: &[i64],
+    user_id: i64,
+) -> Result<Vec<GraphNode>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -388,12 +410,14 @@ async fn batch_fetch_memory_nodes(db: &Database, ids: &[i64]) -> Result<Vec<Grap
                 .collect::<Vec<_>>()
                 .join(",");
 
+            let uid_placeholder = ids_owned.len() + 1;
             let sql = format!(
                 "SELECT id, content, category, importance, pagerank_score, \
                         source, created_at, is_static, source_count, \
                         decay_score, community_id \
-                 FROM memories WHERE id IN ({})",
-                placeholders
+                 FROM memories WHERE id IN ({placeholders}) AND user_id = ?{uid}",
+                placeholders = placeholders,
+                uid = uid_placeholder,
             );
 
             let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
@@ -402,6 +426,7 @@ async fn batch_fetch_memory_nodes(db: &Database, ids: &[i64]) -> Result<Vec<Grap
             for &id in &ids_owned {
                 params.push(Box::new(id));
             }
+            params.push(Box::new(user_id));
 
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                 params.iter().map(|p| p.as_ref()).collect();

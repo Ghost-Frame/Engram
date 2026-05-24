@@ -68,10 +68,10 @@ async fn list_webhooks_handler(
 
 async fn delete_webhook_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::webhooks::delete_webhook(&db, id).await?;
+    kleos_lib::webhooks::delete_webhook(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -92,12 +92,12 @@ async fn test_webhook_handler(
 
 async fn list_dead_letters_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
     Query(query): Query<DeadLetterQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = query.limit.unwrap_or(50).min(200);
-    let items = kleos_lib::webhooks::list_dead_letters(&db, id, limit).await?;
+    let items = kleos_lib::webhooks::list_dead_letters(&db, id, auth.user_id, limit).await?;
     Ok(Json(
         json!({ "dead_letters": items, "count": items.len(), "webhook_id": id }),
     ))

@@ -20,7 +20,7 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 /// (fire-and-forget -- claim refresh errors are silently ignored).
 ///
 /// Returns `EngError::NotFound` if no task with the given ID exists.
-pub async fn record_heartbeat(db: &Database, id: i64) -> Result<()> {
+pub async fn record_heartbeat(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let changed = db
         .write(move |conn| {
             let n = conn
@@ -28,8 +28,8 @@ pub async fn record_heartbeat(db: &Database, id: i64) -> Result<()> {
                     "UPDATE chiasm_tasks \
                      SET last_heartbeat = datetime('now'), \
                          updated_at     = datetime('now') \
-                     WHERE id = ?1",
-                    rusqlite::params![id],
+                     WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![id, user_id],
                 )
                 .map_err(rusqlite_to_eng_error)?;
             Ok(n)
@@ -75,12 +75,14 @@ pub async fn mark_stale_tasks(
     db: &Database,
     grace_multiplier: f64,
 ) -> Result<Vec<super::tasks::Task>> {
-    // Collect the IDs of every overdue task.
-    let ids: Vec<i64> = db
+    // Collect (id, owner) of every overdue task. This is a system-wide
+    // maintenance sweep (not user-scoped); the owner is carried so the per-task
+    // get_task readback below resolves under the correct user.
+    let ids: Vec<(i64, i64)> = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id FROM chiasm_tasks \
+                    "SELECT id, user_id FROM chiasm_tasks \
                      WHERE status IN ('active', 'paused') \
                        AND last_heartbeat IS NOT NULL \
                        AND julianday('now') - julianday(last_heartbeat) \
@@ -93,14 +95,15 @@ pub async fn mark_stale_tasks(
             let mut ids = Vec::new();
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-                ids.push(id);
+                let owner: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
+                ids.push((id, owner));
             }
             Ok(ids)
         })
         .await?;
 
     let mut stale = Vec::with_capacity(ids.len());
-    for task_id in ids {
+    for (task_id, owner) in ids {
         // Re-check the heartbeat condition at update time to prevent TOCTOU:
         // a concurrent heartbeat after the read must prevent staling.
         let gm = grace_multiplier;
@@ -136,7 +139,7 @@ pub async fn mark_stale_tasks(
             let _ = super::claims::release_claims(db, task_id).await;
             super::emit_chiasm_event(db, "task.stale", serde_json::json!({"task_id": task_id}))
                 .await;
-            if let Ok(task) = super::tasks::get_task(db, task_id, 1).await {
+            if let Ok(task) = super::tasks::get_task(db, task_id, owner).await {
                 stale.push(task);
             }
         }
@@ -177,7 +180,7 @@ mod tests {
         // Freshly created task has no heartbeat.
         assert!(task.last_heartbeat.is_none());
 
-        record_heartbeat(&db, task.id).await.unwrap();
+        record_heartbeat(&db, task.id, 1).await.unwrap();
 
         let updated = get_task(&db, task.id, 1).await.unwrap();
         assert!(

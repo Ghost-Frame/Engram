@@ -44,6 +44,8 @@ pub async fn correct_memory(
             sync_id: None,
             artifacts: None,
         },
+        None,
+        false,
     )
     .await?;
 

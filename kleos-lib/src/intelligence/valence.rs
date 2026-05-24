@@ -199,21 +199,23 @@ pub async fn store_valence(db: &Database, memory_id: i64, content: &str) -> Resu
 pub async fn query_by_emotion(
     db: &Database,
     emotion: &str,
-    _user_id: i64,
+    user_id: i64,
     limit: i64,
 ) -> Result<Vec<EmotionMemory>> {
     let emotion_owned = emotion.to_string();
     db.read(move |conn| {
+        // The owner predicate (?3) keeps single-DB (shared) mode from returning
+        // another user's affect-tagged memories; a no-op in a single-owner shard.
         let mut stmt = conn
             .prepare(
                 "SELECT id, content, category, importance, valence, arousal, dominant_emotion, created_at \
                  FROM memories \
-                 WHERE dominant_emotion = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+                 WHERE dominant_emotion = ?1 AND user_id = ?3 AND is_forgotten = 0 AND is_archived = 0 \
                  ORDER BY ABS(valence) DESC, created_at DESC LIMIT ?2",
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let rows = stmt
-            .query_map(params![emotion_owned, limit], |row| {
+            .query_map(params![emotion_owned, limit, user_id], |row| {
                 Ok(EmotionMemory {
                     id: row.get(0)?,
                     content: row.get(1)?,

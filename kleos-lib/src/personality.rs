@@ -1010,25 +1010,32 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     // Option<String> when reading and fall back to empty string so a NULL value
     // in either column does not abort the entire preferences query with an
     // InvalidColumnType error.
-    let preferences = db.read(move |conn| {
-        let mut stmt = conn.prepare(
-            "SELECT domain, preference, strength FROM user_preferences ORDER BY strength DESC LIMIT 50",
-        ).map_err(rusqlite_to_eng_error)?;
+    let preferences = db
+        .read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT domain, preference, strength FROM user_preferences \
+             WHERE user_id = ?1 ORDER BY strength DESC LIMIT 50",
+                )
+                .map_err(rusqlite_to_eng_error)?;
 
-        let rows = stmt.query_map([], |row| {
-            Ok(PreferenceRow {
-                domain: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                preference: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                strength: row.get(2)?,
-            })
-        }).map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(rusqlite::params![user_id], |row| {
+                    Ok(PreferenceRow {
+                        domain: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                        preference: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        strength: row.get(2)?,
+                    })
+                })
+                .map_err(rusqlite_to_eng_error)?;
 
-        let mut preferences = Vec::new();
-        for row in rows {
-            preferences.push(row.map_err(rusqlite_to_eng_error)?);
-        }
-        Ok(preferences)
-    }).await?;
+            let mut preferences = Vec::new();
+            for row in rows {
+                preferences.push(row.map_err(rusqlite_to_eng_error)?);
+            }
+            Ok(preferences)
+        })
+        .await?;
 
     // Gather facts
     let facts = db

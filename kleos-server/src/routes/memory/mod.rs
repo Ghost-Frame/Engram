@@ -119,7 +119,7 @@ async fn store_memory(
     let result = if let Some(ref e) = embedder {
         memory::store_with_chunks(&db, e.as_ref(), req).await?
     } else {
-        memory::store(&db, req).await?
+        memory::store(&db, req, None, false).await?
     };
     let embedded = pre_embedded || embedder.is_some();
     if let Some(existing_id) = result.duplicate_of {
@@ -808,7 +808,7 @@ async fn update_memory(
     Path(id): Path<i64>,
     Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let updated = memory::update(&db, id, req, auth.user_id).await?;
+    let updated = memory::update(&db, id, req, auth.user_id, false).await?;
     Ok(Json(memory_to_json(&updated)))
 }
 

@@ -66,13 +66,13 @@ pub fn router() -> Router<AppState> {
 // Rubric handlers
 // ---------------------------------------------------------------------------
 
-/// Handler for `GET /thymus/rubrics`. Returns all rubrics as `{ "rubrics": [...] }`.
-/// No filtering or pagination -- returns the full set. Returns 200 on success.
+/// Handler for `GET /thymus/rubrics`. Returns all rubrics belonging to the
+/// authenticated user as `{ "rubrics": [...] }`. Returns 200 on success.
 async fn list_rubrics_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let rubrics = list_rubrics(&db).await?;
+    let rubrics = list_rubrics(&db, auth.user_id).await?;
     Ok(Json(json!({ "rubrics": rubrics })))
 }
 
@@ -91,36 +91,38 @@ async fn create_rubric_handler(
     Ok((StatusCode::CREATED, Json(json!(rubric))))
 }
 
-/// Handler for `GET /thymus/rubrics/{id}`. Returns the rubric or 404 if not found.
+/// Handler for `GET /thymus/rubrics/{id}`. Returns the rubric or 404 if not
+/// found or not owned by the authenticated user.
 async fn get_rubric_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let rubric = get_rubric(&db, id).await?;
+    let rubric = get_rubric(&db, id, auth.user_id).await?;
     Ok(Json(json!(rubric)))
 }
 
 /// Handler for `PATCH /thymus/rubrics/{id}`. Applies a partial update and
-/// returns the updated rubric. Fails with 404 if the rubric does not exist.
+/// returns the updated rubric. Fails with 404 if the rubric does not exist
+/// or is not owned by the authenticated user.
 async fn update_rubric_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<UpdateRubricRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let rubric = update_rubric(&db, id, body).await?;
+    let rubric = update_rubric(&db, id, auth.user_id, body).await?;
     Ok(Json(json!(rubric)))
 }
 
-/// Handler for `DELETE /thymus/rubrics/{id}`. Deletes the rubric and returns
-/// `{ "ok": true }`. Idempotent -- succeeds even if the rubric did not exist.
+/// Handler for `DELETE /thymus/rubrics/{id}`. Deletes the rubric owned by the
+/// authenticated user and returns `{ "ok": true }`.
 async fn delete_rubric_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_rubric(&db, id).await?;
+    delete_rubric(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -144,45 +146,59 @@ async fn evaluate_handler(
     Ok((StatusCode::CREATED, Json(json!(evaluation))))
 }
 
-/// Handler for `GET /thymus/evaluations`. Returns a page of evaluations,
-/// optionally filtered by agent and rubric. Limit is capped at 1000.
+/// Handler for `GET /thymus/evaluations`. Returns a page of evaluations
+/// belonging to the authenticated user, optionally filtered by agent and
+/// rubric. Limit is capped at 1000.
 async fn list_evaluations_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListEvaluationsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
-    let evaluations =
-        list_evaluations(&db, params.agent.as_deref(), params.rubric_id, limit).await?;
+    let evaluations = list_evaluations(
+        &db,
+        auth.user_id,
+        params.agent.as_deref(),
+        params.rubric_id,
+        limit,
+    )
+    .await?;
     Ok(Json(json!({ "evaluations": evaluations })))
 }
 
 /// Handler for `GET /thymus/evaluations/{id}`. Returns a single evaluation
-/// by primary key, or 404 if not found.
+/// owned by the authenticated user by primary key, or 404 if not found.
 async fn get_evaluation_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let evaluation = get_evaluation(&db, id).await?;
+    let evaluation = get_evaluation(&db, id, auth.user_id).await?;
     Ok(Json(json!(evaluation)))
 }
 
 /// Handler for `GET /thymus/agents/{agent}/scores`.
 ///
-/// Returns aggregate evaluation scores for one agent across all evaluations,
-/// optionally filtered to a specific rubric (`rubric_id`) or a time window
-/// (`since`). Delegates to
+/// Returns aggregate evaluation scores for one agent across evaluations
+/// belonging to the authenticated user, optionally filtered to a specific
+/// rubric (`rubric_id`) or a time window (`since`). Delegates to
 /// [`kleos_lib::services::thymus::get_agent_scores`].
 ///
 /// Response shape: `{ agent, overall_avg, evaluation_count, by_criterion }`.
 async fn get_agent_scores_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(agent): Path<String>,
     Query(params): Query<AgentScoresParams>,
 ) -> Result<Json<Value>, AppError> {
-    let scores = get_agent_scores(&db, &agent, params.rubric_id, params.since.as_deref()).await?;
+    let scores = get_agent_scores(
+        &db,
+        auth.user_id,
+        &agent,
+        params.rubric_id,
+        params.since.as_deref(),
+    )
+    .await?;
     Ok(Json(json!(scores)))
 }
 
@@ -190,9 +206,9 @@ async fn get_agent_scores_handler(
 // Metric handlers
 // ---------------------------------------------------------------------------
 
-/// Handler for `POST /thymus/metrics`. Records a single quality metric observation.
-/// Injects the authenticated user's ID into the request body before persisting.
-/// Returns `201 Created` with the stored metric record on success.
+/// Handler for `POST /thymus/metrics`. Records a single quality metric
+/// observation. Injects the authenticated user's ID into the request body
+/// before persisting. Returns `201 Created` with the stored metric record.
 async fn record_metric_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -206,16 +222,18 @@ async fn record_metric_handler(
     Ok((StatusCode::CREATED, Json(json!(metric))))
 }
 
-/// Handler for `GET /thymus/metrics`. Returns quality metric records,
-/// optionally filtered by agent, metric name, and time window. Limit capped at 1000.
+/// Handler for `GET /thymus/metrics`. Returns quality metric records belonging
+/// to the authenticated user, optionally filtered by agent, metric name, and
+/// time window. Limit capped at 1000.
 async fn get_metrics_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<GetMetricsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
     let metrics = get_metrics(
         &db,
+        auth.user_id,
         params.agent.as_deref(),
         params.metric.as_deref(),
         params.since.as_deref(),
@@ -226,9 +244,10 @@ async fn get_metrics_handler(
 }
 
 /// Handler for `GET /thymus/metrics/summary`. Returns aggregate statistics
-/// (avg, min, max, count) for a given agent+metric combination.
+/// (avg, min, max, count) for a given agent+metric combination belonging to
+/// the authenticated user.
 async fn get_metric_summary_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<MetricSummaryParams>,
 ) -> Result<Json<Value>, AppError> {
@@ -239,7 +258,8 @@ async fn get_metric_summary_handler(
         kleos_lib::EngError::InvalidInput("metric query parameter is required".into())
     })?;
 
-    let summary = get_metric_summary(&db, agent, metric, params.since.as_deref()).await?;
+    let summary =
+        get_metric_summary(&db, auth.user_id, agent, metric, params.since.as_deref()).await?;
     Ok(Json(summary))
 }
 
@@ -247,9 +267,9 @@ async fn get_metric_summary_handler(
 // Session quality handlers
 // ---------------------------------------------------------------------------
 
-/// Handler for `POST /thymus/session-quality`. Records a session quality snapshot
-/// (e.g. coherence, goal completion, drift indicators). Stamps the authenticated
-/// user's ID onto the mutable body before persisting.
+/// Handler for `POST /thymus/session-quality`. Records a session quality
+/// snapshot (e.g. coherence, goal completion, drift indicators). Stamps the
+/// authenticated user's ID onto the mutable body before persisting.
 /// Returns `201 Created` with the stored session quality record on success.
 async fn record_session_quality_handler(
     Auth(auth): Auth,
@@ -262,15 +282,17 @@ async fn record_session_quality_handler(
 }
 
 /// Handler for `GET /thymus/session-quality`. Returns session quality records
-/// for a given agent, optionally windowed by `since`. Limit capped at 1000.
+/// for a given agent belonging to the authenticated user, optionally windowed
+/// by `since`. Limit capped at 1000.
 async fn get_session_quality_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<SessionQualityParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
-    let records = get_session_quality(&db, agent, params.since.as_deref(), limit).await?;
+    let records =
+        get_session_quality(&db, auth.user_id, agent, params.since.as_deref(), limit).await?;
     Ok(Json(json!({ "session_quality": records })))
 }
 
@@ -278,8 +300,8 @@ async fn get_session_quality_handler(
 // Drift event handlers
 // ---------------------------------------------------------------------------
 
-/// Handler for `POST /thymus/drift-events`. Records a behavioral drift event for
-/// an agent (e.g. persona divergence, instruction violation). Stamps the
+/// Handler for `POST /thymus/drift-events`. Records a behavioral drift event
+/// for an agent (e.g. persona divergence, instruction violation). Stamps the
 /// authenticated user's ID onto the mutable body before persisting.
 /// Returns `201 Created` with the stored drift event record on success.
 async fn record_drift_event_handler(
@@ -293,30 +315,32 @@ async fn record_drift_event_handler(
 }
 
 /// Handler for `GET /thymus/drift-events`. Returns behavioral drift event
-/// records for a given agent. Limit capped at 1000.
+/// records for a given agent belonging to the authenticated user. Limit capped
+/// at 1000.
 async fn get_drift_events_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<DriftEventsParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
-    let events = get_drift_events(&db, agent, limit).await?;
+    let events = get_drift_events(&db, auth.user_id, agent, limit).await?;
     Ok(Json(json!({ "drift_events": events })))
 }
 
 /// Handler for `GET /thymus/drift-summary?agent=<name>`. Returns aggregated
-/// drift event counts grouped by drift_type and severity for the named agent.
-/// Requires the `agent` query parameter; returns 400 when absent.
+/// drift event counts grouped by drift_type and severity for the named agent
+/// belonging to the authenticated user. Requires the `agent` query parameter;
+/// returns 400 when absent.
 async fn get_drift_summary_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<DriftSummaryParams>,
 ) -> Result<Json<Value>, AppError> {
     let agent = params
         .agent
         .ok_or_else(|| kleos_lib::EngError::InvalidInput("agent is required".into()))?;
-    let summary = get_drift_summary(&db, &agent).await?;
+    let summary = get_drift_summary(&db, auth.user_id, &agent).await?;
     Ok(Json(json!({ "drift_summary": summary })))
 }
 
@@ -324,14 +348,13 @@ async fn get_drift_summary_handler(
 // Stats
 // ---------------------------------------------------------------------------
 
-/// Handler for `GET /thymus/stats`. Returns aggregate system-wide thymus statistics
-/// (rubric count, evaluation count, metric count, etc.). No query parameters.
-/// Response is the raw stats object from the service layer; no envelope wrapper.
-/// Returns 200 on success.
+/// Handler for `GET /thymus/stats`. Returns aggregate thymus statistics for
+/// the authenticated user (rubric count, evaluation count, metric count, etc.).
+/// No query parameters. Returns 200 on success.
 async fn get_stats_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_stats(&db).await?;
+    let stats = get_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }

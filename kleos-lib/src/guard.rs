@@ -33,15 +33,15 @@ pub struct GuardResult {
     pub redacted_content: Option<String>,
 }
 
-/// Evaluate content against all active guard rules.
+/// Evaluate content against all active guard rules for the given user.
 ///
 /// Checks each enabled rule's regex pattern against the content.
 /// - Block rules: immediately deny if matched
 /// - Flag rules: allow but include in triggered_rules list
 /// - Redact rules: replace matches with [REDACTED]
-#[tracing::instrument(skip(db, content), fields(content_len = content.len()))]
-pub async fn evaluate(db: &Database, content: &str) -> Result<GuardResult> {
-    let rules = list_rules(db).await?;
+#[tracing::instrument(skip(db, content), fields(content_len = content.len(), user_id))]
+pub async fn evaluate(db: &Database, content: &str, user_id: i64) -> Result<GuardResult> {
+    let rules = list_rules(db, user_id).await?;
 
     let mut triggered: Vec<String> = Vec::new();
     let mut blocked = false;
@@ -105,9 +105,11 @@ pub async fn evaluate(db: &Database, content: &str) -> Result<GuardResult> {
     })
 }
 
-/// Create a new guard rule.
-#[tracing::instrument(skip(db, rule), fields(rule_name = %rule.name))]
-pub async fn create_rule(db: &Database, rule: GuardRule) -> Result<GuardRule> {
+/// Create a new guard rule scoped to the given user.
+/// Stores the rule as a current_state row keyed under the 'guard' agent so
+/// that list_rules can retrieve it with an owner predicate.
+#[tracing::instrument(skip(db, rule), fields(rule_name = %rule.name, user_id))]
+pub async fn create_rule(db: &Database, rule: GuardRule, user_id: i64) -> Result<GuardRule> {
     // SECURITY: reject over-long patterns at create time so they can never
     // reach the hot evaluate() path and starve CPU.
     const MAX_PATTERN_CHARS: usize = 4_096;
@@ -166,12 +168,12 @@ pub async fn create_rule(db: &Database, rule: GuardRule) -> Result<GuardRule> {
         .map_err(rusqlite_to_eng_error)?;
 
         conn.execute(
-            "INSERT INTO current_state (agent, key, value, created_at, updated_at) \
-             VALUES ('guard', ?1, ?2, datetime('now'), datetime('now')) \
-             ON CONFLICT(agent, key) DO UPDATE SET \
+            "INSERT INTO current_state (agent, key, value, user_id, created_at, updated_at) \
+             VALUES ('guard', ?1, ?2, ?3, datetime('now'), datetime('now')) \
+             ON CONFLICT(agent, key, user_id) DO UPDATE SET \
                value = excluded.value, \
                updated_at = datetime('now')",
-            rusqlite::params![state_key, state_value],
+            rusqlite::params![state_key, state_value, user_id],
         )
         .map_err(rusqlite_to_eng_error)?;
 
@@ -184,20 +186,21 @@ pub async fn create_rule(db: &Database, rule: GuardRule) -> Result<GuardRule> {
     Ok(rule)
 }
 
-/// List all guard rules.
-#[tracing::instrument(skip(db))]
-pub async fn list_rules(db: &Database) -> Result<Vec<GuardRule>> {
+/// List all guard rules for the given user.
+/// Scoped by user_id so single-DB mode cannot leak one user's rules to another.
+#[tracing::instrument(skip(db), fields(user_id))]
+pub async fn list_rules(db: &Database, user_id: i64) -> Result<Vec<GuardRule>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT key, value, created_at FROM current_state \
-                 WHERE agent = 'guard' AND key LIKE 'rule:%' \
+                 WHERE agent = 'guard' AND key LIKE 'rule:%' AND user_id = ?1 \
                  ORDER BY created_at ASC",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params![user_id], |row| {
                 let _key: String = row.get(0)?;
                 let value: String = row.get(1)?;
                 let created_at_str: String = row.get(2)?;

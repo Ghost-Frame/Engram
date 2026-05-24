@@ -252,7 +252,7 @@ pub async fn get_failing_skill_candidates(
 #[tracing::instrument(skip(db, capture_tag), fields(user_id, since_secs, limit))]
 pub async fn get_capture_candidates(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     capture_tag: &str,
     since_secs: u64,
     limit: usize,
@@ -269,8 +269,11 @@ pub async fn get_capture_candidates(
     let tag_needle = format!("%\"{}\"%", escaped_tag);
     let since_clause = format!("-{} seconds", since_secs as i64);
     db.read(move |conn| {
+        // The owner predicate (?4) keeps single-DB (shared) mode from surfacing
+        // another user's memories as capture candidates; a no-op in a shard.
         let sql = "SELECT DISTINCT m.content FROM memories m \
-                   WHERE m.is_forgotten = 0 \
+                   WHERE m.user_id = ?4 \
+                     AND m.is_forgotten = 0 \
                      AND m.is_archived = 0 \
                      AND m.is_latest = 1 \
                      AND m.tags IS NOT NULL \
@@ -291,7 +294,7 @@ pub async fn get_capture_candidates(
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         let rows: Vec<String> = stmt
             .query_map(
-                params![tag_needle, since_clause, limit as i64],
+                params![tag_needle, since_clause, limit as i64, user_id],
                 |row| row.get::<_, String>(0),
             )
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?

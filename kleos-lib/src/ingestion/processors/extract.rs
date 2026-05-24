@@ -105,7 +105,7 @@ pub async fn process(
                 Some(embedder) => {
                     memory::store_with_chunks(db.as_ref(), embedder.as_ref(), req).await
                 }
-                None => memory::store(db.as_ref(), req).await,
+                None => memory::store(db.as_ref(), req, None, false).await,
             };
 
             match store_outcome {

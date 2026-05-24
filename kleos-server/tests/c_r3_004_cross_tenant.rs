@@ -5,16 +5,15 @@
 //! - With tenant sharding ENABLED (the new default), two non-system users
 //!   each get their own shard. Their projects, webhooks, and sync streams
 //!   never cross.
-//! - With tenant sharding DISABLED, the `ResolvedDb` extractor refuses
-//!   non-system users with 503 Service Unavailable instead of silently
-//!   falling back to the monolith.
+//! - With tenant sharding DISABLED (single-DB mode), the `ResolvedDb`
+//!   extractor serves the shared monolith DB. Row-level user_id
+//!   predicates isolate users instead of per-file sharding.
 
 mod common;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::http::StatusCode;
 use kleos_lib::auth_piv::{ReplayGuard, SessionManager};
 use kleos_lib::config::Config;
 use kleos_lib::cred::CreddClient;
@@ -216,57 +215,51 @@ async fn webhooks_isolated_between_tenants_with_sharding_on() {
     );
 }
 
-/// With sharding DISABLED, non-system users cannot reach any tenant-scoped
-/// route. The fail-closed extractor returns 503 to surface the misconfig
-/// instead of silently falling back to the monolith.
+/// With sharding DISABLED (single-DB mode), non-system users reach
+/// tenant-scoped routes via the shared monolith DB. Row-level user_id
+/// predicates isolate users instead of per-file sharding.
 #[tokio::test]
-async fn non_system_user_gets_503_when_sharding_disabled() {
+async fn non_system_user_gets_200_when_sharding_disabled() {
     let (app, _state) = common::test_app().await; // tenant_registry: None
     let admin_key = bootstrap_admin_key(&app).await;
     let (_uid, user_key) = seed_user(&app, &admin_key, "no-shard-user").await;
 
-    // /projects is ResolvedDb-backed; non-system user must fail closed.
+    // /projects is ResolvedDb-backed; single-DB mode serves the monolith.
     let (status, body) = get(&app, "/projects", &user_key).await;
-    assert_eq!(
-        status,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "non-system user with sharding disabled must get 503, got {status}: {body}"
+    assert!(
+        status.is_success(),
+        "non-system user in single-DB mode must get 200, got {status}: {body}"
     );
 
     // /webhooks is also ResolvedDb-backed.
     let (status, body) = get(&app, "/webhooks", &user_key).await;
-    assert_eq!(
-        status,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "/webhooks must also fail closed, got {status}: {body}"
+    assert!(
+        status.is_success(),
+        "/webhooks must succeed in single-DB mode, got {status}: {body}"
     );
 
     // /sync/changes is also ResolvedDb-backed.
     let (status, body) = get(&app, "/sync/changes", &user_key).await;
-    assert_eq!(
-        status,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "/sync/changes must also fail closed, got {status}: {body}"
+    assert!(
+        status.is_success(),
+        "/sync/changes must succeed in single-DB mode, got {status}: {body}"
     );
 }
 
-/// With sharding DISABLED, even user_id=1 (the operator) gets 503 on
-/// tenant-scoped routes. The legacy carve-out that pinned user_id=1 to
-/// the monolith was removed during the monolith->tenant migration; the
-/// operator now lives in tenants/1/ like every other user, so disabling
-/// sharding takes the operator offline together with everyone else.
-/// System-only routes (admin/auth_keys/audit) keep working because they
+/// With sharding DISABLED (single-DB mode), user_id=1 (the operator)
+/// reaches tenant-scoped routes via the shared monolith DB. Row-level
+/// user_id predicates isolate the operator from other users, same as
+/// every other tenant. System-only routes (admin/auth_keys/audit)
 /// bypass ResolvedDb and go straight to `state.db`.
 #[tokio::test]
-async fn system_user_503s_for_tenant_routes_when_sharding_disabled() {
+async fn system_user_gets_200_for_tenant_routes_when_sharding_disabled() {
     let (app, _state) = common::test_app().await;
     let admin_key = bootstrap_admin_key(&app).await;
 
-    let (status, _body) = get(&app, "/projects", &admin_key).await;
-    assert_eq!(
-        status,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "user_id=1 must also fail closed when sharding is disabled (no monolith carve-out)"
+    let (status, body) = get(&app, "/projects", &admin_key).await;
+    assert!(
+        status.is_success(),
+        "user_id=1 in single-DB mode must get 200, got {status}: {body}"
     );
 }
 

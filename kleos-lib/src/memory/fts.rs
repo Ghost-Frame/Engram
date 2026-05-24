@@ -38,9 +38,6 @@ pub async fn fts_search(
     limit: usize,
     user_id: i64,
 ) -> Result<Vec<FtsHit>> {
-    // user_id is kept in the public signature for cross-domain callers; tenant
-    // isolation is enforced at the database level (one DB per tenant).
-    let _ = user_id;
     // SECURITY (SEC-MED-9): reject oversized queries before sanitization to
     // avoid CPU-intensive tokenisation on pathologically large input.
     if query.len() > MAX_FTS_QUERY_LEN {
@@ -57,15 +54,18 @@ pub async fn fts_search(
     // FTS5 match query joined with memories for user/forgotten filtering.
     // The built-in rank column returns negative scores (more negative = more relevant).
     // We negate it so bm25_score is positive and larger = more relevant.
+    // The owner predicate (?2) keeps single-DB (shared) mode from returning
+    // another user's full-text hits; a no-op in a single-owner shard.
     let sql = "
         SELECT m.id, -memories_fts.rank as bm25_score
         FROM memories_fts
         JOIN memories m ON m.id = memories_fts.rowid
         WHERE memories_fts MATCH ?1
+          AND m.user_id = ?2
           AND m.is_forgotten = 0
           AND m.is_latest = 1
         ORDER BY memories_fts.rank
-        LIMIT ?2
+        LIMIT ?3
     ";
 
     match db
@@ -74,7 +74,7 @@ pub async fn fts_search(
                 .prepare(sql)
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let mut rows = stmt
-                .query(rusqlite::params![sanitized, limit as i64])
+                .query(rusqlite::params![sanitized, user_id, limit as i64])
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
             // 6.9 capacity hint: LIMIT bounds the row count.

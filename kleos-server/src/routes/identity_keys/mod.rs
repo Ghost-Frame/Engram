@@ -56,6 +56,11 @@ async fn enroll_handler(
     let fingerprint = hex::encode(Sha256::digest(&pubkey_der));
 
     let user_id = auth.user_id;
+    // SECURITY (C3): the new key inherits the caller's own scopes, so a caller
+    // cannot mint a key more privileged than itself (mirrors the api-key
+    // SEC-MED-4 escalation cap). Stored comma-separated to match the
+    // api_keys.scopes / v53 identity_keys.scopes column format.
+    let scopes_csv = kleos_lib::auth::scopes_to_string(&auth.key.scopes);
     let tier = body.tier.clone();
     let algo_str = algo.as_str().to_string();
     let pubkey_pem = body.pubkey_pem.clone();
@@ -67,9 +72,9 @@ async fn enroll_handler(
     let id: i64 = state.db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO identity_keys (user_id, tier, algo, pubkey_pem, pubkey_fingerprint, host_label, label, serial)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![user_id, tier, algo_str, pubkey_pem, fpr, host, label, serial],
+                "INSERT INTO identity_keys (user_id, tier, algo, pubkey_pem, pubkey_fingerprint, host_label, label, serial, scopes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![user_id, tier, algo_str, pubkey_pem, fpr, host, label, serial, scopes_csv],
             )
             .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
 

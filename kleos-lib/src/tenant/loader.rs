@@ -4,7 +4,7 @@
 //! - They've been idle longer than `idle_timeout`
 //! - The number of resident tenants exceeds `max_resident`
 
-use super::types::{TenantConfig, TenantHandle, TenantRow, TenantStatus};
+use super::types::{QuotaConfig, TenantConfig, TenantHandle, TenantRow, TenantStatus};
 use crate::db::Database;
 use crate::vector::LanceIndex;
 use crate::{EngError, Result};
@@ -180,16 +180,26 @@ impl TenantLoader {
         // `tenants/<id>/kleos.db`; migration (tenant chain v1+) runs inside
         // `Database::open_tenant`.
         let db_path = tenant_dir.join("kleos.db").to_string_lossy().into_owned();
+        // The registry user_id is `auth.user_id.to_string()` for real user
+        // shards, so it parses back to the integer owner; the reserved handoffs
+        // shard and similar use non-numeric ids and resolve to None.
+        let owner_user_id = row.user_id.parse::<i64>().ok();
         let mut db = Database::open_tenant(
             &db_path,
             Some(Arc::clone(&vector_index)),
             self.encryption_key,
+            owner_user_id,
         )
         .await?;
         db.use_chunk_vector_search = self.use_chunk_vector_search;
         db.chunk_vector_index = chunk_vector_index;
         let db = Arc::new(db);
 
+        let initial_quota = QuotaConfig {
+            content_bytes: row.quota_bytes,
+            memory_count: row.quota_memories,
+            disk_bytes: None,
+        };
         let handle = Arc::new(TenantHandle {
             tenant_id: tenant_id.to_string(),
             user_id: row.user_id.clone(),
@@ -198,6 +208,10 @@ impl TenantLoader {
             created_at: SystemTime::UNIX_EPOCH
                 + std::time::Duration::from_secs(row.created_at as u64),
             last_access: std::sync::Mutex::new(Instant::now()),
+            quota: arc_swap::ArcSwap::from_pointee(initial_quota),
+            dirty: std::sync::atomic::AtomicBool::new(false),
+            read_only: std::sync::atomic::AtomicBool::new(false),
+            shard_path: tenant_dir.clone(),
         });
 
         // Store in cache
@@ -300,10 +314,29 @@ impl TenantLoader {
         Ok(count)
     }
 
+    /// Return the handle for `user_id` if currently resident, without loading.
+    ///
+    /// Scans resident handles by user_id (O(n) over max_resident=512).
+    /// Used by admin quota update to refresh the ArcSwap without forcing a load.
+    pub async fn get_if_loaded(&self, user_id: &str) -> Option<Arc<TenantHandle>> {
+        let handles = self.handles.read().await;
+        handles.values().find(|h| h.user_id == user_id).cloned()
+    }
+
     /// Get all currently loaded tenant IDs.
     pub async fn loaded_tenant_ids(&self) -> Vec<String> {
         let handles = self.handles.read().await;
         handles.keys().cloned().collect()
+    }
+
+    /// Return all currently resident handles as a snapshot Vec.
+    ///
+    /// Used by the disk sampler to iterate loaded tenants without re-loading
+    /// evicted ones. Snapshot is taken under a read lock; handles are Arcs so
+    /// the snapshot is cheap.
+    pub async fn snapshot_all_handles(&self) -> Vec<Arc<TenantHandle>> {
+        let handles = self.handles.read().await;
+        handles.values().cloned().collect()
     }
 }
 

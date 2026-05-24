@@ -138,10 +138,17 @@ impl Database {
     /// both freshly-created and existing tenant shards land at the latest
     /// tenant schema version. Pool sizes are kept small because thousands of
     /// tenants may be resident concurrently.
+    ///
+    /// `owner_user_id` is the integer id owning this shard (parsed from the
+    /// tenant registry id); it is passed to the migration chain so the
+    /// memory-core `user_id` re-add (tenant v55) can backfill existing rows to
+    /// the owner. `None` for shards with non-numeric tenant ids (the reserved
+    /// handoffs shard).
     pub async fn open_tenant(
         db_path: &str,
         vector_index: Option<Arc<dyn VectorIndex>>,
         encryption_key: Option<[u8; 32]>,
+        owner_user_id: Option<i64>,
     ) -> Result<Self> {
         let pool_config = DbPoolConfig {
             max_readers: 2,
@@ -156,7 +163,7 @@ impl Database {
             ))
         })?;
         writer
-            .interact(|conn| tenant_migrations::run_tenant_migrations(conn))
+            .interact(move |conn| tenant_migrations::run_tenant_migrations(conn, owner_user_id))
             .await
             .map_err(|e| {
                 EngError::DatabaseMessage(format!("tenant pool migration failed: {e}"))
@@ -202,7 +209,7 @@ impl Database {
             EngError::DatabaseMessage(format!("failed to acquire writer pool connection: {e}"))
         })?;
         writer
-            .interact(|conn| tenant_migrations::run_tenant_migrations(conn))
+            .interact(|conn| tenant_migrations::run_tenant_migrations(conn, None))
             .await
             .map_err(|e| EngError::DatabaseMessage(format!("tenant migration failed: {e}")))??;
 

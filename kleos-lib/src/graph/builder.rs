@@ -37,13 +37,14 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                             decay_score, community_id \
                      FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                       AND user_id = ?2 \
                      ORDER BY COALESCE(decay_score, importance) DESC \
                      LIMIT ?1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
-                .query_map(rusqlite::params![limit], |row| {
+                .query_map(rusqlite::params![limit, user_id], |row| {
                     let id: i64 = row.get(0)?;
                     let content: String = row.get(1)?;
                     let category: String =
@@ -140,10 +141,10 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
     }
 
     // -- Phase 2: Batch fetch links as edges --------------------------------------
-    // Tenant isolation is provided by ResolvedDb routing (Phase 5+); the JOIN no
-    // longer needs the user_id predicate because tenant shards contain only one
-    // tenant's memories. On the legacy monolith path (user_id = 1), no tenant
-    // boundary exists by design.
+    // Edges are restricted to `memory_ids`, which Phase 1 already scoped to the
+    // caller, and `valid_set` drops any edge whose endpoint is outside that set.
+    // So an edge can only connect two of the caller's own memories -- isolation
+    // holds in single-DB mode without a separate user_id predicate here.
     let edges = db
         .read(move |conn| {
             let placeholders: String = std::iter::repeat_n("?", memory_ids.len())

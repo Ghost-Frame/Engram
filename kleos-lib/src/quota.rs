@@ -275,30 +275,54 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
     .await
 }
 
-/// Gate a memory write on tenant quota (MT-F20).
+/// Check and enforce content quotas inside an open write transaction.
 ///
-/// Call at the top of every handler that can create a new memory (store,
-/// import, ingest, skill creation, etc.). Returns `Err(EngError::Forbidden)`
-/// with a `quota_exceeded` marker when the tenant is already at or above
-/// their limit, so callers can surface a 429/403 without leaking the
-/// underlying numbers.
+/// Called from inside the `db.transaction()` closure on every memory write.
+/// Because the write pool has `writer_count = 1`, this check and the
+/// subsequent INSERT are serialized by the connection pool -- no concurrent
+/// writer can pass the check between this read and that INSERT. This is
+/// TOCTOU-safe for a single-node deployment.
 ///
-/// NOTE: Tenant shard databases skip quota checks -- the tenant_quotas table
-/// only exists in the main database. Shards are already isolated per-user and
-/// admin-provisioned, so quota enforcement happens at the admin level.
-#[tracing::instrument(skip(db))]
-pub async fn enforce_memory_quota(db: &Database, user_id: i64) -> Result<()> {
-    // Tenant shards don't have tenant_quotas table -- skip check.
-    if db.is_tenant() {
+/// Returns `Err(EngError::QuotaExceeded)` if either the content-bytes limit
+/// or the memory-count limit would be exceeded by this write. Returns `Ok(())`
+/// immediately if both limits are `None` (unlimited).
+pub fn enforce_quota_in_tx(
+    tx: &rusqlite::Transaction,
+    quota: &crate::tenant::types::QuotaConfig,
+    content_bytes: i64,
+) -> Result<()> {
+    if quota.content_bytes.is_none() && quota.memory_count.is_none() {
         return Ok(());
     }
-    let status = check_quota(db, user_id).await?;
-    if !status.within_limits || status.memory_count >= status.memory_limit {
-        return Err(EngError::Forbidden(format!(
-            "quota exceeded: {} of {} memories used",
-            status.memory_count, status.memory_limit
-        )));
+
+    let (cur_bytes, cur_count): (i64, i64) = tx
+        .query_row(
+            "SELECT
+                (SELECT value FROM tenant_state WHERE key = 'content_bytes'),
+                (SELECT value FROM tenant_state WHERE key = 'memory_count')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("quota read failed: {e}")))?;
+
+    if let Some(limit) = quota.content_bytes {
+        if cur_bytes + content_bytes > limit {
+            return Err(EngError::QuotaExceeded(format!(
+                "content quota exceeded: {} + {} > {} bytes",
+                cur_bytes, content_bytes, limit
+            )));
+        }
     }
+
+    if let Some(limit) = quota.memory_count {
+        if cur_count + 1 > limit {
+            return Err(EngError::QuotaExceeded(format!(
+                "memory count quota exceeded: {} + 1 > {} memories",
+                cur_count, limit
+            )));
+        }
+    }
+
     Ok(())
 }
 
@@ -333,6 +357,28 @@ pub async fn enforce_storage_quota(db: &Database, upload_bytes: i64) -> Result<(
     Ok(())
 }
 
+/// Read quota defaults from environment variables.
+///
+/// All variables default to `None` (unlimited) when unset, preserving
+/// backward compatibility for existing tenants and bare deployments.
+///
+/// Environment variables:
+/// - `KLEOS_DEFAULT_CONTENT_QUOTA_BYTES` -- max content bytes per tenant
+/// - `KLEOS_DEFAULT_MEMORY_COUNT_QUOTA`  -- max memory rows per tenant
+/// - `KLEOS_DEFAULT_DISK_QUOTA_BYTES`    -- max shard directory bytes per tenant
+pub fn default_quota_from_env() -> crate::tenant::types::QuotaConfig {
+    /// Parse a named environment variable as i64, returning None if absent or non-numeric.
+    fn read_i64(key: &str) -> Option<i64> {
+        std::env::var(key).ok().and_then(|v| v.parse::<i64>().ok())
+    }
+
+    crate::tenant::types::QuotaConfig {
+        content_bytes: read_i64("KLEOS_DEFAULT_CONTENT_QUOTA_BYTES"),
+        memory_count: read_i64("KLEOS_DEFAULT_MEMORY_COUNT_QUOTA"),
+        disk_bytes: read_i64("KLEOS_DEFAULT_DISK_QUOTA_BYTES"),
+    }
+}
+
 /// Record a usage event in the usage_events table.
 #[tracing::instrument(skip(db, event_type))]
 pub async fn record_usage(
@@ -353,4 +399,126 @@ pub async fn record_usage(
         Ok(())
     })
     .await
+}
+
+#[cfg(test)]
+mod enforce_quota_in_tx_tests {
+    use super::*;
+    use crate::tenant::types::QuotaConfig;
+    use rusqlite::Connection;
+
+    /// Set up an in-memory DB with the tenant_state table seeded to given values.
+    fn setup_tenant_state(bytes: i64, count: i64) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tenant_state (
+                key TEXT PRIMARY KEY,
+                value INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO tenant_state(key, value) VALUES ('content_bytes', 0);
+            INSERT INTO tenant_state(key, value) VALUES ('memory_count', 0);",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE tenant_state SET value = ?1 WHERE key = 'content_bytes'",
+            rusqlite::params![bytes],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE tenant_state SET value = ?1 WHERE key = 'memory_count'",
+            rusqlite::params![count],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// Unlimited quota always passes regardless of content size.
+    #[test]
+    fn test_unlimited_quota_always_passes() {
+        let conn = setup_tenant_state(999_999_999, 999_999);
+        let quota = QuotaConfig::default();
+        let tx = conn.unchecked_transaction().unwrap();
+        assert!(enforce_quota_in_tx(&tx, &quota, 1_000_000).is_ok());
+    }
+
+    /// Content bytes quota allows write when under limit.
+    #[test]
+    fn test_content_bytes_allow() {
+        let conn = setup_tenant_state(400, 5);
+        let quota = QuotaConfig {
+            content_bytes: Some(1000),
+            memory_count: None,
+            disk_bytes: None,
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        assert!(enforce_quota_in_tx(&tx, &quota, 100).is_ok());
+    }
+
+    /// Content bytes quota rejects write that would exceed limit.
+    #[test]
+    fn test_content_bytes_deny() {
+        let conn = setup_tenant_state(950, 5);
+        let quota = QuotaConfig {
+            content_bytes: Some(1000),
+            memory_count: None,
+            disk_bytes: None,
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        let result = enforce_quota_in_tx(&tx, &quota, 100);
+        assert!(matches!(result, Err(EngError::QuotaExceeded(_))));
+    }
+
+    /// Memory count quota rejects when at limit.
+    #[test]
+    fn test_memory_count_deny() {
+        let conn = setup_tenant_state(100, 10);
+        let quota = QuotaConfig {
+            content_bytes: None,
+            memory_count: Some(10),
+            disk_bytes: None,
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        let result = enforce_quota_in_tx(&tx, &quota, 50);
+        assert!(matches!(result, Err(EngError::QuotaExceeded(_))));
+    }
+
+    /// Memory count quota allows when one below limit.
+    #[test]
+    fn test_memory_count_allow() {
+        let conn = setup_tenant_state(100, 9);
+        let quota = QuotaConfig {
+            content_bytes: None,
+            memory_count: Some(10),
+            disk_bytes: None,
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        assert!(enforce_quota_in_tx(&tx, &quota, 50).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod env_quota_tests {
+    use super::*;
+
+    /// Env defaults: unset = None (unlimited).
+    #[test]
+    fn test_default_quota_from_env_unset() {
+        std::env::remove_var("KLEOS_DEFAULT_CONTENT_QUOTA_BYTES");
+        std::env::remove_var("KLEOS_DEFAULT_MEMORY_COUNT_QUOTA");
+        std::env::remove_var("KLEOS_DEFAULT_DISK_QUOTA_BYTES");
+        let q = default_quota_from_env();
+        assert!(q.content_bytes.is_none());
+        assert!(q.memory_count.is_none());
+        assert!(q.disk_bytes.is_none());
+    }
+
+    /// Env defaults: set values are parsed.
+    #[test]
+    fn test_default_quota_from_env_set() {
+        std::env::set_var("KLEOS_DEFAULT_CONTENT_QUOTA_BYTES", "1048576");
+        let q = default_quota_from_env();
+        assert_eq!(q.content_bytes, Some(1_048_576));
+        std::env::remove_var("KLEOS_DEFAULT_CONTENT_QUOTA_BYTES");
+    }
 }

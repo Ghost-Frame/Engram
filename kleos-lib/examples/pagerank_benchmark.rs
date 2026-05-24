@@ -150,7 +150,7 @@ async fn build_dataset(db: &Database, args: &Args) -> kleos_lib::Result<(usize, 
             i * 17,
             i * 31
         );
-        let stored = memory::store(db, store_request(&content, args.user_id)).await?;
+        let stored = memory::store(db, store_request(&content, args.user_id), None, false).await?;
         if stored.created {
             ids.push(stored.id);
         }

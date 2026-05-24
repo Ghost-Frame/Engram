@@ -164,8 +164,8 @@ async fn create_task_handler(
 }
 
 /// Returns task statistics.
-async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
-    let stats = get_task_stats(&db).await?;
+async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
+    let stats = get_task_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -213,23 +213,23 @@ async fn get_task_history_handler(
 /// Deletes a task.
 async fn delete_task_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_task(&db, id).await?;
+    delete_task(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
 /// Returns the task activity feed.
 async fn get_feed(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(params): Query<ListTasksParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
-    let items = get_task_feed(&db, limit, offset).await?;
-    let total = get_task_stats(&db).await?.total;
+    let items = get_task_feed(&db, auth.user_id, limit, offset).await?;
+    let total = get_task_stats(&db, auth.user_id).await?.total;
     Ok(Json(json!({ "items": items, "total": total })))
 }
 
@@ -381,10 +381,10 @@ async fn list_project_claims_handler(
 /// Record a heartbeat for a task, refreshing its liveness timestamp.
 async fn heartbeat_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::services::chiasm::heartbeat::record_heartbeat(&db, id).await?;
+    kleos_lib::services::chiasm::heartbeat::record_heartbeat(&db, id, auth.user_id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

@@ -21,6 +21,9 @@ pub async fn open(target_dir: &Path) -> Result<TargetDb> {
             .ok_or_else(|| anyhow!("target path is not valid UTF-8"))?,
         None,
         None,
+        // Fresh target shard: v55 runs before any rows are inserted, so there
+        // is nothing to backfill; rows are inserted with explicit user_id.
+        None,
     )
     .await
     .map_err(|e| anyhow!("open tenant db: {e}"))?;

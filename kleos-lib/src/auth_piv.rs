@@ -323,23 +323,54 @@ impl Default for ReplayGuard {
 // Session tokens
 // ---------------------------------------------------------------------------
 
-const SESSION_TTL: Duration = Duration::from_secs(900); // 15 minutes
+/// Default sliding-window TTL: each verified session call extends the token
+/// expiry by this much. Overridable via KLEOS_SESSION_TTL_SECS.
+const DEFAULT_SESSION_TTL_SECS: u64 = 900; // 15 minutes
+
+/// Default absolute lifetime cap from initial mint. Even with continuous
+/// activity, a session token must be replaced via fresh PIV signing once it
+/// exceeds this age. Overridable via KLEOS_SESSION_MAX_LIFETIME_SECS.
+const DEFAULT_SESSION_MAX_LIFETIME_SECS: u64 = 86_400; // 24 hours
 
 pub struct SessionManager {
     key: [u8; 32],
     sessions: Arc<Mutex<HashMap<String, SessionEntry>>>,
+    ttl: Duration,
+    max_lifetime: Duration,
 }
 
 struct SessionEntry {
     identity_id: i64,
+    issued_at: Instant,
     expires_at: Instant,
 }
 
 impl SessionManager {
+    /// Construct a SessionManager with the given HMAC key and default
+    /// TTL / max-lifetime. Tests use this directly; production goes through
+    /// `from_env_or_generate`.
     pub fn new(key: [u8; 32]) -> Self {
+        Self::with_durations(
+            key,
+            Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
+            Duration::from_secs(DEFAULT_SESSION_MAX_LIFETIME_SECS),
+        )
+    }
+
+    /// Construct a SessionManager with explicit TTL and absolute-lifetime
+    /// caps. If `max_lifetime < ttl` the caller's intent is incoherent, so
+    /// we floor `max_lifetime` at `ttl` to keep refresh logic monotonic.
+    pub fn with_durations(key: [u8; 32], ttl: Duration, max_lifetime: Duration) -> Self {
+        let max_lifetime = if max_lifetime < ttl {
+            ttl
+        } else {
+            max_lifetime
+        };
         Self {
             key,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            ttl,
+            max_lifetime,
         }
     }
 
@@ -363,16 +394,40 @@ impl SessionManager {
             tracing::warn!("KLEOS_SESSION_KEY not set, generated ephemeral key (sessions will not survive restart)");
             key
         };
-        Ok(Self::new(key))
+
+        let ttl = parse_positive_secs_env("KLEOS_SESSION_TTL_SECS", DEFAULT_SESSION_TTL_SECS);
+        let max_lifetime = parse_positive_secs_env(
+            "KLEOS_SESSION_MAX_LIFETIME_SECS",
+            DEFAULT_SESSION_MAX_LIFETIME_SECS,
+        );
+        if max_lifetime < ttl {
+            tracing::warn!(
+                ttl_secs = ttl.as_secs(),
+                max_lifetime_secs = max_lifetime.as_secs(),
+                "KLEOS_SESSION_MAX_LIFETIME_SECS is below KLEOS_SESSION_TTL_SECS; clamping max to ttl",
+            );
+        }
+
+        Ok(Self::with_durations(key, ttl, max_lifetime))
     }
 
+    /// Generate a fresh session token bound to `identity_id` with a new
+    /// sliding window. Records `issued_at` for the absolute-lifetime cap
+    /// enforced by `refresh`.
     pub fn mint(&self, identity_id: i64) -> String {
-        let expires_at = Instant::now() + SESSION_TTL;
+        let now = Instant::now();
+        self.mint_with_issue(identity_id, now, now + self.ttl)
+    }
+
+    /// Internal helper: build and store a SessionEntry. Used by `mint` (which
+    /// stamps a new `issued_at`) and `refresh` (which inherits the original
+    /// `issued_at` so the hard cap is anchored to the first mint).
+    fn mint_with_issue(&self, identity_id: i64, issued_at: Instant, expires_at: Instant) -> String {
         let expires_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
-            + SESSION_TTL.as_millis() as u64;
+            + (expires_at.saturating_duration_since(Instant::now())).as_millis() as u64;
 
         let mut random_8 = [0u8; 8];
         use rand::Rng;
@@ -396,6 +451,7 @@ impl SessionManager {
             token.clone(),
             SessionEntry {
                 identity_id,
+                issued_at,
                 expires_at,
             },
         );
@@ -406,7 +462,10 @@ impl SessionManager {
         token
     }
 
-    /// Verify a session token and return the identity ID if valid.
+    /// Verify a session token and return the identity ID if the token is
+    /// known and not past its current `expires_at`. Does not extend the
+    /// session; callers wanting sliding-window behavior must also call
+    /// `refresh`.
     pub fn verify(&self, token: &str) -> Result<i64> {
         let sessions = self
             .sessions
@@ -421,6 +480,72 @@ impl SessionManager {
         }
 
         Ok(entry.identity_id)
+    }
+
+    /// Roll an active session forward by minting a replacement token that
+    /// inherits the original `issued_at` (anchoring the hard cap) and gets
+    /// a fresh `expires_at = now + ttl`.
+    ///
+    /// The OLD token is intentionally left in the map until its own
+    /// `expires_at` fires. This is required for concurrency safety: two
+    /// near-simultaneous requests carrying the same cached session token
+    /// must both verify successfully, even though only the first triggers
+    /// a refresh. Pre-emptively removing the old token would race the
+    /// second request into a spurious 401.
+    ///
+    /// The client picks up the new token from `x-kleos-session-issued`
+    /// and uses it on subsequent calls. The old token simply ages out.
+    ///
+    /// Returns:
+    /// - `Ok(new_token)` on successful refresh.
+    /// - `Err` if the token is unknown, already expired, or has crossed
+    ///   `max_lifetime` since its original mint (forcing fresh PIV re-auth).
+    pub fn refresh(&self, token: &str) -> Result<String> {
+        let now = Instant::now();
+        let (identity_id, issued_at) = {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            let entry = sessions
+                .get(token)
+                .ok_or_else(|| EngError::Auth("unknown session token".into()))?;
+
+            if entry.expires_at <= now {
+                return Err(EngError::Auth("session token expired".into()));
+            }
+
+            if now.saturating_duration_since(entry.issued_at) >= self.max_lifetime {
+                return Err(EngError::Auth(
+                    "session token exceeded absolute lifetime cap".into(),
+                ));
+            }
+
+            (entry.identity_id, entry.issued_at)
+        };
+
+        let expires_at = now + self.ttl;
+        Ok(self.mint_with_issue(identity_id, issued_at, expires_at))
+    }
+}
+
+/// Read an env var as positive u64 seconds. Falls back to `default_secs` if
+/// the var is missing, malformed, zero, or negative.
+fn parse_positive_secs_env(var: &str, default_secs: u64) -> Duration {
+    match std::env::var(var) {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(v) if v > 0 => Duration::from_secs(v),
+            Ok(_) => {
+                tracing::warn!(var, "value must be > 0; using default");
+                Duration::from_secs(default_secs)
+            }
+            Err(e) => {
+                tracing::warn!(var, error = %e, "could not parse as u64; using default");
+                Duration::from_secs(default_secs)
+            }
+        },
+        Err(_) => Duration::from_secs(default_secs),
     }
 }
 
@@ -1217,5 +1342,151 @@ mod tests {
         let token = mgr1.mint(5);
         let result = mgr2.verify(&token);
         assert!(result.is_err());
+    }
+
+    // -- Sliding-window refresh tests --
+    //
+    // These use short Durations + thread::sleep to exercise the timing
+    // logic. Bounds are generous enough (40ms+ between checks) to remain
+    // reliable on slow CI runners.
+
+    #[test]
+    fn session_refresh_returns_new_token_and_keeps_old_valid_until_expiry() {
+        // Concurrency safety: two near-simultaneous requests carrying the
+        // same cached token must both verify, so refresh leaves the old
+        // entry in the map until its own expires_at fires.
+        let mgr = SessionManager::with_durations(
+            [42u8; 32],
+            Duration::from_secs(60),
+            Duration::from_secs(3600),
+        );
+        let old = mgr.mint(11);
+        let new = mgr.refresh(&old).expect("refresh succeeds");
+        assert_ne!(old, new, "refresh must mint a distinct token");
+        assert_eq!(mgr.verify(&new).expect("new token valid"), 11);
+        assert_eq!(
+            mgr.verify(&old)
+                .expect("old token still verifies until natural expiry"),
+            11,
+        );
+    }
+
+    #[test]
+    fn session_refresh_is_concurrency_safe() {
+        // N threads racing to refresh the same token: every thread should
+        // either get Ok(new_token) or, if max_lifetime is hit, Err -- but
+        // never panic, never produce a verify-fail for the original token
+        // while still within its TTL, and the verify of every returned
+        // token should succeed.
+        let mgr = Arc::new(SessionManager::with_durations(
+            [7u8; 32],
+            Duration::from_secs(60),
+            Duration::from_secs(3600),
+        ));
+        let original = mgr.mint(99);
+
+        let threads = 16;
+        let barrier = Arc::new(std::sync::Barrier::new(threads));
+        let mut handles = Vec::with_capacity(threads);
+        for _ in 0..threads {
+            let mgr = mgr.clone();
+            let token = original.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let new = mgr.refresh(&token).expect("concurrent refresh");
+                let id = mgr.verify(&new).expect("refreshed token verifies");
+                assert_eq!(id, 99);
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread joined");
+        }
+
+        // The original is still valid after the storm.
+        assert_eq!(mgr.verify(&original).expect("original still valid"), 99);
+    }
+
+    #[test]
+    fn session_refresh_unknown_token_rejected() {
+        let mgr = SessionManager::new([42u8; 32]);
+        let err = mgr.refresh("bogus").unwrap_err().to_string();
+        assert!(err.contains("unknown"), "unexpected err: {err}");
+    }
+
+    #[test]
+    fn session_refresh_expired_token_rejected() {
+        let mgr = SessionManager::with_durations(
+            [42u8; 32],
+            Duration::from_millis(40),
+            Duration::from_secs(60),
+        );
+        let token = mgr.mint(3);
+        std::thread::sleep(Duration::from_millis(80));
+        let err = mgr.refresh(&token).unwrap_err().to_string();
+        assert!(err.contains("expired"), "unexpected err: {err}");
+    }
+
+    #[test]
+    fn session_sliding_window_carries_past_original_ttl() {
+        // ttl=60ms, cap=10s. Original token would die at t=60ms; refresh
+        // before then and the new token outlives the original window.
+        let mgr = SessionManager::with_durations(
+            [42u8; 32],
+            Duration::from_millis(60),
+            Duration::from_secs(10),
+        );
+        let t0 = mgr.mint(9);
+        std::thread::sleep(Duration::from_millis(30));
+        let t1 = mgr.refresh(&t0).expect("refresh while still alive");
+        std::thread::sleep(Duration::from_millis(50));
+        // t=80ms now -- t0 would have expired by 60ms, but t1 (issued at
+        // t=30, expires at t=90) is still alive.
+        assert_eq!(
+            mgr.verify(&t1).expect("rolled-forward token still valid"),
+            9
+        );
+        assert!(
+            mgr.verify(&t0).is_err(),
+            "original token must not be reusable after refresh"
+        );
+    }
+
+    #[test]
+    fn session_hard_cap_blocks_refresh_even_when_current_token_valid() {
+        // ttl=80ms, cap=100ms. After a refresh at t=40ms the current token
+        // is valid until t=120ms, but at t=110ms the absolute lifetime
+        // (t > 100ms since original issue) blocks further refresh -- the
+        // caller must re-PIV-sign to get a fresh session.
+        let mgr = SessionManager::with_durations(
+            [42u8; 32],
+            Duration::from_millis(80),
+            Duration::from_millis(100),
+        );
+        let t0 = mgr.mint(4);
+        std::thread::sleep(Duration::from_millis(40));
+        let t1 = mgr.refresh(&t0).expect("first refresh inside cap");
+        std::thread::sleep(Duration::from_millis(70));
+        // t=110ms: t1 still verifies (issued at 40, expires at 120)
+        assert_eq!(mgr.verify(&t1).expect("current token still alive"), 4);
+        // but refresh declines because issued_at=0 and now > 100ms
+        let err = mgr.refresh(&t1).unwrap_err().to_string();
+        assert!(
+            err.contains("absolute lifetime") || err.contains("lifetime cap"),
+            "unexpected err: {err}"
+        );
+    }
+
+    #[test]
+    fn session_with_durations_floors_max_lifetime_to_ttl() {
+        // An incoherent config (max < ttl) is clamped, not rejected, so a
+        // misconfigured server never has refresh logic running backwards.
+        let mgr = SessionManager::with_durations(
+            [0u8; 32],
+            Duration::from_secs(600),
+            Duration::from_secs(60),
+        );
+        assert_eq!(mgr.ttl, Duration::from_secs(600));
+        assert_eq!(mgr.max_lifetime, Duration::from_secs(600));
     }
 }

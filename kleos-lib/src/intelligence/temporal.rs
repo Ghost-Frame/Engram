@@ -47,7 +47,8 @@ const MONTHLY_TOLERANCE_SECS: f64 = 432_000.0;
 // TEMPORAL PATTERN DETECTION
 // ============================================================================
 
-/// Detect recurring temporal patterns across all non-forgotten memories.
+/// Detect recurring temporal patterns across all non-forgotten memories for
+/// the given user, then persist each pattern via `store_pattern`.
 ///
 /// Algorithm (category-grouped inter-arrival stddev):
 /// 1. Read `created_at` timestamps + ids for up to `DETECT_SCAN_LIMIT`
@@ -61,8 +62,8 @@ const MONTHLY_TOLERANCE_SECS: f64 = 432_000.0;
 ///
 /// Returns only PRECISE patterns (high confidence) -- noisy categories are
 /// silently skipped to avoid hallucinated recurrence claims.
-#[tracing::instrument(skip(db))]
-pub async fn detect_patterns(db: &Database) -> Result<Vec<TemporalPattern>> {
+#[tracing::instrument(skip(db), fields(user_id))]
+pub async fn detect_patterns(db: &Database, user_id: i64) -> Result<Vec<TemporalPattern>> {
     // --- 1. Load timestamps grouped by category ---
     let rows: Vec<(i64, String, String)> = db
         .read(move |conn| {
@@ -170,9 +171,9 @@ pub async fn detect_patterns(db: &Database) -> Result<Vec<TemporalPattern>> {
         });
     }
 
-    // --- 4. Persist each pattern ---
+    // --- 4. Persist each pattern (scoped to the detecting user) ---
     for pattern in &patterns {
-        if let Err(e) = store_pattern(db, pattern).await {
+        if let Err(e) = store_pattern(db, pattern, user_id).await {
             warn!(msg = "temporal_pattern_store_failed", error = %e);
         }
     }
@@ -239,14 +240,11 @@ fn parse_sqlite_timestamp(s: &str) -> i64 {
 // PERSISTENCE
 // ============================================================================
 
-/// Persist a `TemporalPattern` to the `temporal_patterns` table.
-///
-/// Uses `?N` parameter binding throughout -- no string interpolation.
-/// `user_id` is intentionally omitted: the tenant DB is already scoped, and
-/// the column is dropped in migration v25 (following commit a798947).
+/// Persist a `TemporalPattern` to the `temporal_patterns` table, scoped to
+/// the given user so that single-DB mode isolates pattern rows per owner.
 /// `memory_ids` is serialised to a JSON array for the TEXT column.
-#[tracing::instrument(skip(db, pattern))]
-pub async fn store_pattern(db: &Database, pattern: &TemporalPattern) -> Result<()> {
+#[tracing::instrument(skip(db, pattern), fields(user_id))]
+pub async fn store_pattern(db: &Database, pattern: &TemporalPattern, user_id: i64) -> Result<()> {
     let pattern_type = pattern.pattern_type.clone();
     let description = pattern.description.clone();
     let memory_ids_json = serde_json::to_string(&pattern.memory_ids)
@@ -257,14 +255,15 @@ pub async fn store_pattern(db: &Database, pattern: &TemporalPattern) -> Result<(
     db.write(move |conn| {
         conn.execute(
             "INSERT INTO temporal_patterns \
-             (pattern_type, description, memory_ids, confidence, recurrence) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+             (pattern_type, description, memory_ids, confidence, recurrence, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 pattern_type,
                 description,
                 memory_ids_json,
                 confidence,
                 recurrence,
+                user_id,
             ],
         )
         .map_err(rusqlite_to_eng_error)?;
@@ -273,25 +272,30 @@ pub async fn store_pattern(db: &Database, pattern: &TemporalPattern) -> Result<(
     .await
 }
 
-/// List persisted temporal patterns, newest first, up to `limit` rows.
-///
+/// List persisted temporal patterns for the given user, newest first, up to
+/// `limit` rows. The WHERE user_id = ?1 predicate enforces single-DB isolation.
 /// `memory_ids` JSON text is deserialised back into `Vec<i64>`; a NULL or
 /// malformed column yields an empty vec rather than an error.
-#[tracing::instrument(skip(db))]
-pub async fn list_patterns(db: &Database, limit: i64) -> Result<Vec<TemporalPattern>> {
+#[tracing::instrument(skip(db), fields(user_id, limit))]
+pub async fn list_patterns(
+    db: &Database,
+    user_id: i64,
+    limit: i64,
+) -> Result<Vec<TemporalPattern>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT id, pattern_type, description, memory_ids, confidence, \
                         recurrence, created_at \
                  FROM temporal_patterns \
+                 WHERE user_id = ?1 \
                  ORDER BY created_at DESC \
-                 LIMIT ?1",
+                 LIMIT ?2",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let iter = stmt
-            .query_map(params![limit], |row| {
+            .query_map(params![user_id, limit], |row| {
                 let id: i64 = row.get(0)?;
                 let pattern_type: String = row.get(1)?;
                 let description: String = row.get(2)?;
@@ -1083,7 +1087,7 @@ mod tests {
             insert_memory(&db, "morning_routine", &ts(i * 24)).await;
         }
 
-        let patterns = detect_patterns(&db).await.unwrap();
+        let patterns = detect_patterns(&db, 1).await.unwrap();
 
         let daily: Vec<_> = patterns
             .iter()
@@ -1118,7 +1122,7 @@ mod tests {
         insert_memory(&db, "ad_hoc", &ts(100)).await;
         insert_memory(&db, "ad_hoc", &ts(5000)).await;
 
-        let patterns = detect_patterns(&db).await.unwrap();
+        let patterns = detect_patterns(&db, 1).await.unwrap();
         let for_cat: Vec<_> = patterns
             .iter()
             .filter(|p| p.description.contains("ad_hoc"))
@@ -1145,9 +1149,9 @@ mod tests {
             created_at: None,
         };
 
-        store_pattern(&db, &pattern).await.unwrap();
+        store_pattern(&db, &pattern, 1).await.unwrap();
 
-        let listed = list_patterns(&db, 10).await.unwrap();
+        let listed = list_patterns(&db, 1, 10).await.unwrap();
         assert_eq!(listed.len(), 1, "expected exactly 1 pattern");
         let got = &listed[0];
         assert_eq!(got.pattern_type, "daily");
@@ -1172,11 +1176,12 @@ mod tests {
                 recurrence: Some("P1W".to_string()),
                 created_at: None,
             };
-            store_pattern(&db, &p).await.unwrap();
+            store_pattern(&db, &p, 1).await.unwrap();
         }
 
-        let listed = list_patterns(&db, 1).await.unwrap();
+        let listed = list_patterns(&db, 1, 1).await.unwrap();
         assert_eq!(listed.len(), 1, "limit=1 must return exactly 1 row");
+        // NOTE: first arg is user_id=1, second is limit=1
     }
 
     /// `detect_patterns` followed by `list_patterns` must show persisted rows.
@@ -1188,13 +1193,13 @@ mod tests {
             insert_memory(&db, "daily_standup", &ts(i * 24)).await;
         }
 
-        let detected = detect_patterns(&db).await.unwrap();
+        let detected = detect_patterns(&db, 1).await.unwrap();
         assert!(
             !detected.is_empty(),
             "expected detect to find at least one pattern"
         );
 
-        let listed = list_patterns(&db, 50).await.unwrap();
+        let listed = list_patterns(&db, 1, 50).await.unwrap();
         assert!(
             !listed.is_empty(),
             "expected list to return the persisted patterns"

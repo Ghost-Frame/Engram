@@ -265,8 +265,9 @@ pub async fn reflect(
                 .query_row(
                     "SELECT COUNT(*) FROM memories WHERE category = 'growth' \
                      AND substr(content, 1, 200) = ?1 \
+                     AND user_id = ?2 \
                      AND created_at > datetime('now', '-24 hours')",
-                    rusqlite::params![prefix_clone],
+                    rusqlite::params![prefix_clone, user_id],
                     |row| row.get(0),
                 )
                 .unwrap_or(0);
@@ -292,11 +293,11 @@ pub async fn reflect(
             let trimmed_refl = trimmed_for_closure.clone();
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-                 source_count, is_static, is_forgotten, is_archived, confidence, status, \
+                 source_count, is_static, is_forgotten, is_archived, confidence, status, user_id, \
                  created_at, updated_at) \
-                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1, 1.0, 'approved', \
+                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1, 1.0, 'approved', ?3, \
                  datetime('now'), datetime('now'))",
-                rusqlite::params![trimmed_for_closure, source_c],
+                rusqlite::params![trimmed_for_closure, source_c, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
 
@@ -304,9 +305,9 @@ pub async fn reflect(
 
             conn.execute(
                 "INSERT INTO reflections (content, reflection_type, source_memory_ids, \
-                 confidence, created_at) \
-                 VALUES (?1, 'growth', ?2, 1.0, datetime('now'))",
-                rusqlite::params![trimmed_refl, format!("[{}]", memory_id)],
+                 confidence, user_id, created_at) \
+                 VALUES (?1, 'growth', ?2, 1.0, ?3, datetime('now'))",
+                rusqlite::params![trimmed_refl, format!("[{}]", memory_id), user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
 
@@ -340,8 +341,8 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
         .read(move |conn| {
             conn.query_row(
                 "SELECT COUNT(*) FROM memories \
-                 WHERE created_at > datetime('now', '-1 hour')",
-                [],
+                 WHERE user_id = ?1 AND created_at > datetime('now', '-1 hour')",
+                rusqlite::params![user_id],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)
@@ -373,8 +374,8 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
                         SUM(CASE WHEN access_count = 0 THEN 1 ELSE 0 END) as never_accessed, \
                         SUM(CASE WHEN category = 'growth' THEN 1 ELSE 0 END) as growth_count, \
                         AVG(importance) as avg_importance \
-                 FROM memories WHERE is_forgotten = 0",
-                rusqlite::params![],
+                 FROM memories WHERE is_forgotten = 0 AND user_id = ?1",
+                rusqlite::params![user_id],
                 |row| {
                     Ok((
                         row.get::<_, i64>(0).unwrap_or(0),
@@ -402,13 +403,14 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
             let mut stmt = conn
                 .prepare(
                     "SELECT content FROM memories \
-                     WHERE category = 'growth' AND source = 'engram-growth' AND is_forgotten = 0 \
+                     WHERE category = 'growth' AND source = 'engram-growth' \
+                       AND is_forgotten = 0 AND user_id = ?1 \
                      ORDER BY created_at DESC LIMIT 10",
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let lines = stmt
-                .query_map([], |row| {
+                .query_map(rusqlite::params![user_id], |row| {
                     let content: String = row.get(0)?;
                     Ok(format!("- {}", content))
                 })
