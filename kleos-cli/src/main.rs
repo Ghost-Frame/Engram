@@ -165,6 +165,9 @@ enum Commands {
     /// Bearer API key management (list, revoke)
     #[command(subcommand, name = "api-key")]
     ApiKey(ApiKeyCommands),
+    /// MCP direct-auth token management (mint, list, revoke)
+    #[command(subcommand, name = "mcp-token")]
+    McpToken(McpTokenCommands),
     /// User account management (admin-only, multi-user instances)
     #[command(subcommand)]
     User(UserCommands),
@@ -252,6 +255,54 @@ enum ApiKeyCommands {
         /// API key ID to revoke
         id: i64,
     },
+}
+
+/// Subcommands for `kleos-cli mcp-token` -- mint and manage MCP direct-auth tokens.
+/// These tokens let MCP clients authenticate with a static Bearer header
+/// instead of per-request PIV signing.
+#[derive(Subcommand)]
+enum McpTokenCommands {
+    /// Mint a new MCP token, register it with the server, and print the bearer string.
+    Mint {
+        /// Human-readable name for this token
+        #[arg(short, long)]
+        name: String,
+        /// Comma-separated scopes (read, write, admin). No wildcards.
+        #[arg(short, long, default_value = "read,write")]
+        scopes: String,
+        /// Token lifetime (e.g. 30d, 7d, 90d, 24h)
+        #[arg(short, long, default_value = "30d")]
+        ttl: String,
+    },
+    /// List your registered MCP tokens.
+    List,
+    /// Revoke a single MCP token by its jti.
+    Revoke {
+        /// The jti (token ID) to revoke
+        jti: String,
+    },
+    /// Revoke all your MCP tokens.
+    RevokeAll,
+    /// Show details for a single MCP token by jti.
+    Info {
+        /// The jti (token ID) to inspect
+        jti: String,
+    },
+}
+
+/// Parse a human-readable TTL string like "30d", "7d", "24h" into seconds.
+fn parse_ttl(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    if let Some(days) = s.strip_suffix('d') {
+        let n: u64 = days.parse().map_err(|_| format!("invalid TTL: {}", s))?;
+        Ok(n * 86400)
+    } else if let Some(hours) = s.strip_suffix('h') {
+        let n: u64 = hours.parse().map_err(|_| format!("invalid TTL: {}", s))?;
+        Ok(n * 3600)
+    } else {
+        s.parse::<u64>()
+            .map_err(|_| format!("invalid TTL: {} (use Nd or Nh)", s))
+    }
 }
 
 /// Subcommands for `kleos-cli user` -- CRUD on user accounts.
@@ -1400,6 +1451,140 @@ async fn main() {
                                 serde_json::to_string_pretty(&v).unwrap()
                             );
                         }
+                    }
+                    Err(e) => eprintln!("Error: {}", e),
+                }
+            }
+        },
+
+        Commands::McpToken(cmd) => match cmd {
+            McpTokenCommands::Mint { name, scopes, ttl } => {
+                // Validate scopes client-side before contacting server.
+                if let Err(e) = kleos_lib::mcp_token::parse_scopes_strict(scopes) {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+                let ttl_secs = match parse_ttl(ttl) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+
+                // Require an identity key (Ed25519 software key).
+                let signer_ref = match &client.signer {
+                    Some(s) => s,
+                    None => {
+                        eprintln!("Error: No identity key loaded. Run 'kleos-cli identity init' first.");
+                        std::process::exit(1);
+                    }
+                };
+                let sk_bytes = match signer_ref.ed25519_secret_bytes() {
+                    Some(b) => b,
+                    None => {
+                        eprintln!("Error: MCP token minting requires an Ed25519 software key (PIV keys cannot export secrets).");
+                        std::process::exit(1);
+                    }
+                };
+                let kid = signer_ref.fingerprint().to_string();
+                let uid = 1_i64; // Validated server-side against the signed identity.
+
+                // Mint the token locally.
+                let sk = ed25519_dalek::SigningKey::from_bytes(&sk_bytes);
+                let max_ttl = kleos_lib::mcp_token::DEFAULT_MAX_TTL_SECS;
+                let (token, payload) = match kleos_lib::mcp_token::mint(
+                    &sk, &kid, uid, None, scopes, ttl_secs, max_ttl,
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("Error minting token: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+
+                // Register with server via signed POST /mcp-tokens.
+                let body = serde_json::json!({
+                    "token": token,
+                    "name": name,
+                    "scopes": scopes,
+                    "ttl_secs": ttl_secs,
+                });
+                match client.post("/mcp-tokens", body).await {
+                    Ok(_) => {
+                        let base = client.base_url();
+                        println!("\nMCP Token minted and registered.\n");
+                        println!("Token (save this -- it won't be shown again):");
+                        println!("  {}\n", token);
+                        println!("Claude Code config (~/.claude.json or project .mcp.json):");
+                        println!("  {{");
+                        println!("    \"mcpServers\": {{");
+                        println!("      \"kleos\": {{");
+                        println!("        \"type\": \"http\",");
+                        println!("        \"url\": \"{}/mcp\",", base);
+                        println!("        \"headers\": {{");
+                        println!("          \"Authorization\": \"Bearer {}\"", token);
+                        println!("        }}");
+                        println!("      }}");
+                        println!("    }}");
+                        println!("  }}\n");
+                        println!(
+                            "Expires: {}",
+                            chrono::DateTime::from_timestamp(payload.exp as i64, 0)
+                                .map(|dt| dt.to_rfc3339())
+                                .unwrap_or_else(|| "unknown".into())
+                        );
+                        println!("Scopes: {}", scopes);
+                        println!("Revoke:  kleos-cli mcp-token revoke {}", payload.jti);
+                    }
+                    Err(e) => {
+                        eprintln!("Server rejected token registration: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            McpTokenCommands::List => match client.get("/mcp-tokens").await {
+                Ok(v) => match v.get("tokens").and_then(|k| k.as_array()) {
+                    Some(tokens) if !tokens.is_empty() => {
+                        println!(
+                            "{:<10} {:<20} {:<12} {:<8} {:<22} {}",
+                            "JTI", "NAME", "SCOPES", "ACTIVE", "EXPIRES", "LAST USED"
+                        );
+                        for t in tokens {
+                            let jti = t["jti"].as_str().unwrap_or("?");
+                            let short_jti = if jti.len() > 8 { &jti[..8] } else { jti };
+                            println!(
+                                "{:<10} {:<20} {:<12} {:<8} {:<22} {}",
+                                short_jti,
+                                t["name"].as_str().unwrap_or("?"),
+                                t["scopes"].as_str().unwrap_or("?"),
+                                t["is_active"].as_bool().unwrap_or(false),
+                                t["expires_at"].as_str().unwrap_or("never"),
+                                t["last_used_at"].as_str().unwrap_or("never"),
+                            );
+                        }
+                    }
+                    _ => println!("No MCP tokens."),
+                },
+                Err(e) => eprintln!("Error: {}", e),
+            },
+            McpTokenCommands::Revoke { jti } => {
+                match client.delete(&format!("/mcp-tokens/{}", jti)).await {
+                    Ok(_) => println!("Token {} revoked.", jti),
+                    Err(e) => eprintln!("Error: {}", e),
+                }
+            }
+            McpTokenCommands::RevokeAll => match client.delete("/mcp-tokens").await {
+                Ok(v) => {
+                    let count = v["revoked_count"].as_u64().unwrap_or(0);
+                    println!("Revoked {} token(s).", count);
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            },
+            McpTokenCommands::Info { jti } => {
+                match client.get(&format!("/mcp-tokens/{}", jti)).await {
+                    Ok(v) => {
+                        println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
                     }
                     Err(e) => eprintln!("Error: {}", e),
                 }

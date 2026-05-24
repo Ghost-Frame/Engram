@@ -940,6 +940,16 @@ impl RequestSigner {
         &self.fingerprint
     }
 
+    /// Return the raw Ed25519 secret key bytes (32 bytes).
+    /// Returns `None` if the backend is PIV (hardware key -- cannot extract).
+    pub fn ed25519_secret_bytes(&self) -> Option<[u8; 32]> {
+        match &self.backend {
+            SigningBackend::Ed25519(sk) => Some(sk.to_bytes()),
+            #[cfg(feature = "piv")]
+            SigningBackend::Piv(_) => None,
+        }
+    }
+
     pub fn identity_hash(&self) -> &str {
         &self.identity_hash
     }
