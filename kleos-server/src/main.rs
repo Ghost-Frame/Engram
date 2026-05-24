@@ -314,6 +314,11 @@ async fn main() {
             let (tx, _) = tokio::sync::broadcast::channel(4096);
             tx
         },
+        artifact_encryption: Arc::new({
+            let key_src = std::env::var("KLEOS_ARTIFACT_KEY").unwrap_or_default();
+            kleos_lib::artifacts_crypto::ArtifactEncryption::new(&key_src)
+                .expect("invalid KLEOS_ARTIFACT_KEY")
+        }),
     };
 
     // R8 R-008: every background task is described by a factory so the

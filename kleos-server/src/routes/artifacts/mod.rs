@@ -1,5 +1,5 @@
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, Path},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -82,8 +82,9 @@ async fn list_for_memory(
 ///   - `session_id` (optional)
 ///   - `metadata` (optional): JSON string
 async fn upload_artifact(
+    State(state): State<AppState>,
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(memory_id): Path<i64>,
     mut multipart: Multipart,
 ) -> Result<Json<Value>, AppError> {
@@ -188,12 +189,21 @@ async fn upload_artifact(
     // Enforce per-tenant storage quota before writing.
     kleos_lib::quota::enforce_storage_quota(&db, size_bytes).await?;
 
+    // Compute hash and extract indexable text from plaintext BEFORE encryption.
     let sha256 = artifacts::sha256_hex(&data);
-
-    // Extract indexable text once; the artifacts_fts triggers in schema_sql.rs
-    // copy `content` into the FTS index on INSERT, so no manual indexing call
-    // is needed downstream.
     let content = artifacts::extract_indexable_content(&mime_type, &data);
+
+    // Encrypt the data blob if artifact encryption is enabled.
+    // The content column (plaintext for FTS) stays unencrypted -- accepted
+    // trade-off per T12 in the design doc.
+    let enc = &state.artifact_encryption;
+    let (store_data, is_encrypted) = if enc.is_enabled() {
+        let tenant_id = auth.user_id.to_string();
+        let encrypted = enc.encrypt_for_tenant(&tenant_id, &data)?;
+        (encrypted, true)
+    } else {
+        (data, false)
+    };
 
     let opts = StoreArtifactOpts {
         artifact_type,
@@ -213,9 +223,9 @@ async fn upload_artifact(
         size_bytes,
         &sha256,
         "inline",
-        Some(data),
+        Some(store_data),
         None,
-        false,
+        is_encrypted,
         &opts,
     )
     .await?;
@@ -232,8 +242,9 @@ async fn upload_artifact(
 
 /// Stream an artifact's binary data as an attachment, verifying its owning memory exists.
 async fn download_artifact(
+    State(state): State<AppState>,
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let artifact = artifacts::get_artifact_by_id(&db, id)
@@ -260,9 +271,19 @@ async fn download_artifact(
     .await?
     .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Memory not found".into())))?;
 
-    let data = artifacts::get_artifact_data(&db, id)
+    let raw_data = artifacts::get_artifact_data(&db, id)
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("Artifact has no data".into())))?;
+
+    // Decrypt transparently if the artifact was stored encrypted.
+    let data = if artifact.is_encrypted {
+        let tenant_id = auth.user_id.to_string();
+        state
+            .artifact_encryption
+            .decrypt_for_tenant(&tenant_id, &raw_data)?
+    } else {
+        raw_data
+    };
 
     // Sanitize the filename to prevent Content-Disposition header injection.
     // Only alphanumeric characters, dots, hyphens, and underscores are

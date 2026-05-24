@@ -1,3 +1,4 @@
+use kleos_lib::artifacts_crypto::ArtifactEncryption;
 use kleos_lib::config::{Config, EidolonConfig};
 use kleos_lib::cred::CreddClient;
 use kleos_lib::db::Database;
@@ -103,6 +104,9 @@ pub struct AppState {
     /// Broadcast channel for real-time Axon event delivery to SSE subscribers.
     /// The sender is cloned cheaply into each SSE connection via `subscribe()`.
     pub axon_broadcast: broadcast::Sender<serde_json::Value>,
+    /// Optional AES-256-GCM encryption for artifact data blobs.
+    /// Initialized from KLEOS_ARTIFACT_KEY env var (empty = disabled).
+    pub artifact_encryption: Arc<ArtifactEncryption>,
 }
 
 /// Accessor methods that clone `Arc`'d providers without holding locks across awaits.
