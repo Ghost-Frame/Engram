@@ -906,6 +906,8 @@ const MIGRATION_READD_USER_ID_SKILLS: i64 = 78;
 const MIGRATION_READD_USER_ID_BRAIN: i64 = 79;
 /// Version number for the identity_keys.scopes JSON-to-CSV format migration.
 const MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV: i64 = 80;
+/// Version number for the MCP direct-auth token revocation table.
+const MIGRATION_MCP_TOKENS: i64 = 81;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1570,6 +1572,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV,
             "identity_keys_scopes_json_to_csv",
         )?;
+    }
+
+    if current_version < MIGRATION_MCP_TOKENS {
+        info!("Running migration 81: mcp_tokens");
+        run_migration_mcp_tokens(conn)?;
+        record_migration(conn, MIGRATION_MCP_TOKENS, "mcp_tokens")?;
     }
 
     Ok(())

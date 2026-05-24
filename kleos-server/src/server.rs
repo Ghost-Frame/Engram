@@ -170,6 +170,7 @@ fn merge_api_routes() -> Router<AppState> {
         .merge(routes::policy::router())
         .merge(routes::users::router())
         .merge(routes::mcp_schema::router())
+        .merge(routes::mcp_tokens::router())
 }
 
 /// Build the Axum router with all routes and middleware applied.

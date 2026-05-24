@@ -33,6 +33,7 @@ pub mod jobs;
 pub mod loom;
 pub mod mcp;
 pub mod mcp_schema;
+pub mod mcp_tokens;
 pub mod memory;
 pub mod onboard;
 pub mod pack;
