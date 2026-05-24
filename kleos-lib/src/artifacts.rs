@@ -8,10 +8,8 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
+use crate::validation::ARTIFACT_FTS_MAX_SIZE;
 use crate::{EngError, Result};
-
-/// Maximum byte size of artifact content that will be submitted to the FTS index.
-const ARTIFACT_FTS_MAX_SIZE: usize = 1_048_576;
 
 /// Converts a rusqlite error into an EngError for uniform error propagation.
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {

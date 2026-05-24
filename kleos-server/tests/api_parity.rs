@@ -109,6 +109,10 @@ impl TestApp {
                 let (tx, _) = tokio::sync::broadcast::channel(64);
                 tx
             },
+            artifact_encryption: Arc::new(
+                kleos_lib::artifacts_crypto::ArtifactEncryption::new("")
+                    .expect("disabled encryption"),
+            ),
         };
         let router = build_router(state);
 
@@ -409,6 +413,9 @@ async fn bootstrap_returns_api_key() {
             let (tx, _) = tokio::sync::broadcast::channel(64);
             tx
         },
+        artifact_encryption: Arc::new(
+            kleos_lib::artifacts_crypto::ArtifactEncryption::new("").expect("disabled encryption"),
+        ),
     };
     let router = build_router(state);
 
