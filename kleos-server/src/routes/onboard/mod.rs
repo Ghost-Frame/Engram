@@ -225,8 +225,7 @@ async fn fetch_url(
     let parsed = url::Url::parse(&body.url)
         .map_err(|_| AppError(kleos_lib::EngError::InvalidInput("Invalid URL".into())))?;
 
-    let (fetch_url, host_override) =
-        kleos_lib::webhooks::pin_url_to_ip(&body.url, pinned_ip);
+    let (fetch_url, host_override) = kleos_lib::webhooks::pin_url_to_ip(&body.url, pinned_ip);
 
     let mut req = FETCH_CLIENT.get(&fetch_url);
     if let Some(host) = &host_override {
@@ -323,7 +322,10 @@ async fn fetch_url(
 
         if let Some(embedder) = state.current_embedder().await {
             if let Ok(emb) = embedder
-                .embed(kleos_lib::validation::truncate_on_char_boundary(store_content, 8000))
+                .embed(kleos_lib::validation::truncate_on_char_boundary(
+                    store_content,
+                    8000,
+                ))
                 .await
             {
                 req.embedding = Some(emb);

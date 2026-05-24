@@ -19,9 +19,9 @@ use axum::{
 use metrics::{counter, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use std::sync::OnceLock;
 use std::time::Instant;
+use subtle::ConstantTimeEq;
 
 use crate::state::AppState;
 

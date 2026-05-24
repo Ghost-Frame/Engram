@@ -121,7 +121,11 @@ async fn update_preserves_lifecycle_fields() {
     assert_eq!(is_archived, 1, "is_archived must carry forward");
     assert_eq!(is_fact, 1, "is_fact must carry forward");
     assert_eq!(valence, Some(0.5), "valence must carry forward");
-    assert_eq!(emotion.as_deref(), Some("joy"), "emotion must carry forward");
+    assert_eq!(
+        emotion.as_deref(),
+        Some("joy"),
+        "emotion must carry forward"
+    );
     assert_eq!(source_count, 3, "source_count must carry forward");
     assert_eq!(
         forget_after.as_deref(),
@@ -136,7 +140,9 @@ async fn store_with_superseded_parent_does_not_fork() {
     let tenant = single_tenant().await;
     let db = tenant.database();
 
-    let a = memory::store(&db, base_store("A v1")).await.expect("store A");
+    let a = memory::store(&db, base_store("A v1"))
+        .await
+        .expect("store A");
     let a_id = a.id;
 
     // Update A -> A' so A is no longer the latest version.

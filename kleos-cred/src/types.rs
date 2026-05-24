@@ -497,7 +497,10 @@ mod tests {
             notes: None,
         };
         let dbg = format!("{:?}", login);
-        assert!(!dbg.contains("hunter2"), "password must not appear in Debug");
+        assert!(
+            !dbg.contains("hunter2"),
+            "password must not appear in Debug"
+        );
         assert!(!dbg.contains("admin"), "username must not appear in Debug");
         assert!(dbg.contains("<redacted>"), "must show redaction marker");
 
@@ -507,7 +510,10 @@ mod tests {
             notes: None,
         };
         let dbg = format!("{:?}", api);
-        assert!(!dbg.contains("sk-secret"), "API key must not appear in Debug");
+        assert!(
+            !dbg.contains("sk-secret"),
+            "API key must not appear in Debug"
+        );
         assert!(dbg.contains("ApiKey"));
     }
 }

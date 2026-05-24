@@ -7,7 +7,11 @@ use kleos_lib::fsrs::decay;
 use rusqlite::params;
 use serde_json::{json, Value};
 
-use crate::{error::AppError, extractors::{Auth, ResolvedDb}, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
 
 mod types;
 mod web;
@@ -63,15 +67,15 @@ async fn refresh_decay(
 
     let count = updates.len();
     db.write(move |conn| {
-            for (id, score) in &updates {
-                conn.execute(
-                    "UPDATE memories SET decay_score = ?1 WHERE id = ?2",
-                    params![*score, *id],
-                )?;
-            }
-            Ok(())
-        })
-        .await?;
+        for (id, score) in &updates {
+            conn.execute(
+                "UPDATE memories SET decay_score = ?1 WHERE id = ?2",
+                params![*score, *id],
+            )?;
+        }
+        Ok(())
+    })
+    .await?;
 
     Ok(Json(json!({ "refreshed": count })))
 }

@@ -131,7 +131,9 @@ pub(crate) async fn resolve_from_kleos(
                         }
                     } else {
                         tracing::error!(error = %e, "PIV signing failed -- refusing bearer fallback (set KLEOS_ALLOW_CRED_FALLBACK=1 to override)");
-                        return Err(CredError::AuthFailed(format!("PIV signing failed: {}", e)).into());
+                        return Err(
+                            CredError::AuthFailed(format!("PIV signing failed: {}", e)).into()
+                        );
                     }
                 }
             }

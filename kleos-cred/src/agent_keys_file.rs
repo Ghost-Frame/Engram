@@ -554,7 +554,10 @@ mod tests {
         let store = FileAgentKeyStore::load_from(path.clone()).unwrap();
         let entry = store.keys.get("legacy-agent").unwrap();
         assert!(entry.key_hashed, "legacy key must be auto-migrated");
-        assert_ne!(entry.key_hash, legacy_token, "hash must differ from plaintext");
+        assert_ne!(
+            entry.key_hash, legacy_token,
+            "hash must differ from plaintext"
+        );
 
         // The original plaintext token must still validate (hashed on both sides).
         assert_eq!(

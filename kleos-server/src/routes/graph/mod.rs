@@ -826,11 +826,7 @@ async fn community_members_handler(
     Path(id): Path<i64>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = kleos_lib::validation::clamp_signed_limit(
-        params.limit.unwrap_or(50),
-        50,
-        1000,
-    );
+    let limit = kleos_lib::validation::clamp_signed_limit(params.limit.unwrap_or(50), 50, 1000);
     let members = get_community_members(&db, id, auth.user_id, limit)
         .await
         .map_err(AppError)?;
@@ -893,11 +889,7 @@ async fn entity_cooccurrences_handler(
     Path(id): Path<i64>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = kleos_lib::validation::clamp_signed_limit(
-        params.limit.unwrap_or(20),
-        20,
-        1000,
-    );
+    let limit = kleos_lib::validation::clamp_signed_limit(params.limit.unwrap_or(20), 20, 1000);
     let entities = get_cooccurring_entities(&db, id, auth.user_id, limit)
         .await
         .map_err(AppError)?;

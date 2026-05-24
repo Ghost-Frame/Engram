@@ -739,11 +739,7 @@ async fn time_travel_handler(
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<TimeTravelBody>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = kleos_lib::validation::clamp_signed_limit(
-        body.limit.unwrap_or(20),
-        20,
-        100,
-    ) as i64;
+    let limit = kleos_lib::validation::clamp_signed_limit(body.limit.unwrap_or(20), 20, 100) as i64;
     let results = time_travel(
         &db,
         auth.user_id,

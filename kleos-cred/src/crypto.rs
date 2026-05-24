@@ -135,9 +135,8 @@ pub fn encrypt_secret(
 ) -> Result<(Vec<u8>, [u8; NONCE_SIZE])> {
     // Serialized secret plaintext; wrap in Zeroizing so it is scrubbed from
     // the heap on drop rather than left recoverable via core dump or swap.
-    let plaintext = Zeroizing::new(
-        serde_json::to_vec(data).map_err(|e| CredError::Encryption(e.to_string()))?,
-    );
+    let plaintext =
+        Zeroizing::new(serde_json::to_vec(data).map_err(|e| CredError::Encryption(e.to_string()))?);
 
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| CredError::Encryption(format!("invalid key: {}", e)))?;

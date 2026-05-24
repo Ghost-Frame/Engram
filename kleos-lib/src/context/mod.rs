@@ -353,7 +353,10 @@ fn build_working_memory_block(rows: &[scratchpad::ScratchEntry]) -> Option<Strin
         };
         let mut value = row.value.trim().to_string();
         if value.len() > VALUE_MAX {
-            value = format!("{}...", crate::validation::truncate_on_char_boundary(&value, VALUE_MAX));
+            value = format!(
+                "{}...",
+                crate::validation::truncate_on_char_boundary(&value, VALUE_MAX)
+            );
         }
         let session_prefix: String = row.session.chars().take(8).collect();
         let time_part = format_scratch_age(&row.updated_at);
@@ -1407,7 +1410,11 @@ mod assembly_tests {
             mk(ContextBlockSource::Evolution, "beta"),
         ];
         let got = assemble_context_string(&blocks, &[]);
-        let expected = format!("## Preference/Fact Evolution\n{}\n\n{}", w("alpha"), w("beta"));
+        let expected = format!(
+            "## Preference/Fact Evolution\n{}\n\n{}",
+            w("alpha"),
+            w("beta")
+        );
         assert_eq!(got, expected);
     }
 

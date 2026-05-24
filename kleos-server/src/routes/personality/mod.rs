@@ -9,7 +9,11 @@ use kleos_lib::personality::{
 };
 use serde_json::{json, Value};
 
-use crate::{error::AppError, extractors::{Auth, ResolvedDb}, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
 
 mod types;
 use types::{DetectBody, ListSignalsParams, StoreSignalBody};

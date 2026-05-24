@@ -528,10 +528,14 @@ mod tests {
     #[test]
     fn non_bash_tool_is_not_silently_allowed() {
         let json = r#"{"tool_name":"Write","tool_input":{"file_path":"/etc/x","content":"y"}}"#;
-        let parsed = parse_claude_hook(json).expect("non-Bash tool must reach the gate, not exit(0)");
+        let parsed =
+            parse_claude_hook(json).expect("non-Bash tool must reach the gate, not exit(0)");
         assert_eq!(parsed.tool_name.as_deref(), Some("Write"));
         assert!(parsed.command.is_none(), "Write carries no command");
-        assert!(parsed.tool_input.is_some(), "tool_input forwarded as gate context");
+        assert!(
+            parsed.tool_input.is_some(),
+            "tool_input forwarded as gate context"
+        );
     }
 
     /// A Bash tool payload still yields its command.

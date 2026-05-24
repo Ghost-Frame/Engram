@@ -191,9 +191,9 @@ impl RegistryDb {
                 "tenant id {} already maps to a different user (got {}, requested {})",
                 row.tenant_id, existing.user_id, row.user_id
             ))),
-            None => {
-                Err(EngError::Internal("tenant row disappeared after insert".to_string()))
-            }
+            None => Err(EngError::Internal(
+                "tenant row disappeared after insert".to_string(),
+            )),
         }
     }
 

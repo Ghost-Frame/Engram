@@ -10,10 +10,10 @@ use crate::vector::LanceIndex;
 use crate::{EngError, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Instant, SystemTime};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Instant, SystemTime};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tracing::{debug, info, warn};
 
@@ -311,8 +311,8 @@ impl TenantLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::time::Duration;
+    use tempfile::tempdir;
 
     /// Builds a small tenant-loader configuration for fast tests.
     fn test_config() -> TenantConfig {
