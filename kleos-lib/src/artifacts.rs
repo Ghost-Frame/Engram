@@ -63,6 +63,19 @@ pub fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Compute the sharded blob path for a given SHA-256 hash.
+///
+/// Format: `{blobs_dir}/{sha[0:2]}/{sha[2:4]}/{sha}.bin` (or `.enc` if
+/// encrypted). The two-level fan-out keeps per-directory inode counts
+/// manageable even at scale (max 256 dirs per level).
+pub fn blob_path(blobs_dir: &std::path::Path, sha256: &str, encrypted: bool) -> std::path::PathBuf {
+    let ext = if encrypted { "enc" } else { "bin" };
+    blobs_dir
+        .join(&sha256[..2])
+        .join(&sha256[2..4])
+        .join(format!("{}.{}", sha256, ext))
+}
+
 /// Application MIME type subtypes that are eligible for FTS indexing.
 const INDEXABLE_APP_TYPES: &[&str] = &[
     "application/json",
@@ -233,7 +246,7 @@ pub async fn get_artifact_by_id(db: &Database, artifact_id: i64) -> Result<Optio
     db.read(move |conn| {
         conn.query_row(
             "SELECT id, memory_id, filename, mime_type, size_bytes, \
-                    sha256, storage_mode, is_encrypted, is_indexed, created_at \
+                    sha256, storage_mode, disk_path, is_encrypted, is_indexed, created_at \
              FROM artifacts \
              WHERE id = ?1",
             params![artifact_id],

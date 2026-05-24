@@ -1,4 +1,5 @@
 use axum::{
+    body::Body,
     extract::{DefaultBodyLimit, Multipart, Path, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
@@ -8,13 +9,16 @@ use axum::{
 use kleos_lib::artifacts::{self, StoreArtifactOpts};
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
+use tokio_util::io::ReaderStream;
 
 use crate::{
     error::AppError,
     extractors::{Auth, ResolvedDb},
     state::AppState,
 };
-use kleos_lib::validation::MAX_ARTIFACT_UPLOAD_BYTES as MAX_UPLOAD_BYTES;
+use kleos_lib::validation::{
+    ARTIFACT_DISK_TIER_THRESHOLD, MAX_ARTIFACT_UPLOAD_BYTES as MAX_UPLOAD_BYTES,
+};
 
 mod types;
 
@@ -214,6 +218,81 @@ async fn upload_artifact(
         metadata,
     };
 
+    // Determine storage tier: > 1 MiB goes to disk.
+    let (storage_mode, store_data_for_db, disk_path_str) =
+        if store_data.len() > ARTIFACT_DISK_TIER_THRESHOLD {
+            let blobs_dir = std::path::Path::new(db.db_path())
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("blobs");
+            let dest = artifacts::blob_path(&blobs_dir, &sha256, is_encrypted);
+
+            // Create sharded subdirectory.
+            if let Some(parent) = dest.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                    AppError(kleos_lib::EngError::Internal(format!(
+                        "failed to create blob directory: {e}"
+                    )))
+                })?;
+            }
+
+            // Atomic write: tempfile in blobs_dir -> fsync -> persist.
+            // If the DB insert fails later, the tempfile auto-drops (no orphan).
+            let tmp = tempfile::NamedTempFile::new_in(&blobs_dir).map_err(|e| {
+                AppError(kleos_lib::EngError::Internal(format!(
+                    "failed to create temp file: {e}"
+                )))
+            })?;
+            std::io::Write::write_all(&mut tmp.as_file(), &store_data).map_err(|e| {
+                AppError(kleos_lib::EngError::Internal(format!(
+                    "failed to write blob: {e}"
+                )))
+            })?;
+            tmp.as_file().sync_all().map_err(|e| {
+                AppError(kleos_lib::EngError::Internal(format!(
+                    "failed to fsync blob: {e}"
+                )))
+            })?;
+
+            let dest_str = dest.to_string_lossy().into_owned();
+
+            // DB insert first -- if it fails, tmp auto-drops, no orphan file.
+            let artifact_id = artifacts::store_artifact(
+                &db,
+                memory_id,
+                &display_name,
+                &filename,
+                &mime_type,
+                size_bytes,
+                &sha256,
+                "disk",
+                None,
+                Some(&dest_str),
+                is_encrypted,
+                &opts,
+            )
+            .await?;
+
+            // Persist after successful DB insert.
+            tmp.persist(&dest).map_err(|e| {
+                AppError(kleos_lib::EngError::Internal(format!(
+                    "failed to persist blob: {e}"
+                )))
+            })?;
+
+            return Ok(Json(json!({
+                "id": artifact_id,
+                "memory_id": memory_id,
+                "filename": filename,
+                "mime_type": mime_type,
+                "size_bytes": size_bytes,
+                "sha256": sha256,
+                "storage_mode": "disk",
+            })));
+        } else {
+            ("inline", Some(store_data), None::<String>)
+        };
+
     let artifact_id = artifacts::store_artifact(
         &db,
         memory_id,
@@ -222,9 +301,9 @@ async fn upload_artifact(
         &mime_type,
         size_bytes,
         &sha256,
-        "inline",
-        Some(store_data),
-        None,
+        storage_mode,
+        store_data_for_db,
+        disk_path_str.as_deref(),
         is_encrypted,
         &opts,
     )
@@ -237,6 +316,7 @@ async fn upload_artifact(
         "mime_type": mime_type,
         "size_bytes": size_bytes,
         "sha256": sha256,
+        "storage_mode": "inline",
     })))
 }
 
@@ -271,20 +351,6 @@ async fn download_artifact(
     .await?
     .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Memory not found".into())))?;
 
-    let raw_data = artifacts::get_artifact_data(&db, id)
-        .await?
-        .ok_or_else(|| AppError(kleos_lib::EngError::Internal("Artifact has no data".into())))?;
-
-    // Decrypt transparently if the artifact was stored encrypted.
-    let data = if artifact.is_encrypted {
-        let tenant_id = auth.user_id.to_string();
-        state
-            .artifact_encryption
-            .decrypt_for_tenant(&tenant_id, &raw_data)?
-    } else {
-        raw_data
-    };
-
     // Sanitize the filename to prevent Content-Disposition header injection.
     // Only alphanumeric characters, dots, hyphens, and underscores are
     // permitted; any other byte is stripped. Length is capped at 255.
@@ -300,19 +366,91 @@ async fn download_artifact(
         safe_filename
     };
 
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, artifact.mime_type.clone()),
-            (header::CONTENT_LENGTH, data.len().to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", safe_filename),
-            ),
-        ],
-        data,
-    )
-        .into_response())
+    if artifact.storage_mode == "disk" {
+        let disk_path = artifact.disk_path.as_deref().ok_or_else(|| {
+            AppError(kleos_lib::EngError::Internal(
+                "disk-tier artifact has no disk_path".into(),
+            ))
+        })?;
+
+        if artifact.is_encrypted {
+            // Encrypted disk artifacts must be read fully to decrypt.
+            let raw_data = tokio::fs::read(disk_path).await.map_err(|e| {
+                AppError(kleos_lib::EngError::Internal(format!(
+                    "failed to read disk blob: {e}"
+                )))
+            })?;
+            let tenant_id = auth.user_id.to_string();
+            let data = state
+                .artifact_encryption
+                .decrypt_for_tenant(&tenant_id, &raw_data)?;
+
+            Ok((
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, artifact.mime_type.clone()),
+                    (header::CONTENT_LENGTH, data.len().to_string()),
+                    (
+                        header::CONTENT_DISPOSITION,
+                        format!("attachment; filename=\"{}\"", safe_filename),
+                    ),
+                ],
+                data,
+            )
+                .into_response())
+        } else {
+            // Unencrypted disk artifacts can be streamed directly.
+            let file = tokio::fs::File::open(disk_path).await.map_err(|e| {
+                AppError(kleos_lib::EngError::Internal(format!(
+                    "failed to open disk blob: {e}"
+                )))
+            })?;
+            let stream = ReaderStream::new(file);
+            let body = Body::from_stream(stream);
+
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, &artifact.mime_type)
+                .header(header::CONTENT_LENGTH, artifact.size_bytes.to_string())
+                .header(
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}\"", safe_filename),
+                )
+                .body(body)
+                .unwrap()
+                .into_response())
+        }
+    } else {
+        // Inline storage -- read from DB.
+        let raw_data = artifacts::get_artifact_data(&db, id)
+            .await?
+            .ok_or_else(|| {
+                AppError(kleos_lib::EngError::Internal("Artifact has no data".into()))
+            })?;
+
+        let data = if artifact.is_encrypted {
+            let tenant_id = auth.user_id.to_string();
+            state
+                .artifact_encryption
+                .decrypt_for_tenant(&tenant_id, &raw_data)?
+        } else {
+            raw_data
+        };
+
+        Ok((
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, artifact.mime_type.clone()),
+                (header::CONTENT_LENGTH, data.len().to_string()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}\"", safe_filename),
+                ),
+            ],
+            data,
+        )
+            .into_response())
+    }
 }
 
 /// DELETE /artifact/{id} -- permanently remove an artifact.
