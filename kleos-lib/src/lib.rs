@@ -3,6 +3,7 @@ pub mod admin;
 pub mod agents;
 pub mod approvals;
 pub mod artifacts;
+pub mod artifacts_crypto;
 pub mod audit;
 pub mod auth;
 pub mod auth_piv;
