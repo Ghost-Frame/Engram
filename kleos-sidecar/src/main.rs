@@ -318,20 +318,6 @@ async fn main() {
 
     let mut rc = resolve_config(cli, cfg_file);
 
-    // If no API key came from CLI/env/config, try credd.
-    if rc.kleos_api_key.is_none() {
-        let slot = kleos_lib::cred::bootstrap::current_agent_slot();
-        match kleos_lib::cred::bootstrap::resolve_api_key(&slot).await {
-            Ok(k) => {
-                tracing::debug!(slot = %slot, "resolved kleos API key from credd");
-                rc.kleos_api_key = Some(k);
-            }
-            Err(e) => {
-                tracing::warn!("could not resolve kleos API key from credd: {}", e);
-            }
-        }
-    }
-
     // Init tracing. JSON format wires a JSON layer; text uses the default fmt.
     if rc.log_format == "json" {
         init_json_tracing();
@@ -341,6 +327,45 @@ async fn main() {
         // the OTel shutdown happens at process exit via the guard's Drop. In
         // json mode we skip OTel to avoid the extra dependency on the recorder.
         std::mem::forget(_guard);
+    }
+
+    // Build the tiered request signer (PIV > ed25519 > none) as the PRIMARY
+    // Kleos auth. agent_label is the audit identity the server records, so the
+    // sidecar's stored memories are attributed to "kleos-sidecar" regardless of
+    // which tier (PIV on Master's box, ed25519 on no-YubiKey hosts) authenticates.
+    let host_label = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("HOST"))
+        .unwrap_or_else(|_| "unknown".to_string());
+    let agent_label =
+        std::env::var("KLEOS_AGENT_LABEL").unwrap_or_else(|_| "kleos-sidecar".to_string());
+    let signer =
+        kleos_lib::auth_piv::RequestSigner::from_env_or_file(&host_label, &agent_label, "daemon")
+            .ok()
+            .flatten()
+            .map(std::sync::Arc::new);
+    if let Some(ref s) = signer {
+        tracing::info!(
+            tier = s.tier(),
+            agent_label = %s.agent_label(),
+            "sidecar request signer initialized (primary auth)"
+        );
+    } else {
+        tracing::info!("no request signer; using bearer API key auth");
+    }
+
+    // Bearer fallback: resolve a key from credd ONLY when there is no signer.
+    // When a signer exists it is the sole auth path, so we must NOT enter the
+    // credd ECDH/PIV bootstrap -- that path consumes a PIV PIN attempt and is
+    // exactly what burns Master's YubiKey PIN on keyless starts.
+    if rc.kleos_api_key.is_none() && signer.is_none() {
+        let slot = kleos_lib::cred::bootstrap::current_agent_slot();
+        match kleos_lib::cred::bootstrap::resolve_api_key(&slot).await {
+            Ok(k) => {
+                tracing::debug!(slot = %slot, "resolved kleos API key from credd");
+                rc.kleos_api_key = Some(k);
+            }
+            Err(e) => tracing::warn!("could not resolve kleos API key from credd: {}", e),
+        }
     }
 
     metrics::init();
@@ -415,6 +440,7 @@ async fn main() {
         client,
         kleos_url: rc.kleos_url,
         kleos_api_key: rc.kleos_api_key,
+        signer,
         llm,
         sessions: Arc::new(RwLock::new(manager)),
         source: rc.source,

@@ -11,6 +11,8 @@ pub struct Observation {
     pub role: String,
     pub importance: i32,
     pub category: String,
+    /// Optional originating agent or caller identifier stamped at observe time.
+    pub origin: Option<String>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -27,6 +29,9 @@ pub struct Session {
     pub pending_since: Option<Instant>,
     /// Updated on every observation add or append. Used by the idle-expiry sweep.
     pub last_activity: Instant,
+    /// Optional origin label propagated from session/start, stamped on observations
+    /// that do not carry their own origin.
+    pub origin: Option<String>,
 }
 
 impl Session {
@@ -41,6 +46,7 @@ impl Session {
             ended: false,
             pending_since: None,
             last_activity: Instant::now(),
+            origin: None,
         }
     }
 
@@ -291,6 +297,7 @@ mod tests {
             role: "tool".to_string(),
             importance: 3,
             category: "discovery".to_string(),
+            origin: None,
             timestamp: Utc::now(),
         };
 
@@ -407,6 +414,7 @@ mod tests {
             role: "tool".into(),
             importance: 1,
             category: "d".into(),
+            origin: None,
             timestamp: Utc::now(),
         };
         s.add_observation(obs.clone());
@@ -437,6 +445,7 @@ mod tests {
             role: "tool".into(),
             importance: 1,
             category: "d".into(),
+            origin: None,
             timestamp: Utc::now(),
         };
 
@@ -475,6 +484,7 @@ mod tests {
             role: "tool".into(),
             importance: 1,
             category: "d".into(),
+            origin: None,
             timestamp: Utc::now(),
         });
         assert!(s.pending_since.is_some());
@@ -492,6 +502,7 @@ mod tests {
             role: "tool".into(),
             importance: 1,
             category: "d".into(),
+            origin: None,
             timestamp: Utc::now(),
         };
 

@@ -10,6 +10,9 @@ pub struct SidecarState {
     pub client: reqwest::Client,
     pub kleos_url: String,
     pub kleos_api_key: Option<String>,
+    /// Tiered request signer (PIV > ed25519 > none). When present, auth headers
+    /// are signed rather than sent as a plain bearer token.
+    pub signer: Option<Arc<kleos_lib::auth_piv::RequestSigner>>,
     pub llm: Option<Arc<LocalModelClient>>,
     pub sessions: Arc<RwLock<SessionManager>>,
     pub source: String,

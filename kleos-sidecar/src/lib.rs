@@ -37,6 +37,7 @@ pub fn build_test_state(kleos_url: String, token: Option<String>) -> SidecarStat
         client,
         kleos_url,
         kleos_api_key: None,
+        signer: None,
         llm,
         sessions: Arc::new(RwLock::new(manager)),
         source: "test".to_string(),

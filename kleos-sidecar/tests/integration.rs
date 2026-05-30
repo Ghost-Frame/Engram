@@ -638,6 +638,7 @@ async fn test_idle_session_sweep() {
             role: "tool".to_string(),
             importance: 1,
             category: "d".to_string(),
+            origin: None,
             timestamp: chrono::Utc::now(),
         });
     }

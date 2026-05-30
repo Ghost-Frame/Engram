@@ -32,5 +32,9 @@ toml = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 
+[features]
+# Enable PIV/YubiKey signing tier (passes through to kleos-lib/piv).
+piv = ["kleos-lib/piv"]
+
 [dev-dependencies]
 tempfile = "3"
