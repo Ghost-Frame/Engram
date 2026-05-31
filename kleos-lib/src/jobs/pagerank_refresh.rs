@@ -15,9 +15,10 @@ use crate::graph::pagerank::{
 };
 
 /// Check whether the pagerank cache needs refreshing based on dirty_count or
-/// elapsed time since last_refresh. Returns [0] (sentinel user id) if a
-/// refresh is needed, empty vec otherwise. The singleton-row pagerank_dirty
-/// table replaced the old per-user rows in migration 38.
+/// elapsed time since last_refresh. Returns active memory owners when a refresh
+/// is needed, empty vec otherwise. The singleton-row pagerank_dirty table
+/// replaced the old per-user dirty rows in migration 38, but shared-DB mode
+/// still needs each owner's graph computed separately.
 async fn dirty_users(db: &Database, threshold: u32, interval_secs: u64) -> crate::Result<Vec<i64>> {
     let threshold_i64 = threshold as i64;
     let interval_i64 = interval_secs as i64;
@@ -29,10 +30,22 @@ async fn dirty_users(db: &Database, threshold: u32, interval_secs: u64) -> crate
         );
         let needs_refresh: i64 =
             conn.query_row(&sql, rusqlite::params![threshold_i64], |row| row.get(0))?;
-        if needs_refresh > 0 {
-            Ok(vec![0i64]) // sentinel: single-tenant, user_id = 0
+        if needs_refresh == 0 {
+            return Ok(vec![]);
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT user_id FROM memories \
+             WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+             ORDER BY user_id",
+        )?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        let users = rows.collect::<std::result::Result<Vec<i64>, _>>()?;
+
+        if users.is_empty() {
+            Ok(vec![0i64])
         } else {
-            Ok(vec![])
+            Ok(users)
         }
     })
     .await
@@ -285,6 +298,7 @@ mod tests {
         let refreshed = outcomes.iter().filter(|(_, ok)| *ok).count();
 
         assert_eq!(refreshed, 1);
+        assert_eq!(outcomes[0].0, user_id);
         assert_eq!(pagerank_count(db.as_ref(), user_id).await, created);
     }
 }
