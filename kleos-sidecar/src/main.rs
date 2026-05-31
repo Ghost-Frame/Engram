@@ -57,6 +57,7 @@ struct ConfigFile {
     log_format: Option<String>,
 }
 
+/// Loads sidecar TOML configuration, falling back to defaults on read or parse errors.
 fn load_config_file(path: &str) -> ConfigFile {
     match std::fs::read_to_string(path) {
         Ok(text) => match toml::from_str::<ConfigFile>(&text) {
@@ -83,6 +84,7 @@ fn load_config_file(path: &str) -> ConfigFile {
     name = "kleos-sidecar",
     about = "Kleos memory sidecar for agent sessions"
 )]
+/// Defines command-line and environment configuration accepted by the sidecar.
 struct Cli {
     /// Path to a TOML config file. Keys mirror CLI flags.
     /// Config file values are overridden by env vars and CLI flags.
@@ -401,24 +403,12 @@ async fn main() {
 
     tracing::info!(default_session_id = %session_id, "starting sidecar (multi-session enabled)");
 
-    let token = match rc.token.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(t) => Some(t.to_string()),
-        None => {
-            let generated = auth::generate_token();
-            tracing::warn!(
-                host = %rc.host,
-                "KLEOS_SIDECAR_TOKEN not set; generated one-time sidecar token (printed to stderr)"
-            );
-            // SECURITY (SEC-LOW-5): print token once to stderr so the launching
-            // process can capture it. Full value intentionally not in logs.
-            eprintln!("SIDECAR_TOKEN={}", generated);
-            tracing::debug!(
-                token_prefix = &generated[..8.min(generated.len())],
-                "sidecar token generated (see stderr for full value)"
-            );
-            Some(generated)
-        }
-    };
+    let token = rc
+        .token
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
     if token.is_some() {
         tracing::info!("sidecar shared-secret auth enabled");
     } else {
@@ -662,6 +652,7 @@ async fn shutdown_signal(state: SidecarState) {
 }
 
 #[cfg(unix)]
+/// Waits for SIGTERM or Ctrl-C on Unix before graceful shutdown.
 async fn wait_for_signal() {
     use tokio::signal::unix::{signal, SignalKind};
 
@@ -673,6 +664,7 @@ async fn wait_for_signal() {
 }
 
 #[cfg(windows)]
+/// Waits for Windows console shutdown signals before graceful shutdown.
 async fn wait_for_signal() {
     use tokio::signal::windows;
 

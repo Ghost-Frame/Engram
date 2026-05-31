@@ -101,6 +101,7 @@ pub fn router(state: SidecarState) -> Router {
     )
 }
 
+/// Renders the current sidecar Prometheus metrics snapshot.
 async fn metrics_handler() -> (StatusCode, String) {
     (StatusCode::OK, metrics::render())
 }
@@ -201,6 +202,7 @@ async fn resume_session(
     })))
 }
 
+/// Reports local sidecar health plus cached upstream Kleos reachability.
 async fn health(State(state): State<SidecarState>) -> Json<Value> {
     let upstream_reachable = probe_upstream_cached(&state).await;
 
@@ -243,13 +245,7 @@ async fn probe_upstream_cached(state: &SidecarState) -> bool {
     let url_str = format!("{}/health", state.kleos_url);
     let reachable = match kleos_lib::net::validate_outbound_url(&url_str) {
         Ok(url) => {
-            let req = apply_kleos_auth(
-                state,
-                state.client.head(url),
-                "HEAD",
-                "/health",
-                b"",
-            );
+            let req = apply_kleos_auth(state, state.client.head(url), "HEAD", "/health", b"");
             match tokio::time::timeout(HEALTH_PROBE_TIMEOUT, req.send()).await {
                 // 405 Method Not Allowed means the endpoint exists but doesn't support HEAD -- upstream is reachable.
                 Ok(Ok(r)) => r.status().is_success() || r.status().as_u16() == 405,
@@ -283,6 +279,7 @@ struct StartSessionBody {
     pub origin: Option<String>,
 }
 
+/// Starts a tracked sidecar session and records its optional origin label.
 async fn start_session(
     State(state): State<SidecarState>,
     Json(body): Json<StartSessionBody>,
@@ -365,14 +362,17 @@ struct ObserveBody {
     pub origin: Option<String>,
 }
 
+/// Returns the default importance for observations forwarded to Kleos.
 fn default_importance() -> i32 {
     3
 }
 
+/// Returns the default category for observations forwarded to Kleos.
 fn default_category() -> String {
     "discovery".to_string()
 }
 
+/// Accepts a tool or conversation observation and queues it for batched storage.
 async fn observe(
     State(state): State<SidecarState>,
     Json(body): Json<ObserveBody>,
@@ -487,6 +487,7 @@ struct RecallBody {
     pub session_id: Option<String>,
 }
 
+/// Returns the default maximum number of memories to recall.
 fn default_recall_limit() -> usize {
     10
 }
@@ -628,6 +629,7 @@ async fn post_with_fallback(
     Ok(response)
 }
 
+/// Recalls relevant Kleos memories for the current session and prompt.
 async fn recall(
     State(state): State<SidecarState>,
     Json(body): Json<RecallBody>,
@@ -732,6 +734,7 @@ Given the contents of a file that was read by a tool, produce a concise summary 
 Be extremely concise. Output ONLY the summary, no preamble. \
 Target 200-400 words. Preserve exact names of functions, types, and variables.";
 
+/// Compresses a tool result or passes it through when compression is disabled.
 async fn compress(
     State(state): State<SidecarState>,
     Json(body): Json<CompressBody>,
@@ -917,6 +920,7 @@ struct EndSessionBody {
     pub session_id: Option<String>,
 }
 
+/// Flushes pending observations and marks the selected session ended.
 async fn end_session(
     State(state): State<SidecarState>,
     Json(body): Json<EndSessionBody>,
