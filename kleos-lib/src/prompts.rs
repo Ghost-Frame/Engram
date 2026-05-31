@@ -8,6 +8,7 @@ use crate::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
+/// Returns a serialized memory prompt block and packing statistics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptResult {
     pub prompt: String,
@@ -16,6 +17,7 @@ pub struct PromptResult {
     pub tokens_estimated: usize,
 }
 
+/// Returns the task header JSON plus a rendered text form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderResult {
     pub header: serde_json::Value,
@@ -24,6 +26,7 @@ pub struct HeaderResult {
     pub prior_models: Vec<String>,
 }
 
+/// Generates a prompt block from the caller's static and important memories.
 #[tracing::instrument(skip(db, _context), fields(format = %format))]
 pub async fn generate_prompt(
     db: &Database,
@@ -33,6 +36,7 @@ pub async fn generate_prompt(
     user_id: i64,
 ) -> Result<PromptResult> {
     // (id, content, category, score)
+    let prompt_user_id = user_id;
     let candidates: Vec<(i64, String, String, f64)> = db
         .read(move |conn| {
             let mut seen = std::collections::HashSet::new();
@@ -44,9 +48,9 @@ pub async fn generate_prompt(
                     "SELECT id, content, category, importance \
                          FROM memories \
                          WHERE is_static = 1 AND is_forgotten = 0 \
-                           AND is_consolidated = 0",
+                           AND is_consolidated = 0 AND user_id = ?1",
                 )?;
-                let rows = stmt.query_map([], |row| {
+                let rows = stmt.query_map(params![prompt_user_id], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
@@ -69,9 +73,10 @@ pub async fn generate_prompt(
                          FROM memories \
                          WHERE is_forgotten = 0 AND is_archived = 0 \
                            AND is_latest = 1 AND is_consolidated = 0 \
+                           AND user_id = ?1 \
                          ORDER BY ds DESC LIMIT 1000",
                 )?;
-                let rows = stmt.query_map([], |row| {
+                let rows = stmt.query_map(params![prompt_user_id], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
@@ -131,6 +136,7 @@ pub async fn generate_prompt(
     })
 }
 
+/// Generates an attribution header from the caller's recent memories.
 #[tracing::instrument(skip(db, _context), fields(actor_model = %actor_model, actor_role = %actor_role))]
 pub async fn generate_header(
     db: &Database,
@@ -151,9 +157,10 @@ pub async fn generate_header(
                      FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 \
                        AND is_latest = 1 AND is_consolidated = 0 \
+                       AND user_id = ?2 \
                      ORDER BY created_at DESC LIMIT ?1",
             )?;
-            let rows = stmt.query_map(params![fetch_limit], |row| {
+            let rows = stmt.query_map(params![fetch_limit, user_id], |row| {
                 Ok((
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, i64>(0)?,
@@ -288,6 +295,7 @@ pub struct ContradictionInfo {
     pub reason: String,
 }
 
+/// Formats memory summaries as compact bullet lines for prompt injection.
 fn format_memories_as_bullets(memories: &[MemorySummary]) -> String {
     if memories.is_empty() {
         return "No relevant patterns activated.".to_string();
@@ -309,6 +317,7 @@ fn format_memories_as_bullets(memories: &[MemorySummary]) -> String {
         .join("\n")
 }
 
+/// Formats resolved contradictions as a short markdown section.
 fn format_contradictions(contradictions: &[ContradictionInfo]) -> String {
     if contradictions.is_empty() {
         return String::new();

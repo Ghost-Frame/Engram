@@ -9,6 +9,7 @@ use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use tracing::info;
 
+/// Converts a link type and similarity score into a weighted PageRank edge.
 fn edge_weight(link_type: &str, similarity: f64) -> f64 {
     let tw = match link_type {
         "caused_by" | "causes" => 2.0,
@@ -20,6 +21,7 @@ fn edge_weight(link_type: &str, similarity: f64) -> f64 {
     similarity * tw
 }
 
+/// Computes PageRank over one user's live memory graph.
 #[tracing::instrument(skip(db))]
 pub async fn compute_pagerank(
     db: &Database,
@@ -31,9 +33,10 @@ pub async fn compute_pagerank(
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id FROM memories \
-                     WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1",
+                     WHERE is_forgotten = 0 AND is_archived = 0 \
+                       AND is_latest = 1 AND user_id = ?1",
             )?;
-            let rows = stmt.query_map(rusqlite::params![], |row| row.get(0))?;
+            let rows = stmt.query_map(rusqlite::params![user_id], |row| row.get(0))?;
             Ok(rows.collect::<std::result::Result<Vec<i64>, _>>()?)
         })
         .await?;
@@ -58,9 +61,10 @@ pub async fn compute_pagerank(
                      JOIN memories mt ON mt.id = ml.target_id \
                      WHERE ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                        AND ms.is_archived = 0 AND mt.is_archived = 0 \
+                       AND ms.user_id = ?1 AND mt.user_id = ?1 \
                      GROUP BY ml.source_id, ml.target_id",
             )?;
-            let rows = stmt.query_map(rusqlite::params![], |row| {
+            let rows = stmt.query_map(rusqlite::params![user_id], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
@@ -129,6 +133,7 @@ pub async fn compute_pagerank(
     })
 }
 
+/// Recomputes and persists normalized PageRank scores for one user's memories.
 #[tracing::instrument(skip(db))]
 pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageRankUpdateResult> {
     let result = compute_pagerank(db, user_id, 0.85, 25).await?;
@@ -165,9 +170,9 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
             .read(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT id, julianday('now') - julianday(created_at) \
-                         FROM memories",
+                         FROM memories WHERE user_id = ?1",
                 )?;
-                let mut rows = stmt.query(rusqlite::params![])?;
+                let mut rows = stmt.query(rusqlite::params![user_id])?;
                 let mut m = HashMap::new();
                 while let Some(row) = rows.next()? {
                     let id: i64 = row.get(0)?;
@@ -198,10 +203,11 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
     // Wrap batch UPDATEs in transaction for atomicity (S1-5/S1-6 fix).
     // Use prepare_cached so the statement is parsed once and reused across N rows.
     db.transaction(move |tx| {
-        let mut stmt =
-            tx.prepare_cached("UPDATE memories SET pagerank_score = ?1 WHERE id = ?2")?;
+        let mut stmt = tx.prepare_cached(
+            "UPDATE memories SET pagerank_score = ?1 WHERE id = ?2 AND user_id = ?3",
+        )?;
         for (id, normalized) in &scores_vec {
-            stmt.execute(rusqlite::params![normalized, id])?;
+            stmt.execute(rusqlite::params![normalized, id, user_id])?;
         }
         Ok(())
     })
@@ -812,25 +818,44 @@ pub async fn ensure_pagerank_for_user(db: &Database, _user_id: i64) -> Result<()
     Ok(())
 }
 
-/// Rebuild pagerank over the database's whole memory graph in a single pass.
+/// Rebuilds pagerank for every user present in the database.
 ///
-/// `compute_pagerank` ranks every live memory in the DB and does not filter by
-/// `user_id`, so one pass covers all owners. This is correct in both modes:
-/// in a per-owner shard there is only one owner; in single-DB (shared) mode the
-/// `prevent_cross_tenant_links` trigger keeps `memory_links` within a single
-/// owner, so the graph is a disjoint union of per-owner subgraphs and link
-/// propagation stays within each owner. The `user_id` argument is a metadata
-/// sentinel only (0); pagerank scores are per-memory.
+/// Shared-DB mode now scopes `compute_pagerank` by owner, so an admin rebuild
+/// must enumerate owners, compute each owner's normalized scores separately,
+/// then persist the combined result set.
 #[tracing::instrument(skip(db))]
 pub async fn rebuild_all_users(db: &Database) -> Result<usize> {
-    let scores = compute_pagerank_for_user(db, 0).await?;
-    if scores.is_empty() {
+    let user_ids: Vec<i64> = db
+        .read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT user_id FROM memories \
+                 WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1",
+            )?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
+            Ok(rows.collect::<std::result::Result<Vec<i64>, _>>()?)
+        })
+        .await?;
+
+    let mut users_updated = 0usize;
+    let mut all_scores: Vec<(i64, f64)> = Vec::new();
+
+    for user_id in user_ids {
+        let scores = compute_pagerank_for_user(db, user_id).await?;
+        if !scores.is_empty() {
+            users_updated += 1;
+            all_scores.extend(scores);
+        }
+    }
+
+    if all_scores.is_empty() {
         return Ok(0);
     }
-    persist_pagerank(db, &scores).await?;
-    Ok(1)
+
+    persist_pagerank(db, &all_scores).await?;
+    Ok(users_updated)
 }
 
+/// Unit and integration-style tests for pagerank graph behavior.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,6 +865,7 @@ mod tests {
     use crate::memory::types::{QuestionType, SearchRequest, StoreRequest};
     use std::time::{Duration, Instant};
 
+    /// Builds a minimal store request for pagerank tests.
     fn store_request(content: &str, user_id: i64) -> StoreRequest {
         StoreRequest {
             content: content.to_string(),
@@ -850,6 +876,7 @@ mod tests {
         }
     }
 
+    /// Builds a minimal search request for pagerank-backed search tests.
     fn search_request(query: &str, user_id: i64, limit: usize) -> SearchRequest {
         SearchRequest {
             query: query.to_string(),
@@ -860,6 +887,7 @@ mod tests {
         }
     }
 
+    /// Reads the pagerank dirty counter state for assertions.
     async fn dirty_state(db: &Database, _user_id: i64) -> (i64, i64) {
         db.read(move |conn| {
             Ok(conn.query_row(
@@ -872,6 +900,7 @@ mod tests {
         .expect("query pagerank_dirty")
     }
 
+    /// Counts persisted pagerank rows.
     async fn pagerank_count(db: &Database, _user_id: i64) -> i64 {
         db.read(move |conn| {
             Ok(conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))?)
@@ -880,6 +909,7 @@ mod tests {
         .expect("query memory_pagerank count")
     }
 
+    /// Reads one persisted pagerank row.
     async fn pagerank_row(db: &Database, memory_id: i64) -> (f64, i64) {
         db.read(move |conn| {
             Ok(conn.query_row(
@@ -892,6 +922,7 @@ mod tests {
         .expect("query pagerank row")
     }
 
+    /// edge_weight applies the expected type multipliers.
     #[test]
     fn test_edge_weight() {
         assert!((edge_weight("caused_by", 0.5) - 1.0).abs() < 1e-10);
@@ -899,6 +930,7 @@ mod tests {
         assert!((edge_weight("consolidates", 1.0) - 0.5).abs() < 1e-10);
     }
 
+    /// A simple chain converges with more rank on the sink than the source.
     #[test]
     fn test_pagerank_in_memory() {
         let mut pr: HashMap<i64, f64> = HashMap::new();
@@ -930,6 +962,7 @@ mod tests {
         assert!(pr[&3] > pr[&1]);
     }
 
+    /// Storing and deleting memories increments the pagerank dirty counter.
     #[tokio::test]
     async fn dirty_counter_increments_on_store_and_delete() {
         let db = Database::connect_memory().await.expect("in-memory db");
@@ -951,6 +984,7 @@ mod tests {
         assert_eq!(dirty_state(&db, user_id).await, (2, 0));
     }
 
+    /// persist_pagerank upserts scores and clears the dirty counter snapshot.
     #[tokio::test]
     async fn persist_pagerank_upserts_and_zeroes_dirty_counter() {
         let db = Database::connect_memory().await.expect("in-memory db");
@@ -992,6 +1026,7 @@ mod tests {
         assert!(last_refresh_two >= last_refresh_one);
     }
 
+    /// The first pagerank-backed search prefers the graph hub after caching.
     #[tokio::test]
     async fn first_query_populates_cache_and_prefers_high_rank_memory() {
         let db = Database::connect_memory().await.expect("in-memory db");
@@ -1048,6 +1083,7 @@ mod tests {
         assert_eq!(results[0].memory.id, center.id);
     }
 
+    /// A warmed pagerank-backed search stays under the latency budget.
     #[tokio::test]
     async fn cached_search_returns_under_100ms_after_warm() {
         let db = Database::connect_memory().await.expect("in-memory db");
