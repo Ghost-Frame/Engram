@@ -66,7 +66,7 @@ pub fn strip_tags(html: &str) -> String {
             let tag_content = &lower[i + 1..tag_end];
             let is_closing = tag_content.starts_with('/');
             let tag_name_src = if is_closing {
-                &tag_content[1..]
+                tag_content.strip_prefix('/').unwrap_or(tag_content)
             } else {
                 tag_content
             };
@@ -184,6 +184,6 @@ pub fn detect(input: &str, extension: Option<&str>) -> bool {
     if trimmed.len() < 5 {
         return false;
     }
-    let check = trimmed[..trimmed.len().min(50)].to_lowercase();
+    let check = crate::validation::truncate_on_char_boundary(trimmed, 50).to_lowercase();
     check.starts_with("<!doctype") || check.starts_with("<html")
 }

@@ -25,7 +25,9 @@ struct CircuitBreaker {
     cooldown_ms: u64,
 }
 
+/// Implements the circuit breaker state machine for local model calls.
 impl CircuitBreaker {
+    /// Creates a new circuit breaker with the given threshold and cooldown.
     fn new(threshold: u32, cooldown_ms: u64) -> Self {
         Self {
             failures: AtomicU32::new(0),
@@ -35,6 +37,7 @@ impl CircuitBreaker {
         }
     }
 
+    /// Reports whether the circuit is currently open.
     fn is_open(&self) -> bool {
         let failures = self.failures.load(Ordering::Relaxed);
         if failures < self.threshold {
@@ -50,11 +53,13 @@ impl CircuitBreaker {
         true
     }
 
+    /// Clears the failure count after a successful probe or request.
     fn record_success(&self) {
         self.failures.store(0, Ordering::Relaxed);
         self.open_until_ms.store(0, Ordering::Relaxed);
     }
 
+    /// Records one failure and opens the circuit when the threshold is hit.
     fn record_failure(&self) {
         let prev = self.failures.fetch_add(1, Ordering::Relaxed);
         if prev + 1 >= self.threshold {
@@ -68,6 +73,7 @@ impl CircuitBreaker {
         }
     }
 
+    /// Returns the current circuit breaker state for diagnostics.
     fn state(&self) -> CircuitBreakerState {
         let failures = self.failures.load(Ordering::Relaxed);
         if failures < self.threshold {
@@ -83,6 +89,7 @@ impl CircuitBreaker {
     }
 }
 
+/// Returns the current epoch time in milliseconds.
 fn now_epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -104,6 +111,7 @@ pub struct LocalModelClient {
     probe_result: AtomicU32, // 0=unknown, 1=ok, 2=failed
 }
 
+/// Implements the local Ollama-backed model client.
 impl LocalModelClient {
     /// Create a new client with the given config.
     pub fn new(config: OllamaConfig) -> Self {
@@ -280,7 +288,7 @@ impl LocalModelClient {
                     return Err(EngError::Internal(format!(
                         "ollama {}: {}",
                         status,
-                        &body_text[..body_text.len().min(200)]
+                        crate::validation::truncate_on_char_boundary(&body_text, 200)
                     )));
                 }
 
@@ -338,10 +346,12 @@ impl LocalModelClient {
 // TESTS
 // ============================================================================
 
+/// Tests the local model client and circuit breaker behavior.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies the default Ollama config values.
     #[test]
     fn test_config_defaults() {
         let c = OllamaConfig::default();
@@ -356,6 +366,7 @@ mod tests {
         assert!(c.api_key.is_none());
     }
 
+    /// Verifies the API key field can round-trip into the client.
     #[test]
     fn test_config_api_key_field_round_trips() {
         let c = OllamaConfig {
@@ -369,6 +380,7 @@ mod tests {
         // round-trips into the client is the tightest unit test available.
     }
 
+    /// Verifies a fresh circuit breaker starts closed.
     #[test]
     fn test_circuit_breaker_closed() {
         let cb = CircuitBreaker::new(3, 30_000);
@@ -376,6 +388,7 @@ mod tests {
         assert_eq!(cb.state(), CircuitBreakerState::Closed);
     }
 
+    /// Verifies repeated failures open the circuit.
     #[test]
     fn test_circuit_breaker_opens_after_threshold() {
         let cb = CircuitBreaker::new(3, 30_000);
@@ -387,6 +400,7 @@ mod tests {
         assert_eq!(cb.state(), CircuitBreakerState::Open);
     }
 
+    /// Verifies success resets the circuit breaker state.
     #[test]
     fn test_circuit_breaker_resets_on_success() {
         let cb = CircuitBreaker::new(3, 30_000);
@@ -399,6 +413,7 @@ mod tests {
         assert_eq!(cb.state(), CircuitBreakerState::Closed);
     }
 
+    /// Verifies a zero cooldown allows half-open probing immediately.
     #[test]
     fn test_circuit_breaker_half_open_after_cooldown() {
         let cb = CircuitBreaker::new(3, 0); // 0ms cooldown
@@ -408,6 +423,7 @@ mod tests {
         assert!(!cb.is_open()); // half-open allows probe
     }
 
+    /// Verifies the client reports unavailable after a failed probe.
     #[test]
     fn test_client_not_available_when_probe_failed() {
         let client = LocalModelClient::new(OllamaConfig::default());
@@ -415,12 +431,14 @@ mod tests {
         assert!(!client.is_available());
     }
 
+    /// Verifies the client reports available by default.
     #[test]
     fn test_client_available_by_default() {
         let client = LocalModelClient::new(OllamaConfig::default());
         assert!(client.is_available());
     }
 
+    /// Verifies the default stats snapshot is internally consistent.
     #[test]
     fn test_stats_default() {
         let client = LocalModelClient::new(OllamaConfig::default());

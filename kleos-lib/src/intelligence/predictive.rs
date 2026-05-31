@@ -62,7 +62,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
         .into_iter()
         .fold(Vec::new(), |mut acc, desc| {
             if let Some(cat_start) = desc.find("category:") {
-                let cat = desc[cat_start + 9..].to_string();
+                let cat = desc.get(cat_start + 9..).unwrap_or("").to_string();
                 if !acc.contains(&cat) {
                     acc.push(cat);
                 }
@@ -105,11 +105,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
 
     for row in task_rows {
         if suggested_actions.is_empty() {
-            let truncated = if row.content.len() > 80 {
-                &row.content[..80]
-            } else {
-                &row.content
-            };
+            let truncated = crate::validation::truncate_on_char_boundary(&row.content, 80);
             suggested_actions.push(format!("Continue: {}", truncated));
         }
         proactive_memories.push(ProactiveMemory {
@@ -147,11 +143,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
 
     for row in issue_rows {
         if suggested_actions.len() < 3 {
-            let truncated = if row.content.len() > 80 {
-                &row.content[..80]
-            } else {
-                &row.content
-            };
+            let truncated = crate::validation::truncate_on_char_boundary(&row.content, 80);
             suggested_actions.push(format!("Address issue: {}", truncated));
         }
         proactive_memories.push(ProactiveMemory {

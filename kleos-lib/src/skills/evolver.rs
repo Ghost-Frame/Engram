@@ -50,11 +50,7 @@ fn sanitize_slug(raw: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-");
-    let bounded = if collapsed.len() > 80 {
-        collapsed[..80].to_string()
-    } else {
-        collapsed
-    };
+    let bounded = crate::validation::truncate_on_char_boundary(&collapsed, 80).to_string();
     if bounded.is_empty() {
         "unnamed-skill".to_string()
     } else {
@@ -69,17 +65,14 @@ fn sanitize_description(raw: &str) -> String {
     let unquoted = first_line
         .trim_matches(|c: char| c == '"' || c == '\'')
         .trim();
-    if unquoted.len() > 500 {
-        unquoted[..500].to_string()
-    } else {
-        unquoted.to_string()
-    }
+    crate::validation::truncate_on_char_boundary(unquoted, 500).to_string()
 }
 
 /// Generate a new unique skill ID.
 pub fn generate_skill_id(base_name: &str) -> String {
     let slug = sanitize_slug(base_name);
-    let short_id = &uuid::Uuid::new_v4().to_string()[..8];
+    let uuid_text = uuid::Uuid::new_v4().to_string();
+    let short_id = crate::validation::truncate_on_char_boundary(&uuid_text, 8);
     format!("{}-{}", slug, short_id)
 }
 
@@ -478,35 +471,50 @@ pub async fn evolve(
     }
 }
 
+/// Tests the slug and code-fence normalization helpers.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verifies that code fences are stripped when absent.
     #[test]
     fn test_strip_none() {
         assert_eq!(strip_code_fences("hello"), "hello");
     }
+
+    /// Verifies that fenced markdown loses the fence wrapper.
     #[test]
     fn test_strip_with_lang() {
         let input = "```md\ncontent\n```";
         assert_eq!(strip_code_fences(input), "content");
     }
+
+    /// Verifies that generated ids keep the slug prefix and append a short suffix.
     #[test]
     fn test_gen_id() {
         let id = generate_skill_id("My Cool Skill");
         assert!(id.starts_with("my-cool-skill-"));
     }
+
+    /// Verifies punctuation is normalized out of slugs.
     #[test]
     fn test_sanitize_slug_strips_punct() {
         assert_eq!(sanitize_slug("  Fix The Bug!!!  "), "fix-the-bug");
     }
+
+    /// Verifies repeated dashes collapse into one separator.
     #[test]
     fn test_sanitize_slug_collapses_dashes() {
         assert_eq!(sanitize_slug("foo---bar"), "foo-bar");
     }
+
+    /// Verifies blank input falls back to the unnamed slug.
     #[test]
     fn test_sanitize_slug_empty_fallback() {
         assert_eq!(sanitize_slug("!!!"), "unnamed-skill");
     }
+
+    /// Verifies descriptions are trimmed to a single line.
     #[test]
     fn test_sanitize_description_single_line() {
         let d = sanitize_description("\"This is a skill.\"\nExtra line.");

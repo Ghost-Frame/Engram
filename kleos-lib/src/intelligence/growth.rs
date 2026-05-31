@@ -16,6 +16,7 @@ use rusqlite::OptionalExtension;
 use tracing::{info, warn};
 
 #[tracing::instrument(skip(db), fields(limit))]
+/// Lists recent growth observations for the requested limit.
 pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<GrowthObservation>> {
     db.read(move |conn| {
         let mut stmt = conn.prepare(
@@ -43,6 +44,7 @@ pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<Growth
 }
 
 #[tracing::instrument(skip(db))]
+/// Converts one growth observation into an insight memory.
 pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Result<i64> {
     db.write(move |conn| {
         let result: Option<(String, String)> = conn
@@ -121,6 +123,7 @@ fn validate_observation(text: &str) -> bool {
     true
 }
 
+/// Resolves an observation through secret redaction when needed.
 async fn resolve_growth_observation(
     db: &Database,
     service: &str,
@@ -204,11 +207,7 @@ pub async fn reflect(
 
     let mut user_prompt = format!("Recent activity:\n\n{}\n\n", req.context.join("\n"));
     if let Some(ref existing) = req.existing_growth {
-        let truncated = if existing.len() > 4000 {
-            &existing[..4000]
-        } else {
-            existing
-        };
+        let truncated = crate::validation::truncate_on_char_boundary(existing, 4000);
         user_prompt.push_str(&format!(
             "Things I already know (do NOT repeat these):\n{}\n\n",
             truncated
@@ -320,10 +319,12 @@ pub async fn reflect(
     })
 }
 
+/// Tests the growth reflection helpers and validation rules.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies that valid observations pass validation.
     #[test]
     fn test_validate_observation_valid() {
         assert!(validate_observation(
@@ -331,28 +332,33 @@ mod tests {
         ));
     }
 
+    /// Verifies that short observations are rejected.
     #[test]
     fn test_validate_observation_too_short() {
         assert!(!validate_observation("short"));
     }
 
+    /// Verifies that the literal NOTHING is rejected.
     #[test]
     fn test_validate_observation_nothing() {
         assert!(!validate_observation("NOTHING"));
     }
 
+    /// Verifies that meta-commentary is rejected.
     #[test]
     fn test_validate_observation_meta() {
         assert!(!validate_observation("I don't see anything interesting"));
         assert!(!validate_observation("There is nothing notable"));
     }
 
+    /// Verifies that a prompt override is returned unchanged.
     #[test]
     fn test_get_prompt_override() {
         let p = get_prompt_for_service("engram", Some("Custom prompt"));
         assert_eq!(p, "Custom prompt");
     }
 
+    /// Verifies that the default service prompt includes the expected guidance.
     #[test]
     fn test_get_prompt_default() {
         let p = get_prompt_for_service("unknown_service", None);
