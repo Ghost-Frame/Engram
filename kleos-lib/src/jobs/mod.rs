@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, error, warn};
 
@@ -45,6 +46,15 @@ type JobHandler = Arc<dyn Fn(Value) -> JobFuture + Send + Sync>;
 fn handlers() -> &'static RwLock<HashMap<String, JobHandler>> {
     static HANDLERS: OnceLock<RwLock<HashMap<String, JobHandler>>> = OnceLock::new();
     HANDLERS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Return the outer timeout for a job type.
+fn job_timeout_for(job_type: &str) -> Duration {
+    if job_type == "deprovision_teardown" {
+        crate::jobs::deprovision::job_timeout()
+    } else {
+        Duration::from_millis(120_000)
+    }
 }
 
 /// Ensure the jobs and scheduler lease tables exist.
@@ -213,16 +223,22 @@ pub async fn get_job_stats(db: &Database) -> Result<JobStats> {
     .await
 }
 
-/// Delete up to one batch of completed jobs older than one hour.
+/// Delete completed jobs older than one hour, draining in 100-row batches.
 #[tracing::instrument(skip(db))]
 pub async fn cleanup_completed_jobs(db: &Database) -> Result<u64> {
     db.write(|conn| {
-        let n = conn
-            .execute(
+        let mut deleted = 0u64;
+        loop {
+            let n = conn.execute(
                 "DELETE FROM jobs WHERE id IN (SELECT id FROM jobs WHERE status = 'completed' AND completed_at < datetime('now', '-1 hour') LIMIT 100)",
                 [],
             )?;
-        Ok(n as u64)
+            deleted += n as u64;
+            if n == 0 {
+                break;
+            }
+        }
+        Ok(deleted)
     })
     .await
 }
@@ -446,7 +462,7 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
             return Ok(true);
         }
     };
-    let timeout = tokio::time::Duration::from_millis(120_000);
+    let timeout = job_timeout_for(&job.job_type);
 
     match tokio::time::timeout(timeout, handler(payload)).await {
         Ok(Ok(())) => {
@@ -561,6 +577,46 @@ mod tests {
     fn test_job_stats_default() {
         let s = JobStats::default();
         assert_eq!(s.pending, 0);
+    }
+
+    /// Verify the deprovision job timeout stays above the generic 120s cap.
+    #[serial_test::serial(deprovision_timeout_env)]
+    #[test]
+    fn job_timeout_for_deprovision_exceeds_generic_timeout() {
+        std::env::remove_var("KLEOS_DEPROVISION_JOB_TIMEOUT_SECS");
+        assert_eq!(job_timeout_for("generic").as_millis(), 120_000);
+        assert!(
+            job_timeout_for("deprovision_teardown").as_secs() >= 1800,
+            "deprovision teardown should use its long timeout default"
+        );
+    }
+
+    /// Seed completed jobs with an old timestamp so cleanup can drain them.
+    async fn seed_completed_jobs(db: &Database, count: usize) {
+        db.write(move |conn| {
+            for idx in 0..count {
+                conn.execute(
+                    "INSERT INTO jobs (type, payload, status, attempts, max_attempts, created_at, completed_at) VALUES (?1, ?2, 'completed', 1, 1, datetime('now', '-2 hours'), datetime('now', '-2 hours'))",
+                    params![format!("cleanup.{idx}"), "{}"],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("seed completed jobs");
+    }
+
+    /// Verify cleanup drains more than one 100-row batch in a single call.
+    #[tokio::test]
+    async fn cleanup_completed_jobs_drains_multiple_batches() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+        seed_completed_jobs(&db, 205).await;
+
+        let deleted = cleanup_completed_jobs(&db).await.expect("cleanup");
+        let stats = get_job_stats(&db).await.expect("stats");
+
+        assert_eq!(deleted, 205);
+        assert_eq!(stats.completed, 0);
     }
 
     // End-to-end: enqueue a job, register a handler, run the worker once,

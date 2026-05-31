@@ -117,6 +117,34 @@ async fn run_once(
     Ok(outcomes)
 }
 
+/// Update per-user failure counters and retry windows from a refresh outcome batch.
+fn apply_refresh_outcomes(
+    outcomes: &[(i64, bool)],
+    failure_counts: &mut HashMap<i64, u32>,
+    skip_until: &mut HashMap<i64, Instant>,
+) {
+    let now = Instant::now();
+
+    for (user_id, success) in outcomes {
+        if *success {
+            failure_counts.remove(user_id);
+            skip_until.remove(user_id);
+        } else {
+            let failures = failure_counts.entry(*user_id).or_insert(0);
+            *failures += 1;
+            let backoff_mins = 2u64.pow((*failures).min(6));
+            let retry_at = now + Duration::from_secs(backoff_mins * 60);
+            skip_until.insert(*user_id, retry_at);
+            warn!(
+                user_id,
+                failures = *failures,
+                backoff_mins,
+                "pagerank backoff applied"
+            );
+        }
+    }
+}
+
 /// Spawn the background refresh loop. Returns a `CancellationToken` that,
 /// when cancelled, causes the loop to exit cleanly after its current cycle.
 ///
@@ -155,6 +183,7 @@ pub fn start_pagerank_refresh_job(
                             if refreshed > 0 {
                                 info!(users_refreshed = refreshed, "pagerank batch complete (notify)");
                             }
+                            apply_refresh_outcomes(&outcomes, &mut failure_counts, &mut skip_until);
                         }
                         Err(e) => error!(error = %e, "pagerank notify cycle failed"),
                     }
@@ -166,25 +195,7 @@ pub fn start_pagerank_refresh_job(
                             if refreshed > 0 {
                                 info!(users_refreshed = refreshed, "pagerank batch complete");
                             }
-                            let now = Instant::now();
-                            for (user_id, success) in outcomes {
-                                if success {
-                                    failure_counts.remove(&user_id);
-                                    skip_until.remove(&user_id);
-                                } else {
-                                    let failures = failure_counts.entry(user_id).or_insert(0);
-                                    *failures += 1;
-                                    let backoff_mins = 2u64.pow((*failures).min(6));
-                                    let retry_at = now + Duration::from_secs(backoff_mins * 60);
-                                    skip_until.insert(user_id, retry_at);
-                                    warn!(
-                                        user_id,
-                                        failures = *failures,
-                                        backoff_mins,
-                                        "pagerank backoff applied"
-                                    );
-                                }
-                            }
+                            apply_refresh_outcomes(&outcomes, &mut failure_counts, &mut skip_until);
                         }
                         Err(e) => error!(error = %e, "pagerank refresh cycle failed"),
                     }
@@ -196,12 +207,14 @@ pub fn start_pagerank_refresh_job(
     (token, handle)
 }
 
+/// Unit tests for pagerank refresh scheduling and persistence.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::memory;
     use crate::memory::types::StoreRequest;
 
+    /// Build a minimal memory store request for refresh tests.
     fn store_request(content: &str, user_id: i64) -> StoreRequest {
         StoreRequest {
             content: content.to_string(),
@@ -212,6 +225,7 @@ mod tests {
         }
     }
 
+    /// Count persisted pagerank score rows.
     async fn pagerank_count(db: &Database, _user_id: i64) -> i64 {
         db.read(move |conn| {
             Ok(conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))?)
@@ -220,6 +234,22 @@ mod tests {
         .expect("query pagerank count")
     }
 
+    /// Verify notify-triggered outcomes use the same backoff bookkeeping as interval runs.
+    #[test]
+    fn apply_refresh_outcomes_updates_failure_state() {
+        let mut failure_counts = HashMap::new();
+        let mut skip_until = HashMap::new();
+        let outcomes = vec![(7, false), (8, true), (7, false)];
+
+        apply_refresh_outcomes(&outcomes, &mut failure_counts, &mut skip_until);
+
+        assert_eq!(failure_counts.get(&7), Some(&2));
+        assert!(!failure_counts.contains_key(&8));
+        assert!(skip_until.contains_key(&7));
+        assert!(!skip_until.contains_key(&8));
+    }
+
+    /// Verify a dirty user gets pagerank scores during one refresh pass.
     #[tokio::test]
     async fn run_once_populates_pagerank_for_dirty_user() {
         let db = Arc::new(Database::connect_memory().await.expect("in-memory db"));

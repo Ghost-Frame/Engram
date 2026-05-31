@@ -11,6 +11,7 @@ use crate::EngError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{error, info};
 
 /// Payload stored in the jobs table for a deprovision teardown job.
@@ -22,6 +23,15 @@ pub struct DeprovisionJobPayload {
     pub user_id: i64,
     /// The registry tenant_id (shard path component).
     pub tenant_id: String,
+}
+
+/// Return the per-attempt timeout used by `deprovision_teardown` jobs.
+pub(crate) fn job_timeout() -> Duration {
+    let timeout_secs: u64 = std::env::var("KLEOS_DEPROVISION_JOB_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1800);
+    Duration::from_secs(timeout_secs)
 }
 
 /// Register the `deprovision_teardown` job handler with the global job registry.
@@ -41,10 +51,8 @@ pub async fn register_handler(
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
-    let timeout_secs: u64 = std::env::var("KLEOS_DEPROVISION_JOB_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1800);
+    let timeout = job_timeout();
+    let timeout_secs = timeout.as_secs();
 
     crate::jobs::register_job_handler("deprovision_teardown", move |payload_value| {
         let registry_db = Arc::clone(&registry_db);
@@ -55,7 +63,6 @@ pub async fn register_handler(
             let payload: DeprovisionJobPayload = serde_json::from_value(payload_value)
                 .map_err(|e| EngError::Internal(format!("invalid deprovision payload: {e}")))?;
 
-            let timeout = tokio::time::Duration::from_secs(timeout_secs);
             let result = tokio::time::timeout(
                 timeout,
                 run_teardown_job(
@@ -100,4 +107,18 @@ pub async fn register_handler(
         }
     })
     .await;
+}
+
+/// Unit tests for deprovision job timeout configuration.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify the default deprovision timeout exceeds the generic job cap.
+    #[serial_test::serial(deprovision_timeout_env)]
+    #[test]
+    fn job_timeout_default_is_longer_than_generic_cap() {
+        std::env::remove_var("KLEOS_DEPROVISION_JOB_TIMEOUT_SECS");
+        assert!(job_timeout().as_secs() >= 1800);
+    }
 }
