@@ -4,16 +4,23 @@
 //! auto-generated long tail. `registry()` intentionally exposes only the
 //! daily-use surface for MCP clients, while still deriving every entry from
 //! `kleos_client::ROUTES` so schemas and descriptions stay source-aligned.
+//!
+//! All exposed names are normalised to underscore form (e.g. `memory_store`
+//! rather than `memory.store`) because VS Code's MCP validator rejects tool
+//! names containing dots. `tools/call` in lib.rs translates the underscore
+//! name back to the canonical dot-name before forwarding to the server.
 
 use crate::App;
 use kleos_client::{find_by_name, Route};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 /// The curated daily-driver tool names exposed through `tools/list`.
 ///
-/// Canonical names and selected aliases both appear here when they are part
-/// of the normal human workflow or preserve compatibility with existing MCP
-/// client setups.
+/// Canonical dot-names and their underscore aliases both appear here so that
+/// existing MCP client configurations that reference either form continue to
+/// work. The `registry()` function normalises all entries to underscore form
+/// and deduplicates, so each tool appears exactly once in `tools/list`.
 const DAILY_TOOL_NAMES: &[&str] = &[
     "memory.store",
     "memory_store",
@@ -90,16 +97,26 @@ fn registry_entry(name: &str, route: &Route) -> Value {
 
 /// Returns the curated tool registry as JSON objects suitable for an MCP
 /// `tools/list` response.
+///
+/// Every entry is emitted under its underscore-normalised name (`.` → `_`)
+/// so VS Code's MCP client accepts it. Because `DAILY_TOOL_NAMES` lists both
+/// the canonical dot-form and the underscore alias for some tools, entries are
+/// deduplicated by resolved route so each tool appears exactly once.
 pub fn registry() -> Vec<Value> {
+    let mut seen: HashSet<String> = HashSet::new();
     DAILY_TOOL_NAMES
         .iter()
-        .filter_map(|name| {
-            find_by_name(name)
-                .map(|route| registry_entry(name, route))
-                .or_else(|| {
-                    tracing::warn!(tool = %name, "daily MCP tool is missing from route registry");
-                    None
-                })
+        .filter_map(|&name| {
+            let route = find_by_name(name).or_else(|| {
+                tracing::warn!(tool = %name, "daily MCP tool is missing from route registry");
+                None
+            })?;
+            let emit_name = route.name.replace('.', "_");
+            if seen.insert(emit_name.clone()) {
+                Some(registry_entry(&emit_name, route))
+            } else {
+                None
+            }
         })
         .collect()
 }

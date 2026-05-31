@@ -9,7 +9,7 @@
 pub mod tools;
 pub mod transport;
 
-use kleos_client::Client;
+use kleos_client::{find_by_name, Client};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -76,11 +76,54 @@ fn request_id(req: &Value) -> Option<Value> {
 /// Forwards one JSON-RPC request to the server-side POST /mcp endpoint.
 /// Returns the server's response, or None for notifications.
 /// On transport errors, wraps the error as a JSON-RPC error envelope.
+///
+/// `tools/list` is served from the local registry so VS Code receives
+/// underscore-named tools (its validator rejects dot-notation names).
+/// `tools/call` translates alias names back to canonical dot-names
+/// before forwarding so the upstream server can dispatch them.
 #[tracing::instrument(skip(app, req), fields(method = req.get("method").and_then(|v| v.as_str()).unwrap_or("")))]
 pub async fn handle_jsonrpc(app: &App, req: Value) -> Option<Value> {
     let id = request_id(&req);
-    match app.client.post_mcp(&req).await {
-        Ok(resp) => resp,
-        Err(e) => id.map(|id| error_response(id, -32603, &e)),
+    let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("");
+
+    match method {
+        "tools/list" => {
+            // Serve the curated registry. All names are underscore-normalised
+            // so VS Code's validator accepts them; tools/call translates back.
+            let tools = tools::registry();
+            id.map(|id| {
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "tools": tools }
+                })
+            })
+        }
+        "tools/call" => {
+            // Translate alias name (e.g. "tasks_list") to canonical dot-name
+            // (e.g. "tasks.list") so the upstream server can dispatch it.
+            let mut forwarded = req.clone();
+            if let Some(name) = forwarded
+                .pointer("/params/name")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+            {
+                if let Some(route) = find_by_name(&name) {
+                    if route.name != name {
+                        if let Some(params) = forwarded.get_mut("params") {
+                            params["name"] = json!(route.name);
+                        }
+                    }
+                }
+            }
+            match app.client.post_mcp(&forwarded).await {
+                Ok(resp) => resp,
+                Err(e) => id.map(|id| error_response(id, -32603, &e)),
+            }
+        }
+        _ => match app.client.post_mcp(&req).await {
+            Ok(resp) => resp,
+            Err(e) => id.map(|id| error_response(id, -32603, &e)),
+        },
     }
 }
