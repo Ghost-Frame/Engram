@@ -1841,10 +1841,10 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
         })
         .await?;
     let skills: i64 = db
-        .read(|conn| {
+        .read(move |conn| {
             Ok(conn.query_row(
-                "SELECT COUNT(*) FROM skill_records",
-                rusqlite::params![],
+                "SELECT COUNT(*) FROM skill_records WHERE user_id = ?1",
+                rusqlite::params![user_id],
                 |row| row.get(0),
             )?)
         })

@@ -33,13 +33,14 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
 /// Correct a potentially misspelled skill ID against known skill names.
 /// Returns the best match name if edit distance <= 3, or prefix match.
 #[tracing::instrument(skip(db), fields(name = %name, user_id))]
-pub async fn correct_skill_id(db: &Database, name: &str, _user_id: i64) -> Result<Option<String>> {
+pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result<Option<String>> {
     let name = name.to_string();
     db.read(move |conn| {
-        let mut stmt = conn.prepare("SELECT name FROM skill_records WHERE is_active = 1")?;
+        let mut stmt =
+            conn.prepare("SELECT name FROM skill_records WHERE is_active = 1 AND user_id = ?1")?;
 
         let names: Vec<String> = stmt
-            .query_map(params![], |row| row.get(0))?
+            .query_map(params![user_id], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -138,14 +139,14 @@ pub async fn persist_analysis(
 
 /// Get usage stats for skills (underused or failing).
 #[tracing::instrument(skip(db), fields(user_id))]
-pub async fn get_usage_stats(db: &Database, _user_id: i64) -> Result<serde_json::Value> {
+pub async fn get_usage_stats(db: &Database, user_id: i64) -> Result<serde_json::Value> {
     db.read(move |conn| {
-        // Underused: active skills with < 5 executions
+        // Underused: active skills with < 5 executions, scoped to the owner.
         let mut stmt = conn.prepare(
-            "SELECT id, name, execution_count, trust_score FROM skill_records WHERE is_active = 1 AND execution_count < 5 ORDER BY execution_count ASC LIMIT 20"
+            "SELECT id, name, execution_count, trust_score FROM skill_records WHERE is_active = 1 AND user_id = ?1 AND execution_count < 5 ORDER BY execution_count ASC LIMIT 20"
         )?;
 
-        let underused: Vec<serde_json::Value> = stmt.query_map(params![], |row| {
+        let underused: Vec<serde_json::Value> = stmt.query_map(params![user_id], |row| {
             Ok(serde_json::json!({
                 "id": row.get::<_, i64>(0)?,
                 "name": row.get::<_, String>(1)?,
@@ -156,12 +157,12 @@ pub async fn get_usage_stats(db: &Database, _user_id: i64) -> Result<serde_json:
         .filter_map(|r| r.ok())
         .collect();
 
-        // Failing: active skills with success_rate < 50%
+        // Failing: active skills with success_rate < 50%, scoped to the owner.
         let mut stmt = conn.prepare(
-            "SELECT id, name, success_count, failure_count, trust_score FROM skill_records WHERE is_active = 1 AND execution_count > 0 AND CAST(success_count AS REAL) / execution_count < 0.5 ORDER BY trust_score ASC LIMIT 20"
+            "SELECT id, name, success_count, failure_count, trust_score FROM skill_records WHERE is_active = 1 AND user_id = ?1 AND execution_count > 0 AND CAST(success_count AS REAL) / execution_count < 0.5 ORDER BY trust_score ASC LIMIT 20"
         )?;
 
-        let failing: Vec<serde_json::Value> = stmt.query_map(params![], |row| {
+        let failing: Vec<serde_json::Value> = stmt.query_map(params![user_id], |row| {
             let sc: i32 = row.get(2)?;
             let fc: i32 = row.get(3)?;
             let total = sc + fc;
@@ -196,7 +197,7 @@ pub async fn get_usage_stats(db: &Database, _user_id: i64) -> Result<serde_json:
 )]
 pub async fn get_failing_skill_candidates(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     min_executions: u32,
     max_success_rate: f32,
     cooldown_secs: u64,
@@ -204,14 +205,18 @@ pub async fn get_failing_skill_candidates(
 ) -> Result<Vec<i64>> {
     let cooldown_clause = format!("-{} seconds", cooldown_secs as i64);
     db.read(move |conn| {
+        // ?5 scopes candidates (and their cooldown children) to the owner so
+        // single-DB mode never auto-fixes another user's skills.
         let sql = "SELECT sr.id FROM skill_records sr \
                    WHERE sr.is_active = 1 \
                      AND sr.is_deprecated = 0 \
+                     AND sr.user_id = ?5 \
                      AND sr.execution_count >= ?1 \
                      AND CAST(sr.success_count AS REAL) / sr.execution_count < ?2 \
                      AND NOT EXISTS ( \
                          SELECT 1 FROM skill_records child \
                          WHERE child.parent_skill_id = sr.id \
+                           AND child.user_id = ?5 \
                            AND child.created_at > datetime('now', ?3) \
                      ) \
                    ORDER BY (CAST(sr.success_count AS REAL) / sr.execution_count) ASC, \
@@ -225,6 +230,7 @@ pub async fn get_failing_skill_candidates(
                     max_success_rate as f64,
                     cooldown_clause,
                     limit as i64,
+                    user_id,
                 ],
                 |row| row.get::<_, i64>(0),
             )?
@@ -302,21 +308,22 @@ pub async fn get_capture_candidates(
 #[tracing::instrument(skip(db), fields(user_id, similarity, limit))]
 pub async fn get_derive_candidates(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     similarity: f32,
     limit: usize,
 ) -> Result<Vec<(Vec<i64>, String)>> {
     let similarity = similarity.clamp(0.0, 1.0) as f64;
     db.read(move |conn| {
         // Load tag sets for every active skill the user owns. Skills with no
-        // tags are excluded; there is nothing for Jaccard to work with.
+        // tags are excluded; there is nothing for Jaccard to work with. The
+        // owner predicate keeps single-DB mode from pairing across users.
         let mut stmt = conn.prepare(
             "SELECT sr.id, sr.name, st.tag \
                  FROM skill_records sr \
                  INNER JOIN skill_tags st ON st.skill_id = sr.id \
-                 WHERE sr.is_active = 1 AND sr.is_deprecated = 0",
+                 WHERE sr.is_active = 1 AND sr.is_deprecated = 0 AND sr.user_id = ?1",
         )?;
-        let rows = stmt.query_map(params![], |row| {
+        let rows = stmt.query_map(params![user_id], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
