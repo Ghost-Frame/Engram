@@ -46,6 +46,38 @@ fn apply_kleos_auth(
     req
 }
 
+/// Returns whether the signer would authenticate with a cached server session.
+fn would_use_cached_session(state: &SidecarState) -> bool {
+    state
+        .signer
+        .as_ref()
+        .and_then(|signer| signer.cached_session())
+        .is_some()
+}
+
+/// Clears a cached session when Kleos rejects it so the next request re-signs.
+fn clear_stale_session_after_unauthorized(
+    signer: &Option<Arc<kleos_lib::auth_piv::RequestSigner>>,
+    status: reqwest::StatusCode,
+    used_cached_session: bool,
+    context: &str,
+) -> bool {
+    if status != reqwest::StatusCode::UNAUTHORIZED || !used_cached_session {
+        return false;
+    }
+
+    if let Some(signer) = signer {
+        signer.clear_session();
+        tracing::warn!(
+            context = context,
+            "kleos rejected cached session; cleared it and will retry with fresh signature"
+        );
+        return true;
+    }
+
+    false
+}
+
 /// Capture a server-issued session token into the signer.
 fn capture_kleos_session(state: &SidecarState, resp: &reqwest::Response) {
     if let Some(signer) = &state.signer {
@@ -583,19 +615,41 @@ async fn post_with_fallback(
     let body_bytes = serde_json::to_vec(body).unwrap_or_default();
     let req = apply_kleos_auth(
         state,
-        state.client.post(url).json(body),
+        state.client.post(url.clone()).json(body),
         "POST",
         primary,
         &body_bytes,
     );
+    let used_cached_session = would_use_cached_session(state);
 
-    let response = req.send().await.map_err(|e| {
+    let mut response = req.send().await.map_err(|e| {
         tracing::error!(error = %e, "kleos server request failed");
         (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": "kleos server unreachable" })),
         )
     })?;
+    if clear_stale_session_after_unauthorized(
+        &state.signer,
+        response.status(),
+        used_cached_session,
+        primary,
+    ) {
+        let retry_req = apply_kleos_auth(
+            state,
+            state.client.post(url.clone()).json(body),
+            "POST",
+            primary,
+            &body_bytes,
+        );
+        response = retry_req.send().await.map_err(|e| {
+            tracing::error!(error = %e, "kleos server retry failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "kleos server unreachable" })),
+            )
+        })?;
+    }
     capture_kleos_session(state, &response);
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -610,18 +664,40 @@ async fn post_with_fallback(
         })?;
         let req = apply_kleos_auth(
             state,
-            state.client.post(url).json(body),
+            state.client.post(url.clone()).json(body),
             "POST",
             fallback,
             &body_bytes,
         );
-        let fb_resp = req.send().await.map_err(|e| {
+        let used_cached_session = would_use_cached_session(state);
+        let mut fb_resp = req.send().await.map_err(|e| {
             tracing::error!(error = %e, "kleos server fallback request failed");
             (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({ "error": "kleos server unreachable" })),
             )
         })?;
+        if clear_stale_session_after_unauthorized(
+            &state.signer,
+            fb_resp.status(),
+            used_cached_session,
+            fallback,
+        ) {
+            let retry_req = apply_kleos_auth(
+                state,
+                state.client.post(url.clone()).json(body),
+                "POST",
+                fallback,
+                &body_bytes,
+            );
+            fb_resp = retry_req.send().await.map_err(|e| {
+                tracing::error!(error = %e, "kleos server fallback retry failed");
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": "kleos server unreachable" })),
+                )
+            })?;
+        }
         capture_kleos_session(state, &fb_resp);
         return Ok(fb_resp);
     }
@@ -1077,7 +1153,11 @@ async fn flush_observations(
             // captured clones rather than a &SidecarState reference, which
             // cannot cross the async closure boundary).
             let batch_body = serde_json::to_vec(&batch_req).unwrap_or_default();
-            let mut req = client.post(url).json(&batch_req);
+            let mut req = client.post(url.clone()).json(&batch_req);
+            let used_cached_session = signer
+                .as_ref()
+                .and_then(|s| s.cached_session())
+                .is_some();
             if let Some(ref s) = signer {
                 if let Some(session_tok) = s.cached_session() {
                     req = req.header("X-Kleos-Session", session_tok);
@@ -1096,10 +1176,39 @@ async fn flush_observations(
                 req = req.header("Authorization", format!("Bearer {}", key));
             }
 
-            let response = req.send().await.map_err(|e| {
+            let mut response = req.send().await.map_err(|e| {
                 tracing::warn!(session_id = %sid, error = %e, "batch flush: kleos unreachable");
                 e.to_string()
             })?;
+            if clear_stale_session_after_unauthorized(
+                &signer,
+                response.status(),
+                used_cached_session,
+                "/batch",
+            ) {
+                let mut retry_req = client.post(url.clone()).json(&batch_req);
+                if let Some(ref s) = signer {
+                    match s.sign_request("POST", "/batch", "", &batch_body) {
+                        Ok(signed) => retry_req = signed.apply_headers(retry_req),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "batch flush: retry signing failed; using bearer"
+                            );
+                            if let Some(ref key) = api_key {
+                                retry_req =
+                                    retry_req.header("Authorization", format!("Bearer {}", key));
+                            }
+                        }
+                    }
+                } else if let Some(ref key) = api_key {
+                    retry_req = retry_req.header("Authorization", format!("Bearer {}", key));
+                }
+                response = retry_req.send().await.map_err(|e| {
+                    tracing::warn!(session_id = %sid, error = %e, "batch flush: kleos retry unreachable");
+                    e.to_string()
+                })?;
+            }
 
             // Capture any session token issued by the server.
             if let Some(ref s) = signer {
