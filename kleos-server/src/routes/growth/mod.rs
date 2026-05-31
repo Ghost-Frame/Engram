@@ -35,12 +35,12 @@ async fn reflect_handler(
 
 // SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 async fn observations_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<ObservationsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
-    let observations: Vec<GrowthObservation> = list_observations(&db, limit).await?;
+    let observations: Vec<GrowthObservation> = list_observations(&db, auth.user_id, limit).await?;
     let count = observations.len();
     Ok(Json(
         json!({ "observations": observations, "count": count }),

@@ -15,19 +15,23 @@ use crate::{EngError, Result};
 use rusqlite::OptionalExtension;
 use tracing::{info, warn};
 
-#[tracing::instrument(skip(db), fields(limit))]
-/// Lists recent growth observations for the requested limit.
-pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<GrowthObservation>> {
+#[tracing::instrument(skip(db), fields(user_id, limit))]
+/// Lists recent growth observations owned by `user_id` for the requested limit.
+pub async fn list_observations(
+    db: &Database,
+    user_id: i64,
+    limit: usize,
+) -> Result<Vec<GrowthObservation>> {
     db.read(move |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, content, source, importance, created_at \
                  FROM memories \
-                 WHERE category = 'growth' AND is_forgotten = 0 \
+                 WHERE category = 'growth' AND is_forgotten = 0 AND user_id = ?2 \
                  ORDER BY created_at DESC LIMIT ?1",
         )?;
 
         let observations = stmt
-            .query_map(rusqlite::params![limit as i64], |row| {
+            .query_map(rusqlite::params![limit as i64, user_id], |row| {
                 Ok(GrowthObservation {
                     id: row.get(0)?,
                     content: row.get(1)?,
@@ -49,8 +53,9 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
     db.write(move |conn| {
         let result: Option<(String, String)> = conn
             .query_row(
-                "SELECT content, source FROM memories WHERE id = ?1 AND category = 'growth'",
-                rusqlite::params![observation_id],
+                "SELECT content, source FROM memories \
+                 WHERE id = ?1 AND category = 'growth' AND user_id = ?2",
+                rusqlite::params![observation_id, user_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
@@ -61,11 +66,11 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
 
         conn.execute(
             "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-             source_count, is_static, is_forgotten, confidence, status, \
+             source_count, is_static, is_forgotten, confidence, status, user_id, \
              created_at, updated_at) \
-             VALUES (?1, 'insight', ?2, 8, 1, 1, 1, 1, 0, 1.0, 'approved', \
+             VALUES (?1, 'insight', ?2, 8, 1, 1, 1, 1, 0, 1.0, 'approved', ?3, \
              datetime('now'), datetime('now'))",
-            rusqlite::params![content, source],
+            rusqlite::params![content, source, user_id],
         )?;
 
         Ok(conn.last_insert_rowid())

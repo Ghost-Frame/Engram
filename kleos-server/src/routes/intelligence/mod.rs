@@ -621,12 +621,12 @@ async fn predictive_patterns_handler(
 /// GET /intelligence/predictive/sequences -- mine recent memory sequences for repeated bigrams within a time window.
 #[tracing::instrument(skip_all)]
 async fn predictive_sequences_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<SequencesBody>,
 ) -> Result<Json<Value>, AppError> {
     let window_mins = body.window_mins.unwrap_or(60).clamp(1, 24 * 60);
-    let patterns = detect_sequence_patterns(&db, window_mins).await?;
+    let patterns = detect_sequence_patterns(&db, auth.user_id, window_mins).await?;
     Ok(Json(
         json!({ "patterns": patterns, "window_mins": window_mins, "count": patterns.len() }),
     ))
