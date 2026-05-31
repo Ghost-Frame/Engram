@@ -294,6 +294,14 @@ impl Client {
         let resp = self.execute(&http, "GET", path, None, None).await?;
         self.capture_session(&resp);
         let status = resp.status();
+        // Self-heal: a stale/invalid session token returns 401. Clear it (in
+        // memory and on disk) so the next invocation re-signs instead of
+        // resending the dead token forever.
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            if let Some(signer) = &self.signer {
+                signer.clear_session();
+            }
+        }
         let text = resp.text().await.unwrap_or_default();
         if status.is_success() || status.as_u16() == 404 {
             Ok(serde_json::from_str(&text).unwrap_or(json!({})))
@@ -325,6 +333,12 @@ impl Client {
             .await?;
         self.capture_session(&resp);
         let status = resp.status();
+        // Self-heal: clear a stale/invalid session on 401 so the next call re-signs.
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            if let Some(signer) = &self.signer {
+                signer.clear_session();
+            }
+        }
         let text = resp.text().await.unwrap_or_default();
         if status.is_success() {
             Ok(serde_json::from_str(&text).unwrap_or(json!({"ok": true})))

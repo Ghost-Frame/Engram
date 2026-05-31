@@ -269,9 +269,41 @@ async fn handle_session_start(client: &Client) {
         Err(_) => String::new(),
     };
 
+    // Living prompt: the brain-aware context built by build_living_prompt on the
+    // server. This is the primary content -- the Gemini hook already uses this path;
+    // the Claude hook previously only carried policy rules + growth, leaving the
+    // block empty whenever the operator had no mandatory rules configured.
+    let living_text = match client
+        .post_with_timeout(
+            "/prompt/generate",
+            json!({
+                "agent": "claude-code",
+                "task": "session-bootstrap agent-rules infrastructure active-tasks recent-decisions",
+                "include_brain": true,
+                "include_growth": true,
+                "include_personality": true,
+            }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    {
+        Ok(v) => v
+            .get("prompt")
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_string(),
+        Err(_) => String::new(),
+    };
+
     let rules = fetch_mandatory_rules(client).await;
     let mut ctx = String::from("=== EIDOLON LIVING CONTEXT ===\n\n");
-    ctx.push_str(&rules);
+    if !living_text.is_empty() {
+        ctx.push_str(&living_text);
+    }
+    if !rules.is_empty() {
+        ctx.push_str("\n\n--- Mandatory Rules ---\n");
+        ctx.push_str(&rules);
+    }
     if !growth_text.is_empty() {
         ctx.push_str("\n\n--- Growth Context ---\n");
         ctx.push_str(&growth_text);

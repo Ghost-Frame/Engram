@@ -100,9 +100,32 @@ async fn post_prompt_generate(
         "You are {agent}, an agent working under the Kleos memory system. Be concise, accurate, and cite memories when useful."
     ));
 
+    // Embed the query once up front. hybrid_search only runs its semantic
+    // channel when req.embedding is Some -- without it, recall degrades to FTS
+    // over the raw task string (which for bootstrap queries is a keyword salad
+    // that matches little). The /search route does the same embed-then-search.
+    // Helper closure keeps each SearchRequest's embedding independent.
+    let embed_query = |text: &str| {
+        let text = text.to_string();
+        let state = state.clone();
+        async move {
+            match state.current_embedder().await {
+                Some(embedder) => match embedder.embed(&text).await {
+                    Ok(emb) => Some(emb),
+                    Err(e) => {
+                        tracing::warn!("prompt/generate embedding failed: {}", e);
+                        None
+                    }
+                },
+                None => None,
+            }
+        }
+    };
+
     if include_personality {
         let personality_req = SearchRequest {
             query: format!("{agent} personality"),
+            embedding: embed_query(&format!("{agent} personality")).await,
             limit: Some(3),
             user_id: Some(auth.effective_user_id()),
             category: Some("personality".into()),
@@ -127,8 +150,22 @@ async fn post_prompt_generate(
     }
 
     if include_memories {
+        // Use a recall-oriented query rather than the raw bootstrap task. The
+        // session-start task ("session-bootstrap agent-rules infrastructure
+        // active-tasks recent-decisions") is a label, not something stored
+        // memories phrase themselves as; expanding it improves both the
+        // embedding and the FTS match.
+        let recall_query = if task.contains("session-bootstrap") {
+            format!(
+                "{task} infrastructure servers credentials architecture \
+                 recent decisions active tasks past failures"
+            )
+        } else {
+            task.to_string()
+        };
         let memory_req = SearchRequest {
-            query: task.to_string(),
+            query: recall_query.clone(),
+            embedding: embed_query(&recall_query).await,
             limit: Some(memory_limit),
             user_id: Some(auth.effective_user_id()),
             ..Default::default()

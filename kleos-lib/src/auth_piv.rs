@@ -977,15 +977,61 @@ impl RequestSigner {
         &self.model_label
     }
 
-    pub fn cached_session(&self) -> Option<String> {
-        self.session_token.lock().unwrap().clone()
+    /// Path to the on-disk session cache for this identity. Scoped by
+    /// `identity_hash` so distinct agents/models never share a token, placed in
+    /// `$XDG_RUNTIME_DIR` (tmpfs, cleared on logout) and falling back to a
+    /// user-private temp dir. Disk persistence lets short-lived hook processes
+    /// reuse a server-issued `X-Kleos-Session` instead of each re-signing.
+    fn session_file_path(&self) -> Option<std::path::PathBuf> {
+        let base = std::env::var("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .ok()
+            .or_else(dirs::cache_dir)
+            .unwrap_or_else(std::env::temp_dir);
+        Some(base.join(format!("kleos-session-{}", &self.identity_hash)))
     }
 
+    /// Returns the cached session token: the in-process copy if present,
+    /// otherwise the on-disk copy (which is then promoted into memory).
+    pub fn cached_session(&self) -> Option<String> {
+        if let Some(tok) = self.session_token.lock().unwrap().clone() {
+            return Some(tok);
+        }
+        let path = self.session_file_path()?;
+        let tok = std::fs::read_to_string(&path).ok()?;
+        let tok = tok.trim();
+        if tok.is_empty() {
+            return None;
+        }
+        *self.session_token.lock().unwrap() = Some(tok.to_string());
+        Some(tok.to_string())
+    }
+
+    /// Caches a session token both in process and on disk (0600).
     pub fn set_session(&self, token: String) {
+        if let Some(path) = self.session_file_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            // Write then tighten perms; best-effort, never fatal.
+            if std::fs::write(&path, &token).is_ok() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                }
+            }
+        }
         *self.session_token.lock().unwrap() = Some(token);
     }
 
+    /// Clears the session token from memory and disk. Called on a 401 so a
+    /// stale on-disk token self-heals (the next request re-signs).
     pub fn clear_session(&self) {
+        if let Some(path) = self.session_file_path() {
+            let _ = std::fs::remove_file(&path);
+        }
         *self.session_token.lock().unwrap() = None;
     }
 
