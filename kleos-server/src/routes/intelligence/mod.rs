@@ -274,13 +274,15 @@ async fn scan_contradictions_handler(
 
 // --- Decomposition ---
 
+/// POST /intelligence/decompose/:memory_id -- split an owned memory into
+/// atomic child facts.
 #[tracing::instrument(skip_all)]
 async fn decompose_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let child_ids = decompose(&db, memory_id).await?;
+    let child_ids = decompose(&db, memory_id, auth.user_id).await?;
     Ok(Json(json!({ "child_ids": child_ids })))
 }
 
