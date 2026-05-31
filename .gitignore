@@ -49,7 +49,7 @@ __pycache__/
 .persona/
 GROWTH.md
 
-# Frameshift persona system (per-session activation state, never in project repos)
+# Local agent tooling state (per-session activation, never in project repos)
 frameshift.toml
 frameshift.lock
 .wrangler/

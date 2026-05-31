@@ -6,10 +6,30 @@ It is intentionally smaller than the full `kleos-client::ROUTES` table. The goal
 to expose the tools agents should use constantly while hiding admin, generated, and
 low-value maintenance routes from normal MCP clients.
 
+If you need client-specific configuration examples for Claude Code, Cursor, or
+OpenCode, read [`MCP_CLIENT_SETUP.md`](./MCP_CLIENT_SETUP.md).
+
+### Transport model
+
+- `kleos-mcp` is a thin stdio/HTTP bridge that forwards JSON-RPC requests to the
+  server-side `POST /mcp` endpoint.
+- The server-side endpoint owns dispatch, auth, scope checks, rate limiting,
+  audit logging, and the tool registry.
+- The standalone `kleos-mcp` binary must have either a local signing identity
+  or `KLEOS_API_KEY` bearer fallback configured before it will start.
+
 ### Important behavior
 
 - Use `POST /mcp` for normal MCP `tools/list` and `tools/call` traffic.
 - Use `GET /mcp/schema` to inspect the currently exposed MCP tool schema.
+- `GET /mcp/schema` is auth-gated like the rest of the authenticated API
+  routes; it is not a public discovery endpoint.
+- Prefer dotted tool names as the canonical form. Underscore and
+  `services.*` spellings exist as compatibility aliases for older client setups.
+- The server-side `POST /mcp` endpoint can be disabled with `KLEOS_MCP_ENABLED=0`.
+- If the optional `kleos-mcp` HTTP transport is compiled in, it does not add
+  client auth at the front door. Bind it only to loopback or another trusted
+  private network boundary.
 - Do not rely on `mcp_schema.dispatch`.
   That helper path was intentionally removed from the server and is no longer
   part of the advertised route metadata.

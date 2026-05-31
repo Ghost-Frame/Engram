@@ -4,6 +4,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
+use crate::brain_absorber::absorb_activity_to_brain;
 use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
@@ -11,6 +12,8 @@ use kleos_lib::conversations::{
     self, BulkInsertRequest, CreateConversationRequest, SearchMessagesRequest,
     UpdateConversationRequest, UpsertConversationRequest,
 };
+use kleos_lib::memory;
+use kleos_lib::memory::types::StoreRequest;
 
 mod types;
 use types::{GetConversationParams, ListConversationsParams, ListMessagesParams, MessageBody};
@@ -23,6 +26,7 @@ pub fn router() -> Router<AppState> {
             get(get_one).patch(update).delete(remove),
         )
         .route("/conversations/{id}/messages", post(add_msg).get(list_msgs))
+        .route("/conversations/{id}/memorize", post(memorize))
         .route("/conversations/bulk", post(bulk_insert))
         .route("/conversations/upsert", post(upsert))
         .route("/messages/search", post(search_msgs))
@@ -169,4 +173,79 @@ async fn search_msgs(
 ) -> Result<Json<Value>, AppError> {
     let results = conversations::search_messages(&db, body, auth.user_id).await?;
     Ok(Json(json!({ "messages": results })))
+}
+
+// POST /conversations/{id}/memorize
+// Stores the conversation transcript as a searchable memory and absorbs it
+// into the Hopfield brain. Idempotent: calling it multiple times creates
+// multiple memory versions (handled by the dedup/boost logic in store).
+async fn memorize(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let conv = conversations::get_conversation_for_user(&db, id, auth.user_id).await?;
+    let messages = conversations::list_messages(&db, id, auth.user_id, 1000, 0).await?;
+
+    if messages.is_empty() {
+        return Ok(Json(json!({ "memorized": false, "reason": "no messages" })));
+    }
+
+    // Format as a readable transcript.
+    let header = match &conv.title {
+        Some(t) => format!("[Conversation with {}: {}]\n", conv.agent, t),
+        None => format!("[Conversation with {}]\n", conv.agent),
+    };
+    let body: String = messages
+        .iter()
+        .map(|m| format!("[{}]: {}", m.role, m.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let transcript = format!("{}{}", header, body);
+
+    let embedder = state.current_embedder().await;
+    let req = StoreRequest {
+        content: transcript.clone(),
+        category: "conversation".to_string(),
+        source: conv.agent.clone(),
+        importance: 5,
+        user_id: Some(auth.user_id),
+        ..StoreRequest::default()
+    };
+
+    let result = if let Some(ref e) = embedder {
+        memory::store_with_chunks(&db, e.as_ref(), req).await?
+    } else {
+        memory::store(&db, req, None, false).await?
+    };
+
+    // Brain absorb: fire-and-forget.
+    if let Some(brain) = state.brain.clone() {
+        let embedder = state.embedder.clone();
+        let memory_id = result.id;
+        let user_id = auth.user_id;
+        let agent = conv.agent.clone();
+        if let Ok(permit) = state.brain_absorb_sem.clone().acquire_owned().await {
+            let shutdown = state.shutdown_token.clone();
+            let mut bg = state.background_tasks.lock().await;
+            bg.spawn(async move {
+                let _permit = permit;
+                tokio::select! {
+                    _ = shutdown.cancelled() => {}
+                    _ = absorb_activity_to_brain(
+                        brain, embedder, user_id, memory_id, transcript,
+                        "conversation".to_string(), 5.0, agent,
+                    ) => {}
+                }
+            });
+        }
+    }
+
+    Ok(Json(json!({
+        "memorized": true,
+        "memory_id": result.id,
+        "message_count": messages.len(),
+        "duplicate": result.duplicate_of.is_some(),
+    })))
 }

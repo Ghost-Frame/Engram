@@ -19,8 +19,10 @@ use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 
 use crate::{
+    brain_absorber::absorb_activity_to_brain,
     error::AppError,
     extractors::{Auth, ResolvedDb},
+    routes::fsrs::record_recall_good,
     state::AppState,
 };
 
@@ -113,6 +115,9 @@ async fn store_memory(
 
     req.user_id = Some(auth.user_id);
     let content = req.content.clone();
+    let brain_category = req.category.clone();
+    let brain_source = req.source.clone();
+    let brain_importance = req.importance as f64;
     let inline_artifacts = req.artifacts.take();
     let embedder = state.current_embedder().await;
     let pre_embedded = req.embedding.is_some();
@@ -249,6 +254,8 @@ async fn store_memory(
         });
     }
 
+    let content_for_brain = content.clone();
+
     // Background: extract and link named entities from the new memory.
     // Uses the same fact_extract_sem semaphore (H-005) and shutdown token (M-008).
     // Runs in a separate spawn from fact_extract so a failure in one does not
@@ -301,6 +308,34 @@ async fn store_memory(
                 } => {}
             }
         });
+    }
+
+    // Background: absorb new memory into the Hopfield brain.
+    // Fire-and-forget, best-effort — never fails the store response.
+    // Bounded by brain_absorb_sem (H-005); shutdown-propagated via shutdown_token (M-008).
+    if let Some(brain) = state.brain.clone() {
+        let embedder = state.embedder.clone();
+        let memory_id = result.id;
+        let user_id = auth.user_id;
+        match state.brain_absorb_sem.clone().acquire_owned().await {
+            Ok(permit) => {
+                let shutdown = state.shutdown_token.clone();
+                let mut bg = state.background_tasks.lock().await;
+                bg.spawn(async move {
+                    let _permit = permit;
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            tracing::debug!("background brain_absorb drained on shutdown");
+                        }
+                        _ = absorb_activity_to_brain(
+                            brain, embedder, user_id, memory_id, content_for_brain,
+                            brain_category, brain_importance, brain_source,
+                        ) => {}
+                    }
+                });
+            }
+            Err(_) => tracing::warn!("brain_absorb semaphore closed; skipping brain absorption"),
+        }
     }
 
     let mem = memory::get(&db, result.id, auth.user_id).await?;
@@ -692,6 +727,18 @@ async fn recall(
     }
 
     output.truncate(limit);
+
+    // Background: update FSRS state (grade=Good) for every recalled memory.
+    // Fire-and-forget — never delays or fails the recall response.
+    {
+        let recalled_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
+        let db_clone = db.clone();
+        tokio::spawn(async move {
+            for id in recalled_ids {
+                record_recall_good(&db_clone, id).await;
+            }
+        });
+    }
 
     // Batch-load artifact summaries for all recalled memories.
     let recall_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();

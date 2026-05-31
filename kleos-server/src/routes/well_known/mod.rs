@@ -5,7 +5,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::state::AppState;
 
@@ -23,6 +23,21 @@ fn org_name() -> String {
     std::env::var("KLEOS_ORG_NAME").unwrap_or_else(|_| "Kleos".into())
 }
 
+/// Count the currently advertised curated MCP tools.
+fn curated_mcp_tool_count() -> usize {
+    kleos_mcp::tools::registry().len()
+}
+
+/// Build the MCP registry descriptor used by public discovery metadata.
+fn mcp_registry_descriptor() -> Value {
+    json!({
+        "transport": "stdio",
+        "binary": "kleos-mcp",
+        "tools": curated_mcp_tool_count()
+    })
+}
+
+/// Build the public well-known route table.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/.well-known/agent-card.json", get(agent_card))
@@ -30,6 +45,7 @@ pub fn router() -> Router<AppState> {
         .route("/llms.txt", get(llms_txt))
 }
 
+/// Return the A2A-style agent card for this Kleos instance.
 async fn agent_card() -> impl IntoResponse {
     let url = public_url();
     let card = json!({
@@ -117,6 +133,7 @@ async fn agent_card() -> impl IntoResponse {
     )
 }
 
+/// Return commerce and machine-discovery metadata for agent consumers.
 async fn agent_commerce(State(state): State<AppState>) -> impl IntoResponse {
     // Build service list from pricing table if available, otherwise static.
     let services = build_service_descriptors(&state).await;
@@ -139,11 +156,7 @@ async fn agent_commerce(State(state): State<AppState>) -> impl IntoResponse {
         "registry": {
             "openapi": "/openapi.json",
             "a2a_agent_card": "/.well-known/agent-card.json",
-            "mcp": {
-                "transport": "stdio",
-                "binary": "kleos-mcp",
-                "tools": 465
-            }
+            "mcp": mcp_registry_descriptor()
         }
     });
 
@@ -157,6 +170,7 @@ async fn agent_commerce(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
+/// Build service descriptors from pricing rows, falling back to static defaults.
 async fn build_service_descriptors(state: &AppState) -> serde_json::Value {
     // Try to read from pricing table; fall back to static definitions.
     let pricing = kleos_lib::commerce::pricing::list_service_pricing(&state.db).await;
@@ -234,9 +248,10 @@ async fn build_service_descriptors(state: &AppState) -> serde_json::Value {
     ])
 }
 
+/// Return a compact `llms.txt` discovery document.
 async fn llms_txt() -> Response {
     let org = org_name();
-    let tools = 465;
+    let tools = curated_mcp_tool_count();
     let text = format!(
         r#"# Kleos
 
@@ -273,4 +288,42 @@ Bearer token (API key) or x402 pay-per-call (USDC on Base L2).
         .header(header::CACHE_CONTROL, "public, max-age=3600")
         .body(axum::body::Body::from(text))
         .unwrap_or_else(|_| Response::new(axum::body::Body::empty()))
+}
+
+#[cfg(test)]
+/// Unit tests for public well-known discovery metadata.
+mod tests {
+    use super::*;
+
+    /// Verifies that commerce metadata advertises the live curated MCP registry size.
+    #[test]
+    fn mcp_registry_descriptor_uses_curated_count() {
+        let descriptor = mcp_registry_descriptor();
+        assert_eq!(descriptor["transport"], "stdio");
+        assert_eq!(descriptor["binary"], "kleos-mcp");
+        assert_eq!(
+            descriptor["tools"].as_u64(),
+            Some(curated_mcp_tool_count() as u64),
+            "commerce metadata should use the live curated registry count"
+        );
+    }
+
+    /// Verifies that `llms.txt` advertises the live curated MCP registry size.
+    #[tokio::test]
+    async fn llms_txt_uses_curated_mcp_registry_count() {
+        let response = llms_txt().await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("llms.txt body should be readable");
+        let body = String::from_utf8(bytes.to_vec()).expect("llms.txt should be utf-8");
+        let expected = format!(
+            "{} tools via stdio transport",
+            kleos_mcp::tools::registry().len()
+        );
+
+        assert!(
+            body.contains(&expected),
+            "llms.txt should contain live registry count {expected:?}, got {body:?}"
+        );
+    }
 }

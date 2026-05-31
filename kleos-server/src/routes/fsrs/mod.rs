@@ -349,6 +349,104 @@ async fn recall_due(
     })))
 }
 
+/// Fire-and-forget FSRS update called after a successful recall.
+/// Grades the memory as `Good` (3) — "retrieved, no effort".
+/// Errors are logged as warnings and never propagate to the caller.
+pub async fn record_recall_good(db: &kleos_lib::db::Database, memory_id: i64) {
+    let row = db
+        .read(move |conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, \
+                     fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, \
+                     fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
+                    params![memory_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<f64>>(0)?,
+                            row.get::<_, Option<f64>>(1)?,
+                            row.get::<_, Option<f64>>(2)?,
+                            row.get::<_, Option<f64>>(3)?,
+                            row.get::<_, Option<i64>>(4)?,
+                            row.get::<_, Option<i64>>(5)?,
+                            row.get::<_, Option<i64>>(6)?,
+                            row.get::<_, Option<String>>(7)?,
+                            row.get::<_, String>(8)?,
+                        ))
+                    },
+                )
+                .optional()?)
+        })
+        .await;
+
+    let row = match row {
+        Ok(Some(r)) => r,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(memory_id, "fsrs record_recall_good: read failed: {e}");
+            return;
+        }
+    };
+
+    let (stability, difficulty, storage, retrieval, ls_int, reps, lapses, last_review, created_at) =
+        row;
+    let current_state = stability.map(|s| {
+        let learning_state = match ls_int.unwrap_or(0) {
+            1 => fsrs::LearningState::Learning,
+            2 => fsrs::LearningState::Review,
+            3 => fsrs::LearningState::Relearning,
+            _ => fsrs::LearningState::New,
+        };
+        fsrs::FsrsState {
+            stability: s as f32,
+            difficulty: difficulty.unwrap_or(5.0) as f32,
+            storage_strength: storage.unwrap_or(1.0) as f32,
+            retrieval_strength: retrieval.unwrap_or(1.0) as f32,
+            learning_state,
+            reps: reps.unwrap_or(0) as i32,
+            lapses: lapses.unwrap_or(0) as i32,
+            last_review_at: last_review.unwrap_or_default(),
+        }
+    });
+
+    let ref_str = current_state
+        .as_ref()
+        .map(|s| s.last_review_at.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&created_at);
+    let elapsed = calculate_elapsed_days(ref_str);
+    let new_state = fsrs::process_review(current_state.as_ref(), fsrs::Rating::Good, elapsed);
+
+    let ls_new = new_state.learning_state as i64;
+    let s_new = new_state.stability as f64;
+    let d_new = new_state.difficulty as f64;
+    let ss_new = new_state.storage_strength as f64;
+    let rs_new = new_state.retrieval_strength as f64;
+    let reps_new = new_state.reps as i64;
+    let lapses_new = new_state.lapses as i64;
+    let last_new = new_state.last_review_at.clone();
+
+    if let Err(e) = db
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET fsrs_stability = ?1, fsrs_difficulty = ?2, \
+                 fsrs_storage_strength = ?3, fsrs_retrieval_strength = ?4, \
+                 fsrs_learning_state = ?5, fsrs_reps = ?6, fsrs_lapses = ?7, \
+                 fsrs_last_review_at = ?8, \
+                 access_count = access_count + 1, last_accessed_at = datetime('now') \
+                 WHERE id = ?9",
+                params![
+                    s_new, d_new, ss_new, rs_new, ls_new, reps_new, lapses_new, last_new, memory_id
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    {
+        tracing::warn!(memory_id, "fsrs record_recall_good: write failed: {e}");
+    }
+}
+
 fn calculate_elapsed_days(date_str: &str) -> f32 {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let normalized = if date_str.contains('Z') {

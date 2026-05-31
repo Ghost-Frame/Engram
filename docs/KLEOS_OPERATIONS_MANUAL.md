@@ -64,7 +64,8 @@ Purpose:
 
 - Main human and agent client for the Kleos HTTP API.
 - Covers memory, search, ingestion, jobs, skills, credentials, handoffs,
-  Claude hooks, and identity enrollment.
+  Claude hooks, identity enrollment, bearer/API key management, MCP token
+  management, multi-user enrollment helpers, artifacts, and admin workflows.
 
 Authentication model:
 
@@ -420,6 +421,133 @@ How it works:
 
 - Calls `POST /identity-keys/{id}/revoke`.
 
+### Bearer API keys
+
+#### `kleos-cli api-key list`
+
+- Lists bearer API keys visible to the current caller.
+- Admin callers can see all keys; non-admin callers see their own.
+
+#### `kleos-cli api-key create --name NAME [--scopes csv] [--rate-limit N]`
+
+- Creates a new bearer API key.
+- `--scopes` defaults to `read,write`; admin-scoped keys require admin scope on
+  the caller.
+- `--rate-limit` overrides the inherited requests-per-minute cap.
+
+Use for:
+
+- Long-lived HTTP/API access where bearer auth is the right fit.
+
+#### `kleos-cli api-key revoke ID`
+
+- Revokes a bearer API key by numeric ID.
+- Revoking other users' keys requires admin scope.
+
+### MCP direct-auth tokens
+
+#### `kleos-cli mcp-token mint --name NAME [--scopes csv] [--ttl DURATION]`
+
+How it works:
+
+- Mints an identity-signed bearer token in the `kleos.<payload>.<sig>` format.
+- Registers the token with the server and prints the bearer string once.
+- Scopes are strict (`read`, `write`, `admin` only); wildcards are rejected.
+- Default TTL is 30 days; the server enforces the configured maximum TTL cap.
+
+Use for:
+
+- MCP clients that can only send a static `Authorization: Bearer ...` header.
+
+#### `kleos-cli mcp-token list`
+
+- Lists registered MCP direct-auth tokens for the current caller.
+
+#### `kleos-cli mcp-token info JTI`
+
+- Shows metadata for a single MCP token by `jti`.
+
+#### `kleos-cli mcp-token revoke JTI`
+
+- Revokes one MCP token by `jti`.
+
+#### `kleos-cli mcp-token revoke-all`
+
+- Revokes every MCP token for the current caller.
+
+### Multi-user enrollment helpers
+
+#### `kleos-cli user create`
+
+- Creates a new user account on a multi-user Kleos server.
+- Admin-only.
+
+#### `kleos-cli user list`
+
+- Lists server user accounts.
+- Admin-only.
+
+#### `kleos-cli invite create`
+
+- Generates a one-time enrollment invite token for FIDO2 key registration.
+- Intended for multi-user setups where an operator is onboarding another user.
+
+### Artifacts
+
+#### `kleos-cli artifact upload MEMORY_ID FILE [--name TEXT] [--artifact-type TYPE] [--agent NAME]`
+
+- Uploads a file and attaches it to an existing memory record.
+- Defaults the display name to the filename and the artifact type to `file`.
+
+#### `kleos-cli artifact list MEMORY_ID`
+
+- Lists artifacts attached to one memory.
+
+#### `kleos-cli artifact get ARTIFACT_ID`
+
+- Downloads one artifact by ID.
+
+#### `kleos-cli artifact delete ARTIFACT_ID`
+
+- Deletes one artifact by ID.
+
+#### `kleos-cli artifact search QUERY`
+
+- Runs full-text search across artifact names and extracted content.
+
+#### `kleos-cli artifact stats`
+
+- Reports aggregate artifact storage statistics.
+
+### Admin operations
+
+These require admin role, signed requests, and expect long-running maintenance
+windows.
+
+#### `kleos-cli admin backfill-chunks`
+
+- Backfills missing primary and chunk embeddings across all tenants.
+
+#### `kleos-cli admin rebuild-fts`
+
+- Rebuilds the FTS5 index across tenant databases.
+
+#### `kleos-cli admin vector-rebuild-index`
+
+- Rebuilds the Lance ANN index over current vectors.
+
+#### `kleos-cli admin vector-chunk-sync`
+
+- Rebuilds the per-chunk LanceDB index from existing SQLite rows.
+
+#### `kleos-cli admin vector-health`
+
+- Reports Lance, FTS, and per-tenant vector health.
+
+#### `kleos-cli admin vector-sync-replay`
+
+- Drains the `vector_sync_pending` ledger.
+
 ## `kleos-sh`
 
 Synopsis:
@@ -691,6 +819,20 @@ Required input:
 What it does:
 
 - Reads a file and returns an adversarial review prompt plus metadata.
+
+#### `agent-forge comment-check`
+
+Required input:
+
+- `file_path`
+
+What it does:
+
+- Scans one source file for declarations missing a leading comment.
+- Reports total declarations, documented declarations, missing declarations,
+  coverage, and the exact undocumented items.
+- Supports Rust, Python, and common C-family extensions used in the Kleos
+  workspace.
 
 #### `agent-forge checkpoint`
 
@@ -1121,7 +1263,7 @@ Operational notes:
 Synopsis:
 
 ```bash
-kleos-mcp [--transport stdio|http] [--listen ADDR]
+kleos-mcp [--transport stdio|http]
 ```
 
 Purpose:
@@ -1130,20 +1272,29 @@ Purpose:
 
 How it works:
 
-- Loads app configuration from env.
-- Starts stdio transport by default.
-- When compiled with the `http` feature, can also serve over HTTP.
+- Loads `KLEOS_URL` and local auth from the normal Kleos client environment.
+- Refuses to start unless either a signing identity or `KLEOS_API_KEY` bearer
+  fallback is configured.
+- Starts stdio transport by default and forwards JSON-RPC requests to the
+  server-side `POST /mcp` endpoint.
+- When compiled with the `http` feature, also accepts `--listen ADDR` and can
+  serve `/mcp` itself as a thin HTTP bridge.
 
-Tool families exposed:
+Current MCP model:
 
-- memory
-- context
-- graph
-- intelligence
-- services
-- structural
-- skills
-- admin
+- `kleos-mcp` is a transport adapter, not a separate tool implementation layer.
+- The curated daily-driver registry is defined in `kleos-mcp/src/tools.rs` and
+  reused by both `tools/list` and `GET /mcp/schema`.
+- Prefer dotted tool names such as `memory.search` or `activity.report`.
+  Underscore and `services.*` variants are compatibility aliases.
+- The curated surface intentionally excludes admin, generated long-tail, graph,
+  GUI, and stale helper routes such as `mcp_schema.dispatch`.
+
+HTTP transport note:
+
+- The optional HTTP transport has no front-door client auth of its own.
+- Reachability is the trust boundary, so bind it only to loopback, private LAN,
+  or mesh/VPN interfaces.
 
 ## `eidolon-supervisor`
 

@@ -190,7 +190,7 @@ Kleos speaks three protocols:
 | Protocol | Details |
 |----------|---------|
 | **HTTP API** | 56 route modules -- memory, search, graph, coordination, skills, growth, ingestion, approvals, admin. Bearer token or signed-request auth. |
-| **MCP** | 59 tools over stdio. Drop into Claude Code, Cursor, or any MCP-compatible client. |
+| **MCP** | Curated daily-driver tool registry over stdio. Drop into Claude Code, Cursor, or any MCP-compatible client. See `docs/MCP_CLIENT_SETUP.md` for known-good client configs. |
 | **Client SDKs** | TypeScript, Python (Pydantic v2 + httpx), Go (stdlib only). First-party, typed, tested. |
 
 ### Claude Code integration
@@ -352,10 +352,11 @@ Four channels run per query:
 | `kleos-lib` | Core library: memory, search, embeddings, graph, intelligence, services, skills, growth, auth, gate, jobs. Feature-gated `brain` backend. |
 | `kleos-server` | Axum HTTP server. 56 route modules, 8 middleware layers, embedded web GUI. |
 | `kleos-cli` | Command-line client. Memory ops, skill management, handoffs, credential management. |
-| `kleos-mcp` | MCP server. 59 tools across 8 domains. Stdio transport, HTTP behind a feature flag. |
+| `kleos-mcp` | MCP transport bridge. Curated daily-driver registry with compatibility aliases; stdio by default, HTTP behind a feature flag. |
 | `kleos-sidecar` | Session-scoped memory proxy. File watcher, batched flushing, Ollama compression, persistent sessions. |
 | `kleos-cred` | Credential library. YubiKey challenge-response, Argon2id KDF, ECDH agreement, CRED:v3 vault resolution. |
-| `kleos-credd` | Credential daemon. Two-tier auth (master + agent keys), AES-256-GCM encryption, zero-knowledge agent bootstrap. |
+| `kleos-credd` | Base credential daemon. Two-tier auth (master + agent keys), AES-256-GCM encryption, zero-knowledge agent bootstrap. |
+| `kleos-phylaxd` (`phylaxd`) | The credential daemon actually deployed. Composes `kleos-credd`'s base router with Phylax agent-native security policy enforcement; behaves as plain `credd` with no policies set. The `credd` service runs this binary. |
 | `kleos-ingest` | Transcript ingest daemon. PIV/software-key request signing, file watching, LLM summarization, real-time observation streaming. |
 | `agent-forge` | Structured reasoning CLI. 20+ subcommands. Tree-sitter AST parsing for 7 languages. |
 | `eidolon-supervisor` | Session drift detection daemon. Real-time transcript watching, rule-based alerts. |
@@ -385,7 +386,7 @@ The installer (`kleos-install` or `kleos-install-gui`) supports four profiles:
 | Profile | Includes |
 |---------|----------|
 | `Server` | kleos-server, kleos-cli |
-| `Agent Host` | kleos-cli, kleos-sh, agent-forge, eidolon-supervisor, cred, kleos-credd |
+| `Agent Host` | kleos-cli, kleos-sh, agent-forge, eidolon-supervisor, cred, phylaxd |
 | `Full` | Every binary |
 | `Custom` | Pick individual components |
 
