@@ -35,14 +35,19 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 use tracing::{debug, error, warn};
 
+/// Boxed future returned by a registered job handler.
 type JobFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+
+/// Shared callable that executes one job payload.
 type JobHandler = Arc<dyn Fn(Value) -> JobFuture + Send + Sync>;
 
+/// Return the process-wide registry of job handlers keyed by job type.
 fn handlers() -> &'static RwLock<HashMap<String, JobHandler>> {
     static HANDLERS: OnceLock<RwLock<HashMap<String, JobHandler>>> = OnceLock::new();
     HANDLERS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
+/// Ensure the jobs and scheduler lease tables exist.
 #[tracing::instrument(skip(db))]
 pub async fn ensure_schema(db: &Database) -> Result<()> {
     db.write(|conn| {
@@ -52,6 +57,7 @@ pub async fn ensure_schema(db: &Database) -> Result<()> {
     .await
 }
 
+/// Enqueue a pending job and return its row id.
 #[tracing::instrument(skip(db, payload), fields(job_type = %job_type))]
 pub async fn enqueue_job(
     db: &Database,
@@ -71,6 +77,7 @@ pub async fn enqueue_job(
     .await
 }
 
+/// Atomically claim the oldest retryable pending job for execution.
 #[tracing::instrument(skip(db))]
 pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
     // Atomic claim using a transaction: SELECT then UPDATE within a transaction
@@ -134,6 +141,7 @@ pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
     .await
 }
 
+/// Mark a job completed and clear its error state.
 #[tracing::instrument(skip(db))]
 pub async fn complete_job(db: &Database, id: i64) -> Result<()> {
     db.write(move |conn| {
@@ -148,6 +156,7 @@ pub async fn complete_job(db: &Database, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Mark a job permanently failed with the final error message.
 #[tracing::instrument(skip(db, err_msg))]
 pub async fn fail_job(db: &Database, id: i64, err_msg: &str) -> Result<()> {
     let err_msg = err_msg.to_string();
@@ -163,6 +172,7 @@ pub async fn fail_job(db: &Database, id: i64, err_msg: &str) -> Result<()> {
     Ok(())
 }
 
+/// Return a running job to pending state after a retry delay.
 #[tracing::instrument(skip(db, err_msg))]
 pub async fn retry_job(db: &Database, id: i64, err_msg: &str, delay_sec: i64) -> Result<()> {
     let err_msg = err_msg.to_string();
@@ -179,6 +189,7 @@ pub async fn retry_job(db: &Database, id: i64, err_msg: &str, delay_sec: i64) ->
     Ok(())
 }
 
+/// Count jobs by status for operator and health reporting.
 #[tracing::instrument(skip(db))]
 pub async fn get_job_stats(db: &Database) -> Result<JobStats> {
     db.read(|conn| {
@@ -202,6 +213,7 @@ pub async fn get_job_stats(db: &Database) -> Result<JobStats> {
     .await
 }
 
+/// Delete up to one batch of completed jobs older than one hour.
 #[tracing::instrument(skip(db))]
 pub async fn cleanup_completed_jobs(db: &Database) -> Result<u64> {
     db.write(|conn| {
@@ -232,6 +244,7 @@ pub async fn cleanup_jobs(db: &Database, older_than_days: i64) -> Result<u64> {
     .await
 }
 
+/// Requeue jobs that were claimed but abandoned by a dead worker.
 #[tracing::instrument(skip(db))]
 pub async fn recover_stuck_jobs(db: &Database) -> Result<u64> {
     db.write(|conn| {
@@ -245,6 +258,7 @@ pub async fn recover_stuck_jobs(db: &Database) -> Result<u64> {
     .await
 }
 
+/// List failed jobs in reverse completion order.
 #[tracing::instrument(skip(db))]
 pub async fn list_failed_jobs(db: &Database, limit: i64, offset: i64) -> Result<Vec<Job>> {
     db.read(move |conn| {
@@ -274,6 +288,7 @@ pub async fn list_failed_jobs(db: &Database, limit: i64, offset: i64) -> Result<
     .await
 }
 
+/// List pending jobs in FIFO order.
 #[tracing::instrument(skip(db))]
 pub async fn list_pending_jobs(db: &Database, limit: i64, offset: i64) -> Result<Vec<Job>> {
     db.read(move |conn| {
@@ -303,6 +318,7 @@ pub async fn list_pending_jobs(db: &Database, limit: i64, offset: i64) -> Result
     .await
 }
 
+/// List running jobs ordered by claim time.
 #[tracing::instrument(skip(db))]
 pub async fn list_running_jobs(db: &Database) -> Result<Vec<Job>> {
     db.read(|conn| {
@@ -332,6 +348,7 @@ pub async fn list_running_jobs(db: &Database) -> Result<Vec<Job>> {
     .await
 }
 
+/// Count failed jobs for status summaries.
 #[tracing::instrument(skip(db))]
 pub async fn count_failed_jobs(db: &Database) -> Result<i64> {
     db.read(|conn| {
@@ -344,6 +361,7 @@ pub async fn count_failed_jobs(db: &Database) -> Result<i64> {
     .await
 }
 
+/// Move a failed job back to pending for a manual retry.
 #[tracing::instrument(skip(db))]
 pub async fn retry_failed_job(db: &Database, id: i64) -> Result<bool> {
     db.write(move |conn| {
@@ -357,6 +375,7 @@ pub async fn retry_failed_job(db: &Database, id: i64) -> Result<bool> {
     .await
 }
 
+/// Delete failed jobs older than the requested retention window.
 #[tracing::instrument(skip(db))]
 pub async fn purge_failed_jobs(db: &Database, older_than_days: i64) -> Result<u64> {
     // Reject negatives defensively so we never expand the purge window to a
@@ -373,6 +392,7 @@ pub async fn purge_failed_jobs(db: &Database, older_than_days: i64) -> Result<u6
     .await
 }
 
+/// Register an async handler for a job type.
 #[tracing::instrument(skip(handler), fields(job_type = %job_type))]
 pub async fn register_job_handler<F, Fut>(job_type: &str, handler: F)
 where
@@ -385,6 +405,7 @@ where
     );
 }
 
+/// Claim and execute one pending job if any are ready.
 #[tracing::instrument(skip(db))]
 pub async fn process_next_job(db: &Database) -> Result<bool> {
     let job = match claim_next_job(db).await? {
@@ -398,9 +419,17 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
     };
 
     let Some(handler) = handler else {
+        // Missing handlers can happen during startup or rolling deploys, so
+        // they follow the same retry discipline as handler errors.
         let err_msg = format!("No handler registered for job type: {}", job.job_type);
-        fail_job(db, job.id, &err_msg).await?;
-        error!(job_id = job.id, job_type = %job.job_type, "job handler missing");
+        if job.attempts >= job.max_attempts {
+            fail_job(db, job.id, &err_msg).await?;
+            error!(job_id = job.id, job_type = %job.job_type, "job handler missing -- giving up after max attempts");
+        } else {
+            let delay_sec = 10_i64 * i64::from(job.attempts) * i64::from(job.attempts);
+            retry_job(db, job.id, &err_msg, delay_sec).await?;
+            warn!(job_id = job.id, job_type = %job.job_type, "job handler missing -- scheduled for retry");
+        }
         return Ok(true);
     };
 
@@ -448,6 +477,7 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
 }
 
 // -- Scheduler leases (ported from TS jobs/scheduler.ts) --
+/// Acquire or renew a scheduler lease for the current holder.
 #[tracing::instrument(skip(db), fields(job_name = %job_name, holder_id = %holder_id))]
 pub async fn acquire_lease(
     db: &Database,
@@ -474,6 +504,7 @@ pub async fn acquire_lease(
     .await
 }
 
+/// Release a scheduler lease held by the current holder.
 #[tracing::instrument(skip(db), fields(job_name = %job_name, holder_id = %holder_id))]
 pub async fn release_lease(db: &Database, job_name: &str, holder_id: &str) -> Result<()> {
     let job_name = job_name.to_string();
@@ -488,6 +519,7 @@ pub async fn release_lease(db: &Database, job_name: &str, holder_id: &str) -> Re
     .await
 }
 
+/// Extend a scheduler lease and record that the holder ran the job.
 #[tracing::instrument(skip(db), fields(job_name = %job_name, holder_id = %holder_id))]
 pub async fn touch_lease(
     db: &Database,
@@ -509,10 +541,13 @@ pub async fn touch_lease(
     .await
 }
 
+/// Unit tests for durable jobs and scheduler lease helpers.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Verify loose status parsing and stable status serialization.
     #[test]
     fn test_job_status_roundtrip() {
         assert_eq!(JobStatus::from_str_loose("pending"), JobStatus::Pending);
@@ -520,6 +555,8 @@ mod tests {
         assert_eq!(JobStatus::from_str_loose("failed"), JobStatus::Failed);
         assert_eq!(JobStatus::Pending.as_str(), "pending");
     }
+
+    /// Verify the default stats object starts at zero.
     #[test]
     fn test_job_stats_default() {
         let s = JobStats::default();
@@ -558,5 +595,52 @@ mod tests {
         assert_eq!(stats.pending, 0);
         assert_eq!(stats.running, 0);
         assert_eq!(stats.failed, 0);
+    }
+
+    // Jobs with temporarily missing handlers should retry rather than fail.
+    #[tokio::test]
+    async fn missing_handler_retries_instead_of_failing() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        let job_id = enqueue_job(&db, "unknown.no_handler_retry", "{}", 2)
+            .await
+            .expect("enqueue");
+        assert!(job_id > 0);
+
+        let processed = process_next_job(&db).await.expect("process");
+        assert!(processed, "worker should have claimed the pending job");
+
+        let stats = get_job_stats(&db).await.expect("stats");
+        assert_eq!(
+            stats.failed, 0,
+            "missing handler must not fail permanently while attempts remain"
+        );
+        assert_eq!(
+            stats.pending, 1,
+            "missing-handler job should be rescheduled for retry"
+        );
+        assert_eq!(stats.running, 0);
+    }
+
+    // Jobs with permanently missing handlers should fail after max attempts.
+    #[tokio::test]
+    async fn missing_handler_fails_after_max_attempts() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        let job_id = enqueue_job(&db, "unknown.no_handler_terminal", "{}", 1)
+            .await
+            .expect("enqueue");
+        assert!(job_id > 0);
+
+        let processed = process_next_job(&db).await.expect("process");
+        assert!(processed, "worker should have claimed the pending job");
+
+        let stats = get_job_stats(&db).await.expect("stats");
+        assert_eq!(
+            stats.failed, 1,
+            "missing handler must fail after exhausting max_attempts"
+        );
+        assert_eq!(stats.pending, 0);
+        assert_eq!(stats.running, 0);
     }
 }
