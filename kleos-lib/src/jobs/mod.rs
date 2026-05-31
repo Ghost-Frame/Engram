@@ -398,9 +398,22 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
     };
 
     let Some(handler) = handler else {
+        // A missing handler is a TRANSIENT failure, not a permanent one.
+        // Handlers register during server startup and rolling deploys, so a job
+        // claimed before its handler is registered on this node must be retried,
+        // not stranded as a permanent failure. We reuse the same backoff +
+        // max_attempts discipline as the handler-error and timeout paths below,
+        // so a genuinely-removed job type still terminates after max_attempts
+        // instead of retrying forever.
         let err_msg = format!("No handler registered for job type: {}", job.job_type);
-        fail_job(db, job.id, &err_msg).await?;
-        error!(job_id = job.id, job_type = %job.job_type, "job handler missing");
+        if job.attempts >= job.max_attempts {
+            fail_job(db, job.id, &err_msg).await?;
+            error!(job_id = job.id, job_type = %job.job_type, "job handler missing -- giving up after max attempts");
+        } else {
+            let delay_sec = 10_i64 * i64::from(job.attempts) * i64::from(job.attempts);
+            retry_job(db, job.id, &err_msg, delay_sec).await?;
+            warn!(job_id = job.id, job_type = %job.job_type, "job handler missing -- scheduled for retry");
+        }
         return Ok(true);
     };
 
@@ -558,5 +571,62 @@ mod tests {
         assert_eq!(stats.pending, 0);
         assert_eq!(stats.running, 0);
         assert_eq!(stats.failed, 0);
+    }
+
+    // A job whose handler is not (yet) registered must be RETRIED, not failed
+    // permanently on the first claim. Handlers register during server startup
+    // and rolling deploys, so a job claimed before its handler exists must get
+    // another chance rather than being stranded as a permanent failure. This is
+    // the same transient-failure discipline the timeout and handler-error paths
+    // already use.
+    #[tokio::test]
+    async fn missing_handler_retries_instead_of_failing() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        // Unique, never-registered type so the global handler registry never
+        // has an entry for it regardless of test ordering.
+        let job_id = enqueue_job(&db, "unknown.no_handler_retry", "{}", 2)
+            .await
+            .expect("enqueue");
+        assert!(job_id > 0);
+
+        let processed = process_next_job(&db).await.expect("process");
+        assert!(processed, "worker should have claimed the pending job");
+
+        let stats = get_job_stats(&db).await.expect("stats");
+        assert_eq!(
+            stats.failed, 0,
+            "missing handler must not fail permanently while attempts remain"
+        );
+        assert_eq!(
+            stats.pending, 1,
+            "missing-handler job should be rescheduled for retry"
+        );
+        assert_eq!(stats.running, 0);
+    }
+
+    // After exhausting max_attempts with no handler, the job DOES fail -- a
+    // genuinely-removed job type (e.g. legacy migration debris) must terminate
+    // rather than retry forever. max_attempts=1 means the single claim
+    // increments attempts to 1, hitting the give-up branch deterministically.
+    #[tokio::test]
+    async fn missing_handler_fails_after_max_attempts() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        let job_id = enqueue_job(&db, "unknown.no_handler_terminal", "{}", 1)
+            .await
+            .expect("enqueue");
+        assert!(job_id > 0);
+
+        let processed = process_next_job(&db).await.expect("process");
+        assert!(processed, "worker should have claimed the pending job");
+
+        let stats = get_job_stats(&db).await.expect("stats");
+        assert_eq!(
+            stats.failed, 1,
+            "missing handler must fail after exhausting max_attempts"
+        );
+        assert_eq!(stats.pending, 0);
+        assert_eq!(stats.running, 0);
     }
 }
