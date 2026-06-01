@@ -57,7 +57,7 @@ Use this table when choosing the right command:
 Synopsis:
 
 ```bash
-kleos-cli [--server URL] [--credd-url URL] [--key API_KEY] COMMAND ...
+kleos-cli [--server URL] [--phylaxd-url URL] [--credd-url URL] [--key API_KEY] COMMAND ...
 ```
 
 Purpose:
@@ -254,9 +254,19 @@ Use for:
 
 - Calls `GET /skills/evolution/recent`.
 
-### Credentials through `credd`
+### Credentials through Phylax
 
-These commands talk to `credd`, not directly to the main Kleos server.
+These commands talk to the credential authority, not directly to the main
+Kleos server. `PHYLAXD_URL` is preferred. `CREDD_URL` remains a transition
+fallback, and both default to `http://127.0.0.1:4400` when unset.
+
+Endpoint resolution:
+
+1. `--phylaxd-url` or `--credential-authority-url`
+2. `PHYLAXD_URL`
+3. `--credd-url`
+4. `CREDD_URL`
+5. `http://127.0.0.1:4400`
 
 Token resolution:
 
@@ -266,12 +276,12 @@ Token resolution:
 
 #### `kleos-cli cred get CATEGORY NAME [--raw]`
 
-- Calls `GET /secret/{category}/{name}` on `credd`.
+- Calls `GET /secret/{category}/{name}` on the credential authority.
 - `--raw` extracts the primary value field from the secret object.
 
 #### `kleos-cli cred set CATEGORY NAME [--secret-type TYPE] [--value V] [--username U] [--url URL]`
 
-- Calls `POST /secret/{category}/{name}` on `credd`.
+- Calls `POST /secret/{category}/{name}` on the credential authority.
 - If `--value` is omitted, the CLI prompts on stdin without echoing.
 
 Supported types:
@@ -568,7 +578,7 @@ Authentication resolution:
 
 1. `KLEOS_API_KEY`
 2. `EIDOLON_KEY`
-3. `credd` bootstrap flow using `CREDD_SOCKET` and `CREDD_AGENT_KEY`
+3. Phylax/credd bootstrap flow using `CREDD_SOCKET` and `CREDD_AGENT_KEY`
 4. legacy fallback: `cred get kleos <slot> --raw`
 
 Execution model:
@@ -599,6 +609,8 @@ Important env:
 - `KLEOS_SH_TIMEOUT_SECS`
 - `KLEOS_CRED_KEY`
 - `KLEOS_AGENT_SLOT`
+- `PHYLAXD_URL`
+- `CREDD_URL`
 - `CREDD_SOCKET`
 - `CREDD_AGENT_KEY`
 

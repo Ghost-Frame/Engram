@@ -38,13 +38,16 @@ const CACHE_CAPACITY: usize = 2048;
 const CACHE_TTL_SECS: u64 = 15;
 const N_SHARDS: usize = 32;
 
+/// Cached search results plus their insertion timestamp for TTL eviction.
 struct CacheEntry {
     results: Arc<Vec<SearchResult>>,
     inserted: Instant,
 }
 
+/// Cache key tuple of user, generation, and parameter hash.
 type CacheKey = (i64, u64, u64);
 
+/// Sharded cache state for search results and user generations.
 struct SearchCacheShards {
     shards: [Mutex<LruCache<CacheKey, CacheEntry>>; N_SHARDS],
     generations: RwLock<HashMap<i64, u64>>,
@@ -59,6 +62,7 @@ static SEARCH_CACHE: LazyLock<SearchCacheShards> = LazyLock::new(|| {
 });
 
 #[inline]
+/// Map a user and parameter hash to a stable cache shard index.
 fn shard_idx(user_id: i64, param_hash: u64) -> usize {
     let h = param_hash
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -90,6 +94,7 @@ fn hash_search_params(req: &SearchRequest) -> u64 {
     h.finish()
 }
 
+/// Read a cached search result set if the generation and TTL still match.
 fn cache_get(user_id: i64, param_hash: u64) -> Option<Arc<Vec<SearchResult>>> {
     let gen = {
         let gens = SEARCH_CACHE.generations.read().ok()?;
@@ -107,6 +112,7 @@ fn cache_get(user_id: i64, param_hash: u64) -> Option<Arc<Vec<SearchResult>>> {
     None
 }
 
+/// Store a search result set in the per-user shard cache.
 fn cache_put(user_id: i64, param_hash: u64, results: Arc<Vec<SearchResult>>) {
     let gen = {
         let Ok(gens) = SEARCH_CACHE.generations.read() else {
@@ -179,6 +185,7 @@ struct Candidate {
     is_consolidated: bool,
 }
 
+/// Hydrated memory columns needed to finish score assembly.
 struct HydratedCandidateRow {
     id: i64,
     created_at: String,
@@ -198,6 +205,7 @@ struct HydratedCandidateRow {
     is_consolidated: bool,
 }
 
+/// Joined memory metadata for graph expansion candidates.
 struct GraphExpansionRow {
     link_id: i64,
     similarity: f64,
@@ -214,6 +222,99 @@ struct GraphExpansionRow {
     source: Option<String>,
 }
 
+/// Convert a vector distance into a bounded semantic score.
+fn semantic_score_from_distance(distance: f64) -> f64 {
+    (1.0 - distance).clamp(0.0, 1.0)
+}
+
+/// Apply the personality multiplier and keep both score fields coherent.
+fn apply_personality_boost(
+    candidate: &mut Candidate,
+    strategy: &crate::memory::types::SearchStrategy,
+) {
+    if strategy.include_personality_signals && !candidate.content.is_empty() {
+        let signals = personality::detect_signals(&candidate.content);
+        if !signals.is_empty() {
+            let avg_intensity = signals.iter().map(|(_, v)| v).sum::<f64>() / signals.len() as f64;
+            let clamped = avg_intensity.clamp(0.0, 1.0);
+            candidate.personality_signal_score = Some((clamped * 1000.0).round() / 1000.0);
+            candidate.score *= 1.0 + clamped * strategy.personality_weight;
+            candidate.combined_score = candidate.score;
+        }
+    }
+}
+
+/// Apply a graph RRF increment without discarding earlier additive boosts.
+fn apply_graph_rrf_increment(candidate: &mut Candidate, rrf_delta: f64) {
+    candidate.score += rrf_delta;
+    candidate.combined_score = candidate.score;
+}
+
+/// Insert graph-hop candidates while enforcing a global hop1 cap.
+fn inject_graph_hop1_neighbors(
+    results: &mut HashMap<i64, Candidate>,
+    graph_score_map: &mut HashMap<i64, f64>,
+    neighbor_results: Vec<Vec<GraphExpansionRow>>,
+    strategy: &crate::memory::types::SearchStrategy,
+) {
+    let mut added = 0usize;
+
+    for rows in neighbor_results.into_iter() {
+        for row in rows {
+            if added >= strategy.hop1_limit {
+                break;
+            }
+            if row.is_forgotten {
+                continue;
+            }
+
+            let tw = scoring::link_type_weight(&row.link_type);
+            let gs = row.similarity * tw * strategy.relationship_multiplier;
+            let prev = graph_score_map.get(&row.link_id).copied().unwrap_or(0.0);
+            graph_score_map.insert(row.link_id, prev.max(gs));
+
+            if let std::collections::hash_map::Entry::Vacant(e) = results.entry(row.link_id) {
+                e.insert(Candidate {
+                    id: row.link_id,
+                    content: row.content,
+                    category: row.category,
+                    source: row.source,
+                    model: row.model,
+                    importance: row.importance,
+                    created_at: row.created_at,
+                    version: row.version,
+                    is_latest: Some(row.is_latest),
+                    is_static: false,
+                    source_count: row.source_count,
+                    root_memory_id: None,
+                    access_count: 0,
+                    pagerank_score: 0.0,
+                    fsrs_stability: None,
+                    semantic_score: None,
+                    personality_signal_score: None,
+                    score: 0.0,
+                    combined_score: 0.0,
+                    decay_score: None,
+                    temporal_boost: None,
+                    rrf_pre_boost: None,
+                    verbose_decay_factor: None,
+                    verbose_pr_boost: None,
+                    verbose_src_boost: None,
+                    verbose_stat_boost: None,
+                    verbose_contradiction: None,
+                    is_archived: false,
+                    is_consolidated: false,
+                });
+                added += 1;
+            }
+        }
+        if added >= strategy.hop1_limit {
+            break;
+        }
+    }
+}
+
+/// Hydrate candidate rows by ID so the scorer can finish assembling results.
 async fn hydrate_candidates(
     db: &Database,
     ids: Arc<[i64]>,
@@ -271,6 +372,7 @@ async fn hydrate_candidates(
     .await
 }
 
+/// Fetch graph neighbors for a seed memory without crossing user boundaries.
 async fn fetch_graph_neighbors(
     db: &Database,
     seed_id: i64,
@@ -535,6 +637,7 @@ async fn centroid_or_sqlite_vector(
         limit = ?req.limit,
     )
 )]
+/// Run the full hybrid memory search pipeline.
 pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<SearchResult>>> {
     // SECURITY (SEC-MED-6): clamp at library entry point so MCP, sidecar,
     // and CLI callers inherit the cap. HTTP route-level clamp is kept as
@@ -595,7 +698,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                         chunk_text_map.insert(hit.memory_id, text.clone());
                     }
                     vector_ranked.push((hit.memory_id, hit.rank as f64));
-                    let semantic = hit.distance.map(|d| 1.0 - d as f64);
+                    let semantic = hit.distance.map(|d| semantic_score_from_distance(d as f64));
                     let entry = results.entry(hit.memory_id).or_insert_with(|| Candidate {
                         id: hit.memory_id,
                         content: String::new(),
@@ -855,16 +958,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
         // Personality signal boost: detect emotion/preference signals in the
         // candidate content and apply as a multiplicative boost when the
         // strategy requests personality-weighted recall.
-        if strategy.include_personality_signals && !c.content.is_empty() {
-            let signals = personality::detect_signals(&c.content);
-            if !signals.is_empty() {
-                let avg_intensity =
-                    signals.iter().map(|(_, v)| v).sum::<f64>() / signals.len() as f64;
-                let clamped = avg_intensity.clamp(0.0, 1.0);
-                c.personality_signal_score = Some((clamped * 1000.0).round() / 1000.0);
-                c.combined_score *= 1.0 + clamped * strategy.personality_weight;
-            }
-        }
+        apply_personality_boost(c, &strategy);
 
         let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
         c.rrf_pre_boost = Some(r3(rrf));
@@ -891,61 +985,12 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
             .map(|(seed_id, _)| fetch_graph_neighbors(db, *seed_id, user_id))
             .collect();
         let neighbor_results = futures::future::join_all(neighbor_futures).await;
+        let neighbor_rows: Vec<Vec<GraphExpansionRow>> = neighbor_results
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect();
 
-        for rows in neighbor_results.into_iter().flatten() {
-            {
-                let mut added = 0usize;
-                for row in rows {
-                    if added >= strategy.hop1_limit {
-                        break;
-                    }
-                    if row.is_forgotten {
-                        continue;
-                    }
-
-                    let tw = scoring::link_type_weight(&row.link_type);
-                    let gs = row.similarity * tw * strategy.relationship_multiplier;
-                    let prev = graph_score_map.get(&row.link_id).copied().unwrap_or(0.0);
-                    graph_score_map.insert(row.link_id, prev.max(gs));
-
-                    if let std::collections::hash_map::Entry::Vacant(e) = results.entry(row.link_id)
-                    {
-                        e.insert(Candidate {
-                            id: row.link_id,
-                            content: row.content,
-                            category: row.category,
-                            source: row.source,
-                            model: row.model,
-                            importance: row.importance,
-                            created_at: row.created_at,
-                            version: row.version,
-                            is_latest: Some(row.is_latest),
-                            is_static: false,
-                            source_count: row.source_count,
-                            root_memory_id: None,
-                            access_count: 0,
-                            pagerank_score: 0.0,
-                            fsrs_stability: None,
-                            semantic_score: None,
-                            personality_signal_score: None,
-                            score: 0.0,
-                            combined_score: 0.0,
-                            decay_score: None,
-                            temporal_boost: None,
-                            rrf_pre_boost: None,
-                            verbose_decay_factor: None,
-                            verbose_pr_boost: None,
-                            verbose_src_boost: None,
-                            verbose_stat_boost: None,
-                            verbose_contradiction: None,
-                            is_archived: false,
-                            is_consolidated: false,
-                        });
-                        added += 1;
-                    }
-                }
-            }
-        }
+        inject_graph_hop1_neighbors(&mut results, &mut graph_score_map, neighbor_rows, &strategy);
 
         // Apply graph RRF scores
         let mut graph_ranked: Vec<(i64, f64)> =
@@ -953,8 +998,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
         graph_ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         for (rank, (id, _)) in graph_ranked.iter().enumerate() {
             if let Some(c) = results.get_mut(id) {
-                c.score += rrf_score(rank);
-                c.combined_score = c.score;
+                apply_graph_rrf_increment(c, rrf_score(rank));
             }
         }
     }
@@ -1219,6 +1263,7 @@ pub async fn hybrid_search_reranked(
         limit = req.limit,
     )
 )]
+/// Run faceted search over the filtered result set.
 pub async fn faceted_search(
     db: &Database,
     mut req: FacetedSearchRequest,
@@ -1544,6 +1589,7 @@ fn compute_tag_facets(results: &[SearchResult], limit: usize) -> Vec<FacetBucket
     buckets
 }
 
+/// Aggregate string facet counts for a filtered result set.
 fn compute_string_facets<'a>(
     values: impl Iterator<Item = &'a str>,
     limit: usize,
@@ -1580,6 +1626,7 @@ fn leak_i32_str(v: i32) -> &'static str {
     }
 }
 
+/// Count co-occurring tag pairs for the supplied search results.
 fn compute_tag_cooccurrence(results: &[SearchResult], limit: usize) -> Vec<TagCooccurrence> {
     let mut pair_counts: HashMap<(String, String), usize> = HashMap::new();
     for r in results {
@@ -1618,10 +1665,14 @@ fn parse_iso_date(s: &str) -> Option<String> {
     }
 }
 
+/// Regression tests for cache hashing and ranking edge cases.
 #[cfg(test)]
-mod budget_tests {
-    use super::hash_search_params;
-    use crate::memory::types::{SearchBudget, SearchRequest};
+mod tests {
+    use super::{
+        apply_graph_rrf_increment, apply_personality_boost, hash_search_params,
+        inject_graph_hop1_neighbors, semantic_score_from_distance, Candidate, GraphExpansionRow,
+    };
+    use crate::memory::types::{SearchBudget, SearchRequest, SearchStrategy};
 
     /// Keeps cache entries distinct when callers trim the search pipeline differently.
     #[test]
@@ -1643,5 +1694,139 @@ mod budget_tests {
 
         assert_ne!(h_none, h_low, "None vs Low should differ");
         assert_ne!(h_low, h_mid, "Low vs Mid should differ");
+    }
+
+    /// Clamps semantic distances above 1.0 to a zero score.
+    #[test]
+    fn semantic_distance_above_one_clamps_to_zero() {
+        assert_eq!(semantic_score_from_distance(1.25), 0.0);
+    }
+
+    /// Enforces the hop1 cap across all graph seeds instead of per seed.
+    #[test]
+    fn hop1_limit_caps_total_neighbors_across_all_seeds() {
+        let strategy = SearchStrategy {
+            vector_floor: 0.0,
+            vector_weight: 1.0,
+            fts_weight: 1.0,
+            candidate_multiplier: 1,
+            fts_limit_multiplier: 1,
+            expand_relationships: true,
+            relationship_seed_limit: 2,
+            hop1_limit: 1,
+            hop2_limit: 1,
+            relationship_multiplier: 1.0,
+            include_personality_signals: false,
+            personality_limit: 0,
+            personality_weight: 0.0,
+        };
+
+        let mut results = std::collections::HashMap::new();
+        let mut graph_score_map = std::collections::HashMap::new();
+        let neighbor_results = vec![
+            vec![GraphExpansionRow {
+                link_id: 2,
+                similarity: 0.8,
+                link_type: "related".into(),
+                content: "seed one".into(),
+                category: "general".into(),
+                importance: 5,
+                created_at: "2026-05-31T00:00:00Z".into(),
+                is_latest: true,
+                is_forgotten: false,
+                version: Some(1),
+                source_count: 1,
+                model: None,
+                source: None,
+            }],
+            vec![GraphExpansionRow {
+                link_id: 3,
+                similarity: 0.9,
+                link_type: "related".into(),
+                content: "seed two".into(),
+                category: "general".into(),
+                importance: 5,
+                created_at: "2026-05-31T00:00:00Z".into(),
+                is_latest: true,
+                is_forgotten: false,
+                version: Some(1),
+                source_count: 1,
+                model: None,
+                source: None,
+            }],
+        ];
+
+        inject_graph_hop1_neighbors(
+            &mut results,
+            &mut graph_score_map,
+            neighbor_results,
+            &strategy,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(graph_score_map.len(), 1);
+        assert!(results.contains_key(&2));
+        assert!(!results.contains_key(&3));
+    }
+
+    /// Preserves the personality boost when graph RRF adds its final increment.
+    #[test]
+    fn personality_boost_survives_graph_rrf_merge() {
+        let strategy = SearchStrategy {
+            vector_floor: 0.0,
+            vector_weight: 1.0,
+            fts_weight: 1.0,
+            candidate_multiplier: 1,
+            fts_limit_multiplier: 1,
+            expand_relationships: false,
+            relationship_seed_limit: 1,
+            hop1_limit: 1,
+            hop2_limit: 1,
+            relationship_multiplier: 1.0,
+            include_personality_signals: true,
+            personality_limit: 1,
+            personality_weight: 0.5,
+        };
+
+        let mut candidate = Candidate {
+            id: 7,
+            content: "I feel really excited about this project. I love building things.".into(),
+            category: "general".into(),
+            source: None,
+            model: None,
+            importance: 5,
+            created_at: "2026-05-31T00:00:00Z".into(),
+            version: None,
+            is_latest: Some(true),
+            is_static: false,
+            source_count: 1,
+            root_memory_id: None,
+            access_count: 0,
+            pagerank_score: 0.0,
+            fsrs_stability: None,
+            semantic_score: None,
+            personality_signal_score: None,
+            score: 1.0,
+            combined_score: 1.0,
+            decay_score: None,
+            temporal_boost: None,
+            rrf_pre_boost: None,
+            verbose_decay_factor: None,
+            verbose_pr_boost: None,
+            verbose_src_boost: None,
+            verbose_stat_boost: None,
+            verbose_contradiction: None,
+            is_archived: false,
+            is_consolidated: false,
+        };
+
+        apply_personality_boost(&mut candidate, &strategy);
+        let boosted_score = candidate.score;
+
+        apply_graph_rrf_increment(&mut candidate, 0.25);
+
+        assert!(boosted_score > 1.0);
+        assert_eq!(candidate.score, candidate.combined_score);
+        assert!(candidate.score > boosted_score);
     }
 }

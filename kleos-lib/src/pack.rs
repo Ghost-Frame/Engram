@@ -6,6 +6,7 @@ use crate::db::Database;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 
+/// Selects the serialized output format used for packed memories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
@@ -16,6 +17,7 @@ pub enum PackFormat {
     Xml,
 }
 
+/// Carries one memory candidate and its packing score.
 #[derive(Debug, Clone, Serialize)]
 pub struct PackCandidate {
     pub id: i64,
@@ -26,6 +28,7 @@ pub struct PackCandidate {
     pub source: String,
 }
 
+/// Returns the packed memory block plus packing statistics.
 #[derive(Debug, Clone, Serialize)]
 pub struct PackResult {
     pub packed: String,
@@ -35,14 +38,17 @@ pub struct PackResult {
     pub utilization: String,
 }
 
+/// Greedily packs the caller's highest-priority memories into a token budget.
 #[tracing::instrument(skip(db, _context), fields(token_budget, format = ?format))]
 pub async fn pack_memories(
     db: &Database,
     _context: &str,
     token_budget: usize,
     format: PackFormat,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<PackResult> {
+    let static_user_id = user_id;
+
     // Layer 1: Static facts
     let static_candidates: Vec<PackCandidate> = db
         .read(move |conn| {
@@ -50,9 +56,10 @@ pub async fn pack_memories(
                 "SELECT id, content, category, importance \
                      FROM memories \
                      WHERE is_static = 1 AND is_forgotten = 0 AND is_archived = 0 \
-                       AND is_consolidated = 0 AND is_latest = 1",
+                       AND is_consolidated = 0 AND is_latest = 1 \
+                       AND user_id = ?1",
             )?;
-            let rows = stmt.query_map(rusqlite::params![], |row| {
+            let rows = stmt.query_map(rusqlite::params![static_user_id], |row| {
                 Ok(PackCandidate {
                     id: row.get(0)?,
                     content: row.get(1)?,
@@ -70,6 +77,8 @@ pub async fn pack_memories(
         })
         .await?;
 
+    let important_user_id = user_id;
+
     // Layer 2: High-importance memories
     let important_candidates: Vec<PackCandidate> = db
         .read(move |conn| {
@@ -78,10 +87,10 @@ pub async fn pack_memories(
                             COALESCE(decay_score, importance) as ds \
                      FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-                       AND is_consolidated = 0 \
+                       AND is_consolidated = 0 AND user_id = ?1 \
                      ORDER BY ds DESC LIMIT 30",
             )?;
-            let rows = stmt.query_map(rusqlite::params![], |row| {
+            let rows = stmt.query_map(rusqlite::params![important_user_id], |row| {
                 let ds: f64 = row.get::<_, f64>(4).unwrap_or(5.0);
                 Ok(PackCandidate {
                     id: row.get(0)?,

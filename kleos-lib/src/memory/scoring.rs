@@ -22,6 +22,7 @@ static DECAY_FLOOR_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_DECAY_FLOOR)
 });
+/// Returns the runtime decay floor override.
 pub fn decay_floor() -> f64 {
     *DECAY_FLOOR_OVERRIDE
 }
@@ -34,7 +35,7 @@ pub const RECENCY_WEIGHT: f64 = 0.15;
 /// Each var is a comma-separated list of lowercase phrases that are
 /// merged with the built-in keyword arrays inside `classify_question_mixed`.
 ///
-/// Env vars (all optional, additive — never replace the built-ins):
+/// Env vars (all optional, additive; they never replace the built-ins):
 ///   KLEOS_CLASSIFIER_TEMPORAL_EXTRA
 ///   KLEOS_CLASSIFIER_PREFERENCE_EXTRA
 ///   KLEOS_CLASSIFIER_REASONING_EXTRA
@@ -74,6 +75,7 @@ static EXTRA_CLASSIFIER_KEYWORDS: LazyLock<HashMap<QuestionType, Vec<String>>> =
         map
     });
 
+/// Returns the retrieval strategy tuned for one question type.
 pub fn question_strategy(qt: QuestionType) -> SearchStrategy {
     match qt {
         QuestionType::FactRecall => SearchStrategy {
@@ -154,10 +156,12 @@ pub fn question_strategy(qt: QuestionType) -> SearchStrategy {
     }
 }
 
+/// Checks whether any needle appears in the lowercase query text.
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|n| haystack.contains(n))
 }
 
+/// Classifies a query across multiple question types with soft weights.
 pub fn classify_question_mixed(query: &str) -> HashMap<QuestionType, f64> {
     let q = query.to_lowercase();
     let mut scores: HashMap<QuestionType, f64> = HashMap::new();
@@ -295,6 +299,7 @@ pub fn classify_question_mixed(query: &str) -> HashMap<QuestionType, f64> {
     scores
 }
 
+/// Blends multiple retrieval strategies into one weighted result.
 pub fn blend_strategies(weights: &HashMap<QuestionType, f64>) -> SearchStrategy {
     if weights.len() == 1 {
         return question_strategy(*weights.keys().next().unwrap());
@@ -348,18 +353,26 @@ pub fn blend_strategies(weights: &HashMap<QuestionType, f64>) -> SearchStrategy 
     r
 }
 
+/// Extracts a normalized date hint from a natural-language query.
 pub fn extract_query_date(query: &str) -> Option<String> {
     let q = query.to_lowercase();
     // ISO date
     if let Some(pos) = q.find(|c: char| c.is_ascii_digit()) {
         let rest = &q[pos..];
         if rest.len() >= 10 {
-            let c = &rest[..10];
-            if c.as_bytes()[4] == b'-'
+            let c = crate::validation::truncate_on_char_boundary(rest, 10);
+            if c.len() == 10
+                && c.as_bytes()[4] == b'-'
                 && c.as_bytes()[7] == b'-'
-                && c[..4].chars().all(|x| x.is_ascii_digit())
-                && c[5..7].chars().all(|x| x.is_ascii_digit())
-                && c[8..10].chars().all(|x| x.is_ascii_digit())
+                && c.get(..4).unwrap_or("").chars().all(|x| x.is_ascii_digit())
+                && c.get(5..7)
+                    .unwrap_or("")
+                    .chars()
+                    .all(|x| x.is_ascii_digit())
+                && c.get(8..10)
+                    .unwrap_or("")
+                    .chars()
+                    .all(|x| x.is_ascii_digit())
             {
                 return Some(c.to_string());
             }
@@ -429,7 +442,7 @@ pub fn extract_query_date(query: &str) -> Option<String> {
     }
     // N units ago
     if let Some(ap) = q.find(" ago") {
-        let before = &q[..ap];
+        let before = q.get(..ap).unwrap_or("");
         let parts: Vec<&str> = before.split_whitespace().collect();
         if parts.len() >= 2 {
             let unit = parts[parts.len() - 1];
@@ -456,10 +469,12 @@ pub fn extract_query_date(query: &str) -> Option<String> {
     None
 }
 
+/// Computes a reciprocal-rank score for one result position.
 pub fn rrf_score(rank: usize) -> f64 {
     1.0 / (RRF_K + rank as f64 + 1.0)
 }
 
+/// Boosts memories that are close to the query date.
 pub fn temporal_proximity_boost(query_date: &str, memory_created_at: &str) -> f64 {
     match (parse_date_ms(query_date), parse_date_ms(memory_created_at)) {
         (Some(q), Some(m)) => {
@@ -470,6 +485,7 @@ pub fn temporal_proximity_boost(query_date: &str, memory_created_at: &str) -> f6
     }
 }
 
+/// Penalizes older memories that explicitly signal replacement.
 pub fn contradiction_penalty(content: &str, is_latest: bool) -> f64 {
     if is_latest {
         return 1.0;
@@ -490,6 +506,7 @@ pub fn contradiction_penalty(content: &str, is_latest: bool) -> f64 {
     }
 }
 
+/// Slightly boosts memories that were seen from multiple sources.
 pub fn source_count_boost(source_count: i32, is_consolidated: bool) -> f64 {
     if is_consolidated {
         return 1.0;
@@ -497,6 +514,7 @@ pub fn source_count_boost(source_count: i32, is_consolidated: bool) -> f64 {
     1.0 + (source_count as f64 / 10.0).min(1.0) * 0.05
 }
 
+/// Nudges static memories upward unless they are already consolidated.
 pub fn static_boost(is_static: bool, is_consolidated: bool) -> f64 {
     if is_static && !is_consolidated {
         1.03
@@ -505,10 +523,12 @@ pub fn static_boost(is_static: bool, is_consolidated: bool) -> f64 {
     }
 }
 
+/// Converts PageRank into a small multiplicative boost.
 pub fn pagerank_boost(pagerank_score: f64) -> f64 {
     1.0 + pagerank_score * PAGERANK_WEIGHT
 }
 
+/// Computes a smooth recency curve from a memory timestamp.
 pub fn recency_score(created_at: &str) -> f64 {
     let age_days = match parse_date_ms(created_at) {
         Some(ms) => {
@@ -520,6 +540,7 @@ pub fn recency_score(created_at: &str) -> f64 {
     (-age_days / 30.0_f64).exp()
 }
 
+/// Assigns a weight to a relationship type for ranking.
 pub fn link_type_weight(link_type: &str) -> f64 {
     match link_type {
         "caused_by" | "causes" => 2.0,
@@ -544,10 +565,12 @@ pub(crate) fn parse_date_ms(s: &str) -> Option<i64> {
         .map(|dt| dt.timestamp_millis())
 }
 
+/// Tests the ranking heuristics and query-date parsing helpers.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies ISO dates are extracted intact.
     #[test]
     fn extract_iso() {
         assert_eq!(
@@ -556,6 +579,7 @@ mod tests {
         );
     }
 
+    /// Verifies relative date phrases are recognized.
     #[test]
     fn extract_relative() {
         assert!(extract_query_date("yesterday").is_some());
@@ -563,6 +587,7 @@ mod tests {
         assert!(extract_query_date("3 days ago").is_some());
     }
 
+    /// Verifies month-day phrases normalize to a calendar date.
     #[test]
     fn extract_month() {
         let r = extract_query_date("on march 15");
@@ -570,29 +595,40 @@ mod tests {
         assert!(r.unwrap().contains("-03-15"));
     }
 
+    /// Verifies unrelated queries do not produce a date.
     #[test]
     fn extract_none() {
         assert_eq!(extract_query_date("what is my name"), None);
     }
 
+    /// Regression: a multibyte suffix after an ISO-like prefix must not panic.
+    #[test]
+    fn extract_query_date_multibyte_suffix_returns_none() {
+        assert_eq!(extract_query_date("2026-05-💥"), None);
+    }
+
+    /// Verifies the temporal boost is high for matching dates.
     #[test]
     fn temporal_boost_close() {
         let b = temporal_proximity_boost("2026-03-15", "2026-03-15T12:00:00Z");
         assert!(b > 1.4, "got {}", b);
     }
 
+    /// Verifies the temporal boost stays low for distant dates.
     #[test]
     fn temporal_boost_far() {
         let b = temporal_proximity_boost("2026-03-15", "2025-01-01T00:00:00Z");
         assert!(b < 1.01, "got {}", b);
     }
 
+    /// Verifies contradiction penalties match the latest-state rules.
     #[test]
     fn contradiction_test() {
         assert_eq!(contradiction_penalty("current", true), 1.0);
         assert_eq!(contradiction_penalty("no longer valid", false), 0.65);
     }
 
+    /// Verifies link-type weights line up with the ranking map.
     #[test]
     fn link_weight_test() {
         assert_eq!(link_type_weight("caused_by"), 2.0);
@@ -600,6 +636,7 @@ mod tests {
         assert_eq!(link_type_weight("similarity"), 1.0);
     }
 
+    /// Verifies a single question type keeps its canonical strategy.
     #[test]
     fn blend_single() {
         let mut w = HashMap::new();
@@ -608,6 +645,7 @@ mod tests {
         assert!((s.vector_weight - 0.62).abs() < 0.001);
     }
 
+    /// Verifies mixed strategies average into a sensible midpoint.
     #[test]
     fn blend_mixed() {
         let mut w = HashMap::new();
@@ -621,6 +659,7 @@ mod tests {
         );
     }
 
+    /// Verifies preference queries keep personality signals enabled.
     #[test]
     fn classifier_preference_enables_personality_signals() {
         let weights = classify_question_mixed("what music do you enjoy and love most?");
@@ -632,6 +671,7 @@ mod tests {
         assert!(strategy.personality_weight > 0.0);
     }
 
+    /// Verifies fact-recall queries disable personality signals.
     #[test]
     fn classifier_factrecall_disables_personality_signals() {
         let weights = classify_question_mixed("what did i visit last week?");
@@ -642,6 +682,7 @@ mod tests {
         );
     }
 
+    /// Verifies reasoning queries keep personality signals enabled.
     #[test]
     fn classifier_reasoning_enables_personality_signals() {
         let weights = classify_question_mixed("why did I decide to change jobs?");
@@ -652,11 +693,12 @@ mod tests {
         );
     }
 
+    /// Verifies extra classifier keywords do not override built-ins.
     #[test]
     fn extra_classifier_keywords_env_var_is_additive() {
         // Verify the built-in keywords are unaffected whether env var is set or not.
         // (Runtime env-var loading via LazyLock cannot be reliably tested in parallel
-        // unit tests — covered by integration tests instead.)
+        // unit tests; integration tests cover that path instead.)
         let w = classify_question_mixed("what do you prefer?");
         assert!(w.contains_key(&QuestionType::Preference));
     }

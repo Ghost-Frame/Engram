@@ -202,6 +202,24 @@ pub fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
     &s[..i]
 }
 
+/// Find the byte offset of the first ASCII-case-insensitive match of `needle`
+/// in `haystack`, or `None` if `needle` is empty or absent.
+///
+/// Intended for ASCII needles (tag names, keywords). Because a full ASCII
+/// match can only begin on an ASCII lead byte and spans only ASCII bytes, the
+/// returned offset and `offset + needle.len()` are always valid UTF-8 char
+/// boundaries in `haystack`. This lets callers locate ASCII markers without
+/// building a parallel lowercased copy whose byte offsets can drift from the
+/// original (some characters change byte length under `to_lowercase`).
+pub fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let hay = haystack.as_bytes();
+    let pat = needle.as_bytes();
+    if pat.is_empty() || hay.len() < pat.len() {
+        return None;
+    }
+    (0..=hay.len() - pat.len()).find(|&i| hay[i..i + pat.len()].eq_ignore_ascii_case(pat))
+}
+
 /// Validate content is non-empty and within size limit.
 pub fn validate_content(content: &str) -> Result<()> {
     if content.trim().is_empty() {
@@ -310,6 +328,23 @@ mod tests {
         let e = "x\u{1F600}y"; // 1 + 4 + 1 = 6 bytes
         assert_eq!(truncate_on_char_boundary(e, 2), "x"); // inside emoji
         assert_eq!(truncate_on_char_boundary(e, 5), "x\u{1F600}");
+    }
+
+    #[test]
+    fn find_ascii_case_insensitive_matches_and_yields_boundaries() {
+        // Case-insensitive ASCII match.
+        assert_eq!(find_ascii_case_insensitive("a <TITLE>x", "<title"), Some(2));
+        assert_eq!(find_ascii_case_insensitive("hello", "LO"), Some(3));
+        assert_eq!(find_ascii_case_insensitive("hello", "zz"), None);
+        assert_eq!(find_ascii_case_insensitive("", "x"), None);
+        assert_eq!(find_ascii_case_insensitive("x", ""), None);
+        // A multibyte prefix must not produce a mid-character offset: the
+        // snowman is 3 bytes, so the tag begins at byte 3, a valid boundary.
+        let s = "\u{2603}<title>"; // snowman (3 bytes) + tag
+        let pos = find_ascii_case_insensitive(s, "<title").unwrap();
+        assert_eq!(pos, 3);
+        assert!(s.is_char_boundary(pos));
+        assert!(s.is_char_boundary(pos + "<title".len()));
     }
 
     #[test]

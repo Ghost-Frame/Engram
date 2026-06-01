@@ -28,6 +28,7 @@ const FORBIDDEN_META: &[char] = &[
     ';', '|', '&', '`', '$', '>', '<', '\n', '\r', '\\', '(', ')', '{', '}',
 ];
 
+/// Builds a standard error result for shell tool failures.
 fn shell_error(msg: impl Into<String>) -> ToolResult {
     ToolResult {
         status: ToolStatus::Error,
@@ -37,6 +38,7 @@ fn shell_error(msg: impl Into<String>) -> ToolResult {
     }
 }
 
+/// Loads the allowed command allowlist from the environment.
 fn load_allowed_cmds() -> Vec<String> {
     std::env::var(ENV_ALLOWED_CMDS)
         .ok()
@@ -49,6 +51,7 @@ fn load_allowed_cmds() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Loads and canonicalizes the configured base directory.
 fn load_base_dir() -> Option<PathBuf> {
     let raw = std::env::var(ENV_BASE_DIR).ok()?;
     if raw.trim().is_empty() {
@@ -133,6 +136,7 @@ async fn confine_path(path: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+/// Declares the shell backend tool schemas.
 pub fn shell_tools() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
@@ -188,11 +192,14 @@ pub fn shell_tools() -> Vec<ToolSchema> {
     ]
 }
 
+/// Holds shell backend state for tool execution and sessions.
 pub struct ShellProvider {
     pub name: String,
     sessions: HashMap<String, SessionInfo>,
 }
+/// Implements the shell backend tool handlers.
 impl ShellProvider {
+    /// Creates a new shell provider with an empty session map.
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -200,6 +207,7 @@ impl ShellProvider {
         }
     }
 
+    /// Dispatches one tool call to the matching shell handler.
     pub async fn execute_tool(
         &self,
         tool_name: &str,
@@ -222,6 +230,7 @@ impl ShellProvider {
         }
     }
 
+    /// Runs an allowlisted shell command with bounded output capture.
     async fn exec_shell(&self, args: &serde_json::Value, timeout_ms: u64) -> ToolResult {
         let cmd_str = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
         if cmd_str.is_empty() {
@@ -323,8 +332,8 @@ impl ShellProvider {
             Ok(Ok(out)) => {
                 let so = String::from_utf8_lossy(&out.stdout);
                 let se = String::from_utf8_lossy(&out.stderr);
-                let s = &so[..so.len().min(MAX_OUTPUT_SIZE)];
-                let e = &se[..se.len().min(MAX_OUTPUT_SIZE)];
+                let s = crate::validation::truncate_on_char_boundary(so.as_ref(), MAX_OUTPUT_SIZE);
+                let e = crate::validation::truncate_on_char_boundary(se.as_ref(), MAX_OUTPUT_SIZE);
                 ToolResult {
                     status: if out.status.success() {
                         ToolStatus::Success
@@ -355,6 +364,7 @@ impl ShellProvider {
         }
     }
 
+    /// Reads a file within the configured base directory.
     async fn read_file(&self, args: &serde_json::Value) -> ToolResult {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
         if path.is_empty() {
@@ -398,6 +408,7 @@ impl ShellProvider {
         }
     }
 
+    /// Lists files within the configured base directory.
     async fn list_files(&self, args: &serde_json::Value, _timeout: u64) -> ToolResult {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let recursive = args
@@ -416,6 +427,7 @@ impl ShellProvider {
         };
         let mut out = Vec::new();
         if recursive {
+            /// Recursively walks a directory tree with a bounded result set.
             fn walk(root: &Path, base: &Path, out: &mut Vec<String>, cap: usize) {
                 if out.len() >= cap {
                     return;
@@ -459,6 +471,7 @@ impl ShellProvider {
         }
     }
 
+    /// Runs `git status --porcelain` for a repository path.
     async fn git_status(&self, args: &serde_json::Value, timeout: u64) -> ToolResult {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         // `git` must still appear in the allowlist or exec_shell will
@@ -474,6 +487,7 @@ impl ShellProvider {
         .await
     }
 
+    /// Collects lightweight host information from the shell backend.
     async fn system_info(&self, timeout: u64) -> ToolResult {
         let cmd = if cfg!(target_os = "windows") {
             "systeminfo"
@@ -483,6 +497,7 @@ impl ShellProvider {
         self.exec_shell(&json!({"command": cmd}), timeout).await
     }
 
+    /// Creates and stores a new shell session record.
     pub fn create_session(&mut self, config: &SessionConfig) -> SessionInfo {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
@@ -499,18 +514,22 @@ impl ShellProvider {
         self.sessions.insert(id, info.clone());
         info
     }
+    /// Removes one shell session from the provider state.
     pub fn destroy_session(&mut self, id: &str) {
         self.sessions.remove(id);
     }
+    /// Returns all active shell sessions.
     pub fn list_sessions(&self) -> Vec<&SessionInfo> {
         self.sessions.values().collect()
     }
 }
 
+/// Tests the shell tokenizer and metacharacter filtering.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies simple argv tokenization.
     #[test]
     fn split_argv_basic() {
         assert_eq!(
@@ -519,6 +538,7 @@ mod tests {
         );
     }
 
+    /// Verifies quoted argv tokenization.
     #[test]
     fn split_argv_quotes() {
         assert_eq!(
@@ -527,11 +547,13 @@ mod tests {
         );
     }
 
+    /// Verifies unterminated quotes are rejected.
     #[test]
     fn split_argv_unterminated() {
         assert!(split_argv("echo 'oops").is_err());
     }
 
+    /// Verifies shell metacharacters are blocked.
     #[test]
     fn metacharacters_rejected() {
         for bad in &[";", "|", "&", "`", "$(ls)", ">", "<", "`ls`"] {

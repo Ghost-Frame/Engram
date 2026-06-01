@@ -113,6 +113,8 @@ Unix-socket connections skip the IP-based portion of the rate limiter.
 | `CREDD_SOCKET` | unset (Linux: `/run/user/$UID/credd.sock` if configured) | Unix socket path. |
 | `CREDD_BIND` | unset | TCP bind address (e.g. `127.0.0.1:4400`). |
 | `CREDD_LISTEN` | `127.0.0.1:4400` | Fallback `--listen` value. |
+| `PHYLAXD_URL` | unset | Preferred client-side HTTP endpoint for the Phylax credential authority. |
+| `CREDD_URL` | `http://127.0.0.1:4400` | Legacy client-side HTTP endpoint fallback. |
 | `CREDD_DB_PATH` | `kleos.db` | SQLite DB path. |
 | `CREDD_BOOTSTRAP_BLOB` | `~/.config/cred/bootstrap.enc` | Override path for `bootstrap.enc`. |
 | `CREDD_AGENT_KEYS_FILE` | `~/.config/cred/agent-keys.json` | Override path for the bootstrap-scoped agent-keys store. |

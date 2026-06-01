@@ -9,7 +9,7 @@ use tracing::warn;
 #[tracing::instrument(skip(db))]
 pub async fn find_duplicates(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     threshold: f64,
     limit: i64,
 ) -> Result<Vec<DuplicatePair>> {
@@ -24,12 +24,13 @@ pub async fn find_duplicates(
                    AND ml.type = 'similarity' \
                    AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                    AND ms.is_superseded = 0 AND mt.is_superseded = 0 \
+                   AND ms.user_id = ?3 AND mt.user_id = ?3 \
                  ORDER BY ml.similarity DESC \
                  LIMIT ?2",
         )?;
 
         let pairs = stmt
-            .query_map(rusqlite::params![threshold, limit], |row| {
+            .query_map(rusqlite::params![threshold, limit, user_id], |row| {
                 Ok(DuplicatePair {
                     id_a: row.get(0)?,
                     id_b: row.get(1)?,

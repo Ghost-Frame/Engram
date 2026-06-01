@@ -64,12 +64,14 @@ fn normalize_tags(tags: &Option<Vec<String>>) -> Option<String> {
     })
 }
 
+/// Parse a stored JSON tag list, returning an empty list for absent or invalid tags.
 fn parse_tags_json(tags: &Option<String>) -> Vec<String> {
     tags.as_ref()
         .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
         .unwrap_or_default()
 }
 
+/// Clamp user-provided importance into the supported memory range.
 fn clamp_importance(value: i32) -> i32 {
     value.clamp(1, 10)
 }
@@ -105,6 +107,7 @@ async fn record_vector_sync_failure(
     }
 }
 
+/// Replace stored chunk rows and chunk vectors for one memory.
 pub async fn write_chunks(db: &Database, memory_id: i64, chunks: &[(String, Vec<f32>)]) {
     let chunks_for_tx: Vec<(String, Vec<u8>)> = chunks
         .iter()
@@ -149,6 +152,7 @@ pub async fn write_chunks(db: &Database, memory_id: i64, chunks: &[(String, Vec<
     }
 }
 
+/// Copy chunk rows and vectors from an old memory version to a new version.
 async fn carry_forward_chunks(db: &Database, old_memory_id: i64, new_memory_id: i64) {
     let result = db
         .write(move |conn| {
@@ -235,14 +239,17 @@ async fn carry_forward_chunks(db: &Database, old_memory_id: i64, new_memory_id: 
     }
 }
 
+/// Encode a memory id and chunk index into the LanceDB chunk key space.
 fn chunk_lance_key(memory_id: i64, chunk_idx: usize) -> i64 {
     memory_id * 1000 + chunk_idx as i64
 }
 
+/// Decode a LanceDB chunk key back to the owning memory id.
 pub fn lance_key_to_memory_id(chunk_key: i64) -> i64 {
     chunk_key / 1000
 }
 
+/// Serialize a normalized embedding into a little-endian byte blob.
 fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(embedding.len() * 4);
     for &f in embedding {
@@ -573,6 +580,7 @@ pub async fn store(
     })
 }
 
+/// Insert a memory row inside an existing SQLite transaction.
 fn store_transactional_rusqlite(
     tx: &rusqlite::Transaction<'_>,
     content: &str,
@@ -688,6 +696,7 @@ pub async fn get_for_ownership(db: &Database, id: i64, user_id: i64) -> Result<M
     get_internal(db, id, user_id, &sql, false).await
 }
 
+/// Fetch a memory with an appended owner predicate and optional access logging.
 async fn get_internal(
     db: &Database,
     id: i64,
@@ -729,6 +738,7 @@ async fn get_internal(
     Ok(memory)
 }
 
+/// List active memories for a required owner with optional filters.
 #[tracing::instrument(skip(db, opts), fields(user_id = opts.user_id.unwrap_or(0), limit = opts.limit))]
 pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     // SECURITY (SEC-C3): user_id MUST be set. Without a tenant filter the
@@ -805,6 +815,7 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     .await
 }
 
+/// Soft-delete an owned memory by marking it forgotten.
 #[tracing::instrument(skip(db))]
 pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
     // Soft delete -- set is_forgotten, record reason
@@ -1285,8 +1296,8 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
     let affected = db
         .write(move |conn| {
             Ok(conn.execute(
-                "UPDATE memories SET is_forgotten = 1, updated_at = datetime('now') WHERE id = ?1",
-                rusqlite::params![id],
+                "UPDATE memories SET is_forgotten = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![id, user_id],
             )?)
         })
         .await?;
@@ -1312,13 +1323,14 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
     Ok(())
 }
 
+/// Mark an owned memory as archived so active retrieval excludes it.
 #[tracing::instrument(skip(db))]
 pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
             Ok(conn.execute(
-                "UPDATE memories SET is_archived = 1, updated_at = datetime('now') WHERE id = ?1",
-                rusqlite::params![id],
+                "UPDATE memories SET is_archived = 1, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![id, user_id],
             )?)
         })
         .await?;
@@ -1335,13 +1347,14 @@ pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Restore an owned archived memory to the active corpus.
 #[tracing::instrument(skip(db))]
 pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
             Ok(conn.execute(
-                "UPDATE memories SET is_archived = 0, updated_at = datetime('now') WHERE id = ?1",
-                rusqlite::params![id],
+                "UPDATE memories SET is_archived = 0, updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![id, user_id],
             )?)
         })
         .await?;
@@ -1358,6 +1371,7 @@ pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()>
     Ok(())
 }
 
+/// Store the forget reason for an owned memory.
 #[tracing::instrument(skip(db, reason))]
 pub async fn update_forget_reason(
     db: &Database,
@@ -1366,17 +1380,21 @@ pub async fn update_forget_reason(
     user_id: i64,
 ) -> Result<()> {
     let reason = reason.to_string();
-    db.write(move |conn| {
-        conn.execute(
-            "UPDATE memories SET forget_reason = ?1 WHERE id = ?2",
-            rusqlite::params![reason, id],
-        )?;
-        Ok(())
-    })
-    .await?;
+    let affected = db
+        .write(move |conn| {
+            Ok(conn.execute(
+                "UPDATE memories SET forget_reason = ?1 WHERE id = ?2 AND user_id = ?3",
+                rusqlite::params![reason, id, user_id],
+            )?)
+        })
+        .await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!("memory {} not found", id)));
+    }
     Ok(())
 }
 
+/// Adjust an owned memory's importance while keeping it in range.
 #[tracing::instrument(skip(db))]
 pub async fn adjust_importance(
     db: &Database,
@@ -1384,18 +1402,25 @@ pub async fn adjust_importance(
     user_id: i64,
     delta: i32,
 ) -> Result<()> {
-    db.write(move |conn| {
+    let affected = db.write(move |conn| {
         let sql = if delta > 0 {
-            "UPDATE memories SET importance = MIN(importance + ?1, 10) WHERE id = ?2"
+            "UPDATE memories SET importance = MIN(importance + ?1, 10) WHERE id = ?2 AND user_id = ?3"
         } else {
-            "UPDATE memories SET importance = MAX(importance + ?1, 0) WHERE id = ?2"
+            "UPDATE memories SET importance = MAX(importance + ?1, 0) WHERE id = ?2 AND user_id = ?3"
         };
-        conn.execute(sql, rusqlite::params![delta, memory_id])?;
-        Ok(())
+        Ok(conn.execute(sql, rusqlite::params![delta, memory_id, user_id])?)
     })
-    .await
+    .await?;
+    if affected == 0 {
+        return Err(EngError::NotFound(format!(
+            "memory {} not found",
+            memory_id
+        )));
+    }
+    Ok(())
 }
 
+/// Insert a link between two owned, active memories.
 #[tracing::instrument(skip(db))]
 pub async fn insert_link(
     db: &Database,
@@ -1406,13 +1431,14 @@ pub async fn insert_link(
     user_id: i64,
 ) -> Result<()> {
     // Validate both memories exist and are not forgotten
-    let count_sql = "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND is_forgotten = 0";
+    let count_sql =
+        "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0";
     let link_type = link_type.to_string();
     db.write(move |conn| {
         let count: i64 = conn
             .query_row(
                 count_sql,
-                rusqlite::params![source_id, target_id],
+                rusqlite::params![source_id, target_id, user_id],
                 |row| row.get(0),
             )
             ?;
@@ -1440,6 +1466,7 @@ pub async fn insert_link(
     Ok(())
 }
 
+/// Update the source-count metadata for an owned memory.
 #[tracing::instrument(skip(db))]
 pub async fn update_source_count(
     db: &Database,
@@ -1449,14 +1476,15 @@ pub async fn update_source_count(
 ) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
-            "UPDATE memories SET source_count = ?1, updated_at = datetime('now') WHERE id = ?2",
-            rusqlite::params![source_count, id],
+            "UPDATE memories SET source_count = ?1, updated_at = datetime('now') WHERE id = ?2 AND user_id = ?3",
+            rusqlite::params![source_count, id, user_id],
         )?;
         Ok(())
     })
     .await
 }
 
+/// List all normalized tags used by active memories for one owner.
 #[tracing::instrument(skip(db))]
 pub async fn list_all_tags(db: &Database, user_id: i64) -> Result<Vec<TagCount>> {
     db.read(move |conn| {
@@ -1488,6 +1516,7 @@ pub async fn list_all_tags(db: &Database, user_id: i64) -> Result<Vec<TagCount>>
     .await
 }
 
+/// Search active owned memories by normalized tag membership.
 #[tracing::instrument(skip(db, tags), fields(tag_count = tags.len()))]
 pub async fn search_by_tags(
     db: &Database,
@@ -1576,6 +1605,7 @@ pub async fn search_by_tags(
     .await
 }
 
+/// Replace the normalized tag list on an owned memory.
 #[tracing::instrument(skip(db, tags), fields(tag_count = tags.len()))]
 pub async fn update_memory_tags(
     db: &Database,
@@ -1603,6 +1633,7 @@ pub async fn update_memory_tags(
     Ok(())
 }
 
+/// Return non-forgotten links connected to an owned memory id.
 #[tracing::instrument(skip(db))]
 pub async fn get_links_for(
     db: &Database,
@@ -1615,15 +1646,15 @@ pub async fn get_links_for(
                         m.content, m.category, m.is_forgotten
                  FROM memory_links ml
                  JOIN memories m ON m.id = ml.target_id
-                 WHERE ml.source_id = ?1
+                 WHERE ml.source_id = ?1 AND m.user_id = ?2
                  UNION
                  SELECT ml.source_id, ml.similarity, ml.type,
                         m.content, m.category, m.is_forgotten
                  FROM memory_links ml
                  JOIN memories m ON m.id = ml.source_id
-                 WHERE ml.target_id = ?1",
+                 WHERE ml.target_id = ?1 AND m.user_id = ?2",
         )?;
-        let mut rows = stmt.query(rusqlite::params![memory_id])?;
+        let mut rows = stmt.query(rusqlite::params![memory_id, user_id])?;
 
         // 6.9 capacity hint: link fanout typically small.
         let mut links = Vec::with_capacity(16);
@@ -1644,6 +1675,7 @@ pub async fn get_links_for(
     .await
 }
 
+/// Return the version chain for an owned memory root.
 #[tracing::instrument(skip(db))]
 pub async fn get_version_chain(
     db: &Database,
@@ -1657,10 +1689,10 @@ pub async fn get_version_chain(
         let mut stmt = conn.prepare(
             "SELECT id, content, version, is_latest
                  FROM memories
-                 WHERE (root_memory_id = ?1 OR id = ?1)
+                 WHERE (root_memory_id = ?1 OR id = ?1) AND user_id = ?2
                  ORDER BY version ASC",
         )?;
-        let mut rows = stmt.query(rusqlite::params![root_id])?;
+        let mut rows = stmt.query(rusqlite::params![root_id, user_id])?;
 
         // 6.9 capacity hint: version chains are usually short.
         let mut chain = Vec::with_capacity(8);
@@ -1677,6 +1709,7 @@ pub async fn get_version_chain(
     .await
 }
 
+/// Summarize a user's memory corpus for profile generation.
 #[tracing::instrument(skip(db))]
 pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile> {
     let (memory_count, oldest_memory, newest_memory, avg_importance) = db
@@ -1755,6 +1788,7 @@ pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile
     })
 }
 
+/// Compute detailed per-user memory statistics.
 #[tracing::instrument(skip(db))]
 pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
     // Scope counts to the owner so single-DB (shared) mode reports per-user
@@ -1807,10 +1841,10 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
         })
         .await?;
     let skills: i64 = db
-        .read(|conn| {
+        .read(move |conn| {
             Ok(conn.query_row(
-                "SELECT COUNT(*) FROM skill_records",
-                rusqlite::params![],
+                "SELECT COUNT(*) FROM skill_records WHERE user_id = ?1",
+                rusqlite::params![user_id],
                 |row| row.get(0),
             )?)
         })
@@ -1845,6 +1879,7 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
     })
 }
 
+/// Unit tests for memory row mapping and valence persistence.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1904,6 +1939,7 @@ mod tests {
         assert_eq!(got.content, "col-audit");
     }
 
+    /// Build a minimal store request for valence tests.
     fn valence_store_request(content: &str, user_id: i64) -> crate::memory::types::StoreRequest {
         crate::memory::types::StoreRequest {
             content: content.to_string(),
@@ -1914,6 +1950,7 @@ mod tests {
         }
     }
 
+    /// Read persisted valence fields for a memory.
     async fn read_valence(db: &Database, id: i64) -> (Option<f64>, Option<String>) {
         db.read(move |conn| {
             Ok(conn.query_row(
@@ -1926,6 +1963,7 @@ mod tests {
         .expect("read valence")
     }
 
+    /// Positive affective content should persist positive valence metadata.
     #[tokio::test]
     async fn store_persists_positive_valence_for_happy_content() {
         let db = Database::connect_memory().await.expect("in-mem db");
@@ -1943,6 +1981,7 @@ mod tests {
         assert_ne!(emotion.unwrap_or_default(), "");
     }
 
+    /// Negative affective content should persist negative valence metadata.
     #[tokio::test]
     async fn store_persists_negative_valence_for_angry_content() {
         let db = Database::connect_memory().await.expect("in-mem db");
@@ -1960,6 +1999,7 @@ mod tests {
         assert_ne!(emotion.unwrap_or_default(), "");
     }
 
+    /// Neutral factual content should not force valence metadata.
     #[tokio::test]
     async fn store_leaves_valence_null_for_neutral_content() {
         let db = Database::connect_memory().await.expect("in-mem db");

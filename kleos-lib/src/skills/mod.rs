@@ -690,22 +690,25 @@ pub async fn get_tool_deps(db: &Database, skill_id: i64, user_id: i64) -> Result
 #[tracing::instrument(skip(db), fields(user_id, since_hours, limit))]
 pub async fn list_recent_evolutions(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     since_hours: u32,
     limit: usize,
 ) -> Result<Vec<EvolutionFeedRow>> {
     let since_clause = format!("-{} hours", since_hours as i64);
     db.read(move |conn| {
+        // Scope to the caller's skills so single-DB (shared) mode does not
+        // surface another user's evolution feed; a no-op in a per-user shard.
         let sql = "SELECT sr.id, sr.name, sr.version, st.tag, sr.agent, sr.created_at \
                    FROM skill_records sr \
                    INNER JOIN skill_tags st ON st.skill_id = sr.id \
                    WHERE st.tag IN ('fixed', 'derived', 'captured') \
                      AND sr.created_at > datetime('now', ?1) \
+                     AND sr.user_id = ?3 \
                    ORDER BY sr.created_at DESC \
                    LIMIT ?2";
         let mut stmt = conn.prepare(sql)?;
         let raw: Vec<(i64, String, i32, String, String, String)> = stmt
-            .query_map(params![since_clause, limit as i64], |row| {
+            .query_map(params![since_clause, limit as i64, user_id], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,

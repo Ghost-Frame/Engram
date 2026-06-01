@@ -53,10 +53,10 @@ fn magic_bytes(data: &[u8]) -> Option<SupportedFormat> {
 fn sniff_content(text: &str) -> Option<SupportedFormat> {
     let trimmed = text.trim_start();
 
-    // HTML doctype or opening tag
+    // HTML doctype or opening tag. Truncate on a char boundary so a multibyte
+    // character straddling the 50-byte sniff window cannot panic.
     if trimmed.len() >= 5 {
-        let check_len = trimmed.len().min(50);
-        let lower_start = trimmed[..check_len].to_lowercase();
+        let lower_start = crate::validation::truncate_on_char_boundary(trimmed, 50).to_lowercase();
         if lower_start.starts_with("<!doctype") || lower_start.starts_with("<html") {
             return Some(SupportedFormat::Html);
         }
@@ -142,6 +142,24 @@ pub fn detect_format(input: &[u8], meta: Option<&FormatMeta>) -> SupportedFormat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a multibyte character straddling the 50-byte content sniff
+    /// window must not panic. Old code sliced `trimmed[..50]` on a raw byte
+    /// count.
+    #[test]
+    fn sniff_content_multibyte_window_does_not_panic() {
+        // 48 ASCII bytes then a 4-byte emoji crossing the 50-byte boundary.
+        let input = format!("{}\u{1F600}tail", "a".repeat(48));
+        assert_eq!(
+            detect_format(input.as_bytes(), None),
+            SupportedFormat::PlainText
+        );
+        // Emoji-led content shorter than the window also stays panic-free.
+        assert_eq!(
+            detect_format("\u{1F600}\u{1F600}".as_bytes(), None),
+            SupportedFormat::PlainText
+        );
+    }
 
     #[test]
     fn test_extension_detection() {

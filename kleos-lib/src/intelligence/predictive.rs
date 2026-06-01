@@ -62,7 +62,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
         .into_iter()
         .fold(Vec::new(), |mut acc, desc| {
             if let Some(cat_start) = desc.find("category:") {
-                let cat = desc[cat_start + 9..].to_string();
+                let cat = desc.get(cat_start + 9..).unwrap_or("").to_string();
                 if !acc.contains(&cat) {
                     acc.push(cat);
                 }
@@ -105,11 +105,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
 
     for row in task_rows {
         if suggested_actions.is_empty() {
-            let truncated = if row.content.len() > 80 {
-                &row.content[..80]
-            } else {
-                &row.content
-            };
+            let truncated = crate::validation::truncate_on_char_boundary(&row.content, 80);
             suggested_actions.push(format!("Continue: {}", truncated));
         }
         proactive_memories.push(ProactiveMemory {
@@ -147,11 +143,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
 
     for row in issue_rows {
         if suggested_actions.len() < 3 {
-            let truncated = if row.content.len() > 80 {
-                &row.content[..80]
-            } else {
-                &row.content
-            };
+            let truncated = crate::validation::truncate_on_char_boundary(&row.content, 80);
             suggested_actions.push(format!("Address issue: {}", truncated));
         }
         proactive_memories.push(ProactiveMemory {
@@ -251,6 +243,7 @@ pub const SEQUENCE_MIN_SUPPORT: i64 = 2;
 #[tracing::instrument(skip(db), fields(window_mins))]
 pub async fn detect_sequence_patterns(
     db: &Database,
+    user_id: i64,
     window_mins: i64,
 ) -> Result<Vec<SequencePattern>> {
     if window_mins <= 0 {
@@ -265,9 +258,10 @@ pub async fn detect_sequence_patterns(
                      WHERE is_latest = 1 \
                        AND is_forgotten = 0 \
                        AND is_archived = 0 \
+                       AND user_id = ?1 \
                      ORDER BY created_at ASC, id ASC",
             )?;
-            let iter = stmt.query_map(params![], |row| {
+            let iter = stmt.query_map(params![user_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
             Ok(iter.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -422,10 +416,10 @@ mod tests {
     #[tokio::test]
     async fn sequences_empty_below_two_memories() {
         let db = Database::connect_memory().await.expect("in-mem db");
-        let out = detect_sequence_patterns(&db, 60).await.expect("det");
+        let out = detect_sequence_patterns(&db, 1, 60).await.expect("det");
         assert!(out.is_empty());
         let _ = seed(&db, "pi alpha", "code", 1).await;
-        let out = detect_sequence_patterns(&db, 60).await.expect("det");
+        let out = detect_sequence_patterns(&db, 1, 60).await.expect("det");
         assert!(out.is_empty());
     }
 
@@ -438,9 +432,9 @@ mod tests {
         let b = seed(&db, "rho beta", "docs", 1).await;
         set_created(&db, a, "2026-04-01 10:00:00").await;
         set_created(&db, b, "2026-04-01 10:05:00").await;
-        let out = detect_sequence_patterns(&db, 0).await.expect("det");
+        let out = detect_sequence_patterns(&db, 1, 0).await.expect("det");
         assert!(out.is_empty());
-        let out = detect_sequence_patterns(&db, -5).await.expect("det");
+        let out = detect_sequence_patterns(&db, 1, -5).await.expect("det");
         assert!(out.is_empty());
     }
 
@@ -453,7 +447,7 @@ mod tests {
         let b = seed(&db, "sigma beta", "docs", 1).await;
         set_created(&db, a, "2026-04-01 08:00:00").await;
         set_created(&db, b, "2026-04-01 10:00:00").await; // 120 min gap
-        let out = detect_sequence_patterns(&db, 30).await.expect("det");
+        let out = detect_sequence_patterns(&db, 1, 30).await.expect("det");
         assert!(out.is_empty());
     }
 
@@ -507,7 +501,7 @@ mod tests {
         for (id, ts) in &ids {
             set_created(&db, *id, ts).await;
         }
-        let out = detect_sequence_patterns(&db, 30).await.expect("det");
+        let out = detect_sequence_patterns(&db, 1, 30).await.expect("det");
         let top = out.first().expect("at least one");
         assert_eq!(top.antecedent, "code");
         assert_eq!(top.consequent, "docs");
@@ -535,7 +529,7 @@ mod tests {
         }
         // Single-tenant: all callers share the same DB, so sequences are
         // visible regardless of the user_id argument.
-        let sequences = detect_sequence_patterns(&db, 30).await.expect("det");
+        let sequences = detect_sequence_patterns(&db, 1, 30).await.expect("det");
         assert!(
             !sequences.is_empty(),
             "single-tenant DB exposes all sequences"

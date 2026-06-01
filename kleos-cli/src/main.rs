@@ -2,6 +2,7 @@ mod hook;
 mod import_plugins;
 use hook::{run_hook, HookCommands};
 use kleos_client::{truncate, Client};
+use kleos_lib::config::DEFAULT_CREDENTIAL_AUTHORITY_URL;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -17,9 +18,13 @@ struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:4200", env = "KLEOS_URL")]
     server: String,
 
-    /// Credd daemon URL
-    #[arg(long, default_value = "http://127.0.0.1:4400", env = "CREDD_URL")]
-    credd_url: String,
+    /// Preferred Phylax credential authority URL
+    #[arg(long, visible_alias = "credential-authority-url", env = "PHYLAXD_URL")]
+    phylaxd_url: Option<String>,
+
+    /// Legacy credd daemon URL
+    #[arg(long, env = "CREDD_URL")]
+    credd_url: Option<String>,
 
     /// API key
     #[arg(long)]
@@ -27,6 +32,14 @@ struct Cli {
 
     #[command(subcommand)]
     command: Commands,
+}
+
+/// Resolve preferred and legacy credential authority URL inputs.
+fn resolve_credential_authority_url(phylaxd_url: Option<&str>, credd_url: Option<&str>) -> String {
+    phylaxd_url
+        .or(credd_url)
+        .unwrap_or(DEFAULT_CREDENTIAL_AUTHORITY_URL)
+        .to_string()
 }
 
 /// All top-level subcommands available through `kleos-cli`.
@@ -1280,7 +1293,11 @@ async fn main() {
                         .filter(|s| !s.is_empty())
                 })
                 .or_else(|| api_key.clone());
-            let cred_client = Client::new(cli.credd_url.clone(), credd_token, None);
+            let cred_authority_url = resolve_credential_authority_url(
+                cli.phylaxd_url.as_deref(),
+                cli.credd_url.as_deref(),
+            );
+            let cred_client = Client::new(cred_authority_url, credd_token, None);
             handle_cred_command(&cred_client, cred_cmd).await;
         }
 
@@ -3973,7 +3990,8 @@ async fn handle_artifact_command(client: &Client, cmd: &ArtifactCommands) {
 /// Tests for CLI-side input sanitization helpers.
 #[cfg(test)]
 mod tests {
-    use super::sanitize_download_name;
+    use super::{resolve_credential_authority_url, sanitize_download_name};
+    use kleos_lib::config::DEFAULT_CREDENTIAL_AUTHORITY_URL;
 
     /// A server-supplied filename is reduced to its final, CWD-relative component.
     #[test]
@@ -4008,5 +4026,35 @@ mod tests {
         assert!(sanitize_download_name(".").is_none());
         assert!(sanitize_download_name("..").is_none());
         assert!(sanitize_download_name("/").is_none());
+    }
+
+    /// PHYLAXD_URL input wins over legacy CREDD_URL input.
+    #[test]
+    fn resolve_credential_authority_url_prefers_phylaxd() {
+        assert_eq!(
+            resolve_credential_authority_url(
+                Some("http://127.0.0.1:3100"),
+                Some("http://127.0.0.1:4400")
+            ),
+            "http://127.0.0.1:3100"
+        );
+    }
+
+    /// CREDD_URL input remains the transition fallback.
+    #[test]
+    fn resolve_credential_authority_url_uses_legacy_credd_fallback() {
+        assert_eq!(
+            resolve_credential_authority_url(None, Some("http://127.0.0.1:4401")),
+            "http://127.0.0.1:4401"
+        );
+    }
+
+    /// Missing authority inputs resolve to the shared local default.
+    #[test]
+    fn resolve_credential_authority_url_uses_default() {
+        assert_eq!(
+            resolve_credential_authority_url(None, None),
+            DEFAULT_CREDENTIAL_AUTHORITY_URL
+        );
     }
 }

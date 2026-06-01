@@ -284,7 +284,7 @@ async fn post_prompt_generate(
 
     // Living prompt: Growth observations
     if include_growth {
-        if let Ok(observations) = list_observations(&db, growth_limit).await {
+        if let Ok(observations) = list_observations(&db, auth.user_id, growth_limit).await {
             if !observations.is_empty() {
                 let mut buf = String::from("## Growth Observations\n");
                 for obs in &observations {
@@ -330,9 +330,7 @@ async fn post_prompt_generate(
     let mut tokens = estimate_tokens(&prompt);
     if tokens > max_tokens {
         let target_chars = max_tokens.saturating_mul(4);
-        if prompt.len() > target_chars {
-            prompt.truncate(target_chars);
-            prompt.push_str("\n...[truncated]");
+        if truncate_prompt_to_chars(&mut prompt, target_chars) {
             tokens = estimate_tokens(&prompt);
         }
     }
@@ -372,9 +370,40 @@ async fn post_header(
     })))
 }
 
+/// Truncate `prompt` to at most `target_chars` bytes on a UTF-8 char boundary,
+/// appending a truncation marker. Returns `true` when truncation occurred.
+///
+/// Uses `truncate_on_char_boundary` so a multibyte character straddling the
+/// byte budget cannot panic the way `String::truncate` would.
+fn truncate_prompt_to_chars(prompt: &mut String, target_chars: usize) -> bool {
+    if prompt.len() <= target_chars {
+        return false;
+    }
+    let safe_len = kleos_lib::validation::truncate_on_char_boundary(prompt, target_chars).len();
+    prompt.truncate(safe_len);
+    prompt.push_str("\n...[truncated]");
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: truncating a prompt whose byte budget lands inside a
+    /// multibyte character must not panic. Old code called
+    /// `String::truncate(target_chars)` on a raw byte count.
+    #[test]
+    fn truncate_prompt_to_chars_respects_char_boundary() {
+        // 10 ASCII bytes then a 4-byte emoji; budget 12 lands inside it.
+        let mut p = format!("{}\u{1F600}", "a".repeat(10));
+        assert!(truncate_prompt_to_chars(&mut p, 12));
+        assert!(p.starts_with(&"a".repeat(10)));
+        assert!(p.ends_with("...[truncated]"));
+        // No truncation when already within budget.
+        let mut q = "short".to_string();
+        assert!(!truncate_prompt_to_chars(&mut q, 100));
+        assert_eq!(q, "short");
+    }
 
     #[test]
     fn generate_request_deserializes_living_flags() {

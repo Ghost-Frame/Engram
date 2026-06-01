@@ -36,11 +36,8 @@ pub async fn generate_digest(db: &Database, user_id: i64, period: &str) -> Resul
             let mut count = 0i32;
             for row in rows {
                 let (content, category, importance) = row?;
-                let truncated = if content.len() > 100 {
-                    content[..100].to_string()
-                } else {
-                    content.clone()
-                };
+                let truncated =
+                    crate::validation::truncate_on_char_boundary(&content, 100).to_string();
                 summaries.push(format!(
                     "[{}] (importance:{}) {}",
                     category, importance, truncated

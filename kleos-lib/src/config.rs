@@ -1,6 +1,9 @@
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
+/// Default URL for the local credential authority during the Phylax transition.
+pub const DEFAULT_CREDENTIAL_AUTHORITY_URL: &str = "http://127.0.0.1:4400";
+
 /// Shim: for every `KLEOS_X` env var found, set `ENGRAM_X` if not already set.
 ///
 /// Call this once at binary startup (before any config loading) so that the
@@ -52,6 +55,19 @@ pub fn resolve_db_path(configured: &std::path::Path) -> std::path::PathBuf {
     configured.to_path_buf()
 }
 
+/// Resolve the credential authority URL from preferred and legacy env vars.
+pub fn resolve_credential_authority_url() -> String {
+    credential_authority_url_from_env()
+        .unwrap_or_else(|| DEFAULT_CREDENTIAL_AUTHORITY_URL.to_string())
+}
+
+/// Resolve a credential authority URL override from the environment.
+fn credential_authority_url_from_env() -> Option<String> {
+    std::env::var("PHYLAXD_URL")
+        .or_else(|_| std::env::var("CREDD_URL"))
+        .ok()
+}
+
 /// How the at-rest encryption key is sourced.
 ///
 /// Default is `None` (no encryption). When set, every SQLite connection
@@ -71,6 +87,7 @@ pub enum EncryptionMode {
     Yubikey,
 }
 
+/// Encryption settings for the main SQLite database.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct EncryptionConfig {
     #[serde(default)]
@@ -105,78 +122,97 @@ pub struct ServerEntry {
     pub notes: String,
 }
 
+/// Default SSH port used when a server entry omits one.
 fn default_ssh_port() -> u16 {
     22
 }
 
+/// Default number of daily backups to retain.
 fn default_backup_retention_daily() -> usize {
     30
 }
 
+/// Default switch for the background dreamer task.
 fn default_dreamer_enabled() -> bool {
     true
 }
 
+/// Default interval between dreamer ticks.
 fn default_dream_interval_secs() -> u64 {
     300
 }
 
+/// Default idle window before dreamer work starts.
 fn default_dream_idle_threshold_secs() -> u64 {
     60
 }
 
+/// Default switch for autonomous skill evolution.
 fn default_skill_evolution_enabled() -> bool {
     true
 }
 
+/// Default minimum interval between skill-evolution runs.
 fn default_skill_evolution_interval_secs() -> u64 {
     1800
 }
 
+/// Default per-tick limit for skill fixes.
 fn default_skill_evolution_max_fixes_per_tick() -> u32 {
     3
 }
 
+/// Default per-tick limit for skill captures.
 fn default_skill_evolution_max_captures_per_tick() -> u32 {
     2
 }
 
+/// Default per-tick limit for skill derivations.
 fn default_skill_evolution_max_derives_per_tick() -> u32 {
     1
 }
 
+/// Default failure-rate threshold for skill repair.
 fn default_skill_evolution_failure_threshold() -> f32 {
     0.3
 }
 
+/// Default minimum executions before skill repair is considered.
 fn default_skill_evolution_min_executions() -> u32 {
     5
 }
 
+/// Default cooldown before a repaired skill can be repaired again.
 fn default_skill_evolution_refix_cooldown_secs() -> u64 {
     86_400
 }
 
+/// Default memory tag that marks a skill-capture candidate.
 fn default_skill_evolution_capture_tag() -> String {
     "skill_candidate".to_string()
 }
 
+/// Default minimum tag similarity for skill derivation.
 fn default_skill_evolution_derive_similarity() -> f32 {
     0.7
 }
 
+/// Default local SearXNG endpoint for web search.
 fn default_web_search_url() -> String {
     "http://127.0.0.1:8888".to_string()
 }
 
+/// Default upstream timeout for web search requests.
 fn default_web_search_timeout_ms() -> u64 {
     8000
 }
 
+/// Default result limit for web search requests.
 fn default_web_search_limit() -> u32 {
     10
 }
 
+/// Gate policy configuration for command validation and approvals.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GateConfig {
@@ -191,7 +227,9 @@ pub struct GateConfig {
     pub servers: Vec<ServerEntry>,
 }
 
+/// Default gate policy values used when config files omit the gate section.
 impl Default for GateConfig {
+    /// Builds a conservative default gate configuration.
     fn default() -> Self {
         Self {
             blocked_patterns: vec![
@@ -214,6 +252,7 @@ impl Default for GateConfig {
     }
 }
 
+/// Growth-loop configuration for observation and reflection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GrowthConfig {
@@ -221,7 +260,9 @@ pub struct GrowthConfig {
     pub observation_limit: usize,
 }
 
+/// Default growth-loop limits and intervals.
 impl Default for GrowthConfig {
+    /// Builds default growth-loop settings.
     fn default() -> Self {
         Self {
             reflection_interval_secs: 3600,
@@ -230,6 +271,7 @@ impl Default for GrowthConfig {
     }
 }
 
+/// Session streaming and secret-scrubbing configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionsConfig {
@@ -239,7 +281,9 @@ pub struct SessionsConfig {
     pub scrub_secrets: bool,
 }
 
+/// Default session streaming configuration.
 impl Default for SessionsConfig {
+    /// Builds default session streaming limits.
     fn default() -> Self {
         Self {
             max_concurrent: 64,
@@ -250,6 +294,7 @@ impl Default for SessionsConfig {
     }
 }
 
+/// Prompt-generation limits and inclusion toggles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PromptConfig {
@@ -260,7 +305,9 @@ pub struct PromptConfig {
     pub max_tokens_cap: usize,
 }
 
+/// Default prompt-generation configuration.
 impl Default for PromptConfig {
+    /// Builds default prompt-generation limits.
     fn default() -> Self {
         Self {
             default_max_tokens: 4000,
@@ -272,6 +319,7 @@ impl Default for PromptConfig {
     }
 }
 
+/// Credential authority client configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CreddConfig {
@@ -281,10 +329,12 @@ pub struct CreddConfig {
     pub cache_ttl_secs: u64,
 }
 
+/// Default credential authority client settings.
 impl Default for CreddConfig {
+    /// Builds default credential authority settings.
     fn default() -> Self {
         Self {
-            url: "http://127.0.0.1:4400".to_string(),
+            url: DEFAULT_CREDENTIAL_AUTHORITY_URL.to_string(),
             agent_key_env: "CREDD_AGENT_KEY".to_string(),
             allow_raw: false,
             cache_ttl_secs: 60,
@@ -292,6 +342,7 @@ impl Default for CreddConfig {
     }
 }
 
+/// Eidolon integration configuration nested under the main server config.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EidolonConfig {
@@ -311,7 +362,9 @@ pub struct EidolonConfig {
     pub prompt: PromptConfig,
 }
 
+/// Constructors and environment layering for Eidolon configuration.
 impl EidolonConfig {
+    /// Builds Eidolon configuration from defaults plus environment overrides.
     pub fn from_env() -> Self {
         Self::default().apply_env()
     }
@@ -329,7 +382,7 @@ impl EidolonConfig {
             self.api_key = Some(SecretString::new(v));
         }
         let c = &mut self;
-        if let Ok(v) = std::env::var("CREDD_URL") {
+        if let Some(v) = credential_authority_url_from_env() {
             c.credd.url = v;
         }
         if let Ok(v) = std::env::var("ENGRAM_CREDD_AGENT_KEY_ENV") {
@@ -415,6 +468,7 @@ pub struct SafetyConfig {
     pub rules: Vec<String>,
 }
 
+/// Top-level server configuration loaded from defaults, TOML, and environment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -559,7 +613,9 @@ pub struct Config {
     pub safety: SafetyConfig,
 }
 
+/// Default values for a standalone local Kleos server.
 impl Default for Config {
+    /// Builds a complete default configuration.
     fn default() -> Self {
         Self {
             db_path: "kleos.db".to_string(),
@@ -626,6 +682,7 @@ impl Default for Config {
     }
 }
 
+/// Constructors, loaders, and derived-path helpers for [`Config`].
 impl Config {
     /// Load a `Config` from a TOML file. Missing fields fall back to
     /// their `Default` values via `#[serde(default)]` on most fields.
@@ -692,10 +749,12 @@ impl Config {
         Self::apply_env(base)
     }
 
+    /// Builds the main configuration from defaults plus environment overrides.
     pub fn from_env() -> Self {
         Self::apply_env(Self::default())
     }
 
+    /// Applies process environment overrides to an existing config value.
     fn apply_env(mut config: Self) -> Self {
         if let Ok(v) = std::env::var("ENGRAM_DB_PATH") {
             config.db_path = v;
@@ -1153,14 +1212,35 @@ impl Config {
 }
 
 #[cfg(test)]
+/// Tests for configuration defaults, file loading, and env precedence.
 mod tests {
     use super::*;
 
+    /// Runs a test body with credential-authority env vars isolated.
+    fn with_credential_authority_env(test: impl FnOnce()) {
+        let old_phylaxd = std::env::var("PHYLAXD_URL").ok();
+        let old_credd = std::env::var("CREDD_URL").ok();
+        std::env::remove_var("PHYLAXD_URL");
+        std::env::remove_var("CREDD_URL");
+
+        test();
+
+        match old_phylaxd {
+            Some(value) => std::env::set_var("PHYLAXD_URL", value),
+            None => std::env::remove_var("PHYLAXD_URL"),
+        }
+        match old_credd {
+            Some(value) => std::env::set_var("CREDD_URL", value),
+            None => std::env::remove_var("CREDD_URL"),
+        }
+    }
+
     #[test]
+    /// Verifies nested Eidolon defaults are populated.
     fn eidolon_config_defaults_are_populated() {
         let c = EidolonConfig::default();
         assert!(!c.enabled);
-        assert_eq!(c.credd.url, "http://127.0.0.1:4400");
+        assert_eq!(c.credd.url, DEFAULT_CREDENTIAL_AUTHORITY_URL);
         assert_eq!(c.credd.agent_key_env, "CREDD_AGENT_KEY");
         assert!(!c.credd.allow_raw);
         assert!(c
@@ -1180,12 +1260,59 @@ mod tests {
     }
 
     #[test]
+    /// Verifies the top-level config exposes Eidolon prompt settings.
     fn config_exposes_eidolon_field() {
         let c = Config::default();
         assert_eq!(c.eidolon.prompt.default_max_tokens, 4000);
     }
 
     #[test]
+    #[serial_test::serial(credential_authority_env)]
+    /// Verifies PHYLAXD_URL wins over legacy CREDD_URL.
+    fn credential_authority_prefers_phylaxd_url() {
+        with_credential_authority_env(|| {
+            std::env::set_var("PHYLAXD_URL", "http://127.0.0.1:3100");
+            std::env::set_var("CREDD_URL", "http://127.0.0.1:4400");
+
+            let c = EidolonConfig::from_env();
+
+            assert_eq!(c.credd.url, "http://127.0.0.1:3100");
+        });
+    }
+
+    #[test]
+    #[serial_test::serial(credential_authority_env)]
+    /// Verifies CREDD_URL remains a transition fallback.
+    fn credential_authority_uses_credd_url_fallback() {
+        with_credential_authority_env(|| {
+            std::env::set_var("CREDD_URL", "http://127.0.0.1:4401");
+
+            let c = EidolonConfig::from_env();
+
+            assert_eq!(c.credd.url, "http://127.0.0.1:4401");
+        });
+    }
+
+    #[test]
+    #[serial_test::serial(credential_authority_env)]
+    /// Verifies env layering preserves a file-provided authority URL.
+    fn credential_authority_preserves_existing_url_without_env() {
+        with_credential_authority_env(|| {
+            let c = EidolonConfig {
+                credd: CreddConfig {
+                    url: "http://configured.example:4400".to_string(),
+                    ..CreddConfig::default()
+                },
+                ..EidolonConfig::default()
+            }
+            .apply_env();
+
+            assert_eq!(c.credd.url, "http://configured.example:4400");
+        });
+    }
+
+    #[test]
+    /// Verifies partial TOML files inherit defaults.
     fn from_file_parses_partial_toml_and_uses_defaults() {
         let dir = std::env::temp_dir().join(format!("engram-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1223,6 +1350,7 @@ default_max_tokens = 8000
     }
 
     #[test]
+    /// Verifies malformed TOML returns a parse error.
     fn from_file_rejects_malformed_toml() {
         let dir = std::env::temp_dir().join(format!("engram-cfg-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

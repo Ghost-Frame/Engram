@@ -376,6 +376,8 @@ Four channels run per query:
 - **Database-per-tenant isolation** -- not schema-per-tenant, not row-level. Each tenant gets its own SQLite file with its own encryption key and connection pool.
 - **ServiceGuard on all external calls** -- three-state circuit breaker + exponential backoff + dead-letter queue. Failed work is inspectable and replayable.
 - **Hardware-anchored trust** -- YubiKey-derived keys for both credential daemon and server. PIV request signing. ECDH agent bootstrapping so API keys never hit disk in plaintext.
+- **Phylax credential authority** -- clients prefer `PHYLAXD_URL` for the
+  external credential authority and keep `CREDD_URL` as a transition fallback.
 - **Skills as a first-class system** -- versioned, trust-scored, LLM-evolvable, with execution analytics, judgment history, and lineage tracking.
 - **Built-in supervision** -- Eidolon watches agent sessions in real time and can intervene before damage is done.
 

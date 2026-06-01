@@ -302,14 +302,19 @@ async fn load_memory_content(
 fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
     let mut score = 0.0f32;
 
-    // Pre-compute word indices of all causal keywords.
+    // Pre-compute word indices of all causal keywords. Track each word's real
+    // byte offset in `text` (the words are in-order substrings of `text`)
+    // rather than reconstructing it from word lengths plus an assumed
+    // single-byte separator. The old reconstruction could land inside a
+    // multibyte character and panic on `&text[prefix_len..]`.
     let mut all_kw_word_indices: Vec<usize> = Vec::new();
-    for (wi, _) in words.iter().enumerate() {
-        let prefix_len: usize = words[..wi].iter().map(|w| w.len() + 1).sum();
-        if prefix_len > text.len() {
+    let mut search_from = 0usize;
+    for (wi, w) in words.iter().enumerate() {
+        let Some(rel) = text[search_from..].find(*w) else {
             break;
-        }
-        let remaining = &text[prefix_len..];
+        };
+        let word_start = search_from + rel;
+        let remaining = &text[word_start..];
         let is_causal_kw = STRONG_CAUSAL
             .iter()
             .chain(CONTEXT_CAUSAL.iter())
@@ -318,6 +323,7 @@ fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
         if is_causal_kw {
             all_kw_word_indices.push(wi);
         }
+        search_from = word_start + w.len();
     }
 
     let has_negation = |word_idx: usize| -> bool {
@@ -599,4 +605,30 @@ pub async fn merge_similar(
     }
 
     Ok(merged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: a multibyte whitespace separator (here a non-breaking space)
+    /// after a multibyte word used to make the per-word byte-offset
+    /// reconstruction land inside a character and panic on `&text[offset..]`.
+    #[test]
+    fn compute_causal_score_handles_multibyte_separators() {
+        let text = "café\u{00A0}because the disk caused by overload";
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let score = compute_causal_score(text, &words);
+        assert!(score.is_finite());
+        assert!(score > 0.0, "expected a causal signal, got {score}");
+    }
+
+    /// Plain multibyte content with regular spacing stays panic-free.
+    #[test]
+    fn compute_causal_score_handles_multibyte_words() {
+        let text = "サーバ crashed because 日本語 led to failure";
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let score = compute_causal_score(text, &words);
+        assert!(score.is_finite());
+    }
 }

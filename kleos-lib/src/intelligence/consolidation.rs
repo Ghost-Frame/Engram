@@ -132,9 +132,10 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                 )
                 ?;
                 tx.execute(
-                    "UPDATE memories SET is_consolidated = 1, updated_at = datetime('now') \
-                     WHERE id = ?1",
-                    rusqlite::params![source_id],
+                    "UPDATE memories \
+                     SET is_consolidated = 1, is_latest = 0, updated_at = datetime('now') \
+                     WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![source_id, user_id],
                 )
                 ?;
             }
@@ -199,7 +200,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
 pub async fn find_consolidation_candidates(
     db: &Database,
     threshold: f32,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Vec<Vec<String>>> {
     // Collect all similar pairs from the database.
     let pairs: Vec<(i64, i64)> = db
@@ -215,10 +216,11 @@ pub async fn find_consolidation_candidates(
                        AND ms.is_latest = 1 AND mt.is_latest = 1 \
                        AND ms.is_archived = 0 AND mt.is_archived = 0 \
                        AND ms.is_consolidated = 0 AND mt.is_consolidated = 0 \
+                       AND ms.user_id = ?2 AND mt.user_id = ?2 \
                      ORDER BY ml.similarity DESC \
                      LIMIT 200",
             )?;
-            let mut rows = stmt.query(rusqlite::params![threshold as f64])?;
+            let mut rows = stmt.query(rusqlite::params![threshold as f64, user_id])?;
             let mut pairs = Vec::new();
             while let Some(row) = rows.next()? {
                 let source_id: i64 = row.get(0)?;
@@ -232,6 +234,7 @@ pub async fn find_consolidation_candidates(
     // Simple union-find to cluster connected pairs.
     let mut parent: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
 
+    /// Find the representative root for a memory id in the clustering set.
     fn find(parent: &mut std::collections::HashMap<i64, i64>, x: i64) -> i64 {
         if let std::collections::hash_map::Entry::Vacant(e) = parent.entry(x) {
             e.insert(x);
@@ -251,6 +254,7 @@ pub async fn find_consolidation_candidates(
         root
     }
 
+    /// Merge two memory ids into the same clustering set.
     fn union(parent: &mut std::collections::HashMap<i64, i64>, a: i64, b: i64) {
         let ra = find(parent, a);
         let rb = find(parent, b);
@@ -371,6 +375,7 @@ pub async fn list_consolidations(
     .await
 }
 
+/// Convert a consolidation SELECT row into a Memory value.
 fn row_to_memory(row: &rusqlite::Row<'_>) -> crate::Result<Memory> {
     Ok(Memory {
         id: row.get(0)?,
@@ -425,12 +430,15 @@ fn row_to_memory(row: &rusqlite::Row<'_>) -> crate::Result<Memory> {
     })
 }
 
+/// Unit tests for consolidation helper algorithms.
 #[cfg(test)]
 mod tests {
+    /// Verifies union-find clustering merges connected components.
     #[test]
     fn test_union_find_clustering() {
         let mut parent = std::collections::HashMap::new();
 
+        /// Find the representative root for a test id.
         fn find(parent: &mut std::collections::HashMap<i64, i64>, x: i64) -> i64 {
             if let std::collections::hash_map::Entry::Vacant(e) = parent.entry(x) {
                 e.insert(x);
@@ -443,6 +451,7 @@ mod tests {
             root
         }
 
+        /// Merge two test ids into one component.
         fn union(parent: &mut std::collections::HashMap<i64, i64>, a: i64, b: i64) {
             let ra = find(parent, a);
             let rb = find(parent, b);

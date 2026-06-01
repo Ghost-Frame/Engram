@@ -57,6 +57,7 @@ struct OpenAiRequest {
     stream: bool,
 }
 
+/// Represents one OpenAI chat message in the request payload.
 #[derive(Debug, Serialize)]
 struct OpenAiMessage {
     role: &'static str,
@@ -64,16 +65,19 @@ struct OpenAiMessage {
 }
 
 /// OpenAI-compatible response body.
+/// Represents the OpenAI response envelope.
 #[derive(Debug, Deserialize)]
 struct OpenAiResponse {
     choices: Option<Vec<OpenAiChoice>>,
 }
 
+/// Represents one choice in the OpenAI response envelope.
 #[derive(Debug, Deserialize)]
 struct OpenAiChoice {
     message: Option<OpenAiChoiceMessage>,
 }
 
+/// Represents the assistant message inside one OpenAI choice.
 #[derive(Debug, Deserialize)]
 struct OpenAiChoiceMessage {
     content: Option<String>,
@@ -154,7 +158,7 @@ pub fn repair_and_parse_json<T: serde::de::DeserializeOwned>(raw: &str) -> Optio
     // Strip markdown code fences
     let stripped = if trimmed.starts_with("```") {
         let after_first = if let Some(pos) = trimmed.find('\n') {
-            &trimmed[pos + 1..]
+            trimmed.get(pos + 1..).unwrap_or("")
         } else {
             trimmed
                 .trim_start_matches("```json")
@@ -181,22 +185,25 @@ pub fn repair_and_parse_json<T: serde::de::DeserializeOwned>(raw: &str) -> Optio
 
     debug!(
         "failed to parse JSON from LLM response: {}",
-        &trimmed[..trimmed.len().min(200)]
+        crate::validation::truncate_on_char_boundary(trimmed, 200)
     );
     None
 }
 
+/// Tests the LLM helper parsing and availability checks.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde::Deserialize;
 
+    /// Holds parsed JSON for the repair-and-parse tests.
     #[derive(Debug, Deserialize)]
     struct TestJson {
         facts: Vec<String>,
         skip: bool,
     }
 
+    /// Verifies direct JSON parses without repair.
     #[test]
     fn test_repair_and_parse_direct() {
         let raw = r#"{"facts": ["a", "b"], "skip": false}"#;
@@ -207,6 +214,7 @@ mod tests {
         assert!(!r.skip);
     }
 
+    /// Verifies fenced JSON parses after stripping code fences.
     #[test]
     fn test_repair_and_parse_markdown_fenced() {
         let raw = "```json\n{\"facts\": [\"a\"], \"skip\": true}\n```";
@@ -215,6 +223,7 @@ mod tests {
         assert!(result.unwrap().skip);
     }
 
+    /// Verifies embedded JSON can be recovered from surrounding prose.
     #[test]
     fn test_repair_and_parse_embedded() {
         let raw = "Here is the result: {\"facts\": [\"x\"], \"skip\": false} done.";
@@ -223,6 +232,7 @@ mod tests {
         assert_eq!(result.unwrap().facts, vec!["x"]);
     }
 
+    /// Verifies garbage text returns no JSON value.
     #[test]
     fn test_repair_and_parse_garbage() {
         let raw = "I can't do that, Dave.";
@@ -230,6 +240,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// Verifies the availability check is false when no URL is configured.
     #[test]
     fn test_is_llm_available_default() {
         std::env::remove_var("KLEOS_LLM_URL");
