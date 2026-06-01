@@ -16,9 +16,10 @@ use kleos_cred::CredError;
 use kleos_credd::auth::Auth;
 use kleos_credd::handlers::AppError;
 
+use crate::audit::{actions, log_phylax_audit};
 use crate::models::approval::{self, ApprovalStatus};
 use crate::models::ssh_settings;
-use crate::state::PhylaxState;
+use crate::state::{PhylaxState, DEFAULT_APPROVAL_TTL_SECS};
 
 /// Error type for the pure signer.
 #[derive(Debug, thiserror::Error)]
@@ -103,8 +104,9 @@ pub async fn sign(
     if !auth.is_master() && !auth.can_access_category(&category) {
         return Err(CredError::PermissionDenied("category not permitted".into()).into());
     }
+    // FIX 6: bad hex is a client input error (400), not a permission denial (403).
     let data = hex::decode(&body.data_hex)
-        .map_err(|_| CredError::PermissionDenied("bad data_hex".into()))?;
+        .map_err(|_| CredError::InvalidInput("bad data_hex".into()))?;
 
     // M3 approval gate: unless this key is marked auto_sign, a human must approve.
     let auto_sign = ssh_settings::get_ssh_settings(&state.inner.db, auth.user_id(), &category, &name)
@@ -113,10 +115,13 @@ pub async fn sign(
         .unwrap_or(false);
 
     if !auto_sign {
-        let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(900))
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-        let agent_name = auth.agent_name().unwrap_or("phylax-ssh-agentd").to_string();
+        let expires_at =
+            (chrono::Utc::now() + chrono::Duration::seconds(DEFAULT_APPROVAL_TTL_SECS))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+        // FIX 9: fall back to "master" -- without an agent name the caller used a
+        // master token, and "master" is the convention used everywhere else.
+        let agent_name = auth.agent_name().unwrap_or("master").to_string();
         let ap = approval::create_approval(
             &state.inner.db,
             auth.user_id(),
@@ -129,24 +134,65 @@ pub async fn sign(
         )
         .await?;
 
-        // Poll for a decision (mirrors approvals::wait_for_decision: ~1s x 30).
-        let mut decided = ap.status;
-        for _ in 0..30 {
+        // FIX 1: poll at most 25 iterations (25 < 30 = CREDD_REQUEST_TIMEOUT_SECS)
+        // so the DENY path below fires before the global tower timeout would cancel
+        // the request, avoiding an orphaned Pending approval and a raw 408.
+        // FIX 2: always update `decided` from the latest poll, not only on break.
+        let mut decided = ApprovalStatus::Pending;
+        for _ in 0..25 {
             let cur = approval::get_approval(&state.inner.db, ap.id).await?;
-            if !matches!(cur.status, ApprovalStatus::Pending) {
-                decided = cur.status;
+            decided = cur.status;
+            if !matches!(decided, ApprovalStatus::Pending) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
         if !matches!(decided, ApprovalStatus::Approved) {
+            // FIX 4 (denial audit): record the sign denial before returning.
+            let _ = log_phylax_audit(
+                &state.inner.db,
+                auth.user_id(),
+                Some(&agent_name),
+                None,
+                None,
+                None,
+                None,
+                actions::SSH_SIGN,
+                &category,
+                &name,
+                false,
+                None,
+            )
+            .await;
             return Err(CredError::PermissionDenied("sign not approved".into()).into());
         }
     }
 
     let pem = load_ssh_pem(&state, auth.user_id(), &category, &name).await?;
-    let sig = sign_with_pem(&pem, &data, body.flags)
-        .map_err(|e| CredError::PermissionDenied(format!("sign failed: {e}")))?;
+    // FIX 5: suppress internal error detail from the client; log it server-side.
+    let sig = sign_with_pem(&pem, &data, body.flags).map_err(|e| {
+        tracing::error!(error = %e, "ssh sign failed");
+        CredError::PermissionDenied("signing failed".into())
+    })?;
+
+    // FIX 4 (success audit): record the sign success (category + name, never key material).
+    let agent_name_for_audit = auth.agent_name().unwrap_or("master").to_string();
+    let _ = log_phylax_audit(
+        &state.inner.db,
+        auth.user_id(),
+        Some(&agent_name_for_audit),
+        None,
+        None,
+        None,
+        None,
+        actions::SSH_SIGN,
+        &category,
+        &name,
+        true,
+        None,
+    )
+    .await;
+
     Ok(Json(SignResponse { signature_hex: hex::encode(sig) }))
 }
 
@@ -180,10 +226,14 @@ pub async fn identities(
         };
         // Derive public material; private_key is used only locally and never
         // included in the response, logs, or errors.
+        // FIX 7: never emit a blank public key -- skip the row if encoding fails.
         let public_openssh = match stored_pub {
             Some(p) => p,
             None => match PrivateKey::from_openssh(private_key.as_bytes()) {
-                Ok(k) => k.public_key().to_openssh().unwrap_or_default(),
+                Ok(k) => match k.public_key().to_openssh() {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                },
                 Err(_) => continue,
             },
         };

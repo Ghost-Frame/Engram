@@ -191,8 +191,12 @@ pub async fn decide_approval(
     )
     .await;
 
-    // If approved, mint a lease.
-    if decision == ApprovalStatus::Approved {
+    // If approved, mint a lease -- EXCEPT for ssh-sign approvals.
+    // The sign handler reads Approved status directly and decrypts the key
+    // itself; a redeemable lease for an ssh-sign approval would be a latent
+    // key-exfiltration side channel (any lease holder could redeem it for the
+    // raw private key via the normal resolve path).
+    if decision == ApprovalStatus::Approved && a.resolve_mode != "ssh-sign" {
         let l = lease::mint_lease(
             &state.inner.db,
             a.user_id,
@@ -227,6 +231,11 @@ pub async fn decide_approval(
             "status": "approved",
             "lease": l.to_json(),
         })));
+    }
+
+    // For ssh-sign approvals, return approved status without a lease.
+    if decision == ApprovalStatus::Approved {
+        return Ok(Json(json!({ "status": "approved" })));
     }
 
     Ok(Json(json!({
