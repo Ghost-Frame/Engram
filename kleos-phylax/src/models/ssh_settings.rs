@@ -67,6 +67,25 @@ pub async fn get_ssh_settings(
     .map_err(|e| CredError::Database(e.to_string()))
 }
 
+/// List all SSH settings rows for a user, ordered by category then name.
+pub async fn list_ssh_settings(db: &Database, user_id: i64) -> Result<Vec<SshSettings>> {
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, category, secret_name, auto_sign, auto_load,
+                    created_at, updated_at
+             FROM phylax_ssh_settings
+             WHERE user_id = ?1
+             ORDER BY category, secret_name",
+        )?;
+        let rows = stmt
+            .query_map(params![user_id], row_to_settings)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
+}
+
 /// Create or update SSH settings (upsert).
 pub async fn upsert_ssh_settings(
     db: &Database,

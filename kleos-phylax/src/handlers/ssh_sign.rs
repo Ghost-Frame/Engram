@@ -4,6 +4,7 @@
 use axum::extract::{Path, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 // Must be in scope for `key.try_sign(...)` to resolve; `Signer` is the trait
 // that provides the `try_sign` method used below.
 use signature::Signer;
@@ -106,4 +107,53 @@ pub async fn sign(
     let sig = sign_with_pem(&pem, &data, body.flags)
         .map_err(|e| CredError::PermissionDenied(format!("sign failed: {e}")))?;
     Ok(Json(SignResponse { signature_hex: hex::encode(sig) }))
+}
+
+/// GET /phylax/ssh/identities -- list this user's SSH keys (PUBLIC material only).
+pub async fn identities(
+    Auth(auth): Auth,
+    State(state): State<PhylaxState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    use crate::models::ssh_settings;
+
+    let rows = ssh_settings::list_ssh_settings(&state.inner.db, auth.user_id()).await?;
+    let mut out = Vec::new();
+    for s in rows {
+        if !auth.is_master() && !auth.can_access_category(&s.category) {
+            continue;
+        }
+        // Fetch the secret to obtain the public half (prefer stored public_key).
+        let (_row, data) = match get_secret(
+            &state.inner.db,
+            auth.user_id(),
+            &s.category,
+            &s.secret_name,
+            state.inner.master_key.as_ref(),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => continue, // settings row without a usable secret -- skip
+        };
+        let (private_key, stored_pub) = match data {
+            SecretData::SshKey { private_key, public_key, .. } => (private_key, public_key),
+            _ => continue,
+        };
+        // Derive public material; private_key is used only locally and never
+        // included in the response, logs, or errors.
+        let public_openssh = match stored_pub {
+            Some(p) => p,
+            None => match PrivateKey::from_openssh(private_key.as_bytes()) {
+                Ok(k) => k.public_key().to_openssh().unwrap_or_default(),
+                Err(_) => continue,
+            },
+        };
+        out.push(json!({
+            "category": s.category,
+            "name": s.secret_name,
+            "public_openssh": public_openssh,
+            "auto_sign": s.auto_sign,
+        }));
+    }
+    Ok(Json(json!({ "identities": out })))
 }

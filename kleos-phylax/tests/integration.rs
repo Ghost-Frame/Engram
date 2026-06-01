@@ -14,6 +14,7 @@ use kleos_credd::state::AppState;
 use kleos_lib::db::Database;
 use kleos_lib::EngError;
 use kleos_phylax::audit::{actions, log_phylax_audit};
+use kleos_phylax::models::ssh_settings::{list_ssh_settings, upsert_ssh_settings};
 use kleos_phylax::router::compose_router;
 
 /// Test harness wrapping a Phylax-enabled router.
@@ -685,4 +686,39 @@ async fn test_redeem_lease_does_not_return_plaintext_secret() {
         .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["error"], "lease already redeemed");
+}
+
+// ---- list_ssh_settings model test ----
+
+/// Verify list_ssh_settings returns all rows for a user, ordered by
+/// category then secret_name, and excludes rows for other users.
+#[tokio::test]
+async fn test_list_ssh_settings_returns_all_rows_for_user() {
+    let app = TestApp::new().await;
+
+    // user_id=1 is the master; insert two settings rows via upsert.
+    upsert_ssh_settings(&app.db, 1, "ssh-keys", "deploy", true, false)
+        .await
+        .unwrap();
+    upsert_ssh_settings(&app.db, 1, "infra", "bastion", false, true)
+        .await
+        .unwrap();
+    // Row for a different user -- must not appear in user_id=1 results.
+    upsert_ssh_settings(&app.db, 99, "ssh-keys", "other", false, false)
+        .await
+        .unwrap();
+
+    let rows = list_ssh_settings(&app.db, 1).await.unwrap();
+
+    // Should be ordered category ASC, secret_name ASC: infra/bastion then ssh-keys/deploy.
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].category, "infra");
+    assert_eq!(rows[0].secret_name, "bastion");
+    assert!(!rows[0].auto_sign);
+    assert!(rows[0].auto_load);
+
+    assert_eq!(rows[1].category, "ssh-keys");
+    assert_eq!(rows[1].secret_name, "deploy");
+    assert!(rows[1].auto_sign);
+    assert!(!rows[1].auto_load);
 }
