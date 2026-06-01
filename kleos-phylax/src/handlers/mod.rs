@@ -7,3 +7,4 @@ pub mod leases;
 pub mod namespaces;
 pub mod policies;
 pub mod ssh;
+pub mod ssh_sign;
