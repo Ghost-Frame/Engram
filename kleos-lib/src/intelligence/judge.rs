@@ -97,9 +97,156 @@ fn should_judge(turn_count: i32, transcript: &str, min_turns: i32) -> bool {
     turn_count >= min_turns && !transcript.trim().is_empty()
 }
 
+/// Score a finished session and persist evaluations + session quality + Soma
+/// quality. All-or-nothing: an LLM/parse failure aborts with no writes.
+pub async fn judge_session<L: JudgeLlm>(
+    db: &crate::db::Database,
+    llm: &L,
+    input: JudgeInput,
+) -> crate::Result<()> {
+    /// Minimum turns required before we spend an LLM call on scoring.
+    const MIN_TURNS: i32 = 3;
+    if !should_judge(input.turn_count, &input.transcript, MIN_TURNS) {
+        tracing::debug!(
+            session_id = %input.session_id,
+            turn_count = input.turn_count,
+            "judge: session below threshold, skipping"
+        );
+        return Ok(());
+    }
+
+    let rubrics = crate::services::thymus::list_rubrics(db, input.user_id).await?;
+    let judged: Vec<_> = rubrics
+        .into_iter()
+        .filter(|r| JUDGED_RUBRICS.contains(&r.name.as_str()))
+        .collect();
+    if judged.is_empty() {
+        tracing::warn!(user_id = input.user_id, "judge: no rubrics to score, skipping");
+        return Ok(());
+    }
+
+    let mut criteria: Vec<(String, String)> = Vec::new();
+    for r in &judged {
+        if let Some(arr) = r.criteria.as_array() {
+            for c in arr {
+                let name = c
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let desc = c
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if !name.is_empty() {
+                    criteria.push((name, desc));
+                }
+            }
+        }
+    }
+
+    let (system, user) = build_prompt(&criteria, &input);
+    let raw = llm
+        .complete(&system, &user)
+        .await
+        .map_err(|e| crate::EngError::InvalidInput(format!("judge llm: {e}")))?;
+    let Some(out) = parse_judgment(&raw) else {
+        return Err(crate::EngError::InvalidInput(
+            "judge: unparseable LLM response".into(),
+        ));
+    };
+
+    let mut overall_sum = 0.0_f64;
+    let mut overall_n = 0.0_f64;
+    for r in &judged {
+        let mut rubric_scores = serde_json::Map::new();
+        if let Some(arr) = r.criteria.as_array() {
+            for c in arr {
+                if let Some(name) = c.get("name").and_then(|v| v.as_str()) {
+                    if let Some(score) = out.scores.get(name) {
+                        rubric_scores.insert(name.to_string(), serde_json::json!(score));
+                    }
+                }
+            }
+        }
+        if rubric_scores.is_empty() {
+            continue;
+        }
+        let eval = crate::services::thymus::evaluate(
+            db,
+            crate::services::thymus::EvaluateRequest {
+                rubric_id: r.id,
+                agent: input.agent.clone(),
+                subject: input.session_id.clone(),
+                input: None,
+                output: None,
+                scores: serde_json::Value::Object(rubric_scores),
+                notes: Some(out.notes.clone()),
+                evaluator: "thymus-judge".into(),
+                user_id: Some(input.user_id),
+            },
+        )
+        .await?;
+        overall_sum += eval.overall_score;
+        overall_n += 1.0;
+    }
+
+    let session_overall = if overall_n > 0.0 {
+        overall_sum / overall_n
+    } else {
+        0.0
+    };
+    let rule_rate = judged
+        .iter()
+        .find(|r| r.name == "rule-compliance")
+        .map(|_| session_overall);
+
+    crate::services::thymus::record_session_quality(
+        db,
+        crate::services::thymus::RecordSessionQualityRequest {
+            session_id: input.session_id.clone(),
+            agent: input.agent.clone(),
+            turn_count: Some(input.turn_count),
+            rules_followed: Some(out.rules_followed.clone()),
+            rules_drifted: Some(out.rules_drifted.clone()),
+            personality_score: None,
+            rule_compliance_rate: rule_rate,
+            user_id: Some(input.user_id),
+        },
+    )
+    .await?;
+
+    if let Ok(agent) =
+        crate::services::soma::get_agent_by_name(db, input.user_id, &input.agent).await
+    {
+        let rolled = match agent.quality_score {
+            Some(p) => (p + session_overall) / 2.0,
+            None => session_overall,
+        };
+        let _ = crate::services::soma::update_agent_quality(
+            db,
+            agent.id,
+            input.user_id,
+            Some(rolled),
+            None,
+        )
+        .await;
+    }
+
+    tracing::info!(
+        session_id = %input.session_id,
+        agent = %input.agent,
+        overall = session_overall,
+        "thymus judge recorded"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Database;
 
     #[test]
     fn parses_valid_judgment_with_surrounding_prose() {
@@ -143,5 +290,97 @@ mod tests {
         assert!(user.contains("No wasted tool calls"));
         assert!(user.contains("ran cargo build"));
         assert!(user.contains("fix the build"));
+    }
+
+    /// Stub LLM that always returns the given string unchanged.
+    struct StubLlm(String);
+
+    #[async_trait::async_trait]
+    impl JudgeLlm for StubLlm {
+        async fn complete(&self, _system: &str, _user: &str) -> Result<String, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// End-to-end: seed rubrics + agent, run judge_session, verify evaluations
+    /// are written and Soma quality is updated.
+    #[tokio::test]
+    async fn judge_session_writes_quality_and_evaluations() {
+        let db = Database::connect_memory().await.expect("db");
+
+        // Seed rule-compliance rubric for user 1.
+        crate::services::thymus::create_rubric(
+            &db,
+            crate::services::thymus::CreateRubricRequest {
+                name: "rule-compliance".into(),
+                description: None,
+                criteria: serde_json::json!([
+                    {"name": "engram_first", "weight": 1.0, "scale_min": 0.0, "scale_max": 1.0,
+                     "description": "uses memory first"}
+                ]),
+                user_id: Some(1),
+            },
+        )
+        .await
+        .expect("rubric1");
+
+        // Seed technical-precision rubric for user 1.
+        crate::services::thymus::create_rubric(
+            &db,
+            crate::services::thymus::CreateRubricRequest {
+                name: "technical-precision".into(),
+                description: None,
+                criteria: serde_json::json!([
+                    {"name": "verify_results", "weight": 1.0, "scale_min": 0.0, "scale_max": 1.0,
+                     "description": "verifies"}
+                ]),
+                user_id: Some(1),
+            },
+        )
+        .await
+        .expect("rubric2");
+
+        // Register the agent. `RegisterAgentRequest` uses `type_` (not `agent_type`).
+        crate::services::soma::register_agent(
+            &db,
+            crate::services::soma::RegisterAgentRequest {
+                name: "claude-code".into(),
+                type_: "cli".into(),
+                description: None,
+                capabilities: None,
+                config: None,
+                user_id: Some(1),
+            },
+        )
+        .await
+        .expect("agent");
+
+        let stub = StubLlm(
+            "{\"scores\": {\"engram_first\": 0.5, \"verify_results\": 1.0}, \
+             \"rules_followed\": [\"verify_results\"], \
+             \"rules_drifted\": [\"engram_first\"], \"notes\": \"ok\"}"
+                .into(),
+        );
+        let input = JudgeInput {
+            session_id: "s-test".into(),
+            agent: "claude-code".into(),
+            task: "t".into(),
+            transcript: "did stuff".into(),
+            turn_count: 5,
+            user_id: 1,
+        };
+
+        judge_session(&db, &stub, input).await.expect("judge ok");
+
+        // list_evaluations: (db, user_id, agent, rubric_id, limit) -- no offset.
+        let evals = crate::services::thymus::list_evaluations(&db, 1, None, None, 50)
+            .await
+            .expect("list evals");
+        assert_eq!(evals.len(), 2, "one evaluation per rubric");
+
+        let agent = crate::services::soma::get_agent_by_name(&db, 1, "claude-code")
+            .await
+            .expect("agent");
+        assert!(agent.quality_score.is_some(), "soma quality set");
     }
 }
