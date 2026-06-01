@@ -59,3 +59,54 @@ impl JudgeLlm for RealJudgeLlm {
         crate::intelligence::llm::call_llm(system, user, None).await
     }
 }
+
+/// Build the (system, user) prompt. `criteria` is the flattened list of
+/// (criterion_name, description) across the judged rubrics.
+fn build_prompt(criteria: &[(String, String)], input: &JudgeInput) -> (String, String) {
+    let system = "You are a strict evaluator of AI agent work sessions. \
+Score each listed criterion from 0.0 (total failure) to 1.0 (perfect) based ONLY \
+on the transcript. Respond with a single JSON object and nothing else: \
+{\"scores\": {\"<criterion>\": <0.0-1.0>, ...}, \"rules_followed\": [\"<criterion>\", ...], \
+\"rules_drifted\": [\"<criterion>\", ...], \"notes\": \"<one short sentence>\"}. \
+Include every criterion in \"scores\"."
+        .to_string();
+
+    let mut user = String::new();
+    user.push_str("CRITERIA:\n");
+    for (name, desc) in criteria {
+        user.push_str(&format!("- {name}: {desc}\n"));
+    }
+    user.push_str(&format!("\nAGENT: {}\n", input.agent));
+    user.push_str(&format!("TASK: {}\n", input.task));
+    user.push_str(&format!("TURNS: {}\n", input.turn_count));
+    user.push_str("\nTRANSCRIPT:\n");
+    user.push_str(&input.transcript);
+    (system, user)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_includes_criteria_and_transcript() {
+        let criteria = vec![
+            ("zero_waste".to_string(), "No wasted tool calls".to_string()),
+            ("verify_results".to_string(), "Verifies before claiming done".to_string()),
+        ];
+        let input = JudgeInput {
+            session_id: "s1".into(),
+            agent: "claude-code".into(),
+            task: "fix the build".into(),
+            transcript: "ran cargo build, it passed".into(),
+            turn_count: 5,
+            user_id: 1,
+        };
+        let (system, user) = build_prompt(&criteria, &input);
+        assert!(system.contains("0.0"));
+        assert!(user.contains("zero_waste"));
+        assert!(user.contains("No wasted tool calls"));
+        assert!(user.contains("ran cargo build"));
+        assert!(user.contains("fix the build"));
+    }
+}
