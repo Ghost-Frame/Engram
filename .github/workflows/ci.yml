@@ -12,7 +12,23 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
+    env:
+      # Test binaries statically link the full native dependency tree (lance,
+      # datafusion, arrow, tantivy, ort). With debuginfo the link inputs are
+      # multi-GB and ld SIGBUSes once the 14GB hosted-runner disk fills. CI does
+      # not debug, so drop test-profile debuginfo to shrink the link inputs.
+      CARGO_PROFILE_TEST_DEBUG: "0"
+
     steps:
+      - name: Free disk space
+        # Reclaim ~20-30GB of preinstalled toolchains we do not use, so the heavy
+        # workspace test link has headroom. Inline rm avoids a third-party action.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
+
       - name: Checkout code
         uses: actions/checkout@v4
 
