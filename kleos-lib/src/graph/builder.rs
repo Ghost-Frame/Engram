@@ -1,6 +1,6 @@
 use super::types::{GraphBuildOptions, GraphBuildResult, GraphEdge, GraphNode, LinkType};
-use crate::Result;
 use crate::db::Database;
+use crate::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::info;
 

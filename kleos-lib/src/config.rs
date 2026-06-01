@@ -1249,12 +1249,11 @@ mod tests {
         assert_eq!(c.credd.url, DEFAULT_CREDENTIAL_AUTHORITY_URL);
         assert_eq!(c.credd.agent_key_env, "CREDD_AGENT_KEY");
         assert!(!c.credd.allow_raw);
-        assert!(
-            c.gate
-                .blocked_patterns
-                .iter()
-                .any(|p| p.contains("rm -rf /"))
-        );
+        assert!(c
+            .gate
+            .blocked_patterns
+            .iter()
+            .any(|p| p.contains("rm -rf /")));
         assert_eq!(c.gate.approval_timeout_secs, 300);
         assert_eq!(c.growth.reflection_interval_secs, 3600);
         assert_eq!(c.growth.observation_limit, 100);

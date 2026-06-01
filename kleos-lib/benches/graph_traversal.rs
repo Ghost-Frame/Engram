@@ -3,11 +3,11 @@
 //! Seeds memories + memory_links with a synthetic concept graph (fanout
 //! 4) and benchmarks graph build at two node-count tiers.
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 mod common;
 
-use common::{BenchDb, TIER_MED, TIER_SMALL, synthetic_memories};
+use common::{synthetic_memories, BenchDb, TIER_MED, TIER_SMALL};
 
 use kleos_lib::db::Database;
 use kleos_lib::graph::builder::build_graph_data;
