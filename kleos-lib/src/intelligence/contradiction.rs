@@ -24,10 +24,10 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
             let mut stmt = conn.prepare(
                 "SELECT id, subject, predicate, object, confidence \
                      FROM structured_facts \
-                     WHERE memory_id = ?1",
+                     WHERE memory_id = ?1 AND user_id = ?2",
             )?;
             let rows = stmt
-                .query_map(params![memory_id], |row| {
+                .query_map(params![memory_id, user_id], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
@@ -58,17 +58,21 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                          WHERE sf.subject = ?1 AND sf.predicate = ?2 \
                            AND sf.memory_id != ?3 \
                            AND sf.id != ?4 \
+                           AND sf.user_id = ?5 \
                          ORDER BY sf.confidence DESC",
                 )?;
                 let rows = stmt
-                    .query_map(params![subject_c, predicate_c, memory_id, nfid], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, i64>(2)?,
-                            row.get::<_, f64>(3)?,
-                        ))
-                    })?
+                    .query_map(
+                        params![subject_c, predicate_c, memory_id, nfid, user_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, i64>(2)?,
+                                row.get::<_, f64>(3)?,
+                            ))
+                        },
+                    )?
                     .collect::<std::result::Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
@@ -132,7 +136,7 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
 /// conflicting objects. Returns all detected contradictions.
 #[allow(clippy::type_complexity)]
 #[tracing::instrument(skip(db))]
-pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec<Contradiction>> {
+pub async fn scan_all_contradictions(db: &Database, user_id: i64) -> Result<Vec<Contradiction>> {
     let rows: Vec<(i64, i64, String, String, String, String, f64, f64)> = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
@@ -144,10 +148,11 @@ pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec
                        AND sf1.predicate = sf2.predicate \
                        AND sf1.id < sf2.id \
                        AND sf1.memory_id != sf2.memory_id \
+                     WHERE sf1.user_id = ?1 AND sf2.user_id = ?1 \
                      LIMIT 500",
             )?;
             let rows = stmt
-                .query_map([], |row| {
+                .query_map(params![user_id], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,

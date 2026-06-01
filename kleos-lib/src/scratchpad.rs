@@ -7,6 +7,7 @@ use crate::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
+/// Represents one scratchpad row returned from the database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScratchEntry {
     pub session: String,
@@ -19,6 +20,7 @@ pub struct ScratchEntry {
     pub expires_at: Option<String>,
 }
 
+/// Represents the payload accepted by the scratchpad put endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScratchPutBody {
     pub session: Option<String>,
@@ -28,6 +30,7 @@ pub struct ScratchPutBody {
     pub ttl: Option<i64>,
 }
 
+/// Represents one key-value pair inside a scratchpad write request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScratchKV {
     pub key: String,
@@ -36,6 +39,7 @@ pub struct ScratchKV {
 
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(db, session, agent, model, key, value))]
+/// Inserts or updates one scratchpad entry with a TTL.
 pub async fn upsert_entry(
     db: &Database,
     session: &str,
@@ -63,6 +67,7 @@ pub async fn upsert_entry(
 }
 
 #[tracing::instrument(skip(db, agent, model, session))]
+/// Lists active scratchpad entries filtered by agent, model, and session.
 pub async fn list_entries(
     db: &Database,
     agent: Option<&str>,
@@ -94,6 +99,7 @@ pub async fn list_entries(
 }
 
 #[tracing::instrument(skip(db, session))]
+/// Loads every entry for one scratchpad session in creation order.
 pub async fn get_session_entries(db: &Database, session: &str) -> Result<Vec<ScratchEntry>> {
     let session = session.to_string();
     db.read(move |conn| {
@@ -115,6 +121,7 @@ pub async fn get_session_entries(db: &Database, session: &str) -> Result<Vec<Scr
 }
 
 #[tracing::instrument(skip(db, session))]
+/// Deletes every scratchpad entry for one session.
 pub async fn delete_session(db: &Database, session: &str) -> Result<()> {
     let session = session.to_string();
     db.write(move |conn| {
@@ -128,6 +135,7 @@ pub async fn delete_session(db: &Database, session: &str) -> Result<()> {
 }
 
 #[tracing::instrument(skip(db, session, key))]
+/// Deletes one key from one scratchpad session.
 pub async fn delete_session_key(db: &Database, session: &str, key: &str) -> Result<()> {
     let session = session.to_string();
     let key = key.to_string();
@@ -142,6 +150,7 @@ pub async fn delete_session_key(db: &Database, session: &str, key: &str) -> Resu
 }
 
 #[tracing::instrument(skip(db))]
+/// Removes expired scratchpad entries and returns the number deleted.
 pub async fn purge_expired(db: &Database) -> Result<i64> {
     db.write(move |conn| {
         let changes = conn.execute(
@@ -156,6 +165,7 @@ pub async fn purge_expired(db: &Database) -> Result<i64> {
 /// Promote session entries to permanent memories.
 /// Returns list of created memory IDs.
 #[tracing::instrument(skip(db, session, keys, category))]
+/// Promotes selected session entries into permanent memories.
 pub async fn promote_entries(
     db: &Database,
     user_id: i64,
@@ -186,7 +196,7 @@ pub async fn promote_entries(
     }
 
     let category = category.to_string();
-    let session_prefix = session[..session.len().min(8)].to_string();
+    let session_prefix = session_short_prefix(session).to_string();
 
     db.write(move |conn| {
         let mut promoted = Vec::new();
@@ -225,6 +235,12 @@ pub async fn promote_entries(
     .await
 }
 
+/// Returns a short session prefix without cutting through UTF-8 bytes.
+fn session_short_prefix(session: &str) -> &str {
+    crate::validation::truncate_on_char_boundary(session, 8)
+}
+
+/// Maps one rusqlite row into a scratchpad entry.
 fn row_to_entry_rusqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScratchEntry> {
     Ok(ScratchEntry {
         session: row.get(0)?,
@@ -238,12 +254,12 @@ fn row_to_entry_rusqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScratchEnt
     })
 }
 
-/// `Result<_>` wrapper around `row_to_entry_rusqlite`. Current call sites
-/// use `query_map` which wants the `rusqlite::Result` variant directly, so
+/// Tests for scratchpad serialization and UTF-8-safe promotion previews.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies scratchpad entries serialize with their session fields intact.
     #[test]
     fn test_scratch_entry_serialize() {
         let entry = ScratchEntry {
@@ -258,5 +274,11 @@ mod tests {
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("sess1"));
+    }
+
+    /// Regression: multibyte session prefixes must not panic during promotion.
+    #[test]
+    fn session_short_prefix_handles_multibyte_boundaries() {
+        assert_eq!(session_short_prefix("sess-💥-alpha"), "sess-");
     }
 }

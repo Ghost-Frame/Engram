@@ -23,7 +23,7 @@ pub struct Client {
 /// Constructor and HTTP request helpers for `Client`.
 impl Client {
     /// Constructs a new `Client`. `base_url` may be comma-separated for failover
-    /// (e.g. `"http://10.50.0.1:4200,http://172.30.0.201:4200"`).
+    /// (e.g. `"http://primary-host:4200,http://backup-host:4200"`).
     pub fn new(
         base_url: String,
         api_key: Option<String>,

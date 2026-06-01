@@ -195,7 +195,7 @@ async fn absorb_one(
         None => {
             tracing::warn!(
                 "brain_absorber: embedder not ready, skipping absorption of {:?}",
-                &content[..content.len().min(60)]
+                kleos_lib::validation::truncate_on_char_boundary(content, 60)
             );
             return;
         }

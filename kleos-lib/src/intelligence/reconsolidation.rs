@@ -28,9 +28,9 @@ pub async fn reconsolidate_memory(
             let mut stmt = conn.prepare(
                 "SELECT id, importance, confidence, is_static, access_count, \
                             recall_hits, recall_misses, fsrs_stability, created_at \
-                     FROM memories WHERE id = ?1",
+                     FROM memories WHERE id = ?1 AND user_id = ?2",
             )?;
-            let mut rows = stmt.query(rusqlite::params![memory_id])?;
+            let mut rows = stmt.query(rusqlite::params![memory_id, user_id])?;
             if let Some(row) = rows.next()? {
                 let importance: i32 = row.get(1)?;
                 let confidence: f64 = row.get(2)?;
@@ -168,14 +168,14 @@ pub async fn reconsolidate_memory(
         db.write(move |conn| {
             conn.execute(
                 "UPDATE memories SET importance = ?1, confidence = ?2, updated_at = datetime('now') \
-                 WHERE id = ?3",
-                rusqlite::params![new_importance, new_confidence, memory_id],
+                 WHERE id = ?3 AND user_id = ?4",
+                rusqlite::params![new_importance, new_confidence, memory_id, user_id],
             )
             ?;
 
             conn.execute(
-                "UPDATE memories SET adaptive_score = ?1 WHERE id = ?2",
-                rusqlite::params![adaptive_score, memory_id],
+                "UPDATE memories SET adaptive_score = ?1 WHERE id = ?2 AND user_id = ?3",
+                rusqlite::params![adaptive_score, memory_id, user_id],
             )
             ?;
 
@@ -209,8 +209,8 @@ pub async fn reconsolidate_memory(
         // this row and doesn't re-pick it every sweep.
         db.write(move |conn| {
             conn.execute(
-                "UPDATE memories SET updated_at = datetime('now') WHERE id = ?1",
-                rusqlite::params![memory_id],
+                "UPDATE memories SET updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![memory_id, user_id],
             )?;
             Ok(())
         })
@@ -245,13 +245,13 @@ pub async fn run_reconsolidation_sweep(
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id FROM memories \
-                     WHERE is_forgotten = 0 AND is_latest = 1 \
+                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 \
                        AND (recall_hits + recall_misses > 0 \
                             OR (access_count < 3 AND created_at < datetime('now', '-7 days'))) \
                      ORDER BY updated_at ASC \
-                     LIMIT ?1",
+                     LIMIT ?2",
             )?;
-            let mut rows = stmt.query(rusqlite::params![batch_size as i64])?;
+            let mut rows = stmt.query(rusqlite::params![user_id, batch_size as i64])?;
             let mut ids = Vec::new();
             while let Some(row) = rows.next()? {
                 ids.push(row.get::<_, i64>(0)?);
@@ -286,10 +286,12 @@ pub async fn run_reconsolidation_sweep(
     Ok(results)
 }
 
+/// Unit tests covering reconsolidation action bookkeeping helpers.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies that unchanged importance and confidence keep the action stable.
     #[test]
     fn test_reconsolidation_action_unchanged() {
         let importance = 5;
@@ -306,6 +308,7 @@ mod tests {
         assert_eq!(action, ReconsolidationAction::Unchanged);
     }
 
+    /// Verifies that improved importance or confidence marks the memory as strengthened.
     #[test]
     fn test_reconsolidation_action_strengthened() {
         let importance = 5;
@@ -324,6 +327,7 @@ mod tests {
         assert_eq!(action, ReconsolidationAction::Strengthened);
     }
 
+    /// Verifies that adaptive-score math stays normalized to the recall hit rate.
     #[test]
     fn test_adaptive_score_calculation() {
         let hits = 7;

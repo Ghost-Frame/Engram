@@ -23,8 +23,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy the full workspace so Cargo can resolve the dependency graph.
 COPY . .
 
-# Build only the two required binaries; the rest of the workspace is skipped.
-RUN cargo build --release -p kleos-server -p kleos-cli
+# Build with BuildKit cache mounts so the Cargo registry and compiled
+# dependencies survive across rebuilds — only changed crates are recompiled.
+# Binaries are copied to /tmp here because cache mounts are not accessible
+# from other stages.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p kleos-server -p kleos-cli \
+    && cp target/release/kleos-server /tmp/kleos-server \
+    && cp target/release/kleos-cli    /tmp/kleos-cli
 
 # =============================================================================
 # Stage 2 -- runtime
@@ -42,6 +49,7 @@ LABEL org.opencontainers.image.source="https://github.com/Ghost-Frame/Kleos" \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     ca-certificates \
+    libpcsclite1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a dedicated non-root user for running the server.
@@ -51,8 +59,8 @@ RUN groupadd --system --gid 1000 kleos \
 # Persistent data lives here.  A named volume or bind-mount should be attached.
 RUN mkdir -p /data && chown kleos:kleos /data
 
-COPY --from=builder /build/target/release/kleos-server /usr/local/bin/kleos-server
-COPY --from=builder /build/target/release/kleos-cli     /usr/local/bin/kleos-cli
+COPY --from=builder /tmp/kleos-server /usr/local/bin/kleos-server
+COPY --from=builder /tmp/kleos-cli   /usr/local/bin/kleos-cli
 
 RUN chmod 755 /usr/local/bin/kleos-server /usr/local/bin/kleos-cli
 

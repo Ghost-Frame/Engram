@@ -14,16 +14,20 @@ use std::collections::HashMap;
 const SKIP_TAGS: &[&str] = &["script", "style", "nav", "footer", "header", "aside"];
 
 /// Extract title from <title>...</title> tag.
+///
+/// All offsets are located case-insensitively in `html` itself (tag markers
+/// are ASCII), so the original-case title is sliced without building a
+/// lowercased shadow whose byte offsets can drift from `html`.
 fn extract_title(html: &str) -> String {
-    let lower = html.to_lowercase();
-    if let Some(start) = lower.find("<title") {
-        if let Some(tag_end) = lower[start..].find('>') {
-            let content_start = start + tag_end + 1;
-            if let Some(close) = lower[content_start..].find("</title>") {
-                let title = &html[content_start..content_start + close];
-                let trimmed = title.trim();
-                if !trimmed.is_empty() {
-                    return trimmed.to_string();
+    use crate::validation::find_ascii_case_insensitive;
+    if let Some(start) = find_ascii_case_insensitive(html, "<title") {
+        if let Some(rel_gt) = html[start..].find('>') {
+            let content_start = start + rel_gt + 1;
+            if let Some(rel_close) = find_ascii_case_insensitive(&html[content_start..], "</title>")
+            {
+                let title = html[content_start..content_start + rel_close].trim();
+                if !title.is_empty() {
+                    return title.to_string();
                 }
             }
         }
@@ -35,18 +39,17 @@ fn extract_title(html: &str) -> String {
 /// Removes content within SKIP_TAGS entirely.
 pub fn strip_tags(html: &str) -> String {
     let mut output = String::with_capacity(html.len() / 2);
-    let lower = html.to_lowercase();
     let bytes = html.as_bytes();
-    let lower_bytes = lower.as_bytes();
     let len = bytes.len();
     let mut i = 0;
     let mut skip_depth: Option<String> = None;
 
     while i < len {
         if bytes[i] == b'<' {
-            // Check for comment
-            if i + 3 < len && &lower_bytes[i..i + 4] == b"<!--" {
-                if let Some(end) = lower[i + 4..].find("-->") {
+            // Check for comment. `<!--` and `-->` are ASCII literals, so byte
+            // comparison against `html` is exact and never splits a character.
+            if i + 3 < len && &bytes[i..i + 4] == b"<!--" {
+                if let Some(end) = html[i + 4..].find("-->") {
                     i = i + 4 + end + 3;
                 } else {
                     i = len;
@@ -63,12 +66,16 @@ pub fn strip_tags(html: &str) -> String {
                 }
             };
 
-            let tag_content = &lower[i + 1..tag_end];
+            // Lowercase only the small tag slice for name comparison. Indexing
+            // the original `html` (not a lowercased shadow) keeps byte offsets
+            // valid even when a preceding character changes byte length under
+            // `to_lowercase`.
+            let tag_content = html[i + 1..tag_end].to_lowercase();
             let is_closing = tag_content.starts_with('/');
             let tag_name_src = if is_closing {
-                &tag_content[1..]
+                tag_content.strip_prefix('/').unwrap_or(&tag_content)
             } else {
-                tag_content
+                tag_content.as_str()
             };
             let tag_name = tag_name_src
                 .split(|c: char| c.is_whitespace() || c == '/')
@@ -184,6 +191,38 @@ pub fn detect(input: &str, extension: Option<&str>) -> bool {
     if trimmed.len() < 5 {
         return false;
     }
-    let check = trimmed[..trimmed.len().min(50)].to_lowercase();
+    let check = crate::validation::truncate_on_char_boundary(trimmed, 50).to_lowercase();
     check.starts_with("<!doctype") || check.starts_with("<html")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: a character before the title whose lowercase has a different
+    /// byte length (here 'İ' -> "i̇") used to desync lowercased offsets from the
+    /// original slice and return a garbled or mid-character title.
+    #[test]
+    fn extract_title_handles_multibyte_prefix() {
+        let html = "İ<title>Café Menu</title><body>x</body>";
+        assert_eq!(extract_title(html), "Café Menu");
+    }
+
+    /// Title tag matching is case-insensitive and absent titles fall back.
+    #[test]
+    fn extract_title_case_insensitive_and_fallback() {
+        assert_eq!(extract_title("<HTML><TITLE>Hello</TITLE>"), "Hello");
+        assert_eq!(extract_title("<p>no title here</p>"), "Untitled");
+    }
+
+    /// Multibyte text content and a length-changing prefix character must not
+    /// panic the tag-stripping state machine, and skipped tags stay excluded.
+    #[test]
+    fn strip_tags_multibyte_content_no_panic() {
+        let html = "İ<p>café 🎉 日本語</p><script>secretpayload</script>tail";
+        let text = strip_tags(html);
+        assert!(text.contains("café 🎉 日本語"), "got: {text:?}");
+        assert!(!text.contains("secretpayload"));
+        assert!(text.contains("tail"));
+    }
 }

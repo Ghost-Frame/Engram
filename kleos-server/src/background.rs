@@ -253,12 +253,7 @@ pub fn start_vector_sync_replay_task(
                             }
                             let user_id = match tenant_row.user_id.parse::<i64>() {
                                 Ok(uid) => uid,
-                                Err(e) => {
-                                    warn!(
-                                        tenant = %tenant_row.tenant_id,
-                                        error = %e,
-                                        "vector sync: tenant_row.user_id not parseable as i64; skipping"
-                                    );
+                                Err(_) => {
                                     continue;
                                 }
                             };

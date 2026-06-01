@@ -67,6 +67,7 @@ const META_STOPLIST: &[&str] = &[
     "speaking of which",
 ];
 
+/// Parsed LLM response for decomposition candidates.
 #[derive(Debug, Deserialize)]
 struct LlmDecompositionResponse {
     facts: Option<Vec<String>>,
@@ -76,7 +77,7 @@ struct LlmDecompositionResponse {
 /// Decompose a memory into atomic facts.
 /// Returns the decomposed memory IDs (newly created child facts).
 #[tracing::instrument(skip(db))]
-pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
+pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Vec<i64>> {
     // Fetch the memory content - MUST belong to caller
     let row_opt = db
         .read(move |conn| {
@@ -84,8 +85,8 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
                 .query_row(
                     "SELECT content, category, source, importance, space_id, \
                         episode_id, tags, session_id \
-                 FROM memories WHERE id = ?1 AND is_forgotten = 0",
-                    params![memory_id],
+                 FROM memories WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0",
+                    params![memory_id, user_id],
                     |row| {
                         Ok((
                             row.get::<_, String>(0)?,
@@ -113,8 +114,8 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
     if content.len() < MIN_LENGTH {
         db.write(move |conn| {
             conn.execute(
-                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
-                params![memory_id],
+                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
+                params![memory_id, user_id],
             )?;
             Ok(())
         })
@@ -138,8 +139,8 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
         _ => {
             db.write(move |conn| {
                 conn.execute(
-                    "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
-                    params![memory_id],
+                    "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
+                    params![memory_id, user_id],
                 )?;
                 Ok(())
             })
@@ -164,13 +165,14 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
                 conn.execute(
                     "INSERT INTO memories (content, category, source, importance, version, is_latest, \
                      parent_memory_id, source_count, is_static, is_forgotten, is_fact, confidence, \
-                     status, space_id, episode_id, tags, created_at, updated_at) \
+                     status, user_id, space_id, episode_id, tags, created_at, updated_at) \
                      VALUES (?1, 'fact', 'decomposition', ?2, 1, 1, ?3, 1, 0, 0, 1, 1.0, \
-                     'approved', ?4, ?5, ?6, datetime('now'), datetime('now'))",
+                     'approved', ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))",
                     params![
                         trimmed,
                         importance,
                         memory_id,
+                        user_id,
                         space_id,
                         episode_id,
                         tags_clone
@@ -199,8 +201,8 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
     if !created_ids.is_empty() {
         db.write(move |conn| {
             conn.execute(
-                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
-                params![memory_id],
+                "UPDATE memories SET is_decomposed = 1 WHERE id = ?1 AND user_id = ?2",
+                params![memory_id, user_id],
             )?;
             Ok(())
         })
@@ -416,10 +418,12 @@ fn dedup_by_overlap(facts: &[String], threshold: f64) -> Vec<String> {
     deduped
 }
 
+/// Unit tests covering the rule-based and template decomposition helpers.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies that filler prefixes are stripped without altering plain content.
     #[test]
     fn test_strip_filler() {
         assert_eq!(strip_filler("so the server is down"), "the server is down");
@@ -427,6 +431,7 @@ mod tests {
         assert_eq!(strip_filler("no filler here"), "no filler here");
     }
 
+    /// Verifies that a single short sentence is skipped by template decomposition.
     #[test]
     fn test_decompose_template_short() {
         let result = decompose_template("Short.");
@@ -434,6 +439,7 @@ mod tests {
         assert!(result.facts.is_empty());
     }
 
+    /// Verifies that multi-sentence content yields multiple template facts.
     #[test]
     fn test_decompose_template_multiple() {
         let content = "The server is running on port 8080. The database is PostgreSQL. Redis is used for caching.";
@@ -442,6 +448,7 @@ mod tests {
         assert!(result.facts.len() >= 2);
     }
 
+    /// Verifies that conjunction splitting surfaces multiple rule-based facts.
     #[test]
     fn test_decompose_rule_based_with_conjunction() {
         let content = "I bought a new laptop and I configured the server. The deployment was successful but the tests were slow.";
@@ -450,6 +457,7 @@ mod tests {
         assert!(!result.facts.is_empty());
     }
 
+    /// Verifies that near-duplicate facts collapse under the overlap threshold.
     #[test]
     fn test_dedup_by_overlap() {
         let facts = vec![

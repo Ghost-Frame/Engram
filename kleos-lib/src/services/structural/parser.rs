@@ -32,15 +32,17 @@ fn parse_one(stmt: &str) -> Option<EnStatement> {
     }
 
     // Walk through the input collecting (keyword, value) spans. Anything
-    // before the first keyword is the subject.
-    let lower = raw.to_lowercase();
+    // before the first keyword is the subject. Keywords are matched
+    // case-insensitively against `raw` itself (they are ASCII), so the
+    // recorded offsets stay valid for slicing `raw` even when the subject
+    // contains characters that change byte length under `to_lowercase`.
     let mut spans: Vec<(usize, usize, &'static str)> = Vec::new();
     for kw in ["do:", "needs:", "yields:"] {
         let mut start = 0usize;
-        while let Some(rel) = lower[start..].find(kw) {
+        while let Some(rel) = crate::validation::find_ascii_case_insensitive(&raw[start..], kw) {
             let pos = start + rel;
             // Treat as keyword only when preceded by whitespace or BOL.
-            let before_ok = pos == 0 || lower.as_bytes()[pos - 1].is_ascii_whitespace();
+            let before_ok = pos == 0 || raw.as_bytes()[pos - 1].is_ascii_whitespace();
             if before_ok {
                 spans.push((pos, pos + kw.len(), kw));
             }
@@ -176,5 +178,17 @@ mod tests {
     fn empty_source_returns_empty() {
         assert!(parse_en_source("").is_empty());
         assert!(parse_en_source("   .   .  ").is_empty());
+    }
+
+    /// Regression: a subject character that changes byte length under
+    /// `to_lowercase` (here 'İ') used to shift keyword offsets taken from a
+    /// lowercased copy, mis-slicing the subject against the original input.
+    #[test]
+    fn subject_with_length_changing_char_is_not_misaligned() {
+        let stmts = parse_en_source("İO do: serve needs: DB.");
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(stmts[0].subject, "İO");
+        assert_eq!(stmts[0].action.as_deref(), Some("serve"));
+        assert_eq!(stmts[0].needs, vec!["DB".to_string()]);
     }
 }

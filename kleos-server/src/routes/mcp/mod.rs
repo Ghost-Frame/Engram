@@ -250,6 +250,7 @@ fn sanitize_dispatch_error(tool_name: &str, status_code: u16, internal_msg: &str
         mcp.status,
     )
 )]
+/// Dispatches one tool call through the internal router with auth applied.
 async fn dispatch_tool(
     dispatch: &Router,
     auth: &AuthContext,
@@ -343,7 +344,11 @@ async fn dispatch_tool(
             .unwrap_or_else(|| {
                 let s = String::from_utf8_lossy(&body_bytes);
                 if s.len() > 512 {
-                    format!("{}... ({} bytes)", &s[..512], body_bytes.len())
+                    format!(
+                        "{}... ({} bytes)",
+                        kleos_lib::validation::truncate_on_char_boundary(s.as_ref(), 512),
+                        body_bytes.len()
+                    )
                 } else {
                     s.into_owned()
                 }
@@ -387,7 +392,7 @@ fn append_query_string(path: &str, args: &Value) -> String {
     if qs.is_empty() {
         return path.to_string();
     }
-    format!("{path}?{}", &qs[1..])
+    format!("{path}?{}", qs.strip_prefix('&').unwrap_or(&qs))
 }
 
 /// Pushes one key=value pair onto the query string buffer.
@@ -473,10 +478,18 @@ fn json_rpc_error_response(id: Option<Value>, code: i64, message: &str) -> Respo
     Json(rpc_error(id, code, message)).into_response()
 }
 
+/// Builds a bounded UTF-8 preview for testing and logging.
+#[cfg(test)]
+fn preview_utf8(text: &str, limit: usize) -> String {
+    kleos_lib::validation::truncate_on_char_boundary(text, limit).to_string()
+}
+
+/// Tests the MCP routing helpers and origin guardrails.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies query string assembly for numeric arguments.
     #[test]
     fn query_string_builds_correctly() {
         let args = json!({"limit": 10, "offset": 5});
@@ -486,6 +499,7 @@ mod tests {
         assert!(result.contains("offset=5"));
     }
 
+    /// Verifies null values are skipped when building a query string.
     #[test]
     fn query_string_skips_null() {
         let args = json!({"limit": 10, "filter": null});
@@ -494,22 +508,26 @@ mod tests {
         assert!(!result.contains("filter"));
     }
 
+    /// Verifies empty argument maps return the original path.
     #[test]
     fn query_string_empty_returns_path() {
         assert_eq!(append_query_string("/list", &json!({})), "/list");
     }
 
+    /// Verifies localhost origins are accepted.
     #[test]
     fn origin_allows_localhost() {
         assert!(is_allowed_origin("http://localhost:3000"));
         assert!(is_allowed_origin("https://127.0.0.1:8080"));
     }
 
+    /// Verifies unknown origins are rejected.
     #[test]
     fn origin_rejects_unknown() {
         assert!(!is_allowed_origin("https://evil.example.com"));
     }
 
+    /// Verifies route scopes map cleanly to auth scopes.
     #[test]
     fn scope_conversion() {
         assert_eq!(route_scope_to_auth_scope(RouteScope::Read), Scope::Read);
@@ -517,41 +535,48 @@ mod tests {
         assert_eq!(route_scope_to_auth_scope(RouteScope::Admin), Scope::Admin);
     }
 
+    /// Verifies the hard batch cap stays at the configured constant.
     #[test]
     fn batch_cap_constant_is_set() {
         assert_eq!(MAX_BATCH_SIZE, 20);
     }
 
+    /// Verifies localhost subdomains are rejected.
     #[test]
     fn origin_rejects_localhost_subdomain() {
         assert!(!is_allowed_origin("http://localhost.evil.com"));
         assert!(!is_allowed_origin("https://localhost.evil.com"));
     }
 
+    /// Verifies port-suffixed subdomains are rejected.
     #[test]
     fn origin_rejects_port_suffixed_subdomain() {
         assert!(!is_allowed_origin("http://localhost:3000.evil.com"));
         assert!(!is_allowed_origin("https://127.0.0.1:8080.attacker.net"));
     }
 
+    /// Verifies non-numeric ports are rejected.
     #[test]
     fn origin_rejects_non_numeric_port() {
         assert!(!is_allowed_origin("http://localhost:abc"));
         assert!(!is_allowed_origin("http://localhost:"));
     }
 
+    /// Verifies bare localhost origins are accepted.
     #[test]
     fn origin_allows_localhost_bare() {
         assert!(is_allowed_origin("http://localhost"));
         assert!(is_allowed_origin("https://localhost"));
     }
 
+    /// Verifies IPv6 loopback origins are accepted.
     #[test]
     fn origin_allows_ipv6_loopback_with_port() {
         assert!(is_allowed_origin("http://[::1]:3000"));
         assert!(is_allowed_origin("http://[::1]"));
     }
 
+    /// Verifies internal dispatch errors do not leak backend details.
     #[test]
     fn error_response_is_sanitized() {
         let sanitized = sanitize_dispatch_error(
@@ -562,5 +587,14 @@ mod tests {
         assert_eq!(sanitized, "tool 'test_tool' failed (HTTP 500)");
         assert!(!sanitized.contains("SQLITE"));
         assert!(!sanitized.contains("/data"));
+    }
+
+    /// Verifies multibyte output previews truncate without panicking.
+    #[test]
+    fn preview_utf8_truncates_multibyte_text() {
+        let text = "💥".repeat(200);
+        let preview = preview_utf8(&text, 512);
+        assert!(preview.len() <= 512);
+        assert!(text.starts_with(&preview));
     }
 }

@@ -1,5 +1,5 @@
 # Woodpecker CI pipeline for Kleos
-# Runs on hetzner-dedi local runner (Podman backend)
+# Runs on a self-hosted local runner (Podman backend)
 
 when:
   - event: [push, pull_request, tag]
