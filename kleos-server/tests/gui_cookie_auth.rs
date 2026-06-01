@@ -34,8 +34,11 @@ async fn gui_app() -> axum::Router {
     std::env::set_var("ENGRAM_BOOTSTRAP_SECRET", "test-bootstrap-secret");
     std::env::set_var("CREDD_AGENT_KEY", "test-agent-key");
 
-    let mut config = Config::default();
-    config.gui_enabled = true; // KLEOS_GUI_PASSWORD equivalent
+    // gui_enabled set in the initializer to satisfy clippy::field_reassign_with_default.
+    let mut config = Config {
+        gui_enabled: true, // KLEOS_GUI_PASSWORD equivalent
+        ..Config::default()
+    };
     let dir = std::env::temp_dir().join(format!("kleos-gui-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     config.data_dir = dir.to_string_lossy().into_owned();
