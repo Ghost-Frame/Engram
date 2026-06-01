@@ -9,12 +9,20 @@ import { Table } from '../ui/Table';
 export function Soma() {
   const agents = useLive(['soma', 'agents'], () => listAgents(), 'soma');
 
+  // Derive online count and sort online agents first, then by most-recent heartbeat.
+  const all = agents.data ?? [];
+  const onlineCount = all.filter((a) => a.status === 'online').length;
+  const sorted = [...all].sort((a, b) => {
+    if ((a.status === 'online') !== (b.status === 'online')) return a.status === 'online' ? -1 : 1;
+    return (b.heartbeat_at ?? '').localeCompare(a.heartbeat_at ?? '');
+  });
+
   return (
     <div data-accent="soma">
       <header className="route-header">
         <div>
           <h1>Soma</h1>
-          <p>Registered agents</p>
+          <p>{onlineCount} online of {all.length} registered</p>
         </div>
       </header>
       <Panel title="Live agents">
@@ -23,7 +31,7 @@ export function Soma() {
         ) : (
           <Table
             headers={['Name', 'Type', 'Status', 'Quality', 'Heartbeat']}
-            rows={(agents.data ?? []).map((agent) => [
+            rows={sorted.map((agent) => [
               agent.name,
               agent.type,
               <Badge label={agent.status} tone={agent.status === 'online' ? 'ok' : 'default'} />,

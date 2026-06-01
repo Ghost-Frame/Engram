@@ -38,6 +38,8 @@ export function Loom() {
         <Panel title="Runs">
           {runs.isLoading ? (
             <Spinner />
+          ) : (runs.data ?? []).length === 0 ? (
+            <EmptyState title="No workflow runs" message="No Loom workflows have executed yet." />
           ) : (
             <Table
               headers={['Run', 'Workflow', 'Status', 'Started']}

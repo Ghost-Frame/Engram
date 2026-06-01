@@ -137,55 +137,64 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
     // holds in single-DB mode without a separate user_id predicate here.
     let edges = db
         .read(move |conn| {
-            let placeholders: String = std::iter::repeat_n("?", memory_ids.len())
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            let query = format!(
-                "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
-                 FROM memory_links ml \
-                 JOIN memories ms ON ms.id = ml.source_id \
-                 JOIN memories mt ON mt.id = ml.target_id \
-                 WHERE ml.source_id IN ({placeholders}) OR ml.target_id IN ({placeholders})"
-            );
-
-            // Build parameter list: ids twice (source IN, target IN)
-            let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(memory_ids.len() * 2);
-            for &id in memory_ids.iter().chain(memory_ids.iter()) {
-                params.push(rusqlite::types::Value::Integer(id));
-            }
-
             let valid_set: HashSet<i64> = memory_ids.iter().copied().collect();
-
-            let mut stmt = conn.prepare(&query)?;
-
-            let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
-                let source_id: i64 = row.get(0)?;
-                let target_id: i64 = row.get(1)?;
-                let similarity: f64 = row.get(2)?;
-                let link_type_str: String = row
-                    .get::<_, String>(3)
-                    .unwrap_or_else(|_| "cite".to_string());
-                Ok((source_id, target_id, similarity, link_type_str))
-            })?;
-
             let mut edges: Vec<GraphEdge> = Vec::new();
 
-            for row in rows {
-                let (source_id, target_id, similarity, link_type_str) = row?;
+            // SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER, so a
+            // single `IN (...)` over every node overflows once the graph is large
+            // (e.g. max=50000 from the GUI). Chunk the id set well under that cap.
+            // Filtering by source_id alone is sufficient: an edge is kept only
+            // when both endpoints are in `valid_set` (checked below), and every
+            // in-set source falls in exactly one chunk, so each qualifying edge
+            // is fetched exactly once -- the previous `OR target_id IN (...)` was
+            // redundant under that both-endpoints filter.
+            const ID_CHUNK: usize = 900;
+            for chunk in memory_ids.chunks(ID_CHUNK) {
+                let placeholders: String = std::iter::repeat_n("?", chunk.len())
+                    .collect::<Vec<_>>()
+                    .join(", ");
 
-                if !valid_set.contains(&source_id) || !valid_set.contains(&target_id) {
-                    continue;
+                let query = format!(
+                    "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
+                     FROM memory_links ml \
+                     JOIN memories ms ON ms.id = ml.source_id \
+                     JOIN memories mt ON mt.id = ml.target_id \
+                     WHERE ml.source_id IN ({placeholders})"
+                );
+
+                let params: Vec<rusqlite::types::Value> = chunk
+                    .iter()
+                    .map(|&id| rusqlite::types::Value::Integer(id))
+                    .collect();
+
+                let mut stmt = conn.prepare(&query)?;
+
+                let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                    let source_id: i64 = row.get(0)?;
+                    let target_id: i64 = row.get(1)?;
+                    let similarity: f64 = row.get(2)?;
+                    let link_type_str: String = row
+                        .get::<_, String>(3)
+                        .unwrap_or_else(|_| "cite".to_string());
+                    Ok((source_id, target_id, similarity, link_type_str))
+                })?;
+
+                for row in rows {
+                    let (source_id, target_id, similarity, link_type_str) = row?;
+
+                    if !valid_set.contains(&source_id) || !valid_set.contains(&target_id) {
+                        continue;
+                    }
+
+                    let link_type = LinkType::parse(&link_type_str);
+
+                    edges.push(GraphEdge {
+                        source: format!("m{}", source_id),
+                        target: format!("m{}", target_id),
+                        link_type,
+                        weight: similarity as f32,
+                    });
                 }
-
-                let link_type = LinkType::parse(&link_type_str);
-
-                edges.push(GraphEdge {
-                    source: format!("m{}", source_id),
-                    target: format!("m{}", target_id),
-                    link_type,
-                    weight: similarity as f32,
-                });
             }
 
             Ok(edges)
