@@ -16,6 +16,8 @@ use kleos_cred::CredError;
 use kleos_credd::auth::Auth;
 use kleos_credd::handlers::AppError;
 
+use crate::models::approval::{self, ApprovalStatus};
+use crate::models::ssh_settings;
 use crate::state::PhylaxState;
 
 /// Error type for the pure signer.
@@ -91,7 +93,7 @@ async fn load_ssh_pem(
 }
 
 /// POST /phylax/ssh/{category}/{name}/sign -- sign `data_hex` with the vault key.
-/// Auto-sign path only; the approval gate is added in a later task.
+/// Keys with `auto_sign=true` proceed immediately; all others block on an M3 approval.
 pub async fn sign(
     Auth(auth): Auth,
     State(state): State<PhylaxState>,
@@ -103,6 +105,45 @@ pub async fn sign(
     }
     let data = hex::decode(&body.data_hex)
         .map_err(|_| CredError::PermissionDenied("bad data_hex".into()))?;
+
+    // M3 approval gate: unless this key is marked auto_sign, a human must approve.
+    let auto_sign = ssh_settings::get_ssh_settings(&state.inner.db, auth.user_id(), &category, &name)
+        .await?
+        .map(|s| s.auto_sign)
+        .unwrap_or(false);
+
+    if !auto_sign {
+        let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(900))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let agent_name = auth.agent_name().unwrap_or("phylax-ssh-agentd").to_string();
+        let ap = approval::create_approval(
+            &state.inner.db,
+            auth.user_id(),
+            &agent_name,
+            &category,
+            &name,
+            "ssh-sign",
+            None,
+            &expires_at,
+        )
+        .await?;
+
+        // Poll for a decision (mirrors approvals::wait_for_decision: ~1s x 30).
+        let mut decided = ap.status;
+        for _ in 0..30 {
+            let cur = approval::get_approval(&state.inner.db, ap.id).await?;
+            if !matches!(cur.status, ApprovalStatus::Pending) {
+                decided = cur.status;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        if !matches!(decided, ApprovalStatus::Approved) {
+            return Err(CredError::PermissionDenied("sign not approved".into()).into());
+        }
+    }
+
     let pem = load_ssh_pem(&state, auth.user_id(), &category, &name).await?;
     let sig = sign_with_pem(&pem, &data, body.flags)
         .map_err(|e| CredError::PermissionDenied(format!("sign failed: {e}")))?;
@@ -114,8 +155,6 @@ pub async fn identities(
     Auth(auth): Auth,
     State(state): State<PhylaxState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    use crate::models::ssh_settings;
-
     let rows = ssh_settings::list_ssh_settings(&state.inner.db, auth.user_id()).await?;
     let mut out = Vec::new();
     for s in rows {
