@@ -97,6 +97,11 @@ fn should_judge(turn_count: i32, transcript: &str, min_turns: i32) -> bool {
     turn_count >= min_turns && !transcript.trim().is_empty()
 }
 
+/// Public gate used by the session-end hook: whether a session is worth an LLM call.
+pub fn judge_gate(turn_count: i32, transcript: &str, min_turns: i32) -> bool {
+    should_judge(turn_count, transcript, min_turns)
+}
+
 /// Score a finished session and persist evaluations + session quality + Soma
 /// quality. All-or-nothing: an LLM/parse failure aborts with no writes.
 pub async fn judge_session<L: JudgeLlm>(
@@ -104,17 +109,6 @@ pub async fn judge_session<L: JudgeLlm>(
     llm: &L,
     input: JudgeInput,
 ) -> crate::Result<()> {
-    /// Minimum turns required before we spend an LLM call on scoring.
-    const MIN_TURNS: i32 = 3;
-    if !should_judge(input.turn_count, &input.transcript, MIN_TURNS) {
-        tracing::debug!(
-            session_id = %input.session_id,
-            turn_count = input.turn_count,
-            "judge: session below threshold, skipping"
-        );
-        return Ok(());
-    }
-
     let rubrics = crate::services::thymus::list_rubrics(db, input.user_id).await?;
     let judged: Vec<_> = rubrics
         .into_iter()
