@@ -84,9 +84,44 @@ Include every criterion in \"scores\"."
     (system, user)
 }
 
+/// Parse the LLM response into a JudgeOutput, tolerating surrounding prose.
+/// Rejects responses with no scores.
+fn parse_judgment(raw: &str) -> Option<JudgeOutput> {
+    crate::intelligence::llm::repair_and_parse_json::<JudgeOutput>(raw)
+        .filter(|o| !o.scores.is_empty())
+}
+
+/// True if the session is worth an LLM call: enough turns and a non-empty
+/// transcript.
+fn should_judge(turn_count: i32, transcript: &str, min_turns: i32) -> bool {
+    turn_count >= min_turns && !transcript.trim().is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_valid_judgment_with_surrounding_prose() {
+        let raw = "Here is the result:\n{\"scores\": {\"zero_waste\": 0.8, \
+\"verify_results\": 1.0}, \"rules_followed\": [\"verify_results\"], \
+\"rules_drifted\": [\"zero_waste\"], \"notes\": \"mostly solid\"}\nDone.";
+        let out = parse_judgment(raw).expect("should parse");
+        assert_eq!(out.scores.get("verify_results"), Some(&1.0));
+        assert_eq!(out.rules_drifted, vec!["zero_waste".to_string()]);
+    }
+
+    #[test]
+    fn parse_rejects_garbage() {
+        assert!(parse_judgment("not json at all").is_none());
+    }
+
+    #[test]
+    fn gate_skips_short_sessions() {
+        assert!(!should_judge(2, "some text", 3));
+        assert!(!should_judge(5, "   ", 3));
+        assert!(should_judge(3, "real transcript", 3));
+    }
 
     #[test]
     fn prompt_includes_criteria_and_transcript() {
