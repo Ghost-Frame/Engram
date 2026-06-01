@@ -8,7 +8,9 @@ use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::handlers::{approvals, ecdh, kleos_token, leases, namespaces, policies, ssh};
+use crate::handlers::{
+    approvals, ecdh, kleos_token, leases, namespaces, policies, ssh, ssh_sign,
+};
 use crate::middleware::policy_check_middleware;
 use crate::state::PhylaxState;
 use kleos_credd::auth::{auth_middleware, preauth_rate_limit};
@@ -45,6 +47,10 @@ pub fn phylax_routes(state: AppState) -> Router<PhylaxState> {
         .route("/phylax/ecdh/challenge", post(ecdh::issue_challenge))
         .route("/phylax/ecdh/enroll", post(ecdh::enroll_pubkey))
         .route("/phylax/ecdh/revoke", post(ecdh::revoke_pubkey))
+        // SSH key operations -- literal path before wildcard so it is not shadowed.
+        .route("/phylax/ssh/identities", get(ssh_sign::identities))
+        // SSH signing
+        .route("/phylax/ssh/{category}/{name}/sign", post(ssh_sign::sign))
         // SSH key settings
         .route(
             "/phylax/ssh/{category}/{name}",
