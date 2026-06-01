@@ -54,8 +54,10 @@ async fn read_bearer(bearer_file: Option<&str>) -> anyhow::Result<String> {
     }
 
     // Fall back to environment variable.
-    std::env::var("PHYLAX_BEARER")
-        .context("no bearer token: set PHYLAX_BEARER_FILE or PHYLAX_BEARER")
+    let token = std::env::var("PHYLAX_BEARER")
+        .context("no bearer token: set PHYLAX_BEARER_FILE or PHYLAX_BEARER")?;
+    log::warn!("using PHYLAX_BEARER env var; prefer --bearer-file (env is readable via /proc)");
+    Ok(token)
 }
 
 #[tokio::main]
@@ -95,19 +97,26 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Set up a cancellation token that fires on SIGTERM or SIGINT.
+    //
+    // Signal listeners are registered HERE (before spawning) so any error
+    // propagates through `anyhow::Result` instead of panicking inside a task
+    // with no socket cleanup.
     let cancel = CancellationToken::new();
     let cancel_signals = cancel.clone();
+
+    #[cfg(unix)]
+    let (mut sigterm, mut sigint) = {
+        use tokio::signal::unix::{SignalKind, signal};
+        let sigterm = signal(SignalKind::terminate())
+            .context("failed to register SIGTERM handler")?;
+        let sigint = signal(SignalKind::interrupt())
+            .context("failed to register SIGINT handler")?;
+        (sigterm, sigint)
+    };
 
     tokio::spawn(async move {
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{SignalKind, signal};
-
-            let mut sigterm = signal(SignalKind::terminate())
-                .expect("failed to register SIGTERM handler");
-            let mut sigint = signal(SignalKind::interrupt())
-                .expect("failed to register SIGINT handler");
-
             tokio::select! {
                 _ = sigterm.recv() => log::info!("Received SIGTERM"),
                 _ = sigint.recv()  => log::info!("Received SIGINT"),
@@ -116,10 +125,11 @@ async fn main() -> anyhow::Result<()> {
 
         #[cfg(not(unix))]
         {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("failed to listen for Ctrl-C");
-            log::info!("Received Ctrl-C");
+            if let Err(e) = tokio::signal::ctrl_c().await {
+                log::error!("failed to listen for Ctrl-C: {e}");
+            } else {
+                log::info!("Received Ctrl-C");
+            }
         }
 
         cancel_signals.cancel();

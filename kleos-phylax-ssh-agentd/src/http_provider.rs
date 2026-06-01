@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use anyhow::Context as _;
 use kleos_phylax_ssh_agent::provider::{AgentIdentity, KeyProvider, SignError};
 use reqwest::Client;
+use reqwest::Url;
 use serde::Deserialize;
 use ssh_key::PublicKey;
 
@@ -64,9 +65,13 @@ impl Cache {
 
 /// HTTP-backed KeyProvider that proxies list/sign to a running phylaxd instance.
 pub struct HttpKeyProvider {
+    /// phylaxd base URL, no trailing slash (e.g. `http://127.0.0.1:3100`).
     base_url: String,
+    /// Bearer token sent in the `Authorization` header for every request.
     bearer: String,
+    /// Shared HTTP client; cheap to clone (backed by a connection pool).
     client: Client,
+    /// In-memory identity cache rebuilt on every `refresh()` call.
     cache: Mutex<Cache>,
 }
 
@@ -178,14 +183,23 @@ impl KeyProvider for HttpKeyProvider {
         async move {
             let (category, name) = lookup.ok_or(SignError::KeyNotFound)?;
 
-            let url = format!("{}/phylax/ssh/{}/{}/sign", base_url, category, name);
+            // Percent-encode category and name so traversal characters cannot
+            // escape the path segment (e.g. a name containing "/" or "..").
+            let url = {
+                let mut u = Url::parse(&base_url)
+                    .map_err(|e| SignError::SigningFailed(format!("invalid base URL: {e}")))?;
+                u.path_segments_mut()
+                    .map_err(|_| SignError::SigningFailed("base URL cannot-be-a-base".to_string()))?
+                    .extend(&["phylax", "ssh", &category, &name, "sign"]);
+                u
+            };
             let body = serde_json::json!({
                 "data_hex": data_hex,
                 "flags": flags,
             });
 
             let resp = client
-                .post(&url)
+                .post(url)
                 .bearer_auth(&bearer)
                 .json(&body)
                 .send()
@@ -217,8 +231,7 @@ impl KeyProvider for HttpKeyProvider {
 
     /// Clears the cached identity list on lock.
     fn on_lock(&self) -> impl std::future::Future<Output = ()> + Send {
-        let cache_ref = &self.cache;
-        let mut cache = cache_ref.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap();
         cache.identities.clear();
         cache.blob_map.clear();
         log::info!("SSH agent locked -- identity cache cleared");
