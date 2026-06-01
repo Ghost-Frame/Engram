@@ -19,6 +19,76 @@ use crate::metrics;
 use crate::session::Observation;
 use crate::SidecarState;
 
+/// Apply tiered Kleos auth (PIV/ed25519 signed headers, else bearer) to a request.
+fn apply_kleos_auth(
+    state: &SidecarState,
+    req: reqwest::RequestBuilder,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> reqwest::RequestBuilder {
+    if let Some(signer) = &state.signer {
+        if let Some(session) = signer.cached_session() {
+            return req.header("X-Kleos-Session", session);
+        }
+        let (url_path, query) = match path.split_once('?') {
+            Some((p, q)) => (p, q),
+            None => (path, ""),
+        };
+        match signer.sign_request(method, url_path, query, body) {
+            Ok(signed) => return signed.apply_headers(req),
+            Err(e) => tracing::warn!(error = %e, "request signing failed; falling back to bearer"),
+        }
+    }
+    if let Some(ref key) = state.kleos_api_key {
+        return req.header("Authorization", format!("Bearer {}", key));
+    }
+    req
+}
+
+/// Returns whether the signer would authenticate with a cached server session.
+fn would_use_cached_session(state: &SidecarState) -> bool {
+    state
+        .signer
+        .as_ref()
+        .and_then(|signer| signer.cached_session())
+        .is_some()
+}
+
+/// Clears a cached session when Kleos rejects it so the next request re-signs.
+fn clear_stale_session_after_unauthorized(
+    signer: &Option<Arc<kleos_lib::auth_piv::RequestSigner>>,
+    status: reqwest::StatusCode,
+    used_cached_session: bool,
+    context: &str,
+) -> bool {
+    if status != reqwest::StatusCode::UNAUTHORIZED || !used_cached_session {
+        return false;
+    }
+
+    if let Some(signer) = signer {
+        signer.clear_session();
+        tracing::warn!(
+            context = context,
+            "kleos rejected cached session; cleared it and will retry with fresh signature"
+        );
+        return true;
+    }
+
+    false
+}
+
+/// Capture a server-issued session token into the signer.
+fn capture_kleos_session(state: &SidecarState, resp: &reqwest::Response) {
+    if let Some(signer) = &state.signer {
+        if let Some(v) = resp.headers().get("x-kleos-session-issued") {
+            if let Ok(t) = v.to_str() {
+                signer.set_session(t.to_string());
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Health cache -- 5s TTL upstream probe result cached in an ArcSwap so
 // concurrent /health requests share one upstream round-trip per window.
@@ -63,6 +133,7 @@ pub fn router(state: SidecarState) -> Router {
     )
 }
 
+/// Renders the current sidecar Prometheus metrics snapshot.
 async fn metrics_handler() -> (StatusCode, String) {
     (StatusCode::OK, metrics::render())
 }
@@ -117,13 +188,18 @@ async fn resume_session(
         "count_only": true,
     });
 
-    let mut req = state.client.post(url).json(&search_req);
-    if let Some(ref api_key) = state.kleos_api_key {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
-    }
+    let search_body = serde_json::to_vec(&search_req).unwrap_or_default();
+    let req = apply_kleos_auth(
+        &state,
+        state.client.post(url).json(&search_req),
+        "POST",
+        "/memory/search",
+        &search_body,
+    );
 
     let stored_count = match req.send().await {
         Ok(resp) if resp.status().is_success() => {
+            capture_kleos_session(&state, &resp);
             let body: Value = resp.json().await.unwrap_or_default();
             body.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as usize
         }
@@ -158,6 +234,7 @@ async fn resume_session(
     })))
 }
 
+/// Reports local sidecar health plus cached upstream Kleos reachability.
 async fn health(State(state): State<SidecarState>) -> Json<Value> {
     let upstream_reachable = probe_upstream_cached(&state).await;
 
@@ -200,10 +277,7 @@ async fn probe_upstream_cached(state: &SidecarState) -> bool {
     let url_str = format!("{}/health", state.kleos_url);
     let reachable = match kleos_lib::net::validate_outbound_url(&url_str) {
         Ok(url) => {
-            let mut req = state.client.head(url);
-            if let Some(ref api_key) = state.kleos_api_key {
-                req = req.header("Authorization", format!("Bearer {}", api_key));
-            }
+            let req = apply_kleos_auth(state, state.client.head(url), "HEAD", "/health", b"");
             match tokio::time::timeout(HEALTH_PROBE_TIMEOUT, req.send()).await {
                 // 405 Method Not Allowed means the endpoint exists but doesn't support HEAD -- upstream is reachable.
                 Ok(Ok(r)) => r.status().is_success() || r.status().as_u16() == 405,
@@ -226,11 +300,18 @@ async fn probe_upstream_cached(state: &SidecarState) -> bool {
 
 // --- POST /session/start ---
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct StartSessionBody {
     pub session_id: Option<String>,
+    /// Optional agent identifier to associate with the session.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// Optional origin label; takes precedence over `agent` if both present.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
+/// Starts a tracked sidecar session and records its optional origin label.
 async fn start_session(
     State(state): State<SidecarState>,
     Json(body): Json<StartSessionBody>,
@@ -239,10 +320,19 @@ async fn start_session(
         .session_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+    // Resolve origin from body: origin > agent.
+    let session_origin = body.origin.or(body.agent);
+
     let mut sessions = state.sessions.write().await;
     match sessions.start_session(session_id.clone()) {
-        Ok(session) => {
+        Ok(_) => {
+            // start_session returns an immutable ref; get mutable ref to set origin.
+            let session = sessions
+                .get_mut(&session_id)
+                .expect("session was just inserted");
+            session.origin = session_origin;
             let sid = session.id.clone();
+            let started_at = session.started_at;
             info!(session_id = %sid, "session started");
             state
                 .syntheos
@@ -256,7 +346,7 @@ async fn start_session(
                 StatusCode::CREATED,
                 Json(json!({
                     "session_id": sid,
-                    "started_at": session.started_at,
+                    "started_at": started_at,
                 })),
             ))
         }
@@ -296,16 +386,25 @@ struct ObserveBody {
     #[serde(default = "default_category")]
     pub category: String,
     pub session_id: Option<String>,
+    /// Optional agent identifier to stamp on stored observations.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// Optional origin label; takes precedence over `agent` if both are set.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
+/// Returns the default importance for observations forwarded to Kleos.
 fn default_importance() -> i32 {
     3
 }
 
+/// Returns the default category for observations forwarded to Kleos.
 fn default_category() -> String {
     "discovery".to_string()
 }
 
+/// Accepts a tool or conversation observation and queues it for batched storage.
 async fn observe(
     State(state): State<SidecarState>,
     Json(body): Json<ObserveBody>,
@@ -330,12 +429,16 @@ async fn observe(
         ));
     }
 
-    let obs = Observation {
+    // Resolve origin: body.origin wins over body.agent; session origin is the fallback.
+    let body_origin = body.origin.or(body.agent);
+
+    let mut obs = Observation {
         tool_name,
         content,
         role,
         importance: body.importance,
         category: body.category,
+        origin: body_origin,
         timestamp: chrono::Utc::now(),
     };
 
@@ -343,6 +446,10 @@ async fn observe(
         let mut sessions = state.sessions.write().await;
         let sid = sessions.resolve_id(body.session_id.as_deref()).to_string();
         let session = sessions.get_or_create(&sid);
+        // Fall back to the session's origin if no per-observation origin was given.
+        if obs.origin.is_none() {
+            obs.origin = session.origin.clone();
+        }
 
         if session.ended {
             return Err((
@@ -412,6 +519,7 @@ struct RecallBody {
     pub session_id: Option<String>,
 }
 
+/// Returns the default maximum number of memories to recall.
 fn default_recall_limit() -> usize {
     10
 }
@@ -504,18 +612,45 @@ async fn post_with_fallback(
             Json(json!({ "error": "kleos url invalid" })),
         )
     })?;
-    let mut req = state.client.post(url).json(body);
-    if let Some(ref api_key) = state.kleos_api_key {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
-    }
+    let body_bytes = serde_json::to_vec(body).unwrap_or_default();
+    let req = apply_kleos_auth(
+        state,
+        state.client.post(url.clone()).json(body),
+        "POST",
+        primary,
+        &body_bytes,
+    );
+    let used_cached_session = would_use_cached_session(state);
 
-    let response = req.send().await.map_err(|e| {
+    let mut response = req.send().await.map_err(|e| {
         tracing::error!(error = %e, "kleos server request failed");
         (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "error": "kleos server unreachable" })),
         )
     })?;
+    if clear_stale_session_after_unauthorized(
+        &state.signer,
+        response.status(),
+        used_cached_session,
+        primary,
+    ) {
+        let retry_req = apply_kleos_auth(
+            state,
+            state.client.post(url.clone()).json(body),
+            "POST",
+            primary,
+            &body_bytes,
+        );
+        response = retry_req.send().await.map_err(|e| {
+            tracing::error!(error = %e, "kleos server retry failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "kleos server unreachable" })),
+            )
+        })?;
+    }
+    capture_kleos_session(state, &response);
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         tracing::debug!(primary = %primary, fallback = %fallback, "trying fallback path");
@@ -527,22 +662,50 @@ async fn post_with_fallback(
                 Json(json!({ "error": "kleos url invalid" })),
             )
         })?;
-        let mut req = state.client.post(url).json(body);
-        if let Some(ref api_key) = state.kleos_api_key {
-            req = req.header("Authorization", format!("Bearer {}", api_key));
-        }
-        return req.send().await.map_err(|e| {
+        let req = apply_kleos_auth(
+            state,
+            state.client.post(url.clone()).json(body),
+            "POST",
+            fallback,
+            &body_bytes,
+        );
+        let used_cached_session = would_use_cached_session(state);
+        let mut fb_resp = req.send().await.map_err(|e| {
             tracing::error!(error = %e, "kleos server fallback request failed");
             (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({ "error": "kleos server unreachable" })),
             )
-        });
+        })?;
+        if clear_stale_session_after_unauthorized(
+            &state.signer,
+            fb_resp.status(),
+            used_cached_session,
+            fallback,
+        ) {
+            let retry_req = apply_kleos_auth(
+                state,
+                state.client.post(url.clone()).json(body),
+                "POST",
+                fallback,
+                &body_bytes,
+            );
+            fb_resp = retry_req.send().await.map_err(|e| {
+                tracing::error!(error = %e, "kleos server fallback retry failed");
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": "kleos server unreachable" })),
+                )
+            })?;
+        }
+        capture_kleos_session(state, &fb_resp);
+        return Ok(fb_resp);
     }
 
     Ok(response)
 }
 
+/// Recalls relevant Kleos memories for the current session and prompt.
 async fn recall(
     State(state): State<SidecarState>,
     Json(body): Json<RecallBody>,
@@ -647,6 +810,7 @@ Given the contents of a file that was read by a tool, produce a concise summary 
 Be extremely concise. Output ONLY the summary, no preamble. \
 Target 200-400 words. Preserve exact names of functions, types, and variables.";
 
+/// Compresses a tool result or passes it through when compression is disabled.
 async fn compress(
     State(state): State<SidecarState>,
     Json(body): Json<CompressBody>,
@@ -769,6 +933,7 @@ async fn compress(
                 role: "tool".to_string(),
                 importance: 2,
                 category: "discovery".to_string(),
+                origin: None,
                 timestamp: chrono::Utc::now(),
             };
 
@@ -831,6 +996,7 @@ struct EndSessionBody {
     pub session_id: Option<String>,
 }
 
+/// Flushes pending observations and marks the selected session ended.
 async fn end_session(
     State(state): State<SidecarState>,
     Json(body): Json<EndSessionBody>,
@@ -934,6 +1100,10 @@ async fn flush_observations(
     let ops: Vec<Value> = observations
         .iter()
         .map(|obs| {
+            let mut tags = vec!["sidecar".to_string(), obs.tool_name.clone()];
+            if let Some(o) = &obs.origin {
+                tags.push(format!("origin:{}", o));
+            }
             json!({
                 "op": "store",
                 "body": {
@@ -941,7 +1111,7 @@ async fn flush_observations(
                     "category": obs.category,
                     "source": state.source,
                     "importance": obs.importance,
-                    "tags": vec!["sidecar".to_string(), obs.tool_name.clone()],
+                    "tags": tags,
                     "session_id": session_id,
                 }
             })
@@ -963,6 +1133,7 @@ async fn flush_observations(
     let total = observations.len();
     let client = state.client.clone();
     let api_key = state.kleos_api_key.clone();
+    let signer = state.signer.clone();
     let sid = session_id.to_string();
 
     // Closure returns Option<Vec<bool>>: None means /batch is unavailable
@@ -974,18 +1145,79 @@ async fn flush_observations(
         let url = url.clone();
         let batch_req = batch_req.clone();
         let api_key = api_key.clone();
+        let signer = signer.clone();
         let client = client.clone();
         let sid = sid.clone();
         async move {
-            let mut req = client.post(url).json(&batch_req);
-            if let Some(ref key) = api_key {
+            // Apply tiered auth inline (mirrors apply_kleos_auth but uses
+            // captured clones rather than a &SidecarState reference, which
+            // cannot cross the async closure boundary).
+            let batch_body = serde_json::to_vec(&batch_req).unwrap_or_default();
+            let mut req = client.post(url.clone()).json(&batch_req);
+            let used_cached_session = signer
+                .as_ref()
+                .and_then(|s| s.cached_session())
+                .is_some();
+            if let Some(ref s) = signer {
+                if let Some(session_tok) = s.cached_session() {
+                    req = req.header("X-Kleos-Session", session_tok);
+                } else {
+                    match s.sign_request("POST", "/batch", "", &batch_body) {
+                        Ok(signed) => req = signed.apply_headers(req),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "batch flush: signing failed; using bearer");
+                            if let Some(ref key) = api_key {
+                                req = req.header("Authorization", format!("Bearer {}", key));
+                            }
+                        }
+                    }
+                }
+            } else if let Some(ref key) = api_key {
                 req = req.header("Authorization", format!("Bearer {}", key));
             }
 
-            let response = req.send().await.map_err(|e| {
+            let mut response = req.send().await.map_err(|e| {
                 tracing::warn!(session_id = %sid, error = %e, "batch flush: kleos unreachable");
                 e.to_string()
             })?;
+            if clear_stale_session_after_unauthorized(
+                &signer,
+                response.status(),
+                used_cached_session,
+                "/batch",
+            ) {
+                let mut retry_req = client.post(url.clone()).json(&batch_req);
+                if let Some(ref s) = signer {
+                    match s.sign_request("POST", "/batch", "", &batch_body) {
+                        Ok(signed) => retry_req = signed.apply_headers(retry_req),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "batch flush: retry signing failed; using bearer"
+                            );
+                            if let Some(ref key) = api_key {
+                                retry_req =
+                                    retry_req.header("Authorization", format!("Bearer {}", key));
+                            }
+                        }
+                    }
+                } else if let Some(ref key) = api_key {
+                    retry_req = retry_req.header("Authorization", format!("Bearer {}", key));
+                }
+                response = retry_req.send().await.map_err(|e| {
+                    tracing::warn!(session_id = %sid, error = %e, "batch flush: kleos retry unreachable");
+                    e.to_string()
+                })?;
+            }
+
+            // Capture any session token issued by the server.
+            if let Some(ref s) = signer {
+                if let Some(v) = response.headers().get("x-kleos-session-issued") {
+                    if let Ok(t) = v.to_str() {
+                        s.set_session(t.to_string());
+                    }
+                }
+            }
 
             // 404 means old server -- sentinel None tells caller to use per-obs fallback.
             if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -1171,12 +1403,16 @@ async fn flush_pending_fallback(
     let mut successful = Vec::with_capacity(observations.len());
     let mut failed = Vec::new();
     for obs in observations.into_iter() {
+        let mut tags = vec!["sidecar".to_string(), obs.tool_name.clone()];
+        if let Some(o) = &obs.origin {
+            tags.push(format!("origin:{}", o));
+        }
         let req = json!({
             "content": format!("[{}] {}", obs.tool_name, obs.content),
             "category": obs.category,
             "source": state.source,
             "importance": obs.importance,
-            "tags": vec!["sidecar".to_string(), obs.tool_name.clone()],
+            "tags": tags,
             "session_id": session_id,
             "user_id": state.user_id,
         });

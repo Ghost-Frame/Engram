@@ -57,6 +57,7 @@ struct ConfigFile {
     log_format: Option<String>,
 }
 
+/// Loads sidecar TOML configuration, falling back to defaults on read or parse errors.
 fn load_config_file(path: &str) -> ConfigFile {
     match std::fs::read_to_string(path) {
         Ok(text) => match toml::from_str::<ConfigFile>(&text) {
@@ -83,6 +84,7 @@ fn load_config_file(path: &str) -> ConfigFile {
     name = "kleos-sidecar",
     about = "Kleos memory sidecar for agent sessions"
 )]
+/// Defines command-line and environment configuration accepted by the sidecar.
 struct Cli {
     /// Path to a TOML config file. Keys mirror CLI flags.
     /// Config file values are overridden by env vars and CLI flags.
@@ -318,20 +320,6 @@ async fn main() {
 
     let mut rc = resolve_config(cli, cfg_file);
 
-    // If no API key came from CLI/env/config, try credd.
-    if rc.kleos_api_key.is_none() {
-        let slot = kleos_lib::cred::bootstrap::current_agent_slot();
-        match kleos_lib::cred::bootstrap::resolve_api_key(&slot).await {
-            Ok(k) => {
-                tracing::debug!(slot = %slot, "resolved kleos API key from credd");
-                rc.kleos_api_key = Some(k);
-            }
-            Err(e) => {
-                tracing::warn!("could not resolve kleos API key from credd: {}", e);
-            }
-        }
-    }
-
     // Init tracing. JSON format wires a JSON layer; text uses the default fmt.
     if rc.log_format == "json" {
         init_json_tracing();
@@ -341,6 +329,45 @@ async fn main() {
         // the OTel shutdown happens at process exit via the guard's Drop. In
         // json mode we skip OTel to avoid the extra dependency on the recorder.
         std::mem::forget(_guard);
+    }
+
+    // Build the tiered request signer (PIV > ed25519 > none) as the PRIMARY
+    // Kleos auth. agent_label is the audit identity the server records, so the
+    // sidecar's stored memories are attributed to "kleos-sidecar" regardless of
+    // which tier (PIV on Master's box, ed25519 on no-YubiKey hosts) authenticates.
+    let host_label = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("HOST"))
+        .unwrap_or_else(|_| "unknown".to_string());
+    let agent_label =
+        std::env::var("KLEOS_AGENT_LABEL").unwrap_or_else(|_| "kleos-sidecar".to_string());
+    let signer =
+        kleos_lib::auth_piv::RequestSigner::from_env_or_file(&host_label, &agent_label, "daemon")
+            .ok()
+            .flatten()
+            .map(std::sync::Arc::new);
+    if let Some(ref s) = signer {
+        tracing::info!(
+            tier = s.tier(),
+            agent_label = %s.agent_label(),
+            "sidecar request signer initialized (primary auth)"
+        );
+    } else {
+        tracing::info!("no request signer; using bearer API key auth");
+    }
+
+    // Bearer fallback: resolve a key from credd ONLY when there is no signer.
+    // When a signer exists it is the sole auth path, so we must NOT enter the
+    // credd ECDH/PIV bootstrap -- that path consumes a PIV PIN attempt and is
+    // exactly what burns Master's YubiKey PIN on keyless starts.
+    if rc.kleos_api_key.is_none() && signer.is_none() {
+        let slot = kleos_lib::cred::bootstrap::current_agent_slot();
+        match kleos_lib::cred::bootstrap::resolve_api_key(&slot).await {
+            Ok(k) => {
+                tracing::debug!(slot = %slot, "resolved kleos API key from credd");
+                rc.kleos_api_key = Some(k);
+            }
+            Err(e) => tracing::warn!("could not resolve kleos API key from credd: {}", e),
+        }
     }
 
     metrics::init();
@@ -376,24 +403,12 @@ async fn main() {
 
     tracing::info!(default_session_id = %session_id, "starting sidecar (multi-session enabled)");
 
-    let token = match rc.token.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(t) => Some(t.to_string()),
-        None => {
-            let generated = auth::generate_token();
-            tracing::warn!(
-                host = %rc.host,
-                "KLEOS_SIDECAR_TOKEN not set; generated one-time sidecar token (printed to stderr)"
-            );
-            // SECURITY (SEC-LOW-5): print token once to stderr so the launching
-            // process can capture it. Full value intentionally not in logs.
-            eprintln!("SIDECAR_TOKEN={}", generated);
-            tracing::debug!(
-                token_prefix = &generated[..8.min(generated.len())],
-                "sidecar token generated (see stderr for full value)"
-            );
-            Some(generated)
-        }
-    };
+    let token = rc
+        .token
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
     if token.is_some() {
         tracing::info!("sidecar shared-secret auth enabled");
     } else {
@@ -415,6 +430,7 @@ async fn main() {
         client,
         kleos_url: rc.kleos_url,
         kleos_api_key: rc.kleos_api_key,
+        signer,
         llm,
         sessions: Arc::new(RwLock::new(manager)),
         source: rc.source,
@@ -636,6 +652,7 @@ async fn shutdown_signal(state: SidecarState) {
 }
 
 #[cfg(unix)]
+/// Waits for SIGTERM or Ctrl-C on Unix before graceful shutdown.
 async fn wait_for_signal() {
     use tokio::signal::unix::{signal, SignalKind};
 
@@ -647,6 +664,7 @@ async fn wait_for_signal() {
 }
 
 #[cfg(windows)]
+/// Waits for Windows console shutdown signals before graceful shutdown.
 async fn wait_for_signal() {
     use tokio::signal::windows;
 

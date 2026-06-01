@@ -80,6 +80,7 @@ async fn fetch_mandatory_rules(client: &Client) -> String {
     }
 }
 
+/// Returns the on-disk cache path for mandatory hook policy text.
 fn policy_cache_path() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let dir = std::path::Path::new(&home).join(".cache").join("kleos");
@@ -87,6 +88,7 @@ fn policy_cache_path() -> Option<std::path::PathBuf> {
     Some(dir.join("policy.json"))
 }
 
+/// Reads fresh mandatory policy text from the local cache if it is still valid.
 fn read_policy_cache() -> Option<String> {
     let path = policy_cache_path()?;
     let meta = std::fs::metadata(&path).ok()?;
@@ -102,6 +104,7 @@ fn read_policy_cache() -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Writes mandatory policy text to the local hook policy cache.
 fn write_policy_cache(rules: &str) {
     if let Some(path) = policy_cache_path() {
         let v = serde_json::json!({ "rules": rules });
@@ -117,6 +120,7 @@ fn read_stdin_json() -> Value {
     serde_json::from_str(&buf).unwrap_or(Value::Null)
 }
 
+/// Extracts Claude's session id from hook input or falls back to the parent process id.
 fn extract_session_id(input: &Value) -> String {
     input
         .get("session_id")
@@ -125,10 +129,12 @@ fn extract_session_id(input: &Value) -> String {
         .unwrap_or_else(|| std::env::var("PPID").unwrap_or_else(|_| "unknown".to_string()))
 }
 
+/// Emits Claude hook JSON on stdout.
 fn emit(v: &Value) {
     println!("{}", serde_json::to_string(v).unwrap_or_default());
 }
 
+/// Builds a hook response that injects additional context for the current event.
 fn build_context_output(event: &str, context: &str) -> Value {
     json!({
         "hookSpecificOutput": {
@@ -138,11 +144,14 @@ fn build_context_output(event: &str, context: &str) -> Value {
     })
 }
 
-/// POSTs JSON to the local sidecar and returns the parsed response on success.
+/// POSTs JSON to the optional local sidecar and returns the parsed response on success.
 async fn sidecar_post(path: &str, body: &Value, timeout: Duration) -> Option<Value> {
     let base =
         std::env::var("KLEOS_SIDECAR_URL").unwrap_or_else(|_| "http://127.0.0.1:7711".to_string());
     let url = format!("{}{}", base, path);
+    let debug = std::env::var("KLEOS_HOOK_DEBUG")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
     let client = reqwest::Client::new();
     let mut req = client.post(&url).json(body).timeout(timeout);
@@ -153,11 +162,15 @@ async fn sidecar_post(path: &str, body: &Value, timeout: Duration) -> Option<Val
     match req.send().await {
         Ok(resp) if resp.status().is_success() => resp.json().await.ok(),
         Ok(resp) => {
-            eprintln!("[kleos-hook] sidecar {} returned {}", path, resp.status());
+            if debug {
+                eprintln!("[kleos-hook] sidecar {} returned {}", path, resp.status());
+            }
             None
         }
         Err(e) => {
-            eprintln!("[kleos-hook] sidecar {} failed: {}", path, e);
+            if debug {
+                eprintln!("[kleos-hook] sidecar {} failed: {}", path, e);
+            }
             None
         }
     }
@@ -177,6 +190,7 @@ fn extract_tool_result_text(input: &Value, max_chars: usize) -> String {
     raw.chars().take(max_chars).collect()
 }
 
+/// Builds a hook response that denies the current tool use with a reason.
 fn build_deny_output(event: &str, reason: &str) -> Value {
     json!({
         "hookSpecificOutput": {
@@ -267,6 +281,7 @@ async fn handle_session_start(client: &Client) {
     emit(&build_context_output("SessionStart", &ctx));
 }
 
+/// Handles UserPromptSubmit by recalling context and enforcing supervisor injections.
 async fn handle_user_prompt(client: &Client, input: &Value) {
     let session_id = extract_session_id(input);
 
@@ -342,6 +357,7 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
     }
 }
 
+/// Handles Stop by recording session end and notifying the optional sidecar.
 async fn handle_stop(client: &Client, input: &Value) {
     let _ = client
         .post_with_timeout(
@@ -364,6 +380,7 @@ async fn handle_stop(client: &Client, input: &Value) {
     .await;
 }
 
+/// Handles PreToolUse by asking the server gate whether the proposed tool use is allowed.
 async fn handle_pre_tool(client: &Client, input: &Value) {
     let tool_name = input
         .get("tool_name")
@@ -414,6 +431,7 @@ async fn handle_pre_tool(client: &Client, input: &Value) {
     // else: no output = implicit allow
 }
 
+/// Handles PostToolUse by reporting completion and forwarding an optional observation.
 async fn handle_post_tool(client: &Client, input: &Value) {
     let tool_name = input
         .get("tool_name")
@@ -491,6 +509,7 @@ mod tests {
     use super::*;
 
     #[test]
+    /// Verifies context hook output uses Claude's hookSpecificOutput shape.
     fn test_build_context_output_structure() {
         let out = build_context_output("SessionStart", "some context");
         let inner = &out["hookSpecificOutput"];
@@ -500,6 +519,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies deny hook output carries the permission decision and reason.
     fn test_build_deny_output_structure() {
         let out = build_deny_output("PreToolUse", "blocked!");
         let inner = &out["hookSpecificOutput"];
@@ -509,12 +529,14 @@ mod tests {
     }
 
     #[test]
+    /// Verifies explicit session ids are preserved from hook input.
     fn test_extract_session_id_present() {
         let input = json!({ "session_id": "abc-123" });
         assert_eq!(extract_session_id(&input), "abc-123");
     }
 
     #[test]
+    /// Verifies session id extraction still returns a non-empty fallback.
     fn test_extract_session_id_fallback() {
         let input = json!({});
         let id = extract_session_id(&input);
@@ -522,24 +544,28 @@ mod tests {
     }
 
     #[test]
+    /// Verifies Bash tool inputs use the literal command string.
     fn test_derive_command_bash() {
         let input = json!({"command": "ls -la"});
         assert_eq!(derive_command("Bash", &input), "ls -la");
     }
 
     #[test]
+    /// Verifies Write tool inputs summarize the destination path.
     fn test_derive_command_write() {
         let input = json!({"file_path": "/tmp/foo.rs"});
         assert_eq!(derive_command("Write", &input), "Write /tmp/foo.rs");
     }
 
     #[test]
+    /// Verifies Edit tool inputs summarize the edited path.
     fn test_derive_command_edit() {
         let input = json!({"file_path": "/tmp/bar.rs"});
         assert_eq!(derive_command("Edit", &input), "Edit /tmp/bar.rs");
     }
 
     #[test]
+    /// Verifies WebFetch inputs derive a useful URL command summary.
     fn test_derive_command_other() {
         let input = json!({"url": "https://example.com"});
         let cmd = derive_command("WebFetch", &input);
