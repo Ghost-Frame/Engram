@@ -189,7 +189,7 @@ Kleos speaks three protocols:
 
 | Protocol | Details |
 |----------|---------|
-| **HTTP API** | 56 route modules -- memory, search, graph, coordination, skills, growth, ingestion, approvals, admin. Bearer token or signed-request auth. |
+| **HTTP API** | 59 route modules -- memory, search, graph, coordination, skills, growth, ingestion, approvals, admin. Bearer token or signed-request auth. |
 | **MCP** | Curated daily-driver tool registry over stdio. Drop into Claude Code, Cursor, or any MCP-compatible client. See `docs/MCP_CLIENT_SETUP.md` for known-good client configs. |
 | **Client SDKs** | TypeScript, Python (Pydantic v2 + httpx), Go (stdlib only). First-party, typed, tested. |
 
@@ -204,7 +204,7 @@ Copy the hooks, configure `settings.json`, and your agent has persistent memory,
 
 ### What runs inside
 
-20-crate Rust workspace. The server handles:
+22-crate Rust workspace. The server handles:
 
 - **Multi-tenancy** -- each tenant gets its own encrypted SQLite database, connection pools, and quota limits
 - **8 middleware layers** -- auth, per-tenant rate limiting, audit log, IP extraction, JSON depth limits, Prometheus metrics, safe-mode, compression/timeouts
@@ -350,7 +350,7 @@ Four channels run per query:
 | Crate | What it does |
 | --- | --- |
 | `kleos-lib` | Core library: memory, search, embeddings, graph, intelligence, services, skills, growth, auth, gate, jobs. Feature-gated `brain` backend. |
-| `kleos-server` | Axum HTTP server. 56 route modules, 8 middleware layers, embedded web GUI. |
+| `kleos-server` | Axum HTTP server. 59 route modules, 8 middleware layers, embedded React web GUI (dashboard + 3D memory graph). |
 | `kleos-cli` | Command-line client. Memory ops, skill management, handoffs, credential management. |
 | `kleos-mcp` | MCP transport bridge. Curated daily-driver registry with compatibility aliases; stdio by default, HTTP behind a feature flag. |
 | `kleos-sidecar` | Session-scoped memory proxy. File watcher, batched flushing, Ollama compression, persistent sessions. |
