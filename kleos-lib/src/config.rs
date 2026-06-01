@@ -197,6 +197,16 @@ fn default_skill_evolution_derive_similarity() -> f32 {
     0.7
 }
 
+/// Default switch for session-end Thymus auto-evaluation.
+fn default_thymus_autoeval_enabled() -> bool {
+    true
+}
+
+/// Default minimum turn count below which Thymus auto-evaluation is skipped.
+fn default_thymus_autoeval_min_turns() -> i32 {
+    3
+}
+
 /// Default local SearXNG endpoint for web search.
 fn default_web_search_url() -> String {
     "http://127.0.0.1:8888".to_string()
@@ -563,6 +573,12 @@ pub struct Config {
     /// candidates for derivation.
     #[serde(default = "default_skill_evolution_derive_similarity")]
     pub skill_evolution_derive_similarity: f32,
+    /// Master switch for session-end Thymus auto-evaluation.
+    #[serde(default = "default_thymus_autoeval_enabled")]
+    pub thymus_autoeval_enabled: bool,
+    /// Minimum session turn count below which auto-evaluation is skipped.
+    #[serde(default = "default_thymus_autoeval_min_turns")]
+    pub thymus_autoeval_min_turns: i32,
     /// Base URL of the SearXNG instance proxied by the /search/web route.
     /// Must include scheme and port. Default: http://127.0.0.1:8888 (local
     /// SearXNG). Point at your own SearXNG deployment in production.
@@ -665,6 +681,8 @@ impl Default for Config {
             skill_evolution_refix_cooldown_secs: default_skill_evolution_refix_cooldown_secs(),
             skill_evolution_capture_tag: default_skill_evolution_capture_tag(),
             skill_evolution_derive_similarity: default_skill_evolution_derive_similarity(),
+            thymus_autoeval_enabled: default_thymus_autoeval_enabled(),
+            thymus_autoeval_min_turns: default_thymus_autoeval_min_turns(),
             web_search_url: default_web_search_url(),
             web_search_timeout_ms: default_web_search_timeout_ms(),
             web_search_default_limit: default_web_search_limit(),
@@ -1046,6 +1064,14 @@ impl Config {
                     v,
                     config.skill_evolution_derive_similarity
                 ),
+            }
+        }
+        if let Ok(v) = crate::kleos_env("THYMUS_AUTOEVAL_ENABLED") {
+            config.thymus_autoeval_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = crate::kleos_env("THYMUS_AUTOEVAL_MIN_TURNS") {
+            if let Ok(n) = v.parse() {
+                config.thymus_autoeval_min_turns = n;
             }
         }
         if let Ok(v) = crate::kleos_env("WEB_SEARCH_URL") {
