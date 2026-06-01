@@ -496,10 +496,16 @@ async fn graph_handler(
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<GraphQuery>,
 ) -> Result<Json<Value>, AppError> {
+    // The GUI's 3D graph renders the whole memory set, so it must not be
+    // clamped at MAX_GRAPH_BUILD_NODES (5k). Honor the requested ?max up to a
+    // generous ceiling that scales with real memory growth; the lib uses this
+    // straight as the SQL LIMIT. Unspecified requests still default to the
+    // conservative 5k.
+    const GRAPH_NODE_CEILING: usize = 50_000;
     let cap = params
         .max
         .or(params.limit)
-        .map(|n| (n.max(1) as usize).min(MAX_GRAPH_BUILD_NODES))
+        .map(|n| (n.max(1) as usize).min(GRAPH_NODE_CEILING))
         .unwrap_or(MAX_GRAPH_BUILD_NODES);
     let opts = GraphBuildOptions {
         user_id: auth.effective_user_id(),

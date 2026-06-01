@@ -1,0 +1,6 @@
+/* Tailwind layers for the ported memory graph. Preflight is disabled in
+   tailwind.config.js, so `base` only contributes keyframes (e.g. animate-spin)
+   and theme variables -- not the CSS reset -- keeping the rest of the GUI intact. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

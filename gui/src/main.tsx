@@ -11,6 +11,8 @@ import '@fontsource/jetbrains-mono/500.css';
 import '@fontsource/jetbrains-mono/600.css';
 import App from './App';
 import './design/tokens.css';
+// Tailwind utilities (preflight disabled) -- used by the ported memory graph.
+import './tailwind.css';
 
 // Mount the Kleos GUI as a React single-page application.
 createRoot(document.getElementById('root')!).render(

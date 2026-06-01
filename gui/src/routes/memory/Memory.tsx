@@ -27,7 +27,9 @@ export function Memory() {
       </header>
       <nav aria-label="Memory sections" className="memory-tabs">
         {TABS.map(([to, label]) => (
-          <NavLink className="memory-tabs__link" key={to} to={to}>
+          // Absolute paths -- relative `to` resolved against the current URL,
+          // producing broken links like /memory/graph/search.
+          <NavLink className="memory-tabs__link" key={to} to={`/memory/${to}`} end>
             {label}
           </NavLink>
         ))}
