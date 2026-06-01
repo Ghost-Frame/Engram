@@ -115,7 +115,10 @@ pub async fn judge_session<L: JudgeLlm>(
         .filter(|r| JUDGED_RUBRICS.contains(&r.name.as_str()))
         .collect();
     if judged.is_empty() {
-        tracing::warn!(user_id = input.user_id, "judge: no rubrics to score, skipping");
+        tracing::warn!(
+            user_id = input.user_id,
+            "judge: no rubrics to score, skipping"
+        );
         return Ok(());
     }
 
@@ -268,7 +271,10 @@ mod tests {
     fn prompt_includes_criteria_and_transcript() {
         let criteria = vec![
             ("zero_waste".to_string(), "No wasted tool calls".to_string()),
-            ("verify_results".to_string(), "Verifies before claiming done".to_string()),
+            (
+                "verify_results".to_string(),
+                "Verifies before claiming done".to_string(),
+            ),
         ];
         let input = JudgeInput {
             session_id: "s1".into(),

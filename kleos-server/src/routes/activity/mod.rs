@@ -74,6 +74,67 @@ async fn report_activity(
         });
     }
 
+    // Thymus session-end judge: when an agent reports session.end, score its
+    // recent persisted work (Broca actions) against the rubrics, off the
+    // request path. Best-effort; never affects the response.
+    if state.config.thymus_autoeval_enabled && body.action == "session.end" {
+        let agent = body.agent.clone();
+        let session_id = body
+            .details
+            .as_ref()
+            .and_then(|d| d.get("session_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("{agent}-session"));
+        let task_desc = body.summary.clone();
+        let db_judge = db.clone();
+        let min_turns = state.config.thymus_autoeval_min_turns;
+        tokio::spawn(async move {
+            // Gather the agent's recent actions as the transcript window.
+            let actions = match kleos_lib::services::broca::query_actions(
+                &db_judge,
+                Some(&agent),
+                None,
+                None,
+                None,
+                50,
+                0,
+                caller_user_id,
+            )
+            .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!(error = %e, "thymus judge: query_actions failed");
+                    return;
+                }
+            };
+            let turn_count = actions.len() as i32;
+            let mut transcript = String::new();
+            for a in &actions {
+                let line = a.narrative.clone().unwrap_or_else(|| a.payload.to_string());
+                transcript.push_str(&format!("[{}] {}\n", a.action, line));
+            }
+            if !kleos_lib::intelligence::judge::judge_gate(turn_count, &transcript, min_turns) {
+                return;
+            }
+            let input = kleos_lib::intelligence::judge::JudgeInput {
+                session_id,
+                agent: agent.clone(),
+                task: task_desc,
+                transcript,
+                turn_count,
+                user_id: caller_user_id,
+            };
+            let llm = kleos_lib::intelligence::judge::RealJudgeLlm;
+            if let Err(e) =
+                kleos_lib::intelligence::judge::judge_session(&db_judge, &llm, input).await
+            {
+                tracing::warn!(error = %e, "thymus judge failed");
+            }
+        });
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(json!({ "ok": true, "memory_id": memory_id })),
