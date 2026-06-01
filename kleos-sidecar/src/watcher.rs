@@ -117,7 +117,7 @@ pub fn flush_checkpoint(path: &Path, positions: &HashMap<PathBuf, u64>) {
 /// `ENGRAM_SIDECAR_WATCHER_STATE_PATH` if set; otherwise defaults to
 /// `~/.kleos/sidecar-watcher-state.json`.
 pub fn checkpoint_path() -> PathBuf {
-    if let Ok(p) = std::env::var("ENGRAM_SIDECAR_WATCHER_STATE_PATH") {
+    if let Ok(p) = kleos_lib::kleos_env("SIDECAR_WATCHER_STATE_PATH") {
         return PathBuf::from(p);
     }
     dirs::home_dir()

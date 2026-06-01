@@ -33,9 +33,7 @@ struct MemoryRow {
 }
 
 fn kleos_url() -> Result<String, String> {
-    std::env::var("KLEOS_URL")
-        .or_else(|_| std::env::var("ENGRAM_URL"))
-        .map_err(|_| "KLEOS_URL not set".to_string())
+    kleos_lib::kleos_env("URL").map_err(|_| "KLEOS_URL not set".to_string())
 }
 
 fn apply_auth(

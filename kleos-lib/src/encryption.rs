@@ -146,7 +146,7 @@ fn check_keyfile_permissions(_path: &PathBuf) -> Result<()> {
 
 /// Read `ENGRAM_DB_KEY` env var and hex-decode to 32 bytes.
 fn resolve_env() -> Result<[u8; KEY_SIZE]> {
-    let hex_str = SecretString::new(std::env::var("ENGRAM_DB_KEY").map_err(|_| {
+    let hex_str = SecretString::new(crate::kleos_env("DB_KEY").map_err(|_| {
         EngError::Encryption(
             "ENGRAM_DB_KEY environment variable not set (encryption.mode = env requires it)".into(),
         )

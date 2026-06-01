@@ -138,14 +138,14 @@ fn synthetic_key_for_identity_with_scopes(user_id: i64, scopes_csv: Option<&str>
 }
 
 fn open_access_allowed() -> bool {
-    if std::env::var("ENGRAM_OPEN_ACCESS").as_deref() != Ok("1") {
+    if kleos_lib::kleos_env("OPEN_ACCESS").as_deref() != Ok("1") {
         return false;
     }
     // Require explicit confirmation in BOTH debug and release builds. The
     // dev-loop convenience of an unconditional debug bypass is not worth the
     // foot-gun if a debug binary ever reaches a non-dev environment (H5).
     matches!(
-        std::env::var("ENGRAM_ALLOW_OPEN_ACCESS_IN_RELEASE").as_deref(),
+        kleos_lib::kleos_env("ALLOW_OPEN_ACCESS_IN_RELEASE").as_deref(),
         Ok("yes-i-am-sure")
     )
 }

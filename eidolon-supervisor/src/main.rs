@@ -58,7 +58,9 @@ fn load_config() -> Config {
         });
 
     let kleos_url = std::env::var("KLEOS_SERVER_URL")
-        .or_else(|_| std::env::var("ENGRAM_EIDOLON_URL"))
+        .or_else(|_| {
+            std::env::var("KLEOS_EIDOLON_URL").or_else(|_| std::env::var("ENGRAM_EIDOLON_URL"))
+        })
         .unwrap_or_else(|_| "http://127.0.0.1:4200".to_string());
 
     let api_key = std::env::var("KLEOS_API_KEY")

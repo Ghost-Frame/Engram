@@ -277,14 +277,13 @@ pub struct BrainManager {
 }
 impl BrainManager {
     pub fn new(data_dir: String) -> Self {
-        let backend = std::env::var("ENGRAM_BRAIN_BACKEND").unwrap_or_else(|_| "rust".into());
+        let backend = crate::kleos_env("BRAIN_BACKEND").unwrap_or_else(|_| "rust".into());
         let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
         let binary_path = if backend == "cpp" {
-            std::env::var("ENGRAM_BRAIN_CPP_BIN")
+            crate::kleos_env("BRAIN_CPP_BIN")
                 .unwrap_or_else(|_| format!("eidolon-cpp{}", exe_suffix))
         } else {
-            std::env::var("ENGRAM_BRAIN_RUST_BIN")
-                .unwrap_or_else(|_| format!("eidolon{}", exe_suffix))
+            crate::kleos_env("BRAIN_RUST_BIN").unwrap_or_else(|_| format!("eidolon{}", exe_suffix))
         };
 
         Self {
@@ -1148,7 +1147,7 @@ pub async fn create_brain_backend(
     db: Arc<Database>,
     data_dir: &str,
 ) -> Option<Arc<dyn BrainBackend>> {
-    let mode = std::env::var("ENGRAM_BRAIN_MODE").unwrap_or_else(|_| "hopfield".into());
+    let mode = crate::kleos_env("BRAIN_MODE").unwrap_or_else(|_| "hopfield".into());
 
     match mode.as_str() {
         "hopfield" => match HopfieldBrainManager::new(db).await {
@@ -1203,7 +1202,7 @@ pub async fn create_brain_backend(
     _db: Arc<Database>,
     data_dir: &str,
 ) -> Option<Arc<dyn BrainBackend>> {
-    let mode = std::env::var("ENGRAM_BRAIN_MODE").unwrap_or_else(|_| "subprocess".into());
+    let mode = crate::kleos_env("BRAIN_MODE").unwrap_or_else(|_| "subprocess".into());
     if mode == "none" {
         return None;
     }

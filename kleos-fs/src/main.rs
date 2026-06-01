@@ -549,7 +549,7 @@ static HTTP_CLIENT: LazyLock<reqwest::blocking::Client> = LazyLock::new(|| {
 
 fn check_scratchpad_ledger(key: &str) -> LedgerResult {
     let server_url = env::var("KLEOS_SERVER_URL")
-        .or_else(|_| env::var("ENGRAM_EIDOLON_URL"))
+        .or_else(|_| env::var("KLEOS_EIDOLON_URL").or_else(|_| env::var("ENGRAM_EIDOLON_URL")))
         .unwrap_or_else(|_| "http://127.0.0.1:4200".to_string());
 
     let api_key = resolve_api_key();

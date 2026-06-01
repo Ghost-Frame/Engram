@@ -255,7 +255,7 @@ async fn bootstrap(
     // a pre-shared ENGRAM_BOOTSTRAP_SECRET, fed either via an Authorization
     // header or the request body. If the env var is unset, bootstrap is
     // disabled entirely and must be performed out-of-band.
-    let Ok(expected) = std::env::var("ENGRAM_BOOTSTRAP_SECRET") else {
+    let Ok(expected) = kleos_lib::kleos_env("BOOTSTRAP_SECRET") else {
         return Ok((
             StatusCode::FORBIDDEN,
             Json(json!({

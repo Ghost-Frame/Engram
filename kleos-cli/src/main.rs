@@ -926,7 +926,7 @@ fn direct_env_api_key() -> Option<String> {
         .ok()
         .filter(|k| !k.trim().is_empty())
         .or_else(|| {
-            std::env::var("ENGRAM_API_KEY")
+            kleos_lib::kleos_env("API_KEY")
                 .ok()
                 .filter(|k| !k.trim().is_empty())
         })

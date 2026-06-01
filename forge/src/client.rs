@@ -34,7 +34,7 @@ impl KleosClient {
 
         let api_key = if let Some(k) = std::env::var("KLEOS_API_KEY")
             .ok()
-            .or_else(|| std::env::var("ENGRAM_API_KEY").ok())
+            .or_else(|| kleos_lib::kleos_env("API_KEY").ok())
         {
             Some(k)
         } else {

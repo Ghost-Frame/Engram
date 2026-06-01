@@ -422,7 +422,7 @@ fn is_allowed_origin(origin: &str) -> bool {
     }
 
     // Allow origins from the configured ENGRAM_ALLOWED_ORIGINS.
-    if let Ok(allowed) = std::env::var("ENGRAM_ALLOWED_ORIGINS") {
+    if let Ok(allowed) = kleos_lib::kleos_env("ALLOWED_ORIGINS") {
         for allowed_origin in allowed.split(',').map(str::trim) {
             if lower == allowed_origin.to_ascii_lowercase() {
                 return true;

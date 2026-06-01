@@ -94,7 +94,7 @@ fn sanitize_data_dir(data_dir: &str) -> Option<PathBuf> {
 /// Load the HMAC secret from env, disk, or generate a new one.
 /// Uses an atomic rename (write tmp + rename) to avoid partial-write corruption.
 async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
-    if let Ok(secret) = std::env::var("ENGRAM_HMAC_SECRET") {
+    if let Ok(secret) = kleos_lib::kleos_env("HMAC_SECRET") {
         // SECURITY (SEC-LOW-6): reject HMAC secrets shorter than 32 chars
         // to prevent weak signing keys.
         if secret.len() < 32 {
@@ -441,7 +441,7 @@ pub async fn is_gui_authenticated(state: &AppState, headers: &HeaderMap) -> bool
 fn cookie_attributes(_headers: &HeaderMap) -> &'static str {
     static SECURE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let secure = *SECURE.get_or_init(|| {
-        std::env::var("ENGRAM_SECURE_COOKIES")
+        kleos_lib::kleos_env("SECURE_COOKIES")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
     });

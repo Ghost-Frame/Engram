@@ -35,7 +35,7 @@ static DOWNLOAD_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 });
 
 fn max_download_bytes() -> u64 {
-    std::env::var("ENGRAM_EMBEDDING_MODEL_MAX_BYTES")
+    crate::kleos_env("EMBEDDING_MODEL_MAX_BYTES")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|&n| n > 0)

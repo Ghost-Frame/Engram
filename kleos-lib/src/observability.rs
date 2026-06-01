@@ -59,7 +59,7 @@ pub fn init_tracing(service_name: &str, default_filter: &str) -> OtelGuard {
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            std::env::var("ENGRAM_OTLP_ENDPOINT")
+            crate::kleos_env("OTLP_ENDPOINT")
                 .ok()
                 .filter(|s| !s.is_empty())
         });

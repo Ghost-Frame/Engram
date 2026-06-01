@@ -94,19 +94,17 @@ pub async fn resolve_from_kleos(
     category: &str,
     name: &str,
 ) -> Result<(SecretRow, SecretData), AppError> {
-    let kleos_url = std::env::var("KLEOS_URL")
-        .or_else(|_| std::env::var("ENGRAM_URL"))
-        .map_err(|_| {
-            tracing::debug!(
-                "KLEOS_URL not set; cannot resolve {}/{} from Kleos",
-                category,
-                name
-            );
-            CredError::NotFound(format!(
-                "{}/{} not found (no vault configured)",
-                category, name
-            ))
-        })?;
+    let kleos_url = kleos_lib::kleos_env("URL").map_err(|_| {
+        tracing::debug!(
+            "KLEOS_URL not set; cannot resolve {}/{} from Kleos",
+            category,
+            name
+        );
+        CredError::NotFound(format!(
+            "{}/{} not found (no vault configured)",
+            category, name
+        ))
+    })?;
 
     let http = reqwest::Client::new();
     let list_url = format!("{}/list", kleos_url.trim_end_matches('/'));

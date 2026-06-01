@@ -26,7 +26,7 @@ pub fn is_llm_available() -> bool {
 fn llm_url() -> Option<String> {
     std::env::var("KLEOS_LLM_URL")
         .ok()
-        .or_else(|| std::env::var("ENGRAM_LLM_URL").ok())
+        .or_else(|| crate::kleos_env("LLM_URL").ok())
         .or_else(|| std::env::var("OLLAMA_URL").ok())
 }
 
@@ -43,7 +43,7 @@ fn llm_api_key() -> Option<String> {
 fn llm_model() -> String {
     std::env::var("KLEOS_LLM_MODEL")
         .or_else(|_| std::env::var("OLLAMA_MODEL"))
-        .or_else(|_| std::env::var("ENGRAM_LLM_MODEL"))
+        .or_else(|_| crate::kleos_env("LLM_MODEL"))
         .unwrap_or_else(|_| "llama3.2:3b".to_string())
 }
 

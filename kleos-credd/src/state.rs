@@ -235,9 +235,7 @@ fn load_piv_pubkeys() -> (Arc<Vec<VerifyingKey>>, Option<Arc<PublicKey>>) {
 }
 
 fn init_kleos_signer() -> Option<Arc<RequestSigner>> {
-    let host = std::env::var("KLEOS_URL")
-        .or_else(|_| std::env::var("ENGRAM_URL"))
-        .unwrap_or_else(|_| "http://localhost:4200".into());
+    let host = kleos_lib::kleos_env("URL").unwrap_or_else(|_| "http://localhost:4200".into());
 
     match RequestSigner::from_env_or_file(&host, "credd", "daemon") {
         Ok(Some(signer)) => {

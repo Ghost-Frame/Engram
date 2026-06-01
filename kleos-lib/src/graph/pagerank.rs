@@ -160,7 +160,7 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
     let scores_vec: Vec<(i64, f64)> = {
         // Temporal decay: reduce PageRank for older memories so stale nodes don't
         // dominate graph traversal. Uses a true half-life: score * 0.5^(age/half_life).
-        let half_life: f64 = std::env::var("ENGRAM_PAGERANK_HALF_LIFE_DAYS")
+        let half_life: f64 = crate::kleos_env("PAGERANK_HALF_LIFE_DAYS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(180.0);

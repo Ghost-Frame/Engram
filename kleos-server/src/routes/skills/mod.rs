@@ -56,7 +56,7 @@ fn clamp_offset(raw: Option<usize>) -> Result<usize, AppError> {
 /// Read the skill-sync allowlist from env. Empty means sync is disabled.
 /// Each entry is canonicalized once at check time.
 fn skill_sync_allowlist() -> Vec<std::path::PathBuf> {
-    std::env::var("ENGRAM_SKILL_SYNC_PATHS")
+    kleos_lib::kleos_env("SKILL_SYNC_PATHS")
         .ok()
         .map(|raw| {
             raw.split(':')

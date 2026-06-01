@@ -247,8 +247,7 @@ impl HttpReranker {
             .build()
             .unwrap_or_default();
 
-        let format = std::env::var("KLEOS_RERANKER_FORMAT")
-            .or_else(|_| std::env::var("ENGRAM_RERANKER_FORMAT"))
+        let format = crate::kleos_env("RERANKER_FORMAT")
             .map(|s| RerankFormat::parse(&s))
             .unwrap_or_default();
 
@@ -288,13 +287,13 @@ impl HttpReranker {
     ///           `ENGRAM_RERANKER_HTTP_MODEL`, `ENGRAM_RERANKER_FORMAT`
     pub fn from_env(top_k: usize, db: Option<Arc<Database>>) -> Option<Self> {
         let endpoint = std::env::var("KLEOS_RERANKER_URL")
-            .or_else(|_| std::env::var("ENGRAM_RERANKER_HTTP_ENDPOINT"))
+            .or_else(|_| crate::kleos_env("RERANKER_HTTP_ENDPOINT"))
             .ok()?;
         let api_key = std::env::var("KLEOS_RERANKER_API_KEY")
-            .or_else(|_| std::env::var("ENGRAM_RERANKER_HTTP_API_KEY"))
+            .or_else(|_| crate::kleos_env("RERANKER_HTTP_API_KEY"))
             .ok();
         let model = std::env::var("KLEOS_RERANKER_MODEL")
-            .or_else(|_| std::env::var("ENGRAM_RERANKER_HTTP_MODEL"))
+            .or_else(|_| crate::kleos_env("RERANKER_HTTP_MODEL"))
             .unwrap_or_else(|_| "rerank-v3.5".to_string());
         Some(Self::new_with_db(endpoint, api_key, model, top_k, db))
     }
@@ -528,8 +527,7 @@ pub async fn create_reranker(
         return Ok(None);
     }
 
-    let backend = std::env::var("KLEOS_RERANKER_BACKEND")
-        .or_else(|_| std::env::var("ENGRAM_RERANKER_BACKEND"))
+    let backend = crate::kleos_env("RERANKER_BACKEND")
         .unwrap_or_else(|_| "onnx".to_string())
         .to_lowercase();
 

@@ -204,7 +204,7 @@ async fn main() {
     // the ResolvedDb extractor refuses non-system users when the registry is
     // missing, so disabling sharding renders the server effectively
     // single-user (only user_id=1 keeps working).
-    let tenant_sharding_enabled = match std::env::var("ENGRAM_TENANT_SHARDING") {
+    let tenant_sharding_enabled = match kleos_lib::kleos_env("TENANT_SHARDING") {
         Ok(v) => {
             let s = v.trim().to_ascii_lowercase();
             !(s == "0" || s == "false" || s == "off" || s == "no")
@@ -215,7 +215,7 @@ async fn main() {
     // L14: ENGRAM_OPEN_ACCESS=1 treats every unauthenticated request as
     // user_id=1. Combined with tenant sharding it would expose ALL tenants
     // through the synthetic single-user identity. Refuse to start.
-    if std::env::var("ENGRAM_OPEN_ACCESS").as_deref() == Ok("1") && tenant_sharding_enabled {
+    if kleos_lib::kleos_env("OPEN_ACCESS").as_deref() == Ok("1") && tenant_sharding_enabled {
         eprintln!(
             "FATAL: ENGRAM_OPEN_ACCESS=1 with multi-tenant sharding would expose all tenants \
              as user_id=1. Refusing to start. Either disable open access or set \
@@ -701,7 +701,7 @@ async fn register_job_handlers(
     // Payload: { "deprovision_id": string, "user_id": i64, "tenant_id": string }
     if let Some(ref registry) = tenant_registry {
         let data_root =
-            std::path::PathBuf::from(std::env::var("ENGRAM_DATA_DIR").unwrap_or_else(|_| {
+            std::path::PathBuf::from(kleos_lib::kleos_env("DATA_DIR").unwrap_or_else(|_| {
                 dirs::data_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
                     .join("kleos")

@@ -139,7 +139,7 @@ pub async fn resolve_api_key(agent_slot: &str) -> Result<String, CredError> {
             return Ok(k);
         }
     }
-    if let Ok(k) = env::var("ENGRAM_API_KEY") {
+    if let Ok(k) = crate::kleos_env("API_KEY") {
         if !k.is_empty() {
             return Ok(k);
         }

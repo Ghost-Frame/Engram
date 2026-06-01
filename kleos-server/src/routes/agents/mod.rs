@@ -535,7 +535,7 @@ fn load_or_create_signing_secret() -> String {
 }
 
 fn signing_secret_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("ENGRAM_SIGNING_SECRET_FILE") {
+    if let Ok(path) = kleos_lib::kleos_env("SIGNING_SECRET_FILE") {
         if !path.trim().is_empty() {
             return Some(PathBuf::from(path));
         }

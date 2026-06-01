@@ -47,7 +47,7 @@ fn build_cors_layer() -> CorsLayer {
         .max_age(Duration::from_secs(3600))
         .allow_credentials(true);
 
-    match std::env::var("ENGRAM_ALLOWED_ORIGINS") {
+    match kleos_lib::kleos_env("ALLOWED_ORIGINS") {
         Ok(raw) => {
             let origins: Vec<HeaderValue> = raw
                 .split(',')

@@ -27,7 +27,7 @@ impl SyntheosClient {
     /// Construct from the supplied params. Reads `ENGRAM_SIDECAR_SYNTHEOS` to
     /// decide whether integration is active (default off).
     pub fn new_from_env(http: reqwest::Client, base_url: String, token: Option<String>) -> Self {
-        let enabled = std::env::var("ENGRAM_SIDECAR_SYNTHEOS")
+        let enabled = kleos_lib::kleos_env("SIDECAR_SYNTHEOS")
             .map(|v| v.trim() == "1")
             .unwrap_or(false);
         Self {

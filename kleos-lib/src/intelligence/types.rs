@@ -517,9 +517,7 @@ impl IntelligenceTier {
     /// Accepted values (case-insensitive): `"llm"`, `"rules"`, `"template"`.
     /// Any other value (including unset) resolves to `Auto`.
     pub fn from_env() -> Self {
-        let raw = std::env::var("KLEOS_INTELLIGENCE_TIER")
-            .or_else(|_| std::env::var("ENGRAM_INTELLIGENCE_TIER"))
-            .unwrap_or_default();
+        let raw = crate::kleos_env("INTELLIGENCE_TIER").unwrap_or_default();
         match raw.to_lowercase().as_str() {
             "llm" => Self::Llm,
             "rules" => Self::Rules,

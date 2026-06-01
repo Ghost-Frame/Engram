@@ -56,6 +56,11 @@ pub mod webhooks;
 #[cfg(feature = "brain_hopfield")]
 pub mod brain;
 
+pub mod env;
+// Re-exported so call sites use `kleos_lib::kleos_env(..)` (or `crate::kleos_env`
+// within this crate) without an explicit import at every site.
+pub use env::kleos_env;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]

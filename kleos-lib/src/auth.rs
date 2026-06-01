@@ -18,7 +18,7 @@ static API_KEY_PEPPER: OnceLock<Option<[u8; 32]>> = OnceLock::new();
 
 fn get_pepper() -> Option<[u8; 32]> {
     *API_KEY_PEPPER.get_or_init(|| {
-        std::env::var("ENGRAM_API_KEY_PEPPER").ok().and_then(|hex| {
+        crate::kleos_env("API_KEY_PEPPER").ok().and_then(|hex| {
             if hex.len() != 64 {
                 tracing::warn!(
                     "ENGRAM_API_KEY_PEPPER must be 64 hex chars (32 bytes), got {}",

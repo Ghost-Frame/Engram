@@ -131,15 +131,13 @@ pub async fn get_bootstrap_kleos_bearer(
     // Fetch the [CRED:v3] kleos/<agent> memory from Kleos (or legacy
     // engram-rust/<agent> for entries created before the rename), decrypt
     // it with the cred master key, return the bare bearer.
-    let kleos_url = std::env::var("KLEOS_URL")
-        .or_else(|_| std::env::var("ENGRAM_URL"))
-        .map_err(|_| {
-            error!(
-                "KLEOS_URL not set; cannot fetch bearer for agent={}",
-                params.agent
-            );
-            CredError::InvalidInput("credd misconfigured: KLEOS_URL not set".into())
-        })?;
+    let kleos_url = kleos_lib::kleos_env("URL").map_err(|_| {
+        error!(
+            "KLEOS_URL not set; cannot fetch bearer for agent={}",
+            params.agent
+        );
+        CredError::InvalidInput("credd misconfigured: KLEOS_URL not set".into())
+    })?;
 
     let http = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
@@ -266,12 +264,10 @@ async fn resolve_agent_bearer(state: &AppState, agent: &str) -> Result<String, A
         return Ok(bootstrap_master.as_str().to_string());
     }
 
-    let kleos_url = std::env::var("KLEOS_URL")
-        .or_else(|_| std::env::var("ENGRAM_URL"))
-        .map_err(|_| {
-            error!("KLEOS_URL not set; cannot fetch bearer for agent={}", agent);
-            CredError::InvalidInput("credd misconfigured: KLEOS_URL not set".into())
-        })?;
+    let kleos_url = kleos_lib::kleos_env("URL").map_err(|_| {
+        error!("KLEOS_URL not set; cannot fetch bearer for agent={}", agent);
+        CredError::InvalidInput("credd misconfigured: KLEOS_URL not set".into())
+    })?;
 
     let http = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
