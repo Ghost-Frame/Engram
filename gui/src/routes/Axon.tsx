@@ -31,6 +31,21 @@ export function Axon() {
         </select>
       </header>
       <Panel title="Events">
+        {(channels.data ?? []).length > 0 ? (
+          <div className="feed-row" style={{ flexWrap: 'wrap', gap: 'var(--sp-2)', marginBottom: 'var(--sp-3)' }}>
+            {(channels.data ?? []).map((c) => (
+              <button
+                key={c.id}
+                className="link-button"
+                onClick={() => setChannel(c.name)}
+                style={{ display: 'inline-flex', gap: 6 }}
+              >
+                <Badge label={c.name} />
+                <span>{c.event_count}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         {events.isLoading ? (
           <Spinner />
         ) : !events.data?.length ? (

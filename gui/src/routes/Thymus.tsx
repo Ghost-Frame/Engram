@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { listDrift, listEvaluations, listRubrics } from '$lib/api/thymus';
 import { useLive } from '$lib/realtime';
 import { Badge } from '../ui/Badge';
+import { EmptyState } from '../ui/EmptyState';
 import { Panel } from '../ui/Panel';
 import { Table } from '../ui/Table';
 import { Tabs } from '../ui/Tabs';
@@ -32,30 +33,38 @@ export function Thymus() {
           tabs={[
             {
               content: (
-                <Table
-                  headers={['Agent', 'Subject', 'Score', 'When']}
-                  rows={(evaluations.data ?? []).map((item) => [
-                    item.agent,
-                    item.subject,
-                    item.overall_score.toFixed(2),
-                    item.created_at.slice(0, 16)
-                  ])}
-                />
+                (evaluations.data ?? []).length === 0 ? (
+                  <EmptyState title="No evaluations yet" message="Agent sessions are scored automatically when they end." hint="Quality scores will appear here as sessions complete." />
+                ) : (
+                  <Table
+                    headers={['Agent', 'Subject', 'Score', 'When']}
+                    rows={(evaluations.data ?? []).map((item) => [
+                      item.agent,
+                      item.subject,
+                      item.overall_score.toFixed(2),
+                      item.created_at.slice(0, 16)
+                    ])}
+                  />
+                )
               ),
               id: 'evals',
               label: 'Evaluations'
             },
             {
               content: (
-                <Table
-                  headers={['Agent', 'Type', 'Severity', 'Signal']}
-                  rows={(drift.data ?? []).map((item) => [
-                    item.agent,
-                    item.drift_type,
-                    <Badge label={item.severity} tone={severityTone(item.severity)} />,
-                    item.signal
-                  ])}
-                />
+                (drift.data ?? []).length === 0 ? (
+                  <EmptyState title="No drift signals" message="No agent drift has been recorded." />
+                ) : (
+                  <Table
+                    headers={['Agent', 'Type', 'Severity', 'Signal']}
+                    rows={(drift.data ?? []).map((item) => [
+                      item.agent,
+                      item.drift_type,
+                      <Badge label={item.severity} tone={severityTone(item.severity)} />,
+                      item.signal
+                    ])}
+                  />
+                )
               ),
               id: 'drift',
               label: 'Drift'
