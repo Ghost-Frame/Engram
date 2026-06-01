@@ -1,6 +1,6 @@
 [package]
 name = "kleos-cred"
-version = "1.2.1"
+version = "1.5.0"
 edition = "2021"
 rust-version.workspace = true
 description = "Credential management CLI with encrypted vault and YubiKey support"

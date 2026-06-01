@@ -1,6 +1,6 @@
 [package]
 name = "kleos-server"
-version = "1.2.1"
+version = "1.5.0"
 edition = "2021"
 rust-version.workspace = true
 description = "HTTP server for Kleos -- persistent semantic memory and cognitive infrastructure for AI agents"

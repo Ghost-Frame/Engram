@@ -1,6 +1,6 @@
 [package]
 name = "kleos-fs"
-version = "1.2.1"
+version = "1.5.0"
 edition = "2021"
 autobins = false
 rust-version.workspace = true
