@@ -40,6 +40,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
 async-trait.workspace = true
+nix = { version = "0.29", features = ["user"] }
 rpassword = "7"
 anyhow = "1"
 hex = "0.4"
