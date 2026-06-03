@@ -44,3 +44,6 @@ tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
 tempfile.workspace = true
 nix = { version = "0.29", features = ["user"] }
+# ssh-key 0.6 requires rand_core 0.6.x (rand 0.9 in workspace uses rand_core 0.9 -- incompatible).
+# Pulling rand_core 0.6 directly provides OsRng that satisfies PrivateKey::random's bounds.
+rand_core = { version = "0.6", features = ["getrandom"] }

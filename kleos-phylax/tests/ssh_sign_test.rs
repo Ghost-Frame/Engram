@@ -1,26 +1,29 @@
 //! Integration test for the pure server-side SSH signing helper.
 
-use std::fs;
-
 // Must be in scope for `public_key.verify(...)` to resolve.
 use signature::Verifier;
 
-/// Read the throwaway ed25519 fixture key, sign a challenge, and verify the
-/// returned blob decodes back to a valid ssh_key::Signature and that the
-/// signature is cryptographically valid against the corresponding public key.
+/// Generate an ephemeral ed25519 key at runtime, sign a challenge, and verify
+/// the returned blob decodes back to a valid ssh_key::Signature and that the
+/// signature is cryptographically valid against the generated key's public half.
 #[test]
 fn sign_ed25519_roundtrip() {
-    let pem = fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/test_ed25519"
-    ))
-    .expect("test fixture private key not found");
+    // Generate a fresh ephemeral key for this test run.
+    // ssh-key 0.6 requires rand_core 0.6.x; rand 0.9 (workspace) uses rand_core 0.9,
+    // so we pull rand_core 0.6 directly as a dev-dependency.
+    let key = ssh_key::private::PrivateKey::random(
+        &mut rand_core::OsRng,
+        ssh_key::Algorithm::Ed25519,
+    )
+    .expect("ephemeral ed25519 key generation must succeed");
 
-    let pub_pem = fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/test_ed25519.pub"
-    ))
-    .expect("test fixture public key not found");
+    // Encode the private key as OpenSSH PEM (Zeroizing<String> -- deref to &str).
+    let pem = key
+        .to_openssh(ssh_key::LineEnding::LF)
+        .expect("private key must encode to OpenSSH PEM");
+
+    // Retain the public half for signature verification.
+    let public_key = key.public_key().clone();
 
     let challenge = b"challenge-bytes-to-sign";
 
@@ -40,7 +43,7 @@ fn sign_ed25519_roundtrip() {
         "algorithm must be Ed25519"
     );
 
-    // Load the public key and cryptographically verify the signature.
+    // Cryptographically verify the signature against the generated public key.
     // `Verifier<ssh_key::Signature>` is implemented for `ssh_key::public::KeyData`
     // (and transitively for `ssh_key::PublicKey` via the same dispatch chain).
     // `PublicKey` has an inherent `verify` method for `SshSig` that would shadow
@@ -48,10 +51,8 @@ fn sign_ed25519_roundtrip() {
     // `Verifier<ssh_key::Signature>` impl that mirrors the `Signer` path used above.
     // This proves the bytes are a valid ed25519 signature over `challenge` --
     // not merely that the algorithm tag is correct.
-    let public_key: ssh_key::PublicKey = pub_pem.trim().parse()
-        .expect("test fixture public key must parse");
     Verifier::verify(public_key.key_data(), challenge, &sig)
-        .expect("signature must cryptographically verify against the public key");
+        .expect("signature must cryptographically verify against the generated public key");
 }
 
 /// Passing a malformed PEM string must produce a Parse error, not a panic.

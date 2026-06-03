@@ -727,18 +727,28 @@ async fn test_list_ssh_settings_returns_all_rows_for_user() {
 
 // ---- SSH sign + identities HTTP integration tests ----
 
-/// Fixture private key PEM (tests/fixtures/test_ed25519).
-const FIXTURE_PRIVATE_KEY: &str = include_str!("fixtures/test_ed25519");
-/// Fixture public key in OpenSSH authorized_keys format (tests/fixtures/test_ed25519.pub).
-const FIXTURE_PUBLIC_KEY: &str = include_str!("fixtures/test_ed25519.pub");
-
-/// Happy-path sign: seed an ed25519 SSH key with auto_sign=true, POST to the
-/// sign endpoint, assert HTTP 200 + non-empty signature_hex, then
-/// cryptographically verify the signature against the public key.
+/// Happy-path sign: generate an ephemeral ed25519 key, seed it with auto_sign=true,
+/// POST to the sign endpoint, assert HTTP 200 + non-empty signature_hex, then
+/// cryptographically verify the signature against the generated public key.
 #[tokio::test]
 async fn test_ssh_sign_auto_sign_true_returns_verified_signature() {
     // Must be in scope for `public_key.verify(...)` to resolve.
     use signature::Verifier;
+
+    // Generate a fresh ephemeral key for this test.
+    // ssh-key 0.6 requires rand_core 0.6.x; rand 0.9 (workspace) uses rand_core 0.9,
+    // so we pull rand_core 0.6 directly as a dev-dependency.
+    let key = ssh_key::private::PrivateKey::random(
+        &mut rand_core::OsRng,
+        ssh_key::Algorithm::Ed25519,
+    )
+    .expect("ephemeral ed25519 key generation must succeed");
+    let pem = key
+        .to_openssh(ssh_key::LineEnding::LF)
+        .expect("private key must encode to OpenSSH PEM");
+    let public_key = key.public_key().clone();
+    // Encode public key in OpenSSH authorized_keys format for storage.
+    let public_key_str = public_key.to_openssh().expect("public key must encode to OpenSSH");
 
     let app = TestApp::new().await;
     let master_key = derive_key(1, "test-master-password".as_bytes(), None);
@@ -750,8 +760,8 @@ async fn test_ssh_sign_auto_sign_true_returns_verified_signature() {
         "ssh-keys",
         "deploy",
         &SecretData::SshKey {
-            private_key: FIXTURE_PRIVATE_KEY.to_string(),
-            public_key: Some(FIXTURE_PUBLIC_KEY.trim().to_string()),
+            private_key: pem.to_string(),
+            public_key: Some(public_key_str.trim().to_string()),
             passphrase: None,
         },
         &*master_key,
@@ -786,19 +796,31 @@ async fn test_ssh_sign_auto_sign_true_returns_verified_signature() {
     let sig = ssh_key::Signature::try_from(blob.as_slice())
         .expect("blob must decode as a valid ssh_key::Signature");
 
-    // Parse the public key from the fixture and call through key_data() to
-    // reach the Verifier<ssh_key::Signature> impl (mirrors ssh_sign_test.rs approach).
-    let public_key: ssh_key::PublicKey = FIXTURE_PUBLIC_KEY.trim().parse()
-        .expect("fixture public key must parse");
+    // Call through key_data() to reach the Verifier<ssh_key::Signature> impl
+    // (mirrors ssh_sign_test.rs approach).
     Verifier::verify(public_key.key_data(), challenge.as_slice(), &sig)
-        .expect("signature must cryptographically verify against the public key");
+        .expect("signature must cryptographically verify against the generated public key");
 }
 
-/// Identities lists public-only: seed a key with auto_sign=true, GET /phylax/ssh/identities,
-/// assert the key appears with public_openssh populated and auto_sign=true, and
-/// assert no private key material leaks into the response JSON.
+/// Identities lists public-only: generate an ephemeral key, seed it with auto_sign=true,
+/// GET /phylax/ssh/identities, assert the key appears with public_openssh populated
+/// and auto_sign=true, and assert no private key material leaks into the response JSON.
 #[tokio::test]
 async fn test_ssh_identities_returns_public_material_only() {
+    // Generate a fresh ephemeral key for this test -- independent of the sign test's key.
+    let key = ssh_key::private::PrivateKey::random(
+        &mut rand_core::OsRng,
+        ssh_key::Algorithm::Ed25519,
+    )
+    .expect("ephemeral ed25519 key generation must succeed");
+    let pem = key
+        .to_openssh(ssh_key::LineEnding::LF)
+        .expect("private key must encode to OpenSSH PEM");
+    let public_key_str = key
+        .public_key()
+        .to_openssh()
+        .expect("public key must encode to OpenSSH");
+
     let app = TestApp::new().await;
     let master_key = derive_key(1, "test-master-password".as_bytes(), None);
 
@@ -809,8 +831,8 @@ async fn test_ssh_identities_returns_public_material_only() {
         "ssh-keys",
         "id-test",
         &SecretData::SshKey {
-            private_key: FIXTURE_PRIVATE_KEY.to_string(),
-            public_key: Some(FIXTURE_PUBLIC_KEY.trim().to_string()),
+            private_key: pem.to_string(),
+            public_key: Some(public_key_str.trim().to_string()),
             passphrase: None,
         },
         &*master_key,
