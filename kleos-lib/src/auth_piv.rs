@@ -941,6 +941,20 @@ impl RequestSigner {
         }
     }
 
+    /// Return a reference to the soft Ed25519 signing key.
+    /// Returns `Some` only when the backend is the software Ed25519 tier;
+    /// returns `None` for PIV (hardware key -- the private key is never
+    /// extractable from the YubiKey). The mcp_token mint handler uses this to
+    /// sign short-lived bearer tokens without copying key bytes.
+    pub fn soft_signing_key(&self) -> Option<&ed25519_dalek::SigningKey> {
+        match &self.backend {
+            SigningBackend::Ed25519(sk) => Some(sk),
+            #[cfg(feature = "piv")]
+            SigningBackend::Piv(_) => None,
+        }
+    }
+
+    /// Return the derived identity hash for this signer.
     pub fn identity_hash(&self) -> &str {
         &self.identity_hash
     }
