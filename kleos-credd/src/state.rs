@@ -340,6 +340,14 @@ fn init_kleos_signer() -> Option<Arc<RequestSigner>> {
     }
 }
 
+impl Deref for AppState {
+    type Target = Database;
+
+    fn deref(&self) -> &Self::Target {
+        &self.db
+    }
+}
+
 #[cfg(test)]
 /// Unit tests for signer-tier selection and the soft_signing_key accessor.
 mod tests {
@@ -429,13 +437,5 @@ mod tests {
         // Verify the key bytes round-trip.
         let key_bytes = signer.ed25519_secret_bytes().expect("ed25519_secret_bytes must be Some");
         assert_eq!(key_bytes, [0x42u8; 32]);
-    }
-}
-
-impl Deref for AppState {
-    type Target = Database;
-
-    fn deref(&self) -> &Self::Target {
-        &self.db
     }
 }
