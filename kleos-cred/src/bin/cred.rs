@@ -242,6 +242,9 @@ enum SshCaCmd {
         /// Validity period (e.g. +1h, +30m, +5m).
         #[arg(short = 'V', long, default_value = "+1h")]
         ttl: String,
+        /// Ask phylaxd to perform SSH CA signing instead of local PKCS#11.
+        #[arg(long)]
+        via_phylax: bool,
         /// Path to the agent's public key to sign.
         pubkey: PathBuf,
     },
@@ -260,6 +263,9 @@ enum SshCaCmd {
         /// Output directory (default: ~/.ssh/agent/).
         #[arg(long)]
         out_dir: Option<PathBuf>,
+        /// Ask phylaxd to mint/sign instead of local PKCS#11.
+        #[arg(long)]
+        via_phylax: bool,
     },
 }
 
@@ -2849,15 +2855,132 @@ fn ssh_ca_sign_impl(identity: &str, principal: &str, ttl: &str, pubkey: &Path) -
     Ok(PathBuf::from(format!("{}-cert.pub", stem)))
 }
 
+/// Response from Phylax after signing caller-provided public key material.
+#[derive(serde::Deserialize)]
+struct PhylaxSignResponse {
+    /// OpenSSH certificate public key text.
+    cert_public_key: String,
+}
+
+/// Response from Phylax after minting an agent keypair and certificate.
+#[derive(serde::Deserialize)]
+struct PhylaxMintResponse {
+    /// Path to the generated private key.
+    key_path: PathBuf,
+    /// Path to the generated public certificate.
+    cert_path: PathBuf,
+}
+
+/// Resolve the local Phylax base URL.
+fn phylax_url() -> String {
+    std::env::var("PHYLAX_URL")
+        .or_else(|_| std::env::var("CREDD_URL"))
+        .unwrap_or_else(|_| "http://127.0.0.1:4400".into())
+}
+
+/// Read the local credd/phylax bearer token for agent-safe API calls.
+fn phylax_auth_token() -> Result<String> {
+    if let Ok(token) = std::env::var("CREDD_AGENT_KEY") {
+        let token = token.trim();
+        if !token.is_empty() {
+            return Ok(token.to_string());
+        }
+    }
+
+    let token_path = config_dir().join("credd-agent-key.token");
+    let token = std::fs::read_to_string(&token_path)
+        .with_context(|| format!("read Phylax agent token from {}", token_path.display()))?;
+    let token = token.trim();
+    anyhow::ensure!(
+        !token.is_empty(),
+        "Phylax agent token at {} is empty",
+        token_path.display()
+    );
+    Ok(token.to_string())
+}
+
+/// Sign an existing public key through Phylax and write the local cert file.
+async fn ssh_ca_sign_via_phylax(
+    identity: &str,
+    principal: &str,
+    ttl: &str,
+    pubkey: &Path,
+) -> Result<PathBuf> {
+    let public_key = std::fs::read_to_string(pubkey)
+        .with_context(|| format!("read public key from {}", pubkey.display()))?;
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "{}/phylax/ssh-ca/sign",
+            phylax_url().trim_end_matches('/')
+        ))
+        .header("Authorization", format!("Bearer {}", phylax_auth_token()?))
+        .json(&serde_json::json!({
+            "identity": identity,
+            "principal": principal,
+            "ttl": ttl,
+            "public_key": public_key,
+        }))
+        .send()
+        .await
+        .context("Phylax SSH CA sign request failed")?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("Phylax SSH CA sign returned {}", resp.status());
+    }
+
+    let body: PhylaxSignResponse = resp.json().await.context("parse Phylax sign response")?;
+    let stem = pubkey
+        .to_string_lossy()
+        .trim_end_matches(".pub")
+        .to_string();
+    let cert_path = PathBuf::from(format!("{}-cert.pub", stem));
+    std::fs::write(&cert_path, body.cert_public_key)
+        .with_context(|| format!("write certificate to {}", cert_path.display()))?;
+    Ok(cert_path)
+}
+
+/// Ask Phylax to mint an agent keypair and SSH certificate.
+async fn ssh_ca_mint_via_phylax(
+    agent: &str,
+    principal: &str,
+    ttl: &str,
+) -> Result<PhylaxMintResponse> {
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "{}/phylax/ssh-ca/mint",
+            phylax_url().trim_end_matches('/')
+        ))
+        .header("Authorization", format!("Bearer {}", phylax_auth_token()?))
+        .json(&serde_json::json!({
+            "agent": agent,
+            "principal": principal,
+            "ttl": ttl,
+        }))
+        .send()
+        .await
+        .context("Phylax SSH CA mint request failed")?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("Phylax SSH CA mint returned {}", resp.status());
+    }
+
+    resp.json().await.context("parse Phylax mint response")
+}
+
 async fn cmd_ssh_ca(cmd: SshCaCmd) -> Result<()> {
     match cmd {
         SshCaCmd::Sign {
             identity,
             principal,
             ttl,
+            via_phylax,
             pubkey,
         } => {
-            let cert = ssh_ca_sign_impl(&identity, &principal, &ttl, &pubkey)?;
+            let cert = if via_phylax {
+                ssh_ca_sign_via_phylax(&identity, &principal, &ttl, &pubkey).await?
+            } else {
+                ssh_ca_sign_impl(&identity, &principal, &ttl, &pubkey)?
+            };
             println!("{}", cert.display());
             Ok(())
         }
@@ -2866,7 +2989,15 @@ async fn cmd_ssh_ca(cmd: SshCaCmd) -> Result<()> {
             principal,
             ttl,
             out_dir,
+            via_phylax,
         } => {
+            if via_phylax {
+                let minted = ssh_ca_mint_via_phylax(&agent, &principal, &ttl).await?;
+                println!("key:  {}", minted.key_path.display());
+                println!("cert: {}", minted.cert_path.display());
+                return Ok(());
+            }
+
             let dir = out_dir.unwrap_or_else(|| {
                 directories::BaseDirs::new()
                     .map(|d| d.home_dir().to_path_buf())

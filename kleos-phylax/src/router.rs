@@ -8,7 +8,9 @@ use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::handlers::{approvals, ecdh, kleos_token, leases, namespaces, policies, ssh, ssh_sign};
+use crate::handlers::{
+    approvals, ecdh, kleos_token, leases, namespaces, policies, ssh, ssh_ca, ssh_sign,
+};
 use crate::middleware::policy_check_middleware;
 use crate::state::PhylaxState;
 use kleos_credd::auth::{auth_middleware, preauth_rate_limit};
@@ -54,6 +56,9 @@ pub fn phylax_routes(state: AppState) -> Router<PhylaxState> {
             "/phylax/ssh/{category}/{name}",
             get(ssh::get_settings).put(ssh::update_settings),
         )
+        // SSH certificate authority
+        .route("/phylax/ssh-ca/sign", post(ssh_ca::sign))
+        .route("/phylax/ssh-ca/mint", post(ssh_ca::mint))
         // Apply the same auth and preauth protections as credd routes.
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -74,8 +79,12 @@ pub fn phylax_routes(state: AppState) -> Router<PhylaxState> {
 /// `policy_check_middleware` so /resolve/* requests can return approval
 /// responses before credd plaintext handlers execute.
 pub fn compose_router(state: AppState) -> Router {
-    let phylax_state = PhylaxState::from_app_state(state.clone());
+    compose_router_with_phylax_state(PhylaxState::from_app_state(state))
+}
 
+/// Compose credd base routes and Phylax extensions with an explicit Phylax state.
+pub fn compose_router_with_phylax_state(phylax_state: PhylaxState) -> Router {
+    let state = phylax_state.inner.clone();
     // Merge credd base routes with phylax extension routes and enforce policy
     // interception on all resolve endpoints before the plaintext resolve handlers run.
     let app = kleos_credd::credd_routes::<PhylaxState>(state.clone())

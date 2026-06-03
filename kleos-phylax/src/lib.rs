@@ -11,4 +11,5 @@ pub mod middleware;
 pub mod migrate;
 pub mod models;
 pub mod router;
+pub mod ssh_ca_signer;
 pub mod state;

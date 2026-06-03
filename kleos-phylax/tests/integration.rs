@@ -12,12 +12,49 @@ use kleos_cred::audit::{self, AccessTier, AuditAction};
 use kleos_cred::crypto::derive_key;
 use kleos_cred::storage::store_secret;
 use kleos_cred::types::SecretData;
+use kleos_cred::CredError;
 use kleos_credd::state::AppState;
 use kleos_lib::db::Database;
 use kleos_lib::EngError;
 use kleos_phylax::audit::{actions, log_phylax_audit};
 use kleos_phylax::models::ssh_settings::{list_ssh_settings, upsert_ssh_settings};
-use kleos_phylax::router::compose_router;
+use kleos_phylax::router::compose_router_with_phylax_state;
+use kleos_phylax::ssh_ca_signer::{MintedSshCertificate, SignedSshCertificate, SshCaSigner};
+use kleos_phylax::state::PhylaxState;
+
+/// Fake SSH CA signer used by integration tests.
+#[derive(Clone)]
+struct FakeSshCaSigner;
+
+/// Implement deterministic SSH CA responses for route contract tests.
+impl SshCaSigner for FakeSshCaSigner {
+    /// Return deterministic certificate text for route contract tests.
+    fn sign(
+        &self,
+        _identity: &str,
+        _principal: &str,
+        _ttl: &str,
+        _public_key: &str,
+    ) -> Result<SignedSshCertificate, CredError> {
+        Ok(SignedSshCertificate {
+            cert_public_key: "ssh-ed25519-cert-v01@openssh.com AAAAFakeCert phylax@test".into(),
+        })
+    }
+
+    /// Return deterministic key and certificate paths for route contract tests.
+    fn mint(
+        &self,
+        agent: &str,
+        _principal: &str,
+        _ttl: &str,
+    ) -> Result<MintedSshCertificate, CredError> {
+        Ok(MintedSshCertificate {
+            key_path: format!("/tmp/{}.key", agent).into(),
+            cert_path: format!("/tmp/{}-cert.pub", agent).into(),
+            cert_public_key: "ssh-ed25519-cert-v01@openssh.com AAAAFakeCert phylax@test".into(),
+        })
+    }
+}
 
 /// Test harness wrapping a Phylax-enabled router.
 struct TestApp {
@@ -39,10 +76,12 @@ impl TestApp {
         let master_token = hex::encode(*master_key);
 
         let app_state = AppState::new(db, *master_key);
+        let phylax_state = PhylaxState::from_app_state(app_state.clone())
+            .with_ssh_ca_signer(std::sync::Arc::new(FakeSshCaSigner));
 
         // Compose base credd routes with phylax extensions and shared policy
         // middleware ordering.
-        let router = compose_router(app_state.clone());
+        let router = compose_router_with_phylax_state(phylax_state);
 
         Self {
             router,
@@ -445,6 +484,91 @@ async fn test_ssh_settings() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["auto_sign"], true);
     assert_eq!(body["auto_load"], true);
+}
+
+// ---- SSH CA tests ----
+
+/// Test that Phylax can sign caller-provided SSH public keys through its SSH CA endpoint.
+#[tokio::test]
+async fn test_ssh_ca_sign_endpoint() {
+    let app = TestApp::new().await;
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/phylax/ssh-ca/sign",
+            Some(json!({
+                "identity": "codex-test",
+                "principal": "operator",
+                "ttl": "+5m",
+                "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKeyForRouteContractOnly codex@test"
+            })),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["identity"], "codex-test");
+    assert_eq!(body["principal"], "operator");
+    assert!(body["cert_public_key"]
+        .as_str()
+        .unwrap()
+        .contains("ssh-ed25519-cert"));
+}
+
+/// Test that Phylax can mint an agent keypair and SSH certificate without returning private key bytes.
+#[tokio::test]
+async fn test_ssh_ca_mint_endpoint_does_not_return_private_key() {
+    let app = TestApp::new().await;
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/phylax/ssh-ca/mint",
+            Some(json!({
+                "agent": "codex-test",
+                "principal": "operator",
+                "ttl": "+5m"
+            })),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["agent"], "codex-test");
+    assert_eq!(body["principal"], "operator");
+    assert!(body["key_path"].as_str().unwrap().contains("codex-test"));
+    assert!(body["cert_path"]
+        .as_str()
+        .unwrap()
+        .contains("codex-test-cert.pub"));
+    assert!(body["cert_public_key"]
+        .as_str()
+        .unwrap()
+        .contains("ssh-ed25519-cert"));
+    assert!(
+        body.get("private_key").is_none(),
+        "mint endpoint must not return private key bytes"
+    );
+}
+
+/// Test that Phylax rejects malformed SSH CA signing requests before invoking a signer.
+#[tokio::test]
+async fn test_ssh_ca_sign_rejects_missing_public_key() {
+    let app = TestApp::new().await;
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/phylax/ssh-ca/sign",
+            Some(json!({
+                "identity": "codex-test",
+                "principal": "operator",
+                "ttl": "+5m"
+            })),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("public_key"));
 }
 
 // ---- PIV enrollment test ----
