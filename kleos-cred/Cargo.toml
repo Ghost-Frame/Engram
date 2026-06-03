@@ -36,7 +36,7 @@ rpassword = "7"
 anyhow = "1"
 shellexpand = "3"
 directories = "6"
-kleos-lib = { path = "../kleos-lib", version = "1.2.1" }
+kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["sqlcipher"] }
 
 # Crypto
 aes-gcm = "0.10"

@@ -377,6 +377,23 @@ fn db_path() -> PathBuf {
     config_dir().join("cred.db")
 }
 
+/// Read the persisted at-rest encryption mode from `~/.config/cred/encryption-mode`.
+///
+/// Lets cred open an encrypted vault without `ENGRAM_ENCRYPTION_MODE` in its
+/// environment, so processes that started before encryption was enabled (e.g.
+/// long-running agents) still resolve the correct mode.
+fn read_persisted_encryption_mode() -> Option<kleos_lib::config::EncryptionMode> {
+    use kleos_lib::config::EncryptionMode;
+    let raw = std::fs::read_to_string(config_dir().join("encryption-mode")).ok()?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "none" => Some(EncryptionMode::None),
+        "keyfile" => Some(EncryptionMode::Keyfile),
+        "env" => Some(EncryptionMode::Env),
+        "yubikey" => Some(EncryptionMode::Yubikey),
+        _ => None,
+    }
+}
+
 fn get_session_grants_path() -> PathBuf {
     config_dir().join("get-session-grants.json")
 }
@@ -385,15 +402,23 @@ fn shellexpand(path: &str) -> String {
     shellexpand::tilde(path).into_owned()
 }
 
-/// Derive master key from YubiKey using legacy (private cred compatible) KDF.
+/// YubiKey unlock that also returns the raw slot-2 challenge-response, so the
+/// caller can derive the at-rest SQLCipher key from the SAME HMAC without a
+/// second device round-trip (one device hit per invocation -- no added contention).
 #[allow(deprecated)]
-fn derive_master_key_yubikey() -> Result<[u8; KEY_SIZE]> {
+fn derive_master_key_yubikey_with_response() -> Result<([u8; KEY_SIZE], Zeroizing<Vec<u8>>)> {
     let challenge = yubikey::get_or_create_challenge().context("failed to get challenge file")?;
 
     let response = yubikey::challenge_response(&challenge)
         .context("failed to get YubiKey challenge-response -- is the YubiKey plugged in?")?;
 
-    Ok(derive_key_legacy(&response))
+    let key = derive_key_legacy(&response);
+    Ok((key, Zeroizing::new(response.to_vec())))
+}
+
+/// Derive master key from YubiKey using legacy (private cred compatible) KDF.
+fn derive_master_key_yubikey() -> Result<[u8; KEY_SIZE]> {
+    Ok(derive_master_key_yubikey_with_response()?.0)
 }
 
 fn derive_master_key(
@@ -643,6 +668,17 @@ async fn main() -> Result<()> {
         Commands::Piv { cmd } => cmd_piv(cmd).await,
         Commands::SshCa { cmd } => cmd_ssh_ca(cmd).await,
         cmd => {
+            // Resolve encryption config. ENGRAM_ENCRYPTION_MODE wins; when it is
+            // absent (e.g. an agent process launched before the vault was
+            // encrypted), fall back to the persisted ~/.config/cred/encryption-mode
+            // file so cred can still open the encrypted DB without the env var.
+            let mut enc_config = kleos_lib::config::Config::from_env();
+            if std::env::var("ENGRAM_ENCRYPTION_MODE").is_err() {
+                if let Some(mode) = read_persisted_encryption_mode() {
+                    enc_config.encryption.mode = mode;
+                }
+            }
+
             let mode_label = match cli.auth_mode.as_str() {
                 "yubikey" => "YubiKey",
                 "password" => "password",
@@ -650,14 +686,30 @@ async fn main() -> Result<()> {
                 other => other,
             };
             eprintln!("unlocking with {}...", mode_label);
-            let key = derive_master_key(
-                &cli.auth_mode,
-                cli.master_password.as_deref(),
-                cli.keyfile.as_deref(),
-            )?;
+
+            // Derive the per-secret master key. In yubikey mode, capture the raw
+            // challenge-response so the at-rest key reuses the SAME HMAC (one
+            // device hit per invocation, no added YubiKey contention).
+            let (key, at_rest_key) = if cli.auth_mode == "yubikey" {
+                let (master, response) = derive_master_key_yubikey_with_response()?;
+                let at_rest =
+                    kleos_cred::encryption::resolve_at_rest_key(&enc_config, Some(&response[..]))?;
+                (Zeroizing::new(master), at_rest)
+            } else {
+                let master = derive_master_key(
+                    &cli.auth_mode,
+                    cli.master_password.as_deref(),
+                    cli.keyfile.as_deref(),
+                )?;
+                let at_rest = kleos_cred::encryption::resolve_at_rest_key(&enc_config, None)?;
+                (master, at_rest)
+            };
             eprintln!("unlocked.");
 
-            let db = Database::connect(&db_path().to_string_lossy())
+            // Open with optional at-rest SQLCipher encryption. `None` => plaintext
+            // (backward compatible); the first encrypted open of a still-plaintext
+            // file auto-migrates it via the kleos-lib migrator.
+            let db = Database::connect_encrypted(&db_path().to_string_lossy(), at_rest_key)
                 .await
                 .context("failed to open database")?;
 
