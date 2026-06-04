@@ -34,9 +34,11 @@ rusqlite.workspace = true
 tower-http.workspace = true
 http = "1"
 bytes = "1"
+reqwest.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
 tempfile.workspace = true
+nix = { version = "0.29", features = ["user"] }
