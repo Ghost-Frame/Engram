@@ -159,8 +159,28 @@ where
     B: FnOnce(AppState) -> Router,
 {
     let master_key = resolve_master_key(auth_mode, master_password, keyfile)?;
-    let enc_config = Config::from_env();
+    let mut enc_config = Config::from_env();
+    // When ENGRAM_ENCRYPTION_MODE is not in the environment (the daemon was
+    // started by systemd before encryption was enabled, or the unit was never
+    // updated), fall back to the persisted ~/.config/cred/encryption-mode
+    // marker so we never silently open an already-encrypted vault as plaintext.
+    // Mirrors the cred CLI's resolution exactly.
+    if std::env::var("ENGRAM_ENCRYPTION_MODE").is_err() {
+        if let Some(mode) = kleos_cred::encryption::read_persisted_encryption_mode() {
+            enc_config.encryption.mode = mode;
+        }
+    }
     let encryption_key = resolve_db_encryption_key(&enc_config)?;
+    // Persist the resolved mode so a later restart without ENGRAM_ENCRYPTION_MODE
+    // still opens the encrypted vault correctly instead of silently as plaintext.
+    // Mirrors the cred CLI. Best-effort.
+    if enc_config.encryption.mode != EncryptionMode::None {
+        if let Err(e) =
+            kleos_cred::encryption::persist_encryption_mode(&enc_config.encryption.mode)
+        {
+            tracing::warn!(error = %e, "could not persist encryption-mode marker");
+        }
+    }
     let bootstrap_master = crate::bootstrap::load_bootstrap_blob(&master_key).await?;
     if bootstrap_master.is_some() {
         tracing::info!(

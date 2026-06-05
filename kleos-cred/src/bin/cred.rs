@@ -377,23 +377,6 @@ fn db_path() -> PathBuf {
     config_dir().join("cred.db")
 }
 
-/// Read the persisted at-rest encryption mode from `~/.config/cred/encryption-mode`.
-///
-/// Lets cred open an encrypted vault without `ENGRAM_ENCRYPTION_MODE` in its
-/// environment, so processes that started before encryption was enabled (e.g.
-/// long-running agents) still resolve the correct mode.
-fn read_persisted_encryption_mode() -> Option<kleos_lib::config::EncryptionMode> {
-    use kleos_lib::config::EncryptionMode;
-    let raw = std::fs::read_to_string(config_dir().join("encryption-mode")).ok()?;
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "none" => Some(EncryptionMode::None),
-        "keyfile" => Some(EncryptionMode::Keyfile),
-        "env" => Some(EncryptionMode::Env),
-        "yubikey" => Some(EncryptionMode::Yubikey),
-        _ => None,
-    }
-}
-
 fn get_session_grants_path() -> PathBuf {
     config_dir().join("get-session-grants.json")
 }
@@ -674,7 +657,7 @@ async fn main() -> Result<()> {
             // file so cred can still open the encrypted DB without the env var.
             let mut enc_config = kleos_lib::config::Config::from_env();
             if std::env::var("ENGRAM_ENCRYPTION_MODE").is_err() {
-                if let Some(mode) = read_persisted_encryption_mode() {
+                if let Some(mode) = kleos_cred::encryption::read_persisted_encryption_mode() {
                     enc_config.encryption.mode = mode;
                 }
             }
@@ -712,6 +695,17 @@ async fn main() -> Result<()> {
             let db = Database::connect_encrypted(&db_path().to_string_lossy(), at_rest_key)
                 .await
                 .context("failed to open database")?;
+
+            // Persist the resolved mode so a later daemon/agent started without
+            // ENGRAM_ENCRYPTION_MODE opens the now-encrypted vault correctly
+            // instead of silently as plaintext. Best-effort, idempotent.
+            if enc_config.encryption.mode != kleos_lib::config::EncryptionMode::None {
+                if let Err(e) =
+                    kleos_cred::encryption::persist_encryption_mode(&enc_config.encryption.mode)
+                {
+                    eprintln!("warning: could not persist encryption-mode marker: {e}");
+                }
+            }
 
             // Lift any pre-fix user_id=0 rows produced by older binaries.
             // No-op on already-migrated stores. Tolerated to fail silently
