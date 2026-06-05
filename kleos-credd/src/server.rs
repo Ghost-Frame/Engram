@@ -175,8 +175,7 @@ where
     // still opens the encrypted vault correctly instead of silently as plaintext.
     // Mirrors the cred CLI. Best-effort.
     if enc_config.encryption.mode != EncryptionMode::None {
-        if let Err(e) =
-            kleos_cred::encryption::persist_encryption_mode(&enc_config.encryption.mode)
+        if let Err(e) = kleos_cred::encryption::persist_encryption_mode(&enc_config.encryption.mode)
         {
             tracing::warn!(error = %e, "could not persist encryption-mode marker");
         }

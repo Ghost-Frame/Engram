@@ -144,7 +144,10 @@ mod tests {
     /// Parsing tolerates surrounding whitespace and any letter case.
     #[test]
     fn mode_token_is_case_insensitive_and_trimmed() {
-        assert_eq!(mode_from_token("  YubiKey \n"), Some(EncryptionMode::Yubikey));
+        assert_eq!(
+            mode_from_token("  YubiKey \n"),
+            Some(EncryptionMode::Yubikey)
+        );
         assert_eq!(mode_from_token("KEYFILE"), Some(EncryptionMode::Keyfile));
     }
 
