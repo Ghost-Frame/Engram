@@ -764,7 +764,7 @@ async fn test_ssh_sign_auto_sign_true_returns_verified_signature() {
             public_key: Some(public_key_str.trim().to_string()),
             passphrase: None,
         },
-        &*master_key,
+        &master_key,
     )
     .await
     .expect("store_secret must succeed");
@@ -839,7 +839,7 @@ async fn test_ssh_identities_returns_public_material_only() {
             public_key: Some(public_key_str.trim().to_string()),
             passphrase: None,
         },
-        &*master_key,
+        &master_key,
     )
     .await
     .expect("store_secret must succeed");
