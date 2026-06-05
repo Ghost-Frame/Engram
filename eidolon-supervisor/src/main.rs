@@ -66,7 +66,9 @@ fn load_config() -> Config {
     let api_key = std::env::var("KLEOS_API_KEY")
         .or_else(|_| std::env::var("EIDOLON_KEY"))
         .ok()
-        .filter(|k| !k.is_empty());
+        .filter(|k| !k.is_empty())
+        // Keyless fallback: short-lived bearer from the phylaxd SO_PEERCRED broker.
+        .or_else(kleos_token_client::resolve_via_phylax_broker);
 
     let rules = load_rules();
 

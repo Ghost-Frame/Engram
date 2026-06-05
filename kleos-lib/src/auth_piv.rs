@@ -774,9 +774,15 @@ impl RequestSigner {
     }
 
     pub fn from_env_or_file(host: &str, agent: &str, model: &str) -> Result<Option<Self>> {
-        // T1: Try PIV YubiKey first (highest auth tier)
+        // Allow a host to force the software tier (skip PIV) via
+        // KLEOS_SIGNER_TIER=soft, mirroring credd's CREDD_KLEOS_SIGNER_TIER. This
+        // is the correct mode where a YubiKey is absent or its PIV slot is
+        // unreliable but a soft Ed25519 identity is enrolled.
+        let _force_soft = skip_piv_for_tier(std::env::var("KLEOS_SIGNER_TIER").ok().as_deref());
+
+        // T1: Try PIV YubiKey first (highest auth tier) unless soft is forced.
         #[cfg(feature = "piv")]
-        {
+        if !_force_soft {
             match Self::from_yubikey(host, agent, model) {
                 Ok(signer) => return Ok(Some(signer)),
                 Err(e) => {
@@ -941,6 +947,20 @@ impl RequestSigner {
         }
     }
 
+    /// Return a reference to the soft Ed25519 signing key.
+    /// Returns `Some` only when the backend is the software Ed25519 tier;
+    /// returns `None` for PIV (hardware key -- the private key is never
+    /// extractable from the YubiKey). The mcp_token mint handler uses this to
+    /// sign short-lived bearer tokens without copying key bytes.
+    pub fn soft_signing_key(&self) -> Option<&ed25519_dalek::SigningKey> {
+        match &self.backend {
+            SigningBackend::Ed25519(sk) => Some(sk),
+            #[cfg(feature = "piv")]
+            SigningBackend::Piv(_) => None,
+        }
+    }
+
+    /// Return the derived identity hash for this signer.
     pub fn identity_hash(&self) -> &str {
         &self.identity_hash
     }
@@ -1093,12 +1113,40 @@ fn dirs_for_key_path() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
+/// Decide whether to skip the PIV (hardware) tier and use the software Ed25519
+/// identity instead, based on a requested tier value (typically the
+/// `KLEOS_SIGNER_TIER` env var). Only the literal "soft" (case-insensitive)
+/// forces the software tier; every other value keeps PIV as the preferred tier.
+fn skip_piv_for_tier(tier: Option<&str>) -> bool {
+    matches!(tier, Some(t) if t.eq_ignore_ascii_case("soft"))
+}
+
 // --- Tests ---
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // -- Signer-tier selection --
+
+    /// KLEOS_SIGNER_TIER=soft (any case) forces the software tier, skipping PIV.
+    #[test]
+    fn soft_tier_value_skips_piv() {
+        assert!(skip_piv_for_tier(Some("soft")));
+        assert!(skip_piv_for_tier(Some("SOFT")));
+        assert!(skip_piv_for_tier(Some("Soft")));
+    }
+
+    /// Any other value, or no value, leaves PIV as the preferred tier.
+    #[test]
+    fn other_tier_values_keep_piv() {
+        assert!(!skip_piv_for_tier(None));
+        assert!(!skip_piv_for_tier(Some("piv")));
+        assert!(!skip_piv_for_tier(Some("")));
+        assert!(!skip_piv_for_tier(Some("hardware")));
+    }
+
+    /// Return the current Unix timestamp in milliseconds for tests.
     fn now_ms() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

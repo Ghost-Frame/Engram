@@ -168,6 +168,7 @@ dependencies = [
  "clap",
  "dirs 5.0.1",
  "ignore",
+ "kleos-token-client",
  "reqwest",
  "rusqlite",
  "serde",
@@ -3268,6 +3269,7 @@ name = "eidolon-supervisor"
 version = "1.5.0"
 dependencies = [
  "chrono",
+ "kleos-token-client",
  "lru 0.16.4",
  "notify",
  "notify-debouncer-mini",
@@ -3356,6 +3358,29 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "env_filter"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e90c2accc4b07a8456ea0debdc2e7587bdd890680d71173a15d4ae604f6eef"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.11.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0621c04f2196ac3f488dd583365b9c09be011a4ab8b9f37248ffcc8f6198b56a"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "env_filter",
+ "jiff",
+ "log",
 ]
 
 [[package]]
@@ -4991,6 +5016,7 @@ dependencies = [
  "http-body-util",
  "kleos-cred",
  "kleos-lib",
+ "nix",
  "p256",
  "rand 0.9.4",
  "reqwest",
@@ -5014,6 +5040,7 @@ dependencies = [
 name = "kleos-fs"
 version = "1.5.0"
 dependencies = [
+ "kleos-token-client",
  "libc",
  "reqwest",
  "serde_json",
@@ -5191,6 +5218,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
+ "ed25519-dalek",
  "hex",
  "hkdf",
  "http",
@@ -5198,12 +5226,17 @@ dependencies = [
  "kleos-cred",
  "kleos-credd",
  "kleos-lib",
+ "nix",
  "p256",
  "rand 0.9.4",
+ "rand_core 0.6.4",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "signature",
+ "ssh-key",
  "subtle",
  "tempfile",
  "thiserror 2.0.18",
@@ -5213,6 +5246,35 @@ dependencies = [
  "tracing",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "kleos-phylax-ssh-agent"
+version = "1.5.0"
+dependencies = [
+ "log",
+ "ssh-key",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "kleos-phylax-ssh-agentd"
+version = "1.5.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "hex",
+ "kleos-phylax-ssh-agent",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "ssh-key",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -5281,6 +5343,7 @@ name = "kleos-sh"
 version = "1.5.0"
 dependencies = [
  "clap",
+ "kleos-token-client",
  "reqwest",
  "serde",
  "serde_json",
@@ -5313,6 +5376,10 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
 ]
+
+[[package]]
+name = "kleos-token-client"
+version = "1.5.0"
 
 [[package]]
 name = "kqueue"
@@ -7429,6 +7496,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "p521"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fc9e2161f1f215afdfce23677034ae137bbd45016a880c2eb3ba8eb95f085b2"
+dependencies = [
+ "base16ct",
+ "ecdsa",
+ "elliptic-curve",
+ "primeorder",
+ "rand_core 0.6.4",
+ "sha2",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9490,6 +9571,49 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "ssh-cipher"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caac132742f0d33c3af65bfcde7f6aa8f62f0e991d80db99149eb9d44708784f"
+dependencies = [
+ "cipher",
+ "ssh-encoding",
+]
+
+[[package]]
+name = "ssh-encoding"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb9242b9ef4108a78e8cd1a2c98e193ef372437f8c22be363075233321dd4a15"
+dependencies = [
+ "base64ct",
+ "pem-rfc7468 0.7.0",
+ "sha2",
+]
+
+[[package]]
+name = "ssh-key"
+version = "0.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b86f5297f0f04d08cabaa0f6bff7cb6aec4d9c3b49d87990d63da9d9156a8c3"
+dependencies = [
+ "ed25519-dalek",
+ "num-bigint-dig",
+ "p256",
+ "p384",
+ "p521",
+ "rand_core 0.6.4",
+ "rsa",
+ "sec1",
+ "sha2",
+ "signature",
+ "ssh-cipher",
+ "ssh-encoding",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]

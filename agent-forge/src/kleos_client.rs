@@ -50,7 +50,11 @@ impl KleosClient {
         let base_url =
             env::var("KLEOS_URL").unwrap_or_else(|_| "http://localhost:4200".to_string());
         let base_url = base_url.trim_end_matches('/').to_string();
-        let api_key = env::var("KLEOS_API_KEY").ok();
+        // Keyless fallback: short-lived bearer from the phylaxd SO_PEERCRED broker.
+        let api_key = env::var("KLEOS_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+            .or_else(kleos_token_client::resolve_via_phylax_broker);
 
         let http = Client::builder()
             .timeout(Duration::from_secs(30))

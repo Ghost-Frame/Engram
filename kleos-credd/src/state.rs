@@ -234,8 +234,89 @@ fn load_piv_pubkeys() -> (Arc<Vec<VerifyingKey>>, Option<Arc<PublicKey>>) {
     (Arc::new(keys_9a), key_9d)
 }
 
+/// Build a soft-tier `RequestSigner` from `KLEOS_IDENTITY_KEY` (hex) or
+/// `~/.kleos/identity.key`. This helper is used when
+/// `CREDD_KLEOS_SIGNER_TIER=soft` is set to bypass PIV entirely, and is
+/// also callable from tests with an explicit hex key via the env var.
+fn build_soft_signer(host: &str) -> Option<Arc<RequestSigner>> {
+    // Mirror the T2 branch of RequestSigner::from_env_or_file exactly.
+    if let Ok(hex_key) = std::env::var("KLEOS_IDENTITY_KEY") {
+        let bytes = match hex::decode(hex_key.trim()) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!(error = %e, "KLEOS_IDENTITY_KEY bad hex; cannot build soft signer");
+                return None;
+            }
+        };
+        if bytes.len() != 32 {
+            tracing::error!(
+                got = bytes.len(),
+                "KLEOS_IDENTITY_KEY must be 32 bytes; cannot build soft signer"
+            );
+            return None;
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        let signer = RequestSigner::from_key_bytes(arr, host, "credd", "daemon");
+        tracing::info!(
+            tier = %signer.tier(),
+            fingerprint = %signer.fingerprint(),
+            "Kleos soft signer initialized from KLEOS_IDENTITY_KEY"
+        );
+        return Some(Arc::new(signer));
+    }
+
+    // Fall back to file path (KLEOS_IDENTITY_KEY_FILE or ~/.kleos/identity.key).
+    let key_path = if let Ok(p) = std::env::var("KLEOS_IDENTITY_KEY_FILE") {
+        PathBuf::from(p)
+    } else {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from);
+        match home {
+            Some(h) => h.join(".kleos").join("identity.key"),
+            None => {
+                tracing::error!("cannot determine home directory for soft signer key path");
+                return None;
+            }
+        }
+    };
+
+    if !key_path.exists() {
+        tracing::warn!(
+            path = %key_path.display(),
+            "soft identity key file not found; Kleos vault fallback will use bootstrap bearer"
+        );
+        return None;
+    }
+
+    match RequestSigner::from_file(&key_path, host, "credd", "daemon") {
+        Ok(signer) => {
+            tracing::info!(
+                tier = %signer.tier(),
+                fingerprint = %signer.fingerprint(),
+                path = %key_path.display(),
+                "Kleos soft signer initialized from key file"
+            );
+            Some(Arc::new(signer))
+        }
+        Err(e) => {
+            tracing::error!(error = %e, path = %key_path.display(), "failed to load soft signer from key file");
+            None
+        }
+    }
+}
+
 fn init_kleos_signer() -> Option<Arc<RequestSigner>> {
     let host = kleos_lib::kleos_env("URL").unwrap_or_else(|_| "http://localhost:4200".into());
+
+    // When CREDD_KLEOS_SIGNER_TIER=soft, skip PIV entirely and load only
+    // the soft Ed25519 identity key. This is the correct mode for headless
+    // boxes where a YubiKey may be physically present but PIV is unconfigured.
+    if std::env::var("CREDD_KLEOS_SIGNER_TIER").as_deref() == Ok("soft") {
+        tracing::info!("CREDD_KLEOS_SIGNER_TIER=soft: bypassing PIV, using soft Ed25519 signer");
+        return build_soft_signer(&host);
+    }
 
     match RequestSigner::from_env_or_file(&host, "credd", "daemon") {
         Ok(Some(signer)) => {
@@ -264,5 +345,99 @@ impl Deref for AppState {
 
     fn deref(&self) -> &Self::Target {
         &self.db
+    }
+}
+
+#[cfg(test)]
+/// Unit tests for signer-tier selection and the soft_signing_key accessor.
+mod tests {
+    use super::*;
+
+    /// Guard that restores environment variables when dropped. Prevents
+    /// cross-test env bleed when tests set/unset process-level env vars.
+    struct EnvGuard {
+        vars: Vec<(String, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        /// Save the current value of each variable and set the new value.
+        /// Pass `None` as `value` to unset the variable.
+        fn set(pairs: &[(&str, Option<&str>)]) -> Self {
+            let vars = pairs
+                .iter()
+                .map(|(k, v)| {
+                    let old = std::env::var(k).ok();
+                    match v {
+                        Some(val) => std::env::set_var(k, val),
+                        None => std::env::remove_var(k),
+                    }
+                    (k.to_string(), old)
+                })
+                .collect();
+            Self { vars }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        /// Restore all saved variables when the guard goes out of scope.
+        fn drop(&mut self) {
+            for (k, old) in &self.vars {
+                match old {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    /// A deterministic 32-byte test key in hex (all 0x42 bytes).
+    const TEST_KEY_HEX: &str = "4242424242424242424242424242424242424242424242424242424242424242";
+
+    #[test]
+    fn soft_tier_env_produces_soft_signer_with_accessible_signing_key() {
+        // Serial guard: set env vars, run, restore on drop.
+        let _guard = EnvGuard::set(&[
+            ("CREDD_KLEOS_SIGNER_TIER", Some("soft")),
+            ("KLEOS_IDENTITY_KEY", Some(TEST_KEY_HEX)),
+            // Prevent any real KLEOS_URL / ENGRAM_URL from leaking in.
+            ("KLEOS_URL", Some("http://test.local:4200")),
+        ]);
+
+        let signer_opt = init_kleos_signer();
+        let signer = signer_opt.expect("signer must be Some for soft tier with known key");
+
+        assert_eq!(
+            signer.tier(),
+            "soft",
+            "signer tier must be 'soft' when CREDD_KLEOS_SIGNER_TIER=soft"
+        );
+
+        assert!(
+            signer.soft_signing_key().is_some(),
+            "soft_signing_key() must return Some for a soft-tier signer"
+        );
+    }
+
+    #[test]
+    fn build_soft_signer_returns_soft_tier_and_key_accessor() {
+        // Unit-test the helper directly, bypassing init_kleos_signer env check.
+        let _guard = EnvGuard::set(&[
+            ("KLEOS_IDENTITY_KEY", Some(TEST_KEY_HEX)),
+            // Unset file override so the env-var path is taken.
+            ("KLEOS_IDENTITY_KEY_FILE", None),
+        ]);
+
+        let signer_opt = build_soft_signer("http://test.local:4200");
+        let signer =
+            signer_opt.expect("build_soft_signer must return Some when KLEOS_IDENTITY_KEY is set");
+
+        assert_eq!(signer.tier(), "soft");
+        assert!(signer.soft_signing_key().is_some());
+
+        // Verify the key bytes round-trip.
+        let key_bytes = signer
+            .ed25519_secret_bytes()
+            .expect("ed25519_secret_bytes must be Some");
+        assert_eq!(key_bytes, [0x42u8; 32]);
     }
 }

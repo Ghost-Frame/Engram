@@ -4,6 +4,7 @@ pub mod auth;
 pub mod bootstrap;
 pub mod handlers;
 pub mod listener;
+pub mod peercred;
 pub mod server;
 pub mod state;
 

@@ -10,10 +10,13 @@ use tower::ServiceExt;
 
 use kleos_cred::audit::{self, AccessTier, AuditAction};
 use kleos_cred::crypto::derive_key;
+use kleos_cred::storage::store_secret;
+use kleos_cred::types::SecretData;
 use kleos_credd::state::AppState;
 use kleos_lib::db::Database;
 use kleos_lib::EngError;
 use kleos_phylax::audit::{actions, log_phylax_audit};
+use kleos_phylax::models::ssh_settings::{list_ssh_settings, upsert_ssh_settings};
 use kleos_phylax::router::compose_router;
 
 /// Test harness wrapping a Phylax-enabled router.
@@ -685,4 +688,221 @@ async fn test_redeem_lease_does_not_return_plaintext_secret() {
         .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["error"], "lease already redeemed");
+}
+
+// ---- list_ssh_settings model test ----
+
+/// Verify list_ssh_settings returns all rows for a user, ordered by
+/// category then secret_name, and excludes rows for other users.
+#[tokio::test]
+async fn test_list_ssh_settings_returns_all_rows_for_user() {
+    let app = TestApp::new().await;
+
+    // user_id=1 is the master; insert two settings rows via upsert.
+    upsert_ssh_settings(&app.db, 1, "ssh-keys", "deploy", true, false)
+        .await
+        .unwrap();
+    upsert_ssh_settings(&app.db, 1, "infra", "bastion", false, true)
+        .await
+        .unwrap();
+    // Row for a different user -- must not appear in user_id=1 results.
+    upsert_ssh_settings(&app.db, 99, "ssh-keys", "other", false, false)
+        .await
+        .unwrap();
+
+    let rows = list_ssh_settings(&app.db, 1).await.unwrap();
+
+    // Should be ordered category ASC, secret_name ASC: infra/bastion then ssh-keys/deploy.
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].category, "infra");
+    assert_eq!(rows[0].secret_name, "bastion");
+    assert!(!rows[0].auto_sign);
+    assert!(rows[0].auto_load);
+
+    assert_eq!(rows[1].category, "ssh-keys");
+    assert_eq!(rows[1].secret_name, "deploy");
+    assert!(rows[1].auto_sign);
+    assert!(!rows[1].auto_load);
+}
+
+// ---- SSH sign + identities HTTP integration tests ----
+
+/// Happy-path sign: generate an ephemeral ed25519 key, seed it with auto_sign=true,
+/// POST to the sign endpoint, assert HTTP 200 + non-empty signature_hex, then
+/// cryptographically verify the signature against the generated public key.
+#[tokio::test]
+async fn test_ssh_sign_auto_sign_true_returns_verified_signature() {
+    // Must be in scope for `public_key.verify(...)` to resolve.
+    use signature::Verifier;
+
+    // Generate a fresh ephemeral key for this test.
+    // ssh-key 0.6 requires rand_core 0.6.x; rand 0.9 (workspace) uses rand_core 0.9,
+    // so we pull rand_core 0.6 directly as a dev-dependency.
+    let key =
+        ssh_key::private::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .expect("ephemeral ed25519 key generation must succeed");
+    let pem = key
+        .to_openssh(ssh_key::LineEnding::LF)
+        .expect("private key must encode to OpenSSH PEM");
+    let public_key = key.public_key().clone();
+    // Encode public key in OpenSSH authorized_keys format for storage.
+    let public_key_str = public_key
+        .to_openssh()
+        .expect("public key must encode to OpenSSH");
+
+    let app = TestApp::new().await;
+    let master_key = derive_key(1, "test-master-password".as_bytes(), None);
+
+    // Seed the SSH key secret into the vault (user_id=1 is the master).
+    store_secret(
+        &app.db,
+        1,
+        "ssh-keys",
+        "deploy",
+        &SecretData::SshKey {
+            private_key: pem.to_string(),
+            public_key: Some(public_key_str.trim().to_string()),
+            passphrase: None,
+        },
+        &master_key,
+    )
+    .await
+    .expect("store_secret must succeed");
+
+    // Mark the key as auto_sign=true so no approval gate is triggered.
+    upsert_ssh_settings(&app.db, 1, "ssh-keys", "deploy", true, false)
+        .await
+        .expect("upsert_ssh_settings must succeed");
+
+    // Bytes to sign -- use a short challenge.
+    let challenge = b"http-integration-challenge";
+    let data_hex = hex::encode(challenge);
+
+    // POST /phylax/ssh/ssh-keys/deploy/sign with master auth.
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/phylax/ssh/ssh-keys/deploy/sign",
+            Some(json!({ "data_hex": data_hex, "flags": 0 })),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "sign endpoint must return 200; body={body}"
+    );
+
+    let sig_hex = body["signature_hex"]
+        .as_str()
+        .expect("signature_hex must be a string");
+    assert!(!sig_hex.is_empty(), "signature_hex must not be empty");
+
+    // Decode the SSH wire-format blob and verify it cryptographically.
+    let blob = hex::decode(sig_hex).expect("signature_hex must be valid hex");
+    let sig = ssh_key::Signature::try_from(blob.as_slice())
+        .expect("blob must decode as a valid ssh_key::Signature");
+
+    // Call through key_data() to reach the Verifier<ssh_key::Signature> impl
+    // (mirrors ssh_sign_test.rs approach).
+    Verifier::verify(public_key.key_data(), challenge.as_slice(), &sig)
+        .expect("signature must cryptographically verify against the generated public key");
+}
+
+/// Identities lists public-only: generate an ephemeral key, seed it with auto_sign=true,
+/// GET /phylax/ssh/identities, assert the key appears with public_openssh populated
+/// and auto_sign=true, and assert no private key material leaks into the response JSON.
+#[tokio::test]
+async fn test_ssh_identities_returns_public_material_only() {
+    // Generate a fresh ephemeral key for this test -- independent of the sign test's key.
+    let key =
+        ssh_key::private::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .expect("ephemeral ed25519 key generation must succeed");
+    let pem = key
+        .to_openssh(ssh_key::LineEnding::LF)
+        .expect("private key must encode to OpenSSH PEM");
+    let public_key_str = key
+        .public_key()
+        .to_openssh()
+        .expect("public key must encode to OpenSSH");
+
+    let app = TestApp::new().await;
+    let master_key = derive_key(1, "test-master-password".as_bytes(), None);
+
+    // Seed the key.
+    store_secret(
+        &app.db,
+        1,
+        "ssh-keys",
+        "id-test",
+        &SecretData::SshKey {
+            private_key: pem.to_string(),
+            public_key: Some(public_key_str.trim().to_string()),
+            passphrase: None,
+        },
+        &master_key,
+    )
+    .await
+    .expect("store_secret must succeed");
+
+    // Set auto_sign=true so the key appears in identities.
+    upsert_ssh_settings(&app.db, 1, "ssh-keys", "id-test", true, false)
+        .await
+        .expect("upsert_ssh_settings must succeed");
+
+    // GET /phylax/ssh/identities with master auth.
+    let (status, body) = app
+        .request_master("GET", "/phylax/ssh/identities", None)
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "identities endpoint must return 200; body={body}"
+    );
+
+    let identities = body["identities"]
+        .as_array()
+        .expect("response must have identities array");
+    // Find the seeded key in the list.
+    let entry = identities
+        .iter()
+        .find(|e| e["category"] == "ssh-keys" && e["name"] == "id-test")
+        .expect("seeded key must appear in identities");
+
+    // Public key must be populated and be a non-empty string.
+    let public_openssh = entry["public_openssh"]
+        .as_str()
+        .expect("public_openssh must be a string");
+    assert!(
+        !public_openssh.is_empty(),
+        "public_openssh must not be empty"
+    );
+
+    // auto_sign must be reflected as true.
+    assert_eq!(
+        entry["auto_sign"], true,
+        "auto_sign must be true for the seeded key"
+    );
+
+    // The raw JSON body must not contain any private key material.
+    let raw_json = body.to_string();
+    assert!(
+        !raw_json.contains("PRIVATE KEY"),
+        "response must not contain private key material (found 'PRIVATE KEY')"
+    );
+    assert!(
+        !raw_json.contains("BEGIN OPENSSH"),
+        "response must not contain private key PEM envelope (found 'BEGIN OPENSSH')"
+    );
+}
+
+/// Stub for the approval-gate path (auto_sign=false). This test is intentionally
+/// ignored because it would require a 25-second wall-clock wait for the approval
+/// timeout to fire. The gate's logic is unit-tested in the sign handler; the
+/// manual e2e path is covered by Task 12.
+#[tokio::test]
+#[ignore = "approval-gate path takes up to 25 s; verified by gate unit logic and Task 12 e2e"]
+async fn test_ssh_sign_auto_sign_false_requires_approval_gate() {
+    // When auto_sign=false, POST /phylax/ssh/{category}/{name}/sign must
+    // create a pending approval and block until approved or timed-out (25 s max).
+    // This long-running path is not exercised in automated CI; see Task 12.
 }

@@ -21,6 +21,7 @@ uuid.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+ed25519-dalek.workspace = true
 p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pem"] }
 hkdf = "0.12"
 sha2.workspace = true
@@ -29,13 +30,20 @@ zeroize.workspace = true
 rand.workspace = true
 hex.workspace = true
 dashmap = "6"
+ssh-key = { version = "0.6", features = ["ed25519", "rsa", "p256", "p384", "p521", "crypto"] }
+signature = "2"
 rusqlite.workspace = true
 tower-http.workspace = true
 http = "1"
 bytes = "1"
+reqwest.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
 tempfile.workspace = true
+nix = { version = "0.29", features = ["user"] }
+# ssh-key 0.6 requires rand_core 0.6.x (rand 0.9 in workspace uses rand_core 0.9 -- incompatible).
+# Pulling rand_core 0.6 directly provides OsRng that satisfies PrivateKey::random's bounds.
+rand_core = { version = "0.6", features = ["getrandom"] }

@@ -185,6 +185,14 @@ pub async fn auth_middleware(
         return Ok(next.run(request).await);
     }
 
+    // Skip middleware-level auth for POST /phylax/kleos/token: this endpoint
+    // exists to mint a bearer, so it cannot require one. Its handler enforces
+    // Unix-socket-only transport plus SO_PEERCRED same-owner UID instead.
+    if request.method() == axum::http::Method::POST && request.uri().path() == "/phylax/kleos/token"
+    {
+        return Ok(next.run(request).await);
+    }
+
     let token = extract_bearer_token(&request).ok_or(StatusCode::UNAUTHORIZED)?;
 
     // Check if it's the master key (try hex-decoded first, then raw)

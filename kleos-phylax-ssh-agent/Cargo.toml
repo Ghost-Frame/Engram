@@ -1,0 +1,17 @@
+[package]
+name = "kleos-phylax-ssh-agent"
+version = "1.5.0"
+edition = "2021"
+rust-version.workspace = true
+description = "OpenSSH agent protocol server -- wire protocol and KeyProvider trait"
+license = "Elastic-2.0"
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+ssh-key = { version = "0.6", features = ["ed25519", "rsa", "p256", "p384", "p521", "crypto"] }
+log = "0.4"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
