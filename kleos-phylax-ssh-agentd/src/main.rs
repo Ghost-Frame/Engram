@@ -20,7 +20,10 @@ use crate::http_provider::HttpKeyProvider;
 
 /// Command-line arguments and environment-variable fallbacks.
 #[derive(Debug, Parser)]
-#[command(name = "phylax-ssh-agentd", about = "Headless SSH agent backed by phylaxd")]
+#[command(
+    name = "phylax-ssh-agentd",
+    about = "Headless SSH agent backed by phylaxd"
+)]
 struct Args {
     /// Path to the Unix socket to listen on.
     #[arg(
@@ -31,11 +34,7 @@ struct Args {
     socket: String,
 
     /// Base URL of the phylaxd HTTP API.
-    #[arg(
-        long,
-        env = "PHYLAXD_URL",
-        default_value = "http://127.0.0.1:3100"
-    )]
+    #[arg(long, env = "PHYLAXD_URL", default_value = "http://127.0.0.1:3100")]
     phylaxd_url: String,
 
     /// Path to a file containing the bearer token (token is read and trimmed).
@@ -79,10 +78,7 @@ async fn main() -> anyhow::Result<()> {
     // Resolve the bearer token.
     let bearer = read_bearer(args.bearer_file.as_deref()).await?;
 
-    log::info!(
-        "Connecting to phylaxd at {} ...",
-        args.phylaxd_url
-    );
+    log::info!("Connecting to phylaxd at {} ...", args.phylaxd_url);
 
     // Build the HTTP provider -- eagerly fetches the identity list.
     let provider = Arc::new(
@@ -106,11 +102,11 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(unix)]
     let (mut sigterm, mut sigint) = {
-        use tokio::signal::unix::{SignalKind, signal};
-        let sigterm = signal(SignalKind::terminate())
-            .context("failed to register SIGTERM handler")?;
-        let sigint = signal(SignalKind::interrupt())
-            .context("failed to register SIGINT handler")?;
+        use tokio::signal::unix::{signal, SignalKind};
+        let sigterm =
+            signal(SignalKind::terminate()).context("failed to register SIGTERM handler")?;
+        let sigint =
+            signal(SignalKind::interrupt()).context("failed to register SIGINT handler")?;
         (sigterm, sigint)
     };
 
@@ -140,10 +136,7 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("SSH agent socket: {}", args.socket);
 
-    server
-        .run(cancel)
-        .await
-        .context("SSH agent server error")?;
+    server.run(cancel).await.context("SSH agent server error")?;
 
     log::info!("phylax-ssh-agentd shut down cleanly");
     Ok(())

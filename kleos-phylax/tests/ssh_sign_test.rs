@@ -11,11 +11,9 @@ fn sign_ed25519_roundtrip() {
     // Generate a fresh ephemeral key for this test run.
     // ssh-key 0.6 requires rand_core 0.6.x; rand 0.9 (workspace) uses rand_core 0.9,
     // so we pull rand_core 0.6 directly as a dev-dependency.
-    let key = ssh_key::private::PrivateKey::random(
-        &mut rand_core::OsRng,
-        ssh_key::Algorithm::Ed25519,
-    )
-    .expect("ephemeral ed25519 key generation must succeed");
+    let key =
+        ssh_key::private::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .expect("ephemeral ed25519 key generation must succeed");
 
     // Encode the private key as OpenSSH PEM (Zeroizing<String> -- deref to &str).
     let pem = key
@@ -60,7 +58,10 @@ fn sign_ed25519_roundtrip() {
 fn sign_malformed_pem_returns_parse_error() {
     let result = kleos_phylax::handlers::ssh_sign::sign_with_pem("not a key", b"x", 0);
     assert!(
-        matches!(result, Err(kleos_phylax::handlers::ssh_sign::SshSignError::Parse(_))),
+        matches!(
+            result,
+            Err(kleos_phylax::handlers::ssh_sign::SshSignError::Parse(_))
+        ),
         "expected SshSignError::Parse, got {:?}",
         result
     );

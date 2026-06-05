@@ -31,7 +31,9 @@ where
 
         let result = match message.msg_type {
             msg::SSH_AGENTC_REQUEST_IDENTITIES => handle_identities(&mut stream, provider).await,
-            msg::SSH_AGENTC_SIGN_REQUEST => handle_sign(&mut stream, &message.payload, provider).await,
+            msg::SSH_AGENTC_SIGN_REQUEST => {
+                handle_sign(&mut stream, &message.payload, provider).await
+            }
             msg::SSH_AGENTC_LOCK => {
                 provider.on_lock().await;
                 wire::write_success(&mut stream).await
@@ -68,7 +70,10 @@ where
     wire::push_u32(&mut payload, identities.len() as u32);
 
     for id in &identities {
-        let key_blob = id.public_key.to_bytes().map_err(|e| std::io::Error::other(e.to_string()))?;
+        let key_blob = id
+            .public_key
+            .to_bytes()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         wire::push_string(&mut payload, &key_blob);
         wire::push_string(&mut payload, id.comment.as_bytes());
     }
@@ -129,7 +134,12 @@ mod tests {
             self.identities.clone()
         }
 
-        async fn sign(&self, _key_blob: &[u8], _data: &[u8], _flags: u32) -> Result<Vec<u8>, SignError> {
+        async fn sign(
+            &self,
+            _key_blob: &[u8],
+            _data: &[u8],
+            _flags: u32,
+        ) -> Result<Vec<u8>, SignError> {
             // Return a dummy signature.
             Ok(vec![0xDE, 0xAD, 0xBE, 0xEF])
         }
@@ -139,13 +149,13 @@ mod tests {
 
     #[tokio::test]
     async fn request_identities_empty() {
-        let provider = MockProvider {
-            identities: vec![],
-        };
+        let provider = MockProvider { identities: vec![] };
 
         // Build request.
         let mut request = Vec::new();
-        wire::write_message(&mut request, msg::SSH_AGENTC_REQUEST_IDENTITIES, &[]).await.unwrap();
+        wire::write_message(&mut request, msg::SSH_AGENTC_REQUEST_IDENTITIES, &[])
+            .await
+            .unwrap();
 
         // Handle.
         let stream = tokio::io::duplex(4096);
@@ -156,7 +166,9 @@ mod tests {
         let msg = read_message(&mut combined).await.unwrap().unwrap();
         assert_eq!(msg.msg_type, msg::SSH_AGENTC_REQUEST_IDENTITIES);
 
-        handle_identities(&mut server_write, &provider).await.unwrap();
+        handle_identities(&mut server_write, &provider)
+            .await
+            .unwrap();
         drop(server_write); // Signal EOF.
 
         let response = read_message(&mut client_read).await.unwrap().unwrap();
@@ -170,14 +182,14 @@ mod tests {
 
     #[tokio::test]
     async fn reject_add_identity() {
-        let provider = MockProvider {
-            identities: vec![],
-        };
+        let provider = MockProvider { identities: vec![] };
 
         let (mut client, server) = tokio::io::duplex(4096);
 
         // Send ADD_IDENTITY.
-        wire::write_message(&mut client, msg::SSH_AGENTC_ADD_IDENTITY, &[]).await.unwrap();
+        wire::write_message(&mut client, msg::SSH_AGENTC_ADD_IDENTITY, &[])
+            .await
+            .unwrap();
         drop(client);
 
         handle_connection(server, &provider).await;

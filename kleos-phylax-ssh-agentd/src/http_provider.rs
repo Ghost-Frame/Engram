@@ -17,7 +17,8 @@ use ssh_key::PublicKey;
 /// This uses exactly the same encoding as handler.rs line 71:
 /// `id.public_key.to_bytes()`.
 pub fn public_key_blob(key: &PublicKey) -> anyhow::Result<Vec<u8>> {
-    key.to_bytes().context("failed to encode public key to SSH wire format")
+    key.to_bytes()
+        .context("failed to encode public key to SSH wire format")
 }
 
 /// A single identity entry as returned by the phylaxd HTTP API.
@@ -79,7 +80,10 @@ impl HttpKeyProvider {
     /// Build the provider and eagerly load the identity cache.
     ///
     /// Returns an error if the initial fetch fails.
-    pub async fn connect(base_url: impl Into<String>, bearer: impl Into<String>) -> anyhow::Result<Self> {
+    pub async fn connect(
+        base_url: impl Into<String>,
+        bearer: impl Into<String>,
+    ) -> anyhow::Result<Self> {
         let base_url = base_url.into();
         let bearer = bearer.into();
         let client = Client::builder()
@@ -109,10 +113,7 @@ impl HttpKeyProvider {
             .context("GET /phylax/ssh/identities failed")?;
 
         if !resp.status().is_success() {
-            anyhow::bail!(
-                "GET /phylax/ssh/identities returned HTTP {}",
-                resp.status()
-            );
+            anyhow::bail!("GET /phylax/ssh/identities returned HTTP {}", resp.status());
         }
 
         let body: IdentitiesResponse = resp
@@ -125,10 +126,9 @@ impl HttpKeyProvider {
 
         for api_id in body.identities {
             // Parse the OpenSSH public key string.
-            let public_key: PublicKey = api_id
-                .public_openssh
-                .parse()
-                .with_context(|| format!("invalid public key for {}/{}", api_id.category, api_id.name))?;
+            let public_key: PublicKey = api_id.public_openssh.parse().with_context(|| {
+                format!("invalid public key for {}/{}", api_id.category, api_id.name)
+            })?;
 
             // Compute the blob using the SAME method as handler.rs line 71.
             let blob = public_key_blob(&public_key)
@@ -148,7 +148,10 @@ impl HttpKeyProvider {
         cache.identities = identities;
         cache.blob_map = blob_map;
 
-        log::debug!("Refreshed SSH identity cache: {} keys loaded", cache.identities.len());
+        log::debug!(
+            "Refreshed SSH identity cache: {} keys loaded",
+            cache.identities.len()
+        );
         Ok(())
     }
 }
@@ -221,9 +224,8 @@ impl KeyProvider for HttpKeyProvider {
                 .await
                 .map_err(|e| SignError::SigningFailed(format!("parse sign response: {e}")))?;
 
-            let sig_bytes = hex::decode(&sign_resp.signature_hex).map_err(|e| {
-                SignError::SigningFailed(format!("hex decode signature: {e}"))
-            })?;
+            let sig_bytes = hex::decode(&sign_resp.signature_hex)
+                .map_err(|e| SignError::SigningFailed(format!("hex decode signature: {e}")))?;
 
             Ok(sig_bytes)
         }
@@ -250,14 +252,20 @@ mod tests {
     fn build_cache_maps_blob_to_category_name() {
         // Load the fixture public key.
         let pub_key_str = include_str!("../tests/fixtures/test_ed25519.pub");
-        let public_key: PublicKey = pub_key_str.trim().parse().expect("parse fixture public key");
+        let public_key: PublicKey = pub_key_str
+            .trim()
+            .parse()
+            .expect("parse fixture public key");
 
         // Compute blob via our helper (which delegates to to_bytes()).
         let blob = public_key_blob(&public_key).expect("blob encoding");
 
         // Verify the blob is non-empty and starts with the SSH wire type prefix.
         // Ed25519 keys begin with a 4-byte length + "ssh-ed25519" (11 bytes).
-        assert!(blob.len() > 15, "blob should contain at least type prefix + key material");
+        assert!(
+            blob.len() > 15,
+            "blob should contain at least type prefix + key material"
+        );
 
         // Build a minimal blob_map as the provider does during refresh().
         let mut blob_map: HashMap<Vec<u8>, (String, String)> = HashMap::new();
@@ -265,11 +273,16 @@ mod tests {
 
         // Confirm the same blob retrieved via PublicKey::to_bytes() maps correctly.
         let key_bytes = public_key.to_bytes().expect("to_bytes");
-        let found = blob_map.get(key_bytes.as_slice()).expect("blob must be in map");
+        let found = blob_map
+            .get(key_bytes.as_slice())
+            .expect("blob must be in map");
         assert_eq!(found.0, "ssh", "category mismatch");
         assert_eq!(found.1, "test_key", "name mismatch");
 
         // Confirm our helper and to_bytes() produce identical output.
-        assert_eq!(blob, key_bytes, "public_key_blob must equal PublicKey::to_bytes()");
+        assert_eq!(
+            blob, key_bytes,
+            "public_key_blob must equal PublicKey::to_bytes()"
+        );
     }
 }

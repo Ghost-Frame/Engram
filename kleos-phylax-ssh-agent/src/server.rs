@@ -23,10 +23,7 @@ pub struct AgentServer<P: KeyProvider + 'static> {
 impl<P: KeyProvider + 'static> AgentServer<P> {
     /// Creates a new agent server.
     pub fn new(path: String, provider: Arc<P>) -> Self {
-        Self {
-            path,
-            provider,
-        }
+        Self { path, provider }
     }
 
     /// Returns the socket/pipe path.
@@ -103,7 +100,9 @@ impl<P: KeyProvider + 'static> AgentServer<P> {
 
         loop {
             // Create a new pipe instance for each connection.
-            let pipe = ServerOptions::new().first_pipe_instance(false).create(&self.path)?;
+            let pipe = ServerOptions::new()
+                .first_pipe_instance(false)
+                .create(&self.path)?;
 
             tokio::select! {
                 _ = cancel.cancelled() => {

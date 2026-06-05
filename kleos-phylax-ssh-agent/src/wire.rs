@@ -48,7 +48,9 @@ pub struct AgentMessage {
 /// Reads one SSH agent message from the stream.
 ///
 /// Returns `None` on EOF (clean disconnect).
-pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Option<AgentMessage>> {
+pub async fn read_message<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Option<AgentMessage>> {
     let len = match reader.read_u32().await {
         Ok(len) => len,
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
@@ -56,7 +58,10 @@ pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Resu
     };
 
     if len == 0 || len > MAX_MSG_LEN {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("invalid message length: {len}")));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid message length: {len}"),
+        ));
     }
 
     let mut buf = vec![0u8; len as usize];
@@ -65,14 +70,15 @@ pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Resu
     let msg_type = buf[0];
     let payload = buf[1..].to_vec();
 
-    Ok(Some(AgentMessage {
-        msg_type,
-        payload,
-    }))
+    Ok(Some(AgentMessage { msg_type, payload }))
 }
 
 /// Writes one SSH agent message to the stream.
-pub async fn write_message<W: AsyncWrite + Unpin>(writer: &mut W, msg_type: u8, payload: &[u8]) -> std::io::Result<()> {
+pub async fn write_message<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    msg_type: u8,
+    payload: &[u8],
+) -> std::io::Result<()> {
     let len = (1 + payload.len()) as u32;
     writer.write_u32(len).await?;
     writer.write_u8(msg_type).await?;
@@ -105,7 +111,10 @@ pub fn push_string(buf: &mut Vec<u8>, data: &[u8]) {
 /// Reads a u32 from a byte slice at the given offset, advancing the offset.
 pub fn read_u32(data: &[u8], offset: &mut usize) -> std::io::Result<u32> {
     if *offset + 4 > data.len() {
-        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated u32"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "truncated u32",
+        ));
     }
     let val = u32::from_be_bytes(data[*offset..*offset + 4].try_into().unwrap());
     *offset += 4;
@@ -116,7 +125,10 @@ pub fn read_u32(data: &[u8], offset: &mut usize) -> std::io::Result<u32> {
 pub fn read_string<'a>(data: &'a [u8], offset: &mut usize) -> std::io::Result<&'a [u8]> {
     let len = read_u32(data, offset)? as usize;
     if *offset + len > data.len() {
-        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated string"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "truncated string",
+        ));
     }
     let result = &data[*offset..*offset + len];
     *offset += len;
@@ -130,7 +142,9 @@ mod tests {
     #[tokio::test]
     async fn round_trip_message() {
         let mut buf = Vec::new();
-        write_message(&mut buf, msg::SSH_AGENTC_REQUEST_IDENTITIES, &[]).await.unwrap();
+        write_message(&mut buf, msg::SSH_AGENTC_REQUEST_IDENTITIES, &[])
+            .await
+            .unwrap();
 
         let mut cursor = std::io::Cursor::new(buf);
         let msg = read_message(&mut cursor).await.unwrap().unwrap();
@@ -142,7 +156,9 @@ mod tests {
     async fn round_trip_with_payload() {
         let payload = b"test data";
         let mut buf = Vec::new();
-        write_message(&mut buf, msg::SSH_AGENTC_SIGN_REQUEST, payload).await.unwrap();
+        write_message(&mut buf, msg::SSH_AGENTC_SIGN_REQUEST, payload)
+            .await
+            .unwrap();
 
         let mut cursor = std::io::Cursor::new(buf);
         let msg = read_message(&mut cursor).await.unwrap().unwrap();

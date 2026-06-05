@@ -738,17 +738,17 @@ async fn test_ssh_sign_auto_sign_true_returns_verified_signature() {
     // Generate a fresh ephemeral key for this test.
     // ssh-key 0.6 requires rand_core 0.6.x; rand 0.9 (workspace) uses rand_core 0.9,
     // so we pull rand_core 0.6 directly as a dev-dependency.
-    let key = ssh_key::private::PrivateKey::random(
-        &mut rand_core::OsRng,
-        ssh_key::Algorithm::Ed25519,
-    )
-    .expect("ephemeral ed25519 key generation must succeed");
+    let key =
+        ssh_key::private::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .expect("ephemeral ed25519 key generation must succeed");
     let pem = key
         .to_openssh(ssh_key::LineEnding::LF)
         .expect("private key must encode to OpenSSH PEM");
     let public_key = key.public_key().clone();
     // Encode public key in OpenSSH authorized_keys format for storage.
-    let public_key_str = public_key.to_openssh().expect("public key must encode to OpenSSH");
+    let public_key_str = public_key
+        .to_openssh()
+        .expect("public key must encode to OpenSSH");
 
     let app = TestApp::new().await;
     let master_key = derive_key(1, "test-master-password".as_bytes(), None);
@@ -786,9 +786,15 @@ async fn test_ssh_sign_auto_sign_true_returns_verified_signature() {
             Some(json!({ "data_hex": data_hex, "flags": 0 })),
         )
         .await;
-    assert_eq!(status, StatusCode::OK, "sign endpoint must return 200; body={body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "sign endpoint must return 200; body={body}"
+    );
 
-    let sig_hex = body["signature_hex"].as_str().expect("signature_hex must be a string");
+    let sig_hex = body["signature_hex"]
+        .as_str()
+        .expect("signature_hex must be a string");
     assert!(!sig_hex.is_empty(), "signature_hex must not be empty");
 
     // Decode the SSH wire-format blob and verify it cryptographically.
@@ -808,11 +814,9 @@ async fn test_ssh_sign_auto_sign_true_returns_verified_signature() {
 #[tokio::test]
 async fn test_ssh_identities_returns_public_material_only() {
     // Generate a fresh ephemeral key for this test -- independent of the sign test's key.
-    let key = ssh_key::private::PrivateKey::random(
-        &mut rand_core::OsRng,
-        ssh_key::Algorithm::Ed25519,
-    )
-    .expect("ephemeral ed25519 key generation must succeed");
+    let key =
+        ssh_key::private::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .expect("ephemeral ed25519 key generation must succeed");
     let pem = key
         .to_openssh(ssh_key::LineEnding::LF)
         .expect("private key must encode to OpenSSH PEM");
@@ -846,10 +850,18 @@ async fn test_ssh_identities_returns_public_material_only() {
         .expect("upsert_ssh_settings must succeed");
 
     // GET /phylax/ssh/identities with master auth.
-    let (status, body) = app.request_master("GET", "/phylax/ssh/identities", None).await;
-    assert_eq!(status, StatusCode::OK, "identities endpoint must return 200; body={body}");
+    let (status, body) = app
+        .request_master("GET", "/phylax/ssh/identities", None)
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "identities endpoint must return 200; body={body}"
+    );
 
-    let identities = body["identities"].as_array().expect("response must have identities array");
+    let identities = body["identities"]
+        .as_array()
+        .expect("response must have identities array");
     // Find the seeded key in the list.
     let entry = identities
         .iter()
@@ -857,11 +869,19 @@ async fn test_ssh_identities_returns_public_material_only() {
         .expect("seeded key must appear in identities");
 
     // Public key must be populated and be a non-empty string.
-    let public_openssh = entry["public_openssh"].as_str().expect("public_openssh must be a string");
-    assert!(!public_openssh.is_empty(), "public_openssh must not be empty");
+    let public_openssh = entry["public_openssh"]
+        .as_str()
+        .expect("public_openssh must be a string");
+    assert!(
+        !public_openssh.is_empty(),
+        "public_openssh must not be empty"
+    );
 
     // auto_sign must be reflected as true.
-    assert_eq!(entry["auto_sign"], true, "auto_sign must be true for the seeded key");
+    assert_eq!(
+        entry["auto_sign"], true,
+        "auto_sign must be true for the seeded key"
+    );
 
     // The raw JSON body must not contain any private key material.
     let raw_json = body.to_string();

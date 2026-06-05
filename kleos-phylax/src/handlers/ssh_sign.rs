@@ -47,10 +47,11 @@ pub enum SshSignError {
 /// The current implementation ignores them because ed25519 has exactly one
 /// signature algorithm and needs no flag-based dispatch.
 pub fn sign_with_pem(pem: &str, data: &[u8], _flags: u32) -> Result<Vec<u8>, SshSignError> {
-    let key = PrivateKey::from_openssh(pem.as_bytes())
-        .map_err(|e| SshSignError::Parse(e.to_string()))?;
-    let sig: ssh_key::Signature =
-        key.try_sign(data).map_err(|e| SshSignError::Sign(e.to_string()))?;
+    let key =
+        PrivateKey::from_openssh(pem.as_bytes()).map_err(|e| SshSignError::Parse(e.to_string()))?;
+    let sig: ssh_key::Signature = key
+        .try_sign(data)
+        .map_err(|e| SshSignError::Sign(e.to_string()))?;
     // TryFrom<Signature> for Vec<u8> encodes to SSH wire format (algorithm-prefixed).
     let blob = Vec::<u8>::try_from(sig).map_err(|e| SshSignError::Encode(e.to_string()))?;
     Ok(blob)
@@ -105,20 +106,21 @@ pub async fn sign(
         return Err(CredError::PermissionDenied("category not permitted".into()).into());
     }
     // FIX 6: bad hex is a client input error (400), not a permission denial (403).
-    let data = hex::decode(&body.data_hex)
-        .map_err(|_| CredError::InvalidInput("bad data_hex".into()))?;
+    let data =
+        hex::decode(&body.data_hex).map_err(|_| CredError::InvalidInput("bad data_hex".into()))?;
 
     // M3 approval gate: unless this key is marked auto_sign, a human must approve.
-    let auto_sign = ssh_settings::get_ssh_settings(&state.inner.db, auth.user_id(), &category, &name)
-        .await?
-        .map(|s| s.auto_sign)
-        .unwrap_or(false);
+    let auto_sign =
+        ssh_settings::get_ssh_settings(&state.inner.db, auth.user_id(), &category, &name)
+            .await?
+            .map(|s| s.auto_sign)
+            .unwrap_or(false);
 
     if !auto_sign {
-        let expires_at =
-            (chrono::Utc::now() + chrono::Duration::seconds(DEFAULT_APPROVAL_TTL_SECS))
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string();
+        let expires_at = (chrono::Utc::now()
+            + chrono::Duration::seconds(DEFAULT_APPROVAL_TTL_SECS))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
         // FIX 9: fall back to "master" -- without an agent name the caller used a
         // master token, and "master" is the convention used everywhere else.
         let agent_name = auth.agent_name().unwrap_or("master").to_string();
@@ -193,7 +195,9 @@ pub async fn sign(
     )
     .await;
 
-    Ok(Json(SignResponse { signature_hex: hex::encode(sig) }))
+    Ok(Json(SignResponse {
+        signature_hex: hex::encode(sig),
+    }))
 }
 
 /// GET /phylax/ssh/identities -- list this user's SSH keys (PUBLIC material only).
@@ -221,7 +225,11 @@ pub async fn identities(
             Err(_) => continue, // settings row without a usable secret -- skip
         };
         let (private_key, stored_pub) = match data {
-            SecretData::SshKey { private_key, public_key, .. } => (private_key, public_key),
+            SecretData::SshKey {
+                private_key,
+                public_key,
+                ..
+            } => (private_key, public_key),
             _ => continue,
         };
         // Derive public material; private_key is used only locally and never
