@@ -8,9 +8,7 @@ use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::handlers::{
-    approvals, ecdh, kleos_token, leases, namespaces, policies, ssh, ssh_sign,
-};
+use crate::handlers::{approvals, ecdh, kleos_token, leases, namespaces, policies, ssh, ssh_sign};
 use crate::middleware::policy_check_middleware;
 use crate::state::PhylaxState;
 use kleos_credd::auth::{auth_middleware, preauth_rate_limit};
