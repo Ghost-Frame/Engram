@@ -391,8 +391,7 @@ mod tests {
     }
 
     /// A deterministic 32-byte test key in hex (all 0x42 bytes).
-    const TEST_KEY_HEX: &str =
-        "4242424242424242424242424242424242424242424242424242424242424242";
+    const TEST_KEY_HEX: &str = "4242424242424242424242424242424242424242424242424242424242424242";
 
     #[test]
     fn soft_tier_env_produces_soft_signer_with_accessible_signing_key() {
@@ -429,13 +428,16 @@ mod tests {
         ]);
 
         let signer_opt = build_soft_signer("http://test.local:4200");
-        let signer = signer_opt.expect("build_soft_signer must return Some when KLEOS_IDENTITY_KEY is set");
+        let signer =
+            signer_opt.expect("build_soft_signer must return Some when KLEOS_IDENTITY_KEY is set");
 
         assert_eq!(signer.tier(), "soft");
         assert!(signer.soft_signing_key().is_some());
 
         // Verify the key bytes round-trip.
-        let key_bytes = signer.ed25519_secret_bytes().expect("ed25519_secret_bytes must be Some");
+        let key_bytes = signer
+            .ed25519_secret_bytes()
+            .expect("ed25519_secret_bytes must be Some");
         assert_eq!(key_bytes, [0x42u8; 32]);
     }
 }

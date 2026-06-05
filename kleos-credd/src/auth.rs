@@ -188,8 +188,7 @@ pub async fn auth_middleware(
     // Skip middleware-level auth for POST /phylax/kleos/token: this endpoint
     // exists to mint a bearer, so it cannot require one. Its handler enforces
     // Unix-socket-only transport plus SO_PEERCRED same-owner UID instead.
-    if request.method() == axum::http::Method::POST
-        && request.uri().path() == "/phylax/kleos/token"
+    if request.method() == axum::http::Method::POST && request.uri().path() == "/phylax/kleos/token"
     {
         return Ok(next.run(request).await);
     }

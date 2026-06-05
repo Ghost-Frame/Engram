@@ -40,7 +40,9 @@ pub fn resolve_via_phylax_broker() -> Option<String> {
 
     let mut stream = UnixStream::connect(&sock).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    stream.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .ok()?;
     stream.write_all(request.as_bytes()).ok()?;
     stream.write_all(body).ok()?;
 
@@ -118,7 +120,10 @@ mod tests {
     fn parses_token_from_ok_response() {
         let raw = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n\
                    {\"token\":\"kleos.abc.def\",\"expires_in\":300}";
-        assert_eq!(parse_token_from_http(raw), Some("kleos.abc.def".to_string()));
+        assert_eq!(
+            parse_token_from_http(raw),
+            Some("kleos.abc.def".to_string())
+        );
     }
 
     /// A non-2xx response yields nothing even if a body is present.

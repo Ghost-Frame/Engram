@@ -33,7 +33,10 @@ mod tests {
     #[test]
     fn other_uid_is_rejected() {
         // u32::MAX is never a real local owner.
-        let id = PeerIdentity { uid: u32::MAX, pid: 1234 };
+        let id = PeerIdentity {
+            uid: u32::MAX,
+            pid: 1234,
+        };
         assert!(!id.is_local_owner());
     }
 }

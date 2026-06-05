@@ -9,13 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use axum::{
-    extract::Extension,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-    Router,
-};
+use axum::{extract::Extension, http::StatusCode, response::IntoResponse, routing::get, Router};
 use kleos_credd::peercred::PeerIdentity;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
