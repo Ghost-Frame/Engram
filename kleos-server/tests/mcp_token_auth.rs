@@ -136,6 +136,53 @@ async fn mcp_token_full_flow() {
     );
 }
 
+/// A token whose `payload.uid` disagrees with the enrolled key owner is
+/// accepted AS the key owner: the verified signing identity is the sole
+/// authority, not the client-supplied uid. This is what lets a keyless minter
+/// (the SO_PEERCRED broker, kleos-cli) mint without knowing its server-side
+/// user id, so the flow works for any user on a multi-user/sharded instance.
+#[tokio::test]
+async fn mcp_token_uid_mismatch_binds_to_key_owner() {
+    let (app, _state) = test_app().await;
+    let signer = enroll_soft_key(&app).await;
+
+    // Mint with a bogus uid that does NOT match the enrolled key owner (1).
+    let sk = SigningKey::from_bytes(&[42u8; 32]);
+    let kid = signer.fingerprint().to_string();
+    let (token, _payload) = mcp_token::mint(
+        &sk,
+        &kid,
+        99_999,
+        None,
+        "read,write",
+        3600,
+        mcp_token::DEFAULT_MAX_TTL_SECS,
+    )
+    .unwrap();
+
+    // Registration accepts the mismatch and stamps the real key owner.
+    let (status, body) =
+        register_token(&app, &signer, &token, "mismatch-uid", "read,write", 3600).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "registration must accept a uid mismatch (key owner is authority): {body}"
+    );
+
+    // The bearer authenticates on a protected route, acting as the key owner.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/mcp-tokens")
+        .header("Authorization", format!("Bearer {}", token))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = send(&app, req).await;
+    assert!(
+        status.is_success(),
+        "a token with a mismatched uid must authenticate as the verified key owner"
+    );
+}
+
 /// A revoked token must be rejected with 401.
 #[tokio::test]
 async fn mcp_token_revoked_returns_401() {

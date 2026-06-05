@@ -1519,7 +1519,7 @@ async fn main() {
                         }
                     };
                     let kid = signer_ref.fingerprint().to_string();
-                    let uid = 1_i64; // Validated server-side against the signed identity.
+                    let uid = 1_i64; // Ignored server-side; ownership is the signed identity's.
 
                     // Mint the token locally.
                     let sk = ed25519_dalek::SigningKey::from_bytes(&sk_bytes);

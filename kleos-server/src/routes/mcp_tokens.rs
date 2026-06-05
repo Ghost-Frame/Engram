@@ -64,13 +64,10 @@ async fn register_token(
     })?;
     let payload = &decoded.payload;
 
-    // uid must match the authenticated user.
-    if payload.uid != auth_ctx.user_id {
-        return Err(AppError(kleos_lib::EngError::Auth(format!(
-            "token uid {} does not match authenticated user {}",
-            payload.uid, auth_ctx.user_id
-        ))));
-    }
+    // The token's `payload.uid` is NOT trusted: the authenticated signing
+    // identity is the sole authority for ownership. We stamp the row with
+    // `auth_ctx.user_id` (the verified key owner) below, so a keyless minter
+    // (the SO_PEERCRED broker, kleos-cli) need not know its server-side user id.
 
     // Strict scope validation.
     let requested_scopes = mcp_token::parse_scopes_strict(&body.scopes)
@@ -131,9 +128,10 @@ async fn register_token(
         ))
     })?;
 
-    // Insert into mcp_tokens table.
+    // Insert into mcp_tokens table. Owner is the authenticated key owner, not
+    // the client-supplied payload.uid (which is ignored).
     let jti = payload.jti.clone();
-    let uid = payload.uid;
+    let uid = auth_ctx.user_id;
     let tid = payload.tid;
     let kid = payload.kid.clone();
     let scopes_str = body.scopes.clone();

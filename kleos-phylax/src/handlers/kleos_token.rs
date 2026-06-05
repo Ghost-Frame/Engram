@@ -166,8 +166,9 @@ pub async fn mint_kleos_token(
         .and_then(|Json(b)| b.scopes)
         .unwrap_or_else(|| MINT_SCOPE_CAP.to_string());
 
-    // 5. Mint locally with the soft key. uid is validated server-side against
-    //    the signed identity, so we pass 1 (mirrors kleos-cli mcp-token mint).
+    // 5. Mint locally with the soft key. The server derives ownership from the
+    //    verified signing identity and ignores this uid, so any value works
+    //    (this is what makes the broker user-agnostic on multi-user instances).
     let token =
         mint_token_with_key(sk, &kid, 1, ttl_secs, &scopes).map_err(|_| StatusCode::BAD_REQUEST)?;
 

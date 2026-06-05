@@ -228,13 +228,10 @@ async fn validate_mcp_token(
 
     // --- Signature valid past this point ---
 
-    // Step 6: uid must match identity key owner.
-    if payload.uid != ik_user_id {
-        return Err(format!(
-            "token uid {} does not match key owner {}",
-            payload.uid, ik_user_id
-        ));
-    }
+    // Step 6: The verified identity key's owner is the authoritative user. The
+    // token's `payload.uid` is informational only and deliberately NOT trusted,
+    // so a keyless minter (SO_PEERCRED broker, kleos-cli) need not know its
+    // server-side user id. `ik_user_id` is used everywhere below as the principal.
 
     // Step 7: Scope cap -- token scopes must be subset of identity key scopes.
     let ik_scopes = match ik_scopes_csv.as_deref() {
@@ -243,9 +240,10 @@ async fn validate_mcp_token(
     };
     mcp_token::scopes_within_cap(&token_scopes, &ik_scopes).map_err(|e| e.to_string())?;
 
-    // Step 8: Revocation check (DB). Fail closed on error.
+    // Step 8: Revocation check (DB). Fail closed on error. Scoped to the
+    // verified key owner (ik_user_id), not the untrusted payload.uid.
     let jti = payload.jti.clone();
-    let uid = payload.uid;
+    let uid = ik_user_id;
     let revocation_row = state
         .db
         .read(move |conn| {
@@ -326,7 +324,7 @@ async fn validate_mcp_token(
     // Step 11: Build AuthContext (identity = None, same as API keys).
     let key = ApiKey {
         id: 0,
-        user_id: payload.uid,
+        user_id: ik_user_id,
         key_prefix: "mcp".into(),
         name: token_name,
         scopes: token_scopes,
@@ -341,7 +339,7 @@ async fn validate_mcp_token(
 
     Ok(AuthContext {
         key,
-        user_id: payload.uid,
+        user_id: ik_user_id,
         act_as: None,
         identity: None,
     })
