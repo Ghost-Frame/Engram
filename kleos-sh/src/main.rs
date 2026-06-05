@@ -134,7 +134,11 @@ fn resolve_api_key() -> Option<String> {
             return Some(key);
         }
     }
-    // Primary path: ask credd for a bearer via its Unix socket. This is the
+    // Keyless primary: short-lived bearer from the phylaxd SO_PEERCRED broker.
+    if let Some(key) = kleos_token_client::resolve_via_phylax_broker() {
+        return Some(key);
+    }
+    // Legacy path: ask credd for a bearer via its Unix socket. This is the
     // same flow as lib-eidolon.sh's _eidolon_key_via_credd().
     if let Some(key) = resolve_key_via_credd() {
         return Some(key);

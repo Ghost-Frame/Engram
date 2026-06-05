@@ -168,6 +168,7 @@ dependencies = [
  "clap",
  "dirs 5.0.1",
  "ignore",
+ "kleos-token-client",
  "reqwest",
  "rusqlite",
  "serde",
@@ -3268,6 +3269,7 @@ name = "eidolon-supervisor"
 version = "1.5.0"
 dependencies = [
  "chrono",
+ "kleos-token-client",
  "lru 0.16.4",
  "notify",
  "notify-debouncer-mini",
@@ -5015,6 +5017,7 @@ dependencies = [
 name = "kleos-fs"
 version = "1.5.0"
 dependencies = [
+ "kleos-token-client",
  "libc",
  "reqwest",
  "serde_json",
@@ -5285,6 +5288,7 @@ name = "kleos-sh"
 version = "1.5.0"
 dependencies = [
  "clap",
+ "kleos-token-client",
  "reqwest",
  "serde",
  "serde_json",
@@ -5317,6 +5321,10 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
 ]
+
+[[package]]
+name = "kleos-token-client"
+version = "1.5.0"
 
 [[package]]
 name = "kqueue"

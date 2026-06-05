@@ -609,6 +609,10 @@ fn resolve_api_key() -> Option<String> {
             return Some(key);
         }
     }
+    // Keyless: a short-lived bearer from the phylaxd SO_PEERCRED broker.
+    if let Some(key) = kleos_token_client::resolve_via_phylax_broker() {
+        return Some(key);
+    }
     None
 }
 
