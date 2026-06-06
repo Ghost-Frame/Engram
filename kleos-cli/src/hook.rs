@@ -129,6 +129,21 @@ fn extract_session_id(input: &Value) -> String {
         .unwrap_or_else(|| std::env::var("PPID").unwrap_or_else(|_| "unknown".to_string()))
 }
 
+/// Resolves the agent identity for hook reporting and living-context generation.
+///
+/// Prefers the `KLEOS_AGENT_LABEL` env var, which each harness sets to identify
+/// itself ("codex" for Codex, "claude-code" for Claude Code). Falls back to
+/// "claude-code" -- the historical default -- when the env var is unset, so
+/// existing Claude Code sessions are unaffected. This is what stops the living
+/// context from hardcoding "You are claude-code" inside Codex sessions.
+fn resolve_agent() -> String {
+    std::env::var("KLEOS_AGENT_LABEL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "claude-code".to_string())
+}
+
 /// Emits Claude hook JSON on stdout.
 fn emit(v: &Value) {
     println!("{}", serde_json::to_string(v).unwrap_or_default());
@@ -239,12 +254,14 @@ fn derive_command(tool_name: &str, tool_input: &Value) -> String {
 // --- Hook handlers ---
 
 async fn handle_session_start(client: &Client) {
+    let agent = resolve_agent();
+
     // Register session with activity (best-effort)
     let _ = client
         .post_with_timeout(
             "/activity",
             json!({
-                "agent": "claude-code",
+                "agent": agent.clone(),
                 "action": "session.start",
                 "summary": "session started",
                 "project": "unknown"
@@ -254,13 +271,11 @@ async fn handle_session_start(client: &Client) {
         .await;
 
     // Fetch growth context (best-effort)
-    let growth_text = match client
-        .get_with_timeout(
-            "/growth/materialize?service=claude-code&limit=30&max_bytes=16000",
-            DEFAULT_TIMEOUT,
-        )
-        .await
-    {
+    let growth_path = format!(
+        "/growth/materialize?service={}&limit=30&max_bytes=16000",
+        utf8_percent_encode(&agent, NON_ALPHANUMERIC)
+    );
+    let growth_text = match client.get_with_timeout(&growth_path, DEFAULT_TIMEOUT).await {
         Ok(v) => v
             .get("context")
             .and_then(|c| c.as_str())
@@ -277,7 +292,7 @@ async fn handle_session_start(client: &Client) {
         .post_with_timeout(
             "/prompt/generate",
             json!({
-                "agent": "claude-code",
+                "agent": agent,
                 "task": "session-bootstrap agent-rules infrastructure active-tasks recent-decisions",
                 "include_brain": true,
                 "include_growth": true,
@@ -395,7 +410,7 @@ async fn handle_stop(client: &Client, input: &Value) {
         .post_with_timeout(
             "/activity",
             json!({
-                "agent": "claude-code",
+                "agent": resolve_agent(),
                 "action": "session.end",
                 "summary": "session ended"
             }),
@@ -476,7 +491,7 @@ async fn handle_post_tool(client: &Client, input: &Value) {
         .post_with_timeout(
             "/activity",
             json!({
-                "agent": "claude-code",
+                "agent": resolve_agent(),
                 "action": "tool.completed",
                 "summary": format!("{} completed", tool_name),
             }),
