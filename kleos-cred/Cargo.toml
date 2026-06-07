@@ -1,6 +1,6 @@
 [package]
 name = "kleos-cred"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 rust-version.workspace = true
 description = "Credential management CLI with encrypted vault and YubiKey support"
@@ -36,7 +36,7 @@ rpassword = "7"
 anyhow = "1"
 shellexpand = "3"
 directories = "6"
-kleos-lib = { path = "../kleos-lib", version = "1.5.0", features = ["sqlcipher"] }
+kleos-lib = { path = "../kleos-lib", version = "1.6.0", features = ["sqlcipher"] }
 
 # Crypto
 aes-gcm = "0.10"
@@ -84,4 +84,4 @@ tempfile = { workspace = true }
 
 # Windows needs bundled SQLCipher since there's no system sqlite3.lib
 [target.'cfg(windows)'.dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.5.0", features = ["sqlcipher"] }
+kleos-lib = { path = "../kleos-lib", version = "1.6.0", features = ["sqlcipher"] }

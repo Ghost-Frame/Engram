@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "agent-forge"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3266,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "eidolon-supervisor"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "chrono",
  "kleos-token-client",
@@ -3691,7 +3691,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "forge"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "clap",
  "hostname",
@@ -4909,7 +4909,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kleos-approval-tui"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "chrono",
  "clap",
@@ -4926,7 +4926,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-cleanup"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "clap",
  "rusqlite",
@@ -4934,7 +4934,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-cli"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4957,7 +4957,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-client"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "kleos-lib",
  "percent-encoding",
@@ -4968,7 +4968,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-cred"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5003,7 +5003,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-credd"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5038,7 +5038,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-fs"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "kleos-token-client",
  "libc",
@@ -5049,7 +5049,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-ingest"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "chrono",
  "clap",
@@ -5068,7 +5068,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-install"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5085,7 +5085,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-install-core"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "dirs 6.0.0",
  "hex",
@@ -5101,7 +5101,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-install-gui"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "eframe",
  "kleos-install-core",
@@ -5114,7 +5114,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-lib"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "aes-gcm",
  "arc-swap",
@@ -5176,7 +5176,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-mcp"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "axum 0.8.9",
  "clap",
@@ -5193,7 +5193,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-migrate"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -5212,7 +5212,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-phylax"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "axum 0.8.9",
  "bytes",
@@ -5250,7 +5250,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-phylax-ssh-agent"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "log",
  "ssh-key",
@@ -5261,7 +5261,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-phylax-ssh-agentd"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5279,7 +5279,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-phylaxd"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -5297,7 +5297,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-server"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "async-stream",
  "axum 0.8.9",
@@ -5340,7 +5340,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-sh"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "clap",
  "kleos-token-client",
@@ -5352,7 +5352,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-sidecar"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "arc-swap",
  "axum 0.8.9",
@@ -5379,7 +5379,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-token-client"
-version = "1.5.0"
+version = "1.6.0"
 
 [[package]]
 name = "kqueue"

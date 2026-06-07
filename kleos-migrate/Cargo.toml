@@ -1,6 +1,6 @@
 [package]
 name = "kleos-migrate"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 rust-version.workspace = true
 description = "ETL tool to copy an encrypted SQLCipher monolith into a per-tenant shard"

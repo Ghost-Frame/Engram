@@ -1,6 +1,6 @@
 [package]
 name = "eidolon-supervisor"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 rust-version.workspace = true
 license = "Elastic-2.0"
@@ -11,7 +11,7 @@ name = "eidolon-supervisor"
 path = "src/main.rs"
 
 [dependencies]
-kleos-token-client = { path = "../kleos-token-client", version = "1.5.0" }
+kleos-token-client = { path = "../kleos-token-client", version = "1.6.0" }
 chrono = { workspace = true }
 lru = { workspace = true }
 notify = "8"

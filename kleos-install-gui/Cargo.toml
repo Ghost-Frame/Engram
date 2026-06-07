@@ -1,6 +1,6 @@
 [package]
 name = "kleos-install-gui"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 rust-version.workspace = true
 description = "Native GUI installer for Kleos"

@@ -1,6 +1,6 @@
 [package]
 name = "kleos-phylax-ssh-agentd"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 rust-version.workspace = true
 description = "Headless SSH agent daemon that brokers keys and signing through phylaxd"
@@ -11,7 +11,7 @@ name = "phylax-ssh-agentd"
 path = "src/main.rs"
 
 [dependencies]
-kleos-phylax-ssh-agent = { path = "../kleos-phylax-ssh-agent", version = "1.5.0" }
+kleos-phylax-ssh-agent = { path = "../kleos-phylax-ssh-agent", version = "1.6.0" }
 ssh-key = { version = "0.6", features = ["ed25519", "rsa", "p256", "p384", "p521", "crypto"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
 name = "kleos-mcp"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 rust-version.workspace = true
 description = "MCP server for Kleos -- Model Context Protocol integration for LLM tools"
