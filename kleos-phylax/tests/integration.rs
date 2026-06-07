@@ -535,11 +535,6 @@ async fn test_ssh_ca_mint_endpoint_does_not_return_private_key() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["agent"], "codex-test");
     assert_eq!(body["principal"], "operator");
-    assert!(body["key_path"].as_str().unwrap().contains("codex-test"));
-    assert!(body["cert_path"]
-        .as_str()
-        .unwrap()
-        .contains("codex-test-cert.pub"));
     assert!(body["cert_public_key"]
         .as_str()
         .unwrap()
@@ -547,6 +542,15 @@ async fn test_ssh_ca_mint_endpoint_does_not_return_private_key() {
     assert!(
         body.get("private_key").is_none(),
         "mint endpoint must not return private key bytes"
+    );
+    // Server filesystem paths must not leak to the caller.
+    assert!(
+        body.get("key_path").is_none(),
+        "mint endpoint must not return the server key path"
+    );
+    assert!(
+        body.get("cert_path").is_none(),
+        "mint endpoint must not return the server cert path"
     );
 }
 
@@ -569,6 +573,195 @@ async fn test_ssh_ca_sign_rejects_missing_public_key() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["error"].as_str().unwrap().contains("public_key"));
+}
+
+/// A multi-year TTL must be rejected before any signing occurs (master path).
+#[tokio::test]
+async fn test_ssh_ca_sign_rejects_overlong_ttl() {
+    let app = TestApp::new().await;
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/phylax/ssh-ca/sign",
+            Some(json!({
+                "identity": "codex-test",
+                "principal": "operator",
+                "ttl": "+9999w",
+                "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKeyForRouteContractOnly codex@test"
+            })),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("ttl"));
+}
+
+/// A path-traversal identity must be rejected before reaching the signer.
+#[tokio::test]
+async fn test_ssh_ca_mint_rejects_traversal_agent() {
+    let app = TestApp::new().await;
+
+    let (status, _body) = app
+        .request_master(
+            "POST",
+            "/phylax/ssh-ca/mint",
+            Some(json!({
+                "agent": "../../etc/cron.d/x",
+                "principal": "operator",
+                "ttl": "+5m"
+            })),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// Helper: create an agent token (non-master) for authorization tests.
+async fn create_agent_token(app: &TestApp, name: &str) -> String {
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/agents",
+            Some(json!({
+                "name": name,
+                "categories": ["ssh-ca/*"],
+                "allow_raw": false
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "agent creation failed: {body:?}");
+    body["key"].as_str().unwrap().to_string()
+}
+
+/// A non-master caller must NOT be able to sign directly: the request goes
+/// through the M3 approval gate, and a denial yields 403. This is the core
+/// privilege-escalation fix -- before it, any valid token could mint a root cert.
+#[tokio::test]
+async fn test_ssh_ca_sign_non_master_is_gated_and_denied() {
+    let app = TestApp::new().await;
+    let agent_key = create_agent_token(&app, "ca-agent-denied").await;
+
+    // Fire the sign request as the agent; it will block on the approval gate.
+    let router: Router = app.router.clone();
+    let key = agent_key.clone();
+    let handle = tokio::spawn(async move {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/phylax/ssh-ca/sign")
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({
+                    "identity": "ca-agent-denied",
+                    "principal": "root",
+                    "ttl": "+5m",
+                    "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKeyForRouteContractOnly a@b"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        router.oneshot(req).await.unwrap().status()
+    });
+
+    // Find the pending approval via the agent's own (user-scoped) list, then deny it as master.
+    let mut approval_id = None;
+    for _ in 0..50 {
+        let (_, list) = app
+            .request_auth("GET", "/phylax/approvals", None, &agent_key)
+            .await;
+        if let Some(arr) = list["approvals"].as_array() {
+            if let Some(a) = arr.iter().find(|a| a["status"].as_i64() == Some(0)) {
+                approval_id = a["id"].as_i64();
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let id = approval_id.expect("non-master sign must create a pending approval");
+
+    let (st, _) = app
+        .request_master(
+            "PUT",
+            &format!("/phylax/approvals/{id}"),
+            Some(json!({ "decision": "denied" })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let status = handle.await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "denied non-master sign must be 403"
+    );
+}
+
+/// A non-master caller CAN sign once a human approves the M3 request.
+#[tokio::test]
+async fn test_ssh_ca_sign_non_master_succeeds_after_approval() {
+    let app = TestApp::new().await;
+    let agent_key = create_agent_token(&app, "ca-agent-approved").await;
+
+    let router: Router = app.router.clone();
+    let key = agent_key.clone();
+    let handle = tokio::spawn(async move {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/phylax/ssh-ca/sign")
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({
+                    "identity": "ca-agent-approved",
+                    "principal": "operator",
+                    "ttl": "+5m",
+                    "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKeyForRouteContractOnly a@b"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let res = router.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, body)
+    });
+
+    let mut approval_id = None;
+    for _ in 0..50 {
+        let (_, list) = app
+            .request_auth("GET", "/phylax/approvals", None, &agent_key)
+            .await;
+        if let Some(arr) = list["approvals"].as_array() {
+            if let Some(a) = arr.iter().find(|a| a["status"].as_i64() == Some(0)) {
+                approval_id = a["id"].as_i64();
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let id = approval_id.expect("non-master sign must create a pending approval");
+
+    let (st, _) = app
+        .request_master(
+            "PUT",
+            &format!("/phylax/approvals/{id}"),
+            Some(json!({ "decision": "approved" })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (status, body) = handle.await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "approved non-master sign must be 200"
+    );
+    assert!(body["cert_public_key"]
+        .as_str()
+        .unwrap()
+        .contains("ssh-ed25519-cert"));
 }
 
 // ---- PIV enrollment test ----
