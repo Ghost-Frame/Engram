@@ -94,4 +94,8 @@ pub mod actions {
     pub const SSH_SETTINGS: &str = "ssh_settings_updated";
     /// An SSH private key was used to produce a signature.
     pub const SSH_SIGN: &str = "ssh_sign";
+    /// A caller-provided SSH public key was signed by the SSH CA.
+    pub const SSH_CA_SIGN: &str = "ssh_ca_sign";
+    /// An agent keypair + SSH certificate was minted by the SSH CA.
+    pub const SSH_CA_MINT: &str = "ssh_ca_mint";
 }
