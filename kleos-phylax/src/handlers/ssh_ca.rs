@@ -2,15 +2,16 @@
 //!
 //! Authorization model (decision 2026-06-06): the SSH CA is a high-privilege
 //! capability -- a signed cert can grant fleet-wide SSH access. Both endpoints
-//! therefore require an authenticated principal AND one of:
-//!   - a master token (signs directly, for scripted `fallback-up` on an anchor), or
-//!   - an M3 approval (push to phone; a human approves each signing).
+//! require an authenticated principal that is either a master token (signs
+//! directly, for scripted `fallback-up` on an anchor) or has cleared an M3
+//! approval (push to phone; a human approves each signing).
+//!
 //! On top of that, every request is bounded server-side regardless of caller:
-//!   - the validity interval (`ttl`) is parsed and capped (see `max_ttl_secs`),
-//!   - requested principals are checked against an optional allowlist, and
-//!   - `identity`/`agent` are restricted to filename-safe characters so they
-//!     cannot traverse paths when the signer shells out to `cred ssh-ca`.
-//! Server filesystem paths are never returned to the caller.
+//! the validity interval (`ttl`) is parsed and capped (see `max_ttl_secs`);
+//! requested principals are checked against an optional allowlist; and
+//! `identity`/`agent` are restricted to filename-safe characters so they cannot
+//! traverse paths when the signer shells out to `cred ssh-ca`. Server
+//! filesystem paths are never returned to the caller.
 
 use axum::extract::State;
 use axum::Json;
