@@ -23,6 +23,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy the full workspace so Cargo can resolve the dependency graph.
 COPY . .
 
+# Cap release-build memory so it fits the 16 GB CI runners. Fat LTO with a
+# single codegen unit was SIGKILLed (OOM) while compiling kleos-server on the
+# arm64 runner; thin LTO with 16 codegen units builds within memory and faster,
+# with negligible runtime cost for a server binary. Scoped to this build only.
+ENV CARGO_PROFILE_RELEASE_LTO=thin \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+
 # Build with BuildKit cache mounts so the Cargo registry and compiled
 # dependencies survive across rebuilds — only changed crates are recompiled.
 # Binaries are copied to /tmp here because cache mounts are not accessible
