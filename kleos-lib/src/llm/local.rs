@@ -238,7 +238,7 @@ impl LocalModelClient {
             permit
         };
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": model,
             "messages": [
                 { "role": "system", "content": system_prompt },
@@ -248,6 +248,21 @@ impl LocalModelClient {
             "max_tokens": opts.max_tokens.unwrap_or(2000),
             "stream": false,
         });
+
+        // Cloud OpenAI-proxy compatibility (Foundry/Azure backend). GPT-class
+        // models behind the proxy reject the classic `max_tokens` (require
+        // `max_completion_tokens`) and reject any `temperature` other than 1.
+        // Apply the rename + drop only on authenticated (cloud) endpoints so
+        // the local Ollama path keeps the classic OpenAI request shape.
+        if self.config.api_key.is_some() {
+            if let Some(obj) = body.as_object_mut() {
+                if let Some(mt) = obj.remove("max_tokens") {
+                    obj.insert("max_completion_tokens".to_string(), mt);
+                }
+                // Omitting temperature lets the proxy use its required default (1).
+                obj.remove("temperature");
+            }
+        }
 
         let body_str = body.to_string();
         tracing::debug!(
