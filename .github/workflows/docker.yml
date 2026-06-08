@@ -1,5 +1,8 @@
 name: Container Image
 
+# Build the multi-arch image natively on per-arch runners and merge the
+# results into one manifest list. The previous single-runner approach emulated
+# linux/arm64 under QEMU, which OOM-killed the Rust release build after ~5h.
 on:
   push:
     branches: [main]
@@ -10,23 +13,42 @@ permissions:
   contents: read
   packages: write
 
-jobs:
-  build-and-push:
-    name: Build and push ghcr.io/${{ github.repository_owner }}/kleos
-    runs-on: ubuntu-latest
-    # Avoid running on PRs from forks; they cannot push to the registry anyway.
-    if: github.event_name != 'pull_request'
+env:
+  # Target image repository on GHCR (owner is lowercased by the registry).
+  IMAGE: ghcr.io/${{ github.repository_owner }}/kleos
 
+jobs:
+  # Build each architecture on its own native runner and push it by digest
+  # only (no tags yet). Native compilation avoids the QEMU emulation that
+  # exhausted memory and ran for hours.
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    # Forks cannot push to the registry, so skip the build for PR events.
+    if: github.event_name != 'pull_request'
+    strategy:
+      # Let one architecture finish even if the other fails, for easier triage.
+      fail-fast: false
+      matrix:
+        include:
+          # amd64 builds on the standard x86 hosted runner.
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          # arm64 builds on the free public arm64 hosted runner (no emulation).
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
     steps:
+      # Pull the repository at the triggering ref.
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
+      # Provide the buildx builder used by build-push-action.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Authenticate to GHCR so the digest can be pushed.
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -34,12 +56,70 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Build this single platform and push it by digest. The per-arch GHA
+      # cache scope keeps the two matrix legs from clobbering each other.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          provenance: false
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      # Record the pushed digest as a file named after its sha256 value.
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      # Hand the digest to the merge job via an artifact.
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Combine the per-arch digests into a single tagged multi-arch manifest list.
+  merge:
+    name: Merge manifest
+    runs-on: ubuntu-24.04
+    needs: [build]
+    if: github.event_name != 'pull_request'
+    steps:
+      # Collect every per-arch digest artifact into one directory.
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      # buildx imagetools is provided through the buildx plugin.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Authenticate to GHCR to create the manifest list.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Derive the human-facing tags: `main` for the branch, semver + `latest`
+      # for `v*` tags, plus a short-sha tag. Mirrors the previous behavior.
       - name: Derive image metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/kleos
-          # main branch -> `main`; semver tag -> `v1.2.3`, `1.2`, `latest`.
+          images: ${{ env.IMAGE }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -47,15 +127,15 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=sha,format=short
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: false
+      # Assemble the manifest list from the per-arch digests and apply the tags.
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      # Confirm the published manifest resolves and lists both architectures.
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
