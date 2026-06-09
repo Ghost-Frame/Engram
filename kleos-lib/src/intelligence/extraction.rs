@@ -14,7 +14,7 @@ use tracing::{debug, warn};
 /// Build a per-language regex from a template by interpolating
 /// `lexicon::word_class_alternation` for each placeholder.
 ///
-/// Patch 38 L2.B helper. Used by the like/dislike/favorite/location/role
+/// Helper. Used by the like/dislike/favorite/location/role
 /// patterns whose verbs vary across languages. The remaining patterns
 /// (buy / spent / have / exercise / made / earned) keep their English
 /// surface form because they encode unit-specific syntax (currency `$`,
@@ -25,7 +25,7 @@ fn compile_lang_regex(pattern: &str) -> Option<Regex> {
 }
 
 fn like_regex_for(lang: &str) -> Option<Regex> {
-    // Patch 38 L2.B wildcard-after-stem: TOML lists infinitives
+    // Wildcard-after-stem: TOML lists infinitives
     // (`aimer`, `adorer`) but the source is raw user text with
     // conjugated forms. Stem the alternation and add `\w*` so the
     // root matches every inflection (`aime`, `aimait`, `aimerions`).
@@ -40,7 +40,7 @@ fn like_regex_for(lang: &str) -> Option<Regex> {
     } else {
         format!(r"(?:(?:{pronouns})\w*\s+)")
     };
-    // Patch 38 L2.B fix: wrap the alternation in `(?:...)` BEFORE
+    // Regex fix: wrap the alternation in `(?:...)` BEFORE
     // applying the `\w*` wildcard. Without the inner group, regex
     // priority makes `aim|ador|appreci|prefer|kiff\w*` parse as
     // `(aim) OR (ador) OR ... OR (kiff\w*)` and only the last
@@ -77,7 +77,7 @@ fn favorite_regex_for(lang: &str) -> Option<Regex> {
     // The template accepts either order so the same regex covers both
     // languages. Marker groups stay non-capturing so the caller still
     // reads cap[1] = category, cap[2] = value (signature preserved).
-    // Patch 38 L2.B fix: each alternation is wrapped in `(?:...)` so
+    // Regex fix: each alternation is wrapped in `(?:...)` so
     // the `\w*` wildcard applies to every alternative (regex priority
     // would otherwise attach the wildcard only to the last word).
     let pattern = format!(
@@ -117,7 +117,7 @@ fn role_regex_for(lang: &str) -> Option<Regex> {
     compile_lang_regex(&pattern)
 }
 
-// Patch 38.2 -- helpers for the 6 previously English-only patterns
+// Helpers for the 6 previously English-only patterns
 // (buy / spent / have / exercise / made / earned). Each helper composes a
 // regex fragment from per-language lexicon classes so French (or any other
 // language with the appropriate classes) gets first-class support.
@@ -131,7 +131,7 @@ fn role_regex_for(lang: &str) -> Option<Regex> {
 //   - Prepositions (`on/for` EN, `pour/en/sur` FR) live in their own classes
 //     so callers do not need to hardcode them per language.
 
-/// Patch 38.2 -- compose a regex fragment matching `<currency>50` (prefix
+/// Compose a regex fragment matching `<currency>50` (prefix
 /// convention) or `50 <currency>` (suffix convention) with a single
 /// capturing group for the numeric amount. Returns `None` when neither
 /// currency class is populated for `lang`.
@@ -165,7 +165,7 @@ fn buy_regex_for(lang: &str) -> Option<Regex> {
         return None;
     }
     let pronoun_clause = pronoun_clause_for(lang);
-    // cap[1] = verb, cap[2] = quantity, cap[3] = object
+    // Cap[1] = verb, cap[2] = quantity, cap[3] = object
     let pattern = format!(
         r"(?i)\b{pronoun_clause}((?:{verbs})\w*)\s+(\d+)\s+(.+?)(?:\.|,|$)"
     );
@@ -183,7 +183,7 @@ fn spent_regex_for(lang: &str) -> Option<Regex> {
         return None;
     }
     let pronoun_clause = pronoun_clause_for(lang);
-    // cap[1] = amount, cap[2] = object
+    // Cap[1] = amount, cap[2] = object
     let pattern = format!(
         r"(?i)\b{pronoun_clause}(?:{verbs})\w*\s+{amount}\s+(?:{preps})\s+(.+?)(?:\.|,|$)"
     );
@@ -196,7 +196,7 @@ fn have_regex_for(lang: &str) -> Option<Regex> {
         return None;
     }
     let pronoun_clause = pronoun_clause_for(lang);
-    // cap[1] = quantity, cap[2] = object
+    // Cap[1] = quantity, cap[2] = object
     // Tail clause matches both EN (and/but/so/now) and FR (et/mais/alors/donc) connectors.
     let pattern = format!(
         r"(?i)\b{pronoun_clause}(?:{verbs})\w*\s+(\d+)\s+(.+?)(?:\.|,|\s+(?:and|but|so|now|et|mais|alors|donc))"
@@ -218,7 +218,7 @@ fn exercise_regex_for(lang: &str) -> Option<Regex> {
         (false, false) => format!("{time}|{dist}"),
     };
     let pronoun_clause = pronoun_clause_for(lang);
-    // cap[1] = verb, cap[2] = quantity, cap[3] = unit
+    // Cap[1] = verb, cap[2] = quantity, cap[3] = unit
     // Optional duration filler covers EN ("for") and FR ("pour"/"pendant").
     let pattern = format!(
         r"(?i)\b{pronoun_clause}((?:{verbs})\w*)\s+(?:for\s+|pour\s+|pendant\s+)?(\d+(?:\.\d+)?)\s+({unit_alt})"
@@ -232,7 +232,7 @@ fn made_regex_for(lang: &str) -> Option<Regex> {
         return None;
     }
     let pronoun_clause = pronoun_clause_for(lang);
-    // cap[1] = verb, cap[2] = object
+    // Cap[1] = verb, cap[2] = object
     // Article filler covers EN (a/some) and FR (un/une/des/du).
     let pattern = format!(
         r"(?i)\b{pronoun_clause}((?:{verbs})\w*)\s+(?:a\s+|some\s+|un\s+|une\s+|des\s+|du\s+|de\s+la\s+)?(.+?)(?:\.|,|\s+(?:and|but|for|from|yesterday|today|last|et|mais|pour|hier|aujourd'hui|dernier|derniere))"
@@ -240,7 +240,7 @@ fn made_regex_for(lang: &str) -> Option<Regex> {
     compile_lang_regex(&pattern)
 }
 
-/// Patch 38.2 -- human-readable currency label per language for the
+/// Human-readable currency label per language for the
 /// `[unit:...]` slot of formatted facts. Defaults to "dollars" so any
 /// language without a dedicated mapping behaves like EN historically did.
 fn currency_label(lang: &str) -> &'static str {
@@ -263,7 +263,7 @@ fn earned_regex_for(lang: &str) -> Option<Regex> {
     } else {
         format!(r"(?:\s+(?:{preps})\s+(.+?))?")
     };
-    // cap[1] = verb, cap[2] = amount, cap[3] = object (optional)
+    // Cap[1] = verb, cap[2] = amount, cap[3] = object (optional)
     let pattern = format!(
         r"(?i)\b{pronoun_clause}((?:{verbs})\w*)\s+{amount}{prep_clause}(?:\.|,|$)"
     );
@@ -271,7 +271,7 @@ fn earned_regex_for(lang: &str) -> Option<Regex> {
 }
 
 /// Cache of compiled per-language regexes for the 5 i18n-portable patterns,
-/// plus the cross-language copula set used by the Patch 38.1 collision skip.
+/// plus the cross-language copula set used by the  collision skip.
 /// Compiled once on first access from the current state of the lexicon.
 struct LangRegexCache {
     like: HashMap<String, Regex>,
@@ -279,14 +279,14 @@ struct LangRegexCache {
     favorite: HashMap<String, Regex>,
     location: HashMap<String, Regex>,
     role: HashMap<String, Regex>,
-    // Patch 38.2 -- 6 unit-specific patterns migrated to per-language.
+    // 6 unit-specific patterns migrated to per-language.
     buy: HashMap<String, Regex>,
     spent: HashMap<String, Regex>,
     have: HashMap<String, Regex>,
     exercise: HashMap<String, Regex>,
     made: HashMap<String, Regex>,
     earned: HashMap<String, Regex>,
-    /// Patch 38.1 (v2 -- cross-lang): union of copula tokens (`is_or_are`
+    /// Union of copula tokens (`is_or_are`
     /// class) folded across ALL supported languages, with stem=false
     /// projection so the runtime check can fold its candidate token the
     /// same way regardless of which lang's pattern produced the match.
@@ -351,7 +351,7 @@ static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
         if let Some(re) = earned_regex_for(&lang) {
             earned.insert(lang.clone(), re);
         }
-        // Patch 38.1 v2: merge every lang's copula set into the global
+        // Merge every lang's copula set into the global
         // union. Fold each word with the class's stem policy of THIS
         // lang (typically stem=false for the grammar class), so the
         // stored form matches what the runtime check produces.
@@ -379,7 +379,7 @@ static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
     }
 });
 
-/// Patch 38.1 (v2): returns true when a LIKE / DISLIKE capture is suspect
+/// Returns true when a LIKE / DISLIKE capture is suspect
 /// because its object starts with a copula in any supported language.
 /// Cross-lang on purpose: `verb_like` stems often match cross-lang via
 /// `\w*` (EN `prefer` matches FR `prefere`), so the match's lang does
@@ -406,7 +406,7 @@ fn object_starts_with_copula(object: &str) -> bool {
     false
 }
 
-// Patch 38 L2.B + Patch 38.2 -- all 11 prior English-only static regexes
+// All 11 prior English-only static regexes
 // (like, dislike, favorite, location, role, buy, spent, have, exercise,
 // made, earned) are now superseded by their per-language `_regex_for`
 // helpers and the LANG_REGEX cache above. The currency / time-unit /
@@ -451,7 +451,7 @@ pub async fn fast_extract_facts(
     let date_ref = extract_date_ref(content);
 
     // -- Patterns 1-6 (buy / spent / have / exercise / made / earned) --
-    // Patch 38.2 -- iterate over every supported language and apply that
+    // iterate over every supported language and apply that
     // language's compiled regex. A HashSet dedup-guards against the same
     // canonical fact being emitted twice when a bilingual sentence matches
     // both languages' patterns (rare, but real on transcripts that mix EN
@@ -603,7 +603,7 @@ pub async fn fast_extract_facts(
     }
 
     // -- Preferences: likes/enjoys --
-    // Patch 38 L2.B -- the 5 i18n-portable patterns (like, dislike,
+    // the 5 i18n-portable patterns (like, dislike,
     // favorite, location, role) iterate over every supported language
     // and apply that language's compiled regex. A small HashSet
     // dedup-guards against the same pref / state appearing twice when
@@ -616,7 +616,7 @@ pub async fn fast_extract_facts(
         if let Some(re) = LANG_REGEX.like.get(&lang) {
             for cap in re.captures_iter(content) {
                 let object = cap[2].trim();
-                // Patch 38.1: skip captures whose object starts with a
+                // Skip captures whose object starts with a
                 // copula -- strong signal the source is actually a
                 // FAVORITE structure ("mon plat prefere est X") that
                 // the verb stem overlap mis-classified as LIKE.
@@ -640,7 +640,7 @@ pub async fn fast_extract_facts(
         if let Some(re) = LANG_REGEX.dislike.get(&lang) {
             for cap in re.captures_iter(content) {
                 let object = cap[2].trim();
-                // Patch 38.1: same cross-pattern collision skip as LIKE.
+                // Same cross-pattern collision skip as LIKE.
                 if object_starts_with_copula(object) {
                     continue;
                 }
@@ -823,7 +823,7 @@ fn extract_date_ref(content: &str) -> Option<String> {
 /// Infer the high-level domain of an object string by scanning the i18n
 /// lexicon for every supported language.
 ///
-/// Patch 38 L2 site 11 + normalize -- compare folded versions of both
+/// Compare folded versions of both
 /// sides so an object like "petit-déjeuner" matches the lexicon entry
 /// "petit-déjeuner" (or its bare ASCII equivalent if the user dropped
 /// the accent and the hyphen). DOMAINS preserves the original priority
@@ -887,7 +887,7 @@ mod tests {
         assert_eq!(&caps[0][2], "groceries");
     }
 
-    // Patch 38.2 -- FR coverage tests. These confirm the lexicon-driven
+    // FR coverage tests. These confirm the lexicon-driven
     // regex generates a valid Regex per language and that the captures
     // semantics align with the EN equivalent (same group indices).
 
@@ -929,7 +929,7 @@ mod tests {
         let re = earned_regex_for("fr").expect("FR earned regex must compile");
         let caps: Vec<_> = re.captures_iter(&content).collect();
         assert!(!caps.is_empty(), "FR earned_regex_for should match");
-        // cap[1] = verb, cap[2] = amount, cap[3] = object (optional)
+        // Cap[1] = verb, cap[2] = amount, cap[3] = object (optional)
         assert!(caps[0][1].contains("gagn"));
         assert_eq!(&caps[0][2], "100");
     }

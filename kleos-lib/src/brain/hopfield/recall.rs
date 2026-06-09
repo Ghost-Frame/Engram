@@ -9,7 +9,7 @@ use super::pattern::{self, BrainPattern};
 
 // ---------------------------------------------------------------------------
 // Causal keyword tables -- ported from eidolon absorb.rs
-// Patch 38 L2 site 6 -- sourced from the i18n lexicon (causal_strong,
+// sourced from the i18n lexicon (causal_strong,
 // causal_context, causal_weak, negation_marker) across every supported
 // language. Hardcoded English-only constants removed; the four helpers
 // below assemble the keyword sets on demand. Cost is bounded by the

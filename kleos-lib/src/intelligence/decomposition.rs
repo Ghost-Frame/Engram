@@ -38,34 +38,20 @@ Respond with ONLY a JSON object:
 
 Set skip=true if the content is too short, already atomic, or not decomposable."#;
 
-/// Filler phrases to strip from sentence starts.
-const FILLER_PREFIXES: &[&str] = &[
-    "so ",
-    "well ",
-    "basically ",
-    "actually ",
-    "honestly ",
-    "like ",
-    "i mean ",
-    "you know ",
-    "anyway ",
-];
-
-/// Meta-sentences to skip entirely.
-const META_STOPLIST: &[&str] = &[
-    "let me explain",
-    "as i mentioned",
-    "in summary",
-    "to summarize",
-    "as we discussed",
-    "like i said",
-    "to be clear",
-    "for context",
-    "moving on",
-    "on another note",
-    "by the way",
-    "speaking of which",
-];
+/// Build the filler-prefix list from the i18n lexicon.
+///
+/// The previous hardcoded English-only
+/// FILLER_PREFIXES and META_STOPLIST constants now source their content
+/// from the lexicon (filler_prefixes and meta_stoplist classes) for
+/// every supported language. French / English transcripts are filtered
+/// symmetrically.
+fn filler_prefixes() -> Vec<String> {
+    crate::lexicon::supported_languages()
+        .iter()
+        .flat_map(|lang| crate::lexicon::word_class(lang, "filler_prefixes"))
+        .map(|w| w.to_lowercase())
+        .collect()
+}
 
 /// Parsed LLM response for decomposition candidates.
 #[derive(Debug, Deserialize)]
@@ -290,12 +276,24 @@ fn decompose_rule_based(content: &str) -> DecompositionResult {
         .filter(|s| s.len() >= 10 && s.len() <= 300)
         .collect();
 
-    // Filter meta-sentences
+    // Filter meta-sentences .
+    // Compare folded source vs folded meta phrase so accents and casing
+    // never block a match. The meta_stoplist class allows stemming by
+    // default in the TOML, but multi-word entries stem token by token
+    // via fold_for_matching.
     let filtered: Vec<&str> = raw_sentences
         .into_iter()
         .filter(|s| {
-            let lower = s.to_lowercase();
-            !META_STOPLIST.iter().any(|meta| lower.contains(meta))
+            !crate::lexicon::supported_languages().iter().any(|lang| {
+                let folded_s = crate::lexicon::fold_for_matching(s, lang, true);
+                crate::lexicon::word_class(lang, "meta_stoplist")
+                    .iter()
+                    .any(|meta| {
+                        folded_s.contains(
+                            &crate::lexicon::fold_word_for_class(meta, lang, "meta_stoplist"),
+                        )
+                    })
+            })
         })
         .collect();
 
@@ -376,12 +374,15 @@ fn decompose_template(content: &str) -> DecompositionResult {
     }
 }
 
-/// Strip leading filler phrases.
+/// Strip leading filler phrases (lexicon-driven).
 fn strip_filler(s: &str) -> String {
     let lower = s.to_lowercase();
-    for filler in FILLER_PREFIXES {
-        if lower.starts_with(filler) {
-            return s[filler.len()..]
+    for filler in filler_prefixes() {
+        // Lexicon entries do not carry trailing spaces; append one so the
+        // starts_with check matches the original "filler " convention.
+        let prefix = format!("{filler} ");
+        if lower.starts_with(&prefix) {
+            return s[prefix.len()..]
                 .trim_start_matches(|c: char| c == ',' || c.is_whitespace())
                 .to_string();
         }

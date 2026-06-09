@@ -18,7 +18,7 @@ struct EmotionPattern {
     arousal: f64,
 }
 
-/// Patch 38 L2.B 4/4 -- valence patterns sourced from the i18n lexicon.
+/// Valence patterns sourced from the i18n lexicon.
 ///
 /// The 21 tuples below name the lexicon class, the canonical emotion
 /// label emitted by analyze_valence, and the default valence + arousal
@@ -57,7 +57,7 @@ static EMOTION_PATTERNS: LazyLock<Vec<EmotionPattern>> = LazyLock::new(|| {
             if words.is_empty() {
                 continue;
             }
-            // Patch 38 L2.B wildcard-after-stem: stem each word (one-shot)
+            // Wildcard-after-stem: stem each word (one-shot)
             // and add `\w*` so FR feminine/plural forms (`fatiguee`,
             // `joyeuses`) match without TOML duplication. Multi-word
             // entries (`burned out`) keep their inner whitespace; the

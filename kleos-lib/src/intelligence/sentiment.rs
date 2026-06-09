@@ -2,7 +2,7 @@
 // SENTIMENT LEXICON -- AFINN-style word map for rule-based personality analysis
 // Values range from -5 (most negative) to +5 (most positive).
 //
-// Patch 38 L2 site 12 -- the prior hardcoded English-only entry list is now
+// The prior hardcoded English-only entry list is now
 // sourced from the i18n lexicon (sentiment_pos5 through sentiment_neg5 classes
 // per language). Words are folded with fold_word_for_class so French entries
 // like "désespéré" match user input that drops the accents or uses a related

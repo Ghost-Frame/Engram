@@ -140,7 +140,7 @@ pub struct StaticMemoryRow {
 
 /// Lexicon class identifiers driving the emotion keyword scan.
 ///
-/// Patch 38 L2 site 8 -- the previous hardcoded EMOTION_KEYWORDS HashMap
+/// The previous hardcoded EMOTION_KEYWORDS HashMap
 /// (English-only, 17 entries) is replaced by an iteration over these
 /// classes for every supported language. Each class declares its
 /// `valence` (signed: positive emotions > 0, negative < 0) and
@@ -179,7 +179,7 @@ fn valence_from_signed(signed: f64) -> Valence {
 
 /// Build the intensifier word -> multiplier map from the i18n lexicon.
 ///
-/// Patch 38 L2 site 5 -- replaces the hardcoded English-only INTENSIFIERS
+/// Replaces the hardcoded English-only INTENSIFIERS
 /// static. The map is rebuilt per derive_signals call (cheap given a
 /// small number of tiers and words). Tier multipliers stay in code
 /// because they encode a semantic policy about how strongly each tier
@@ -212,7 +212,7 @@ fn build_intensifier_map() -> HashMap<String, f64> {
 }
 
 /// Valence + intensity for an emotion keyword. Used by the upstream env-var
-/// emotion extension (`EXTRA_EMOTION_KEYWORDS`); the Patch 38 i18n lexicon
+/// emotion extension (`EXTRA_EMOTION_KEYWORDS`); the i18n lexicon
 /// classes carry their own metadata via `class_emotion_metadata`.
 struct EmotionMeta {
     valence: Valence,
@@ -222,7 +222,7 @@ struct EmotionMeta {
 /// Additional emotion keywords loaded from env vars at startup.
 /// KLEOS_PERSONALITY_POSITIVE_EXTRA and KLEOS_PERSONALITY_NEGATIVE_EXTRA
 /// accept comma-separated keyword lists (e.g. "verliebt,selig"). These are
-/// checked in addition to the Patch 38 i18n lexicon emotion classes so an
+/// checked in addition to the i18n lexicon emotion classes so an
 /// operator can extend the taxonomy without a lexicon overlay edit.
 static EXTRA_EMOTION_KEYWORDS: LazyLock<HashMap<String, EmotionMeta>> = LazyLock::new(|| {
     let mut map = HashMap::new();
@@ -263,7 +263,7 @@ static EXTRA_EMOTION_KEYWORDS: LazyLock<HashMap<String, EmotionMeta>> = LazyLock
 // Regex patterns for signal extraction
 // ============================================================================
 
-// Patch 38 L2.B 2/4 -- per-language regex helpers replacing the prior
+// Per-language regex helpers replacing the prior
 // English-only static LIKE_PATTERN / DISLIKE_PATTERN / etc. Each helper
 // reads the relevant lexicon class (verb_like, verb_dislike, etc.) and
 // interpolates its words into the surrounding pattern template. The
@@ -271,7 +271,7 @@ static EXTRA_EMOTION_KEYWORDS: LazyLock<HashMap<String, EmotionMeta>> = LazyLock
 // without coverage is silently skipped at the call site.
 
 fn personality_like_pattern_for(lang: &str) -> Option<Regex> {
-    // Patch 38 L2.B wildcard-after-stem: stem the TOML words once and
+    // Wildcard-after-stem: stem the TOML words once and
     // add `\w*` so inflected forms (`j'aime`, `aimerais`, `loved`,
     // `enjoys`) match without TOML duplication. Verb/marker groups stay
     // non-capturing -- cap[1] = object.
@@ -317,7 +317,7 @@ fn personality_fav_pattern_for(lang: &str) -> Option<Regex> {
     // Marker placement varies (EN before, FR after). Use non-capturing
     // groups around the optional marker so cap[1] / cap[2] still mean
     // (category, value) at the call site.
-    // Patch 38 L2.B fix: wrap each alternation in `(?:...)` BEFORE
+    // Regex fix: wrap each alternation in `(?:...)` BEFORE
     // applying the `\w*` wildcard, otherwise regex priority attaches
     // the suffix only to the last alternative.
     Regex::new(&format!(
@@ -428,7 +428,7 @@ static PERSONALITY_REGEX: LazyLock<PersonalityRegexCache> = LazyLock::new(|| {
 
 /// Clean a captured subject string: trim, remove leading articles, truncate.
 ///
-/// Patch 38 L2 site 4 -- leading articles sourced from the i18n lexicon
+/// Leading articles sourced from the i18n lexicon
 /// (`articles` class) across every supported language so French captures
 /// like "le chien" / "une voiture" / "mes amis" get the same article
 /// stripping as English captures.
@@ -466,7 +466,7 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
     let mut signals = Vec::new();
     let sentences = split_sentences(content);
 
-    // Patch 38 L2.B 2/4 -- the 5 pattern families below iterate over
+    // The 5 pattern families below iterate over
     // every supported language and apply that language's compiled
     // regex. A HashSet keyed by (signal_type discriminant, subject)
     // dedup-guards against duplicate signals when bilingual content
@@ -605,7 +605,7 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
         }
     }
 
-    // Emotions (keyword scan per sentence) -- Patch 38 L2 site 8 +
+    // Emotions (keyword scan per sentence) --  +
     // normalize. Source and lexicon word are both passed through
     // fold_word_for_class so French expressions like "elle est déçue"
     // match the lexicon entry "déçu" even though the user typed without
@@ -651,7 +651,7 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
 
         if !matched {
             // Upstream env-var emotion extensions (KLEOS_PERSONALITY_*_EXTRA),
-            // checked in addition to the Patch 38 i18n lexicon classes above.
+            // checked in addition to the i18n lexicon classes above.
             let lower = sentence.to_lowercase();
             for (kw, meta) in EXTRA_EMOTION_KEYWORDS.iter() {
                 if lower.contains(kw.as_str()) {
@@ -684,7 +684,7 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
 pub fn extract_signals_rule_based(content: &str) -> Vec<PersonalitySignal> {
     let mut signals = extract_signals_template(content);
 
-    // Patch 38 L2.B 2/4 -- per-language iteration for values and
+    // Per-language iteration for values and
     // motivations, same dedup pattern as the upstream caller.
     let mut seen_signals: std::collections::HashSet<(u8, String)> =
         std::collections::HashSet::new();
@@ -751,7 +751,7 @@ pub fn extract_signals_rule_based(content: &str) -> Vec<PersonalitySignal> {
             sig.intensity = (sig.intensity + avg_sentiment * 0.05).clamp(0.0, 1.0);
         }
 
-        // Intensifier detection (Patch 38 L2 site 5 + normalize -- words
+        // Intensifier detection (words
         // via lexicon, source-text tokens folded the same way as map keys
         // so French intensifiers like "très" match "tres" in the source).
         let intensifiers = build_intensifier_map();
