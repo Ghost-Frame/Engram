@@ -29,6 +29,7 @@ pub mod inbox;
 pub mod ingestion;
 pub mod intelligence;
 pub mod jobs;
+pub mod lexicon;
 pub mod llm;
 pub mod mcp_token;
 pub mod memory;

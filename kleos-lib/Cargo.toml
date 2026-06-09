@@ -50,6 +50,8 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
+unicode-normalization = { workspace = true }
+rust-stemmers = { workspace = true }
 url = { workspace = true }
 ipnet = { workspace = true }
 ort = { workspace = true }

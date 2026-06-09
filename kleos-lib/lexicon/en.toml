@@ -1,0 +1,470 @@
+schema_version = 1
+language = "en"
+
+# English baseline lexicon for the kleos-lib intelligence pipeline.
+# The intelligence sites refactor
+# extraction.rs, personality.rs, valence.rs, sentiment.rs, etc. to read from
+# this lexicon rather than hardcoded constants.
+
+[classes.verb_like]
+words = ["love", "like", "enjoy", "adore", "prefer"]
+
+[classes.verb_dislike]
+words = ["hate", "dislike", "detest", "loathe"]
+
+[classes.verb_buy]
+words = ["bought", "purchased", "got", "acquired", "received", "ordered", "picked up"]
+
+[classes.state_verbs]
+# Grammar class -- stemming would over-collapse short forms (is -> i).
+stem = false
+words = ["am", "is", "are", "was", "were", "have", "has", "had", "become", "became", "live", "work", "start"]
+
+[classes.articles]
+# Grammar class -- short tokens not suitable for stemming.
+stem = false
+words = ["the", "a", "an", "my", "your", "his", "her", "their", "our"]
+
+[classes.stopwords]
+# Grammar class -- whole-token equality only.
+stem = false
+words = ["the", "a", "an", "and", "or", "but", "so", "for", "to", "of", "in", "on", "at", "by", "with", "from", "that", "this", "these", "those", "is", "are", "have", "been", "were", "they", "about", "their", "there", "which", "would", "could", "should", "then", "than", "when", "what", "also", "into"]
+
+[classes.first_person_pronoun]
+# Grammar class -- pronouns are not stemmable.
+stem = false
+words = ["I", "i", "I'm", "I've", "I'll", "I'd"]
+
+[classes.emotion_happy]
+words = ["happy", "joyful", "delighted", "glad"]
+valence = 1.0
+intensity = 0.6
+
+[classes.emotion_excited]
+words = ["excited", "eager", "pumped"]
+valence = 1.0
+intensity = 0.8
+
+[classes.emotion_grateful]
+words = ["grateful", "thankful", "appreciative"]
+valence = 1.0
+intensity = 0.7
+
+[classes.emotion_proud]
+words = ["proud", "accomplished"]
+valence = 1.0
+intensity = 0.7
+
+[classes.emotion_relieved]
+words = ["relieved", "reassured"]
+valence = 1.0
+intensity = 0.5
+
+[classes.emotion_thrilled]
+words = ["thrilled", "ecstatic", "elated"]
+valence = 1.0
+intensity = 0.9
+
+[classes.emotion_content]
+words = ["content", "satisfied", "at_peace"]
+valence = 1.0
+intensity = 0.5
+
+[classes.emotion_sad]
+words = ["sad", "downcast", "blue", "depressed", "miserable"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_angry]
+words = ["angry", "furious", "mad", "irritated", "enraged"]
+valence = -1.0
+intensity = 0.8
+
+[classes.emotion_frustrated]
+words = ["frustrated", "exasperated"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_anxious]
+words = ["anxious", "nervous", "uneasy"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_stressed]
+words = ["stressed", "strained", "tense"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_disappointed]
+words = ["disappointed", "let_down", "discouraged"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_overwhelmed]
+words = ["overwhelmed", "swamped"]
+valence = -1.0
+intensity = 0.8
+
+[classes.emotion_lonely]
+words = ["lonely", "isolated", "alone"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_worried]
+words = ["worried", "concerned", "apprehensive"]
+valence = -1.0
+intensity = 0.5
+
+[classes.emotion_bored]
+words = ["bored", "uninterested"]
+valence = -1.0
+intensity = 0.4
+
+[classes.intensifier_weakening]
+# multiplier 0.5. Grammar-like adverbs -- no stemming.
+stem = false
+words = ["barely", "hardly"]
+
+[classes.intensifier_softening]
+# multiplier 0.6
+stem = false
+words = ["mildly"]
+
+[classes.intensifier_attenuating]
+# multiplier 0.7
+stem = false
+words = ["somewhat", "slightly", "a_bit", "kind_of", "sort_of"]
+
+[classes.intensifier_strong]
+# multiplier 1.3
+stem = false
+words = ["very", "really", "super", "totally", "deeply", "strongly", "highly", "completely", "utterly"]
+
+[classes.intensifier_very_strong]
+# multiplier 1.4
+stem = false
+words = ["absolutely", "extremely", "incredibly"]
+
+[classes.negation_marker]
+# Grammar class -- contractions and short particles, no stemming.
+stem = false
+words = ["not", "no", "never", "none", "neither", "nor", "without", "didn't", "wasn't", "isn't", "won't", "can't", "couldn't", "wouldn't", "shouldn't"]
+
+[classes.causal_strong]
+words = ["caused by", "results from", "resulted in", "produced by", "led to", "because of", "due to", "as a result", "thanks to", "triggered"]
+
+[classes.causal_context]
+words = ["after", "following", "as a result of", "given that", "since", "because", "therefore", "consequently"]
+
+[classes.causal_weak]
+# Includes both "causal action verbs" (broke / fixed -- X did something to Y)
+# and "likelihood markers" (maybe / perhaps) for shared low-confidence signal.
+words = ["maybe", "perhaps", "possibly", "might", "broke", "fixed"]
+
+[classes.filler_prefixes]
+words = ["um", "uh", "well", "so", "actually", "basically", "literally", "honestly", "you know", "like", "i mean", "anyway"]
+
+[classes.meta_stoplist]
+words = ["as an AI", "I am an AI", "I cannot", "I do not have", "as a language model", "I am unable", "I'm just", "I don't have access", "I apologize", "let me clarify", "to summarize", "in conclusion", "let me explain", "as I mentioned", "in summary", "as we discussed", "like I said", "to be clear", "for context", "moving on", "on another note", "by the way", "speaking of which"]
+
+[classes.credential_keywords]
+# Technical tokens -- stemming would distort api_key, ssh_key etc.
+stem = false
+words = ["password", "passwd", "passphrase", "secret", "api_key", "apikey", "token", "bearer", "authorization", "credential", "private_key", "ssh_key", "client_secret"]
+
+[classes.atom_decision_markers]
+# Markers that introduce a decision atom in a transcript.
+stem = false
+words = ["we will", "we should", "decided to", "chose to", "went with", "using"]
+
+[classes.atom_constraint_markers]
+# Markers that introduce a constraint or prohibition.
+stem = false
+words = ["must not", "cannot", "never", "always", "required", "forbidden", "do not"]
+
+[classes.atom_task_markers]
+# Markers that introduce a task or todo item.
+stem = false
+words = ["TODO:", "need to", "going to implement", "going to fix", "going to add", "going to build"]
+
+[classes.atom_question_markers]
+# Markers that introduce an open question.
+stem = false
+words = ["not sure", "unclear", "open question", "need to figure out"]
+
+[classes.decision_verbs]
+# Phrases that introduce a decision or action choice.
+stem = false
+words = ["decided to", "chose to", "going to", "switched to", "opted for", "picked", "went with"]
+
+[classes.identity_markers]
+# Phrases that introduce an identity claim.
+stem = false
+words = ["am a", "am an", "'m a", "'m an", "consider myself", "identify as"]
+
+[classes.value_markers]
+# Phrases that signal a personal value or belief.
+stem = false
+words = ["important to me", "matters to me", "I believe in", "I value", "I care about"]
+
+[classes.motivation_markers]
+# Phrases that signal a motivation or goal.
+stem = false
+words = ["I want to", "my goal is", "I aspire to", "I'm trying to", "I hope to", "I aim to"]
+
+[classes.favorite_marker]
+# "my favorite", "my fav", "my favourite" introducers in the favorite_regex.
+stem = false
+words = ["favorite", "fav", "favourite"]
+
+[classes.favorite_category]
+# Categories that follow the "my favorite X" introducer.
+stem = false
+words = ["food", "movie", "book", "show", "game", "song", "color", "colour", "sport", "place", "drink", "artist", "band", "author"]
+
+[classes.is_or_are]
+# Copula used inside the favorite_regex tail and by the
+# cross-pattern collision skip (extraction.rs object_starts_with_copula).
+# Enriched to cover present/past/future/perfect copula forms up-front
+# rather than waiting for missed cases in production.
+stem = false
+words = [
+  "is", "are", "am",
+  "was", "were",
+  "be", "been", "being",
+  "'s", "'re", "'m",
+]
+
+[classes.location_verbs]
+# Phrases that introduce a location change or current location.
+stem = false
+words = ["moved to", "relocated to", "live in", "living in", "staying in"]
+
+[classes.role_verbs]
+# Phrases that introduce a new role or position.
+stem = false
+words = ["started", "began", "got promoted to", "now work as", "am now", "just became"]
+
+[classes.valence_anger_intense]
+words = ["furious", "enraged", "livid", "outraged"]
+valence = -0.9
+arousal = 0.9
+
+[classes.valence_anger_mild]
+words = ["angry", "pissed", "mad", "frustrated", "annoyed", "irritated"]
+valence = -0.7
+arousal = 0.7
+
+[classes.valence_fear_intense]
+words = ["terrified", "panicked", "horrified"]
+valence = -0.8
+arousal = 0.9
+
+[classes.valence_fear_mild]
+words = ["anxious", "worried", "nervous", "stressed", "afraid", "scared"]
+valence = -0.6
+arousal = 0.6
+
+[classes.valence_sadness_intense]
+words = ["devastated", "heartbroken", "grief", "mourning"]
+valence = -0.9
+arousal = 0.3
+
+[classes.valence_sadness_mild]
+words = ["sad", "disappointed", "depressed", "miserable", "upset", "bummed"]
+valence = -0.6
+arousal = 0.3
+
+[classes.valence_fatigue]
+words = ["bored", "tired", "exhausted", "drained", "burned out", "burnt out"]
+valence = -0.3
+arousal = 0.1
+
+[classes.valence_confusion]
+words = ["confused", "lost", "stuck", "puzzled", "stumped"]
+valence = -0.3
+arousal = 0.4
+
+[classes.valence_frustration]
+words = ["crashed", "broken", "failed", "down", "error", "bug", "issue", "problem"]
+valence = -0.5
+arousal = 0.6
+
+[classes.valence_disgust]
+words = ["hate", "worst", "terrible", "awful", "horrible", "garbage", "trash"]
+valence = -0.8
+arousal = 0.5
+
+[classes.valence_joy_intense]
+words = ["ecstatic", "thrilled", "elated", "overjoyed"]
+valence = 0.9
+arousal = 0.9
+
+[classes.valence_excitement]
+words = ["excited", "pumped", "stoked", "hyped", "amazing", "incredible"]
+valence = 0.8
+arousal = 0.8
+
+[classes.valence_joy_mild]
+words = ["happy", "glad", "pleased", "delighted", "great", "awesome", "fantastic"]
+valence = 0.7
+arousal = 0.6
+
+[classes.valence_pride]
+words = ["proud", "accomplished", "nailed", "crushed it", "killed it"]
+valence = 0.7
+arousal = 0.6
+
+[classes.valence_satisfaction]
+words = ["satisfied", "content", "good", "nice", "fine", "pleasant", "comfortable"]
+valence = 0.4
+arousal = 0.3
+
+[classes.valence_calm]
+words = ["calm", "relaxed", "peaceful", "serene", "chill"]
+valence = 0.3
+arousal = 0.1
+
+[classes.valence_gratitude]
+words = ["grateful", "thankful", "appreciate"]
+valence = 0.6
+arousal = 0.3
+
+[classes.valence_curiosity]
+words = ["curious", "interested", "intrigued", "fascinated"]
+valence = 0.4
+arousal = 0.5
+
+[classes.valence_accomplishment]
+words = ["fixed", "resolved", "working", "deployed", "shipped", "launched", "completed", "done", "finished"]
+valence = 0.5
+arousal = 0.5
+
+[classes.valence_admiration]
+words = ["love", "perfect", "beautiful", "elegant", "clean", "brilliant"]
+valence = 0.7
+arousal = 0.4
+
+[classes.valence_surprise]
+words = ["surprised", "unexpected", "wow", "whoa"]
+valence = 0.0
+arousal = 0.7
+
+[classes.sentiment_pos5]
+# AFINN +5 (strong positive)
+words = ["love", "adore", "excellent", "amazing", "fantastic", "brilliant", "wonderful", "outstanding", "superb", "perfect", "incredible", "magnificent", "phenomenal", "exceptional", "flawless", "spectacular", "breathtaking", "glorious", "marvelous", "supreme"]
+
+[classes.sentiment_pos4]
+# AFINN +4
+words = ["bliss", "blissful", "thrilled", "overjoyed", "ecstatic", "elated", "exhilarating", "exquisite", "fascinating", "inspiring", "joyful", "passionate", "radiant", "triumph", "triumphant", "victorious", "delightful", "euphoric", "masterful", "treasured"]
+
+[classes.sentiment_pos3]
+# AFINN +3
+words = ["good", "great", "nice", "enjoy", "happy", "helpful", "pleased", "glad", "pleasant", "cheerful", "confident", "delighted", "eager", "enthusiastic", "fun", "generous", "grateful", "lovely", "motivated", "optimistic", "proud", "refreshing", "rewarding", "satisfied", "successful", "upbeat", "worthwhile", "excited", "energized", "inspired", "courageous", "peaceful", "vindicated", "empowered", "elegant", "robust", "innovative", "seamless", "powerful"]
+
+[classes.sentiment_pos2]
+# AFINN +2
+words = ["like", "fine", "comfortable", "positive", "creative", "friendly", "honest", "hopeful", "kind", "reliable", "smile", "supportive", "trusted", "valued", "welcoming", "content", "relieved", "determined", "amused", "clean", "concise", "efficient", "scalable", "maintainable", "readable", "resilient", "performant", "intuitive", "automated", "responsive", "fast", "flexible", "polished", "complete", "documented", "tested", "secure"]
+
+[classes.sentiment_pos1]
+# AFINN +1
+words = ["ok", "okay", "decent", "fair", "acceptable", "adequate", "alright", "reasonable", "solid", "calm", "steady", "workable", "useful", "functional", "stable", "manageable", "tolerable", "passable", "suitable", "serviceable", "bearable", "capable", "clear", "consistent", "constructive", "interesting", "neat", "polite", "practical", "professional", "nostalgic", "curious", "surprised", "modern", "patched", "working"]
+
+[classes.sentiment_neg1]
+# AFINN -1
+words = ["boring", "mediocre", "bland", "dull", "average", "forgettable", "plain", "flat", "meh", "uninspiring", "uninteresting", "lackluster", "generic", "basic", "stale", "mundane", "tedious", "tiresome", "uninspired", "unremarkable", "vague", "weak", "overrated", "hollow", "dry", "repetitive", "redundant", "routine", "predictable", "ordinary", "nervous", "bored", "restless", "suspicious", "conflicted", "baffled", "shocked", "verbose", "deprecated", "outdated", "underengineered", "rigid", "rough", "incomplete", "undocumented"]
+
+[classes.sentiment_neg2]
+# AFINN -2
+words = ["bad", "annoying", "disappointing", "difficult", "ugly", "poor", "slow", "confusing", "awkward", "buggy", "clunky", "complicated", "dirty", "failed", "flawed", "harsh", "ignorant", "inefficient", "inferior", "irritating", "lazy", "limited", "messy", "problematic", "unpleasant", "unstable", "wasteful", "wrong", "sad", "anxious", "worried", "melancholy", "lonely", "isolated", "stressed", "exhausted", "apathetic", "discouraged", "embarrassed", "irritable", "regretful", "envious", "jealous", "disturbed", "intimidated", "hacky", "fragile", "bloated", "convoluted", "overengineered", "cumbersome", "sluggish", "untested"]
+
+[classes.sentiment_neg3]
+# AFINN -3
+words = ["frustrating", "broken", "corrupt", "cruel", "dangerous", "failure", "harmful", "hostile", "insulting", "misleading", "offensive", "reckless", "rude", "stupid", "terrible", "unreliable", "useless", "desperate", "overwhelmed", "fearful", "ashamed", "resentful", "offended", "vulnerable"]
+
+[classes.sentiment_neg4]
+# AFINN -4
+words = ["miserable", "toxic", "pathetic", "terrifying", "unbearable", "unacceptable", "outrageous", "infuriating", "agonizing", "depressing", "deplorable", "demoralizing", "degrading", "humiliating", "shameful", "pitiful", "hopeless", "horrified", "betrayed", "humiliated"]
+
+[classes.sentiment_neg5]
+# AFINN -5
+words = ["hate", "awful", "horrible", "disgusting", "dreadful", "devastating", "atrocious", "abysmal", "abominable", "appalling", "catastrophic", "despicable", "disastrous", "evil", "execrable", "horrendous", "loathe", "loathing", "monstrous", "nightmarish", "repulsive", "revolting", "ruinous", "vile", "wretched"]
+
+[classes.domain_food]
+words = ["food", "eat", "cook", "drink", "pizza", "coffee", "breakfast", "lunch", "dinner", "snack", "restaurant", "recipe", "grocer"]
+
+[classes.domain_entertainment]
+words = ["movie", "show", "series", "watch"]
+
+[classes.domain_reading]
+words = ["book", "read", "author"]
+
+[classes.domain_music]
+words = ["music", "song", "band", "listen"]
+
+[classes.domain_gaming]
+words = ["game", "play"]
+
+[classes.domain_fitness]
+words = ["sport", "exercise", "run", "gym"]
+
+[classes.domain_travel]
+words = ["travel", "visit", "trip"]
+
+[classes.prohibition_marker]
+words = ["forbidden", "prohibited", "not allowed", "denied", "blocked", "restricted", "must not", "shall not", "never", "do not", "don't", "banned"]
+
+# ---------------------------------------------------------------------------
+# extraction.rs unit-specific patterns (buy/spent/have/exercise/
+# made/earned). EN convention: currency goes BEFORE the amount ($50). FR uses
+# the suffix convention (50 euros). Each language populates only the
+# convention it natively uses; the helper picks the non-empty class.
+# ---------------------------------------------------------------------------
+
+[classes.extract_buy_verbs]
+stem = true
+words = ["bought", "purchased", "got", "acquired", "received", "ordered", "picked up"]
+
+[classes.extract_spent_verbs]
+stem = true
+words = ["spent", "paid"]
+
+[classes.extract_spent_preposition]
+stem = false
+words = ["on", "for"]
+
+[classes.extract_have_verbs]
+stem = true
+words = ["have", "has", "own", "got", "owns"]
+
+[classes.extract_exercise_verbs]
+stem = true
+words = ["ran", "jogged", "walked", "hiked", "swam", "cycled", "biked", "exercised"]
+
+[classes.extract_made_verbs]
+stem = true
+words = ["made", "baked", "cooked", "prepared"]
+
+[classes.extract_earned_verbs]
+stem = true
+words = ["earned", "made", "received", "got"]
+
+[classes.extract_earned_preposition]
+stem = false
+words = ["from", "for", "in"]
+
+[classes.currency_symbols_prefix]
+stem = false
+words = ["$", "USD"]
+
+[classes.currency_symbols_suffix]
+stem = false
+words = []
+
+[classes.time_units]
+stem = false
+words = ["hours", "hour", "minutes", "minute", "mins", "min"]
+
+[classes.distance_units]
+stem = false
+words = ["miles", "mile", "km", "kilometers", "kilometer"]
