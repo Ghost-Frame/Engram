@@ -1,12 +1,59 @@
 // ============================================================================
 // SENTIMENT LEXICON -- AFINN-style word map for rule-based personality analysis
-// Values range from -5 (most negative) to +5 (most positive)
+// Values range from -5 (most negative) to +5 (most positive).
+//
+// Patch 38 L2 site 12 -- the prior hardcoded English-only entry list is now
+// sourced from the i18n lexicon (sentiment_pos5 through sentiment_neg5 classes
+// per language). Words are folded with fold_word_for_class so French entries
+// like "désespéré" match user input that drops the accents or uses a related
+// inflection (sentiment classes default to stem = true in the TOML).
 // ============================================================================
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-static SENTIMENT_LEXICON: LazyLock<HashMap<&'static str, i32>> = LazyLock::new(|| {
+const SENTIMENT_BUCKETS: &[(&str, i32)] = &[
+    ("sentiment_pos5", 5),
+    ("sentiment_pos4", 4),
+    ("sentiment_pos3", 3),
+    ("sentiment_pos2", 2),
+    ("sentiment_pos1", 1),
+    ("sentiment_neg1", -1),
+    ("sentiment_neg2", -2),
+    ("sentiment_neg3", -3),
+    ("sentiment_neg4", -4),
+    ("sentiment_neg5", -5),
+];
+
+/// Pre-built map from folded-word to score, assembled once on first access
+/// from the i18n lexicon. The fold uses each class's `stem` metadata, so
+/// stemming is on for these sentiment buckets and folding is symmetric
+/// between this map and lookups in `score_word` / `score_text_sum`.
+///
+/// The map intentionally uses `String` keys (not `&'static str`) because the
+/// underlying lexicon source can be a runtime override file (TTL-cached).
+/// Refreshing the map requires a process restart, which is acceptable for
+/// AFINN-style buckets that change very infrequently.
+static SENTIMENT_MAP: LazyLock<HashMap<String, i32>> = LazyLock::new(|| {
+    let mut map: HashMap<String, i32> = HashMap::new();
+    for lang in crate::lexicon::supported_languages() {
+        for (class, score) in SENTIMENT_BUCKETS {
+            for word in crate::lexicon::word_class(&lang, class) {
+                let folded = crate::lexicon::fold_word_for_class(&word, &lang, class);
+                map.entry(folded).or_insert(*score);
+            }
+        }
+    }
+    map
+});
+
+// Embedded fallback list, kept here only as a no-op reference for the few
+// downstream tests that hardcoded specific (word, score) pairs. The
+// SENTIMENT_MAP above is the authoritative source. This block is wrapped
+// in #[cfg(test)] so it does not contribute to the production binary.
+#[cfg(test)]
+#[allow(dead_code)]
+static _SENTIMENT_LEXICON_REFERENCE: LazyLock<HashMap<&'static str, i32>> = LazyLock::new(|| {
     let entries: &[(&str, i32)] = &[
         // Strong positive (4-5)
         ("love", 5),
@@ -344,9 +391,17 @@ static SENTIMENT_LEXICON: LazyLock<HashMap<&'static str, i32>> = LazyLock::new(|
 });
 
 /// Look up the sentiment score for a single word.
-/// Returns None if the word is not in the lexicon.
+/// Returns None if the word is not in the lexicon. Folds the input through
+/// every supported language until one yields a hit; this allows the caller
+/// to feed raw text without committing to a single source language.
 pub fn score_word(word: &str) -> Option<i32> {
-    SENTIMENT_LEXICON.get(word.to_lowercase().as_str()).copied()
+    for lang in crate::lexicon::supported_languages() {
+        let folded = crate::lexicon::fold_for_matching(word, &lang, true);
+        if let Some(&score) = SENTIMENT_MAP.get(&folded) {
+            return Some(score);
+        }
+    }
+    None
 }
 
 /// Compute the average sentiment score for a block of text.
@@ -366,15 +421,23 @@ pub fn score_text_sum(text: &str) -> (i64, u32) {
     let mut sum: i64 = 0;
     let mut count: u32 = 0;
 
+    let langs = crate::lexicon::supported_languages();
     for word in text.split_whitespace() {
         let cleaned: &str = word.trim_matches(|c: char| !c.is_alphanumeric());
         if cleaned.is_empty() {
             continue;
         }
-        let lower = cleaned.to_lowercase();
-        if let Some(&score) = SENTIMENT_LEXICON.get(lower.as_str()) {
-            sum += score as i64;
-            count += 1;
+        // Try every supported language until one yields a hit. AFINN-style
+        // sentiment scoring is additive across the text, so each matched
+        // word contributes once. Different inflections that fold to the
+        // same stem are counted once each (loved + loving -> two hits).
+        for lang in &langs {
+            let folded = crate::lexicon::fold_for_matching(cleaned, lang, true);
+            if let Some(&score) = SENTIMENT_MAP.get(&folded) {
+                sum += score as i64;
+                count += 1;
+                break;
+            }
         }
     }
 

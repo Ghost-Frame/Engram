@@ -1,0 +1,472 @@
+schema_version = 1
+language = "fr"
+
+# French baseline lexicon for the kleos-lib intelligence pipeline.
+# The runtime matcher folds inputs and
+# lexicon entries through lowercase + Unicode-NFD diacritic strip +
+# optional Snowball stemming (lexicon::fold_for_matching). The TOML
+# can therefore carry the orthographically-correct French forms with
+# their proper accents -- the matcher reconciles user input that
+# omits accents or uses inflected forms (aimer / aimee / aimait).
+
+[classes.verb_like]
+words = ["aimer", "adorer", "apprécier", "préférer", "kiffer"]
+
+[classes.verb_dislike]
+words = ["détester", "haïr", "ne pas aimer", "ne pas supporter"]
+
+[classes.verb_buy]
+words = ["acheter", "acheté", "achetée", "achetés", "achetées", "acquis", "commandé", "reçu"]
+
+[classes.state_verbs]
+# Grammar class -- short forms not suitable for stemming.
+stem = false
+words = ["est", "suis", "es", "sont", "était", "étaient", "a", "ai", "as", "avons", "avez", "ont", "habite", "habites", "habitons", "habitez", "habitent", "travaille", "travailles", "travaillons", "travaillez", "travaillent", "devient", "deviens", "devenons", "commence", "déménage"]
+
+[classes.articles]
+# Grammar class -- short tokens not stemmable.
+stem = false
+words = ["le", "la", "les", "un", "une", "des", "du", "de", "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses", "notre", "votre", "leur"]
+
+[classes.stopwords]
+# Grammar class -- whole-token equality only.
+stem = false
+words = ["et", "ou", "mais", "donc", "car", "que", "qui", "dont", "ce", "cette", "ces", "à", "de", "du", "des", "en", "sur", "sous", "dans", "par", "pour", "avec", "ont", "étaient", "leur", "leurs", "ils", "elles", "été", "propos", "lequel", "laquelle", "quel", "quelle", "serait", "pourrait", "devrait", "alors", "quand", "quoi", "aussi"]
+
+[classes.first_person_pronoun]
+# Grammar class -- pronouns are not stemmable.
+stem = false
+words = ["je", "j'", "j'ai", "moi", "me", "m'"]
+
+[classes.emotion_happy]
+words = ["heureux", "heureuse", "joyeux", "joyeuse"]
+valence = 1.0
+intensity = 0.6
+
+[classes.emotion_excited]
+words = ["excité", "excitée", "enthousiaste", "impatient", "impatiente"]
+valence = 1.0
+intensity = 0.8
+
+[classes.emotion_grateful]
+words = ["reconnaissant", "reconnaissante", "redevable"]
+valence = 1.0
+intensity = 0.7
+
+[classes.emotion_proud]
+words = ["fier", "fière"]
+valence = 1.0
+intensity = 0.7
+
+[classes.emotion_relieved]
+words = ["soulagé", "soulagée", "rassuré", "rassurée"]
+valence = 1.0
+intensity = 0.5
+
+[classes.emotion_thrilled]
+words = ["enchanté", "enchantée", "ravi", "ravie", "comblé", "comblée"]
+valence = 1.0
+intensity = 0.9
+
+[classes.emotion_content]
+words = ["content", "contente", "satisfait", "satisfaite"]
+valence = 1.0
+intensity = 0.5
+
+[classes.emotion_sad]
+words = ["triste", "abattu", "abattue", "dépité", "dépitée"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_angry]
+words = ["en colère", "furieux", "furieuse", "irrité", "irritée", "enragé", "enragée"]
+valence = -1.0
+intensity = 0.8
+
+[classes.emotion_frustrated]
+words = ["frustré", "frustrée", "exaspéré", "exaspérée"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_anxious]
+words = ["anxieux", "anxieuse", "inquiet", "inquiète", "nerveux", "nerveuse"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_stressed]
+words = ["stressé", "stressée", "tendu", "tendue"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_disappointed]
+words = ["déçu", "déçue", "découragé", "découragée"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_overwhelmed]
+words = ["dépassé", "dépassée", "submergé", "submergée"]
+valence = -1.0
+intensity = 0.8
+
+[classes.emotion_lonely]
+words = ["seul", "seule", "solitaire", "isolé", "isolée"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_worried]
+words = ["soucieux", "soucieuse", "préoccupé", "préoccupée"]
+valence = -1.0
+intensity = 0.5
+
+[classes.emotion_bored]
+words = ["ennuyé", "ennuyée", "blasé", "blasée"]
+valence = -1.0
+intensity = 0.4
+
+[classes.intensifier_weakening]
+# multiplier 0.5. Grammar-like adverbs -- no stemming.
+stem = false
+words = ["à peine", "presque pas"]
+
+[classes.intensifier_softening]
+# multiplier 0.6
+stem = false
+words = ["doucement", "mollement"]
+
+[classes.intensifier_attenuating]
+# multiplier 0.7
+stem = false
+words = ["un peu", "quelque peu", "plutôt", "légèrement", "modéré"]
+
+[classes.intensifier_strong]
+# multiplier 1.3
+stem = false
+words = ["vraiment", "très", "fort", "totalement", "complètement", "profondément", "fortement", "hautement"]
+
+[classes.intensifier_very_strong]
+# multiplier 1.4
+stem = false
+words = ["absolument", "extrêmement", "incroyablement"]
+
+[classes.negation_marker]
+# Grammar class -- contractions and short particles, no stemming.
+stem = false
+words = ["non", "pas", "jamais", "aucun", "aucune", "ni", "sans", "n'est pas", "n'a pas", "n'était pas", "ne va pas"]
+
+[classes.causal_strong]
+words = ["causé par", "résulte de", "résulte en", "provoqué par", "du fait de", "à cause de", "en raison de", "grâce à", "déclenché"]
+
+[classes.causal_context]
+words = ["après", "suite à", "compte tenu de", "étant donné", "depuis", "parce que", "donc", "par conséquent"]
+
+[classes.causal_weak]
+# Voir en.toml: mélange likelihood + verbes d action causale (broke/fixed équivalent FR).
+words = ["peut-être", "possiblement", "probablement", "pourrait", "cassé", "réparé"]
+
+[classes.filler_prefixes]
+words = ["euh", "ben", "alors", "donc", "voilà", "tu sais", "en fait", "honnêtement", "je veux dire", "bref", "bon"]
+
+[classes.meta_stoplist]
+words = ["en tant qu'IA", "je suis une IA", "je ne peux pas", "je n'ai pas", "en tant que modèle de langage", "je ne suis pas en mesure", "je m'excuse", "pour clarifier", "pour résumer", "en conclusion", "laisse-moi expliquer", "comme je l'ai dit", "en résumé", "comme nous en avons parlé", "pour être clair", "pour le contexte", "passons", "à propos", "au fait"]
+
+[classes.credential_keywords]
+# Technical tokens -- stemming would distort api_key, clé_ssh, etc.
+stem = false
+words = ["mot de passe", "mot_de_passe", "secret", "api_key", "apikey", "jeton", "token", "bearer", "autorisation", "credential", "clé_privée", "clé_ssh", "client_secret"]
+
+[classes.atom_decision_markers]
+# Marqueurs introduisant une décision dans un transcript.
+stem = false
+words = ["nous allons", "nous devrions", "on va", "décidé de", "choisi de", "parti avec", "en utilisant", "utilisant"]
+
+[classes.atom_constraint_markers]
+# Marqueurs introduisant une contrainte ou interdiction.
+stem = false
+words = ["ne doit pas", "ne peut pas", "jamais", "toujours", "requis", "interdit", "ne pas"]
+
+[classes.atom_task_markers]
+# Marqueurs introduisant une tâche.
+stem = false
+words = ["TODO:", "à faire", "besoin de", "va implémenter", "va corriger", "va ajouter", "va construire", "il faut"]
+
+[classes.atom_question_markers]
+# Marqueurs introduisant une question ouverte.
+stem = false
+words = ["pas sûr", "pas clair", "question ouverte", "besoin de comprendre", "à éclaircir"]
+
+[classes.decision_verbs]
+# Phrases introduisant une décision ou un choix d'action.
+stem = false
+words = ["décidé de", "choisi de", "vais", "suis passé à", "suis passée à", "opté pour", "pris", "est allé avec", "ai pris"]
+
+[classes.identity_markers]
+# Phrases introduisant une revendication d'identité.
+stem = false
+words = ["suis un", "suis une", "me considère comme", "m'identifie comme", "me définis comme"]
+
+[classes.value_markers]
+# Phrases signalant une valeur ou une croyance personnelle.
+stem = false
+words = ["important pour moi", "compte pour moi", "je crois en", "je valorise", "je tiens à"]
+
+[classes.motivation_markers]
+# Phrases signalant une motivation ou un objectif.
+stem = false
+words = ["je veux", "mon objectif est", "j'aspire à", "j'essaie de", "j'espère", "je vise à", "je souhaite"]
+
+[classes.favorite_marker]
+# Marqueurs d'introduction "mon préféré", "ma préférée", etc.
+stem = false
+words = ["préféré", "préférée", "préférés", "préférées", "favori", "favorite", "favoris", "favorites"]
+
+[classes.favorite_category]
+# Catégories qui suivent "mon X préféré".
+stem = false
+words = ["plat", "film", "livre", "série", "jeu", "chanson", "couleur", "sport", "endroit", "boisson", "artiste", "groupe", "auteur", "nourriture"]
+
+[classes.is_or_are]
+# Copule utilisée dans le motif favorite_regex et par le filtre
+# cross-pattern collision skip (extraction.rs object_starts_with_copula).
+# Enrichi pour couvrir indicatif présent/imparfait/futur + subjonctif courants
+# au lieu d'attendre des cas oubliés en production.
+stem = false
+words = [
+  "est", "sont", "suis", "es", "sommes", "êtes",
+  "était", "étaient", "étais", "étions", "étiez",
+  "sera", "seront", "serai", "seras", "serez", "serons",
+  "serait", "seraient", "serais", "serions", "seriez",
+  "soit", "soient", "sois", "soyons", "soyez",
+  "être", "été",
+]
+
+[classes.location_verbs]
+# Phrases introduisant un changement ou un état de localisation.
+stem = false
+words = ["déménagé à", "déménagé vers", "habite à", "vis à", "vis en", "reste à", "installé à", "installée à"]
+
+[classes.role_verbs]
+# Phrases introduisant un nouveau rôle ou poste.
+stem = false
+words = ["commencé", "débuté", "promu", "travaille maintenant comme", "suis maintenant", "viens de devenir", "promue"]
+
+[classes.valence_anger_intense]
+words = ["furieux", "furieuse", "enragé", "enragée", "déchaîné", "déchaînée", "ulcéré", "ulcérée"]
+valence = -0.9
+arousal = 0.9
+
+[classes.valence_anger_mild]
+words = ["en colère", "fâché", "fâchée", "irrité", "irritée", "agacé", "agacée", "énervé", "énervée"]
+valence = -0.7
+arousal = 0.7
+
+[classes.valence_fear_intense]
+words = ["terrifié", "terrifiée", "paniqué", "paniquée", "horrifié", "horrifiée"]
+valence = -0.8
+arousal = 0.9
+
+[classes.valence_fear_mild]
+words = ["anxieux", "anxieuse", "inquiet", "inquiète", "nerveux", "nerveuse", "stressé", "stressée", "effrayé", "effrayée"]
+valence = -0.6
+arousal = 0.6
+
+[classes.valence_sadness_intense]
+words = ["dévasté", "dévastée", "anéanti", "anéantie", "deuil", "endeuillé", "endeuillée"]
+valence = -0.9
+arousal = 0.3
+
+[classes.valence_sadness_mild]
+words = ["triste", "déçu", "déçue", "déprimé", "déprimée", "misérable", "abattu", "abattue"]
+valence = -0.6
+arousal = 0.3
+
+[classes.valence_fatigue]
+words = ["ennuyé", "ennuyée", "fatigué", "fatiguée", "épuisé", "épuisée", "vidé", "vidée", "à plat", "lessivé", "lessivée"]
+valence = -0.3
+arousal = 0.1
+
+[classes.valence_confusion]
+words = ["confus", "confuse", "perdu", "perdue", "bloqué", "bloquée", "perplexe"]
+valence = -0.3
+arousal = 0.4
+
+[classes.valence_frustration]
+words = ["planté", "cassé", "échoué", "en panne", "erreur", "bug", "souci", "problème"]
+valence = -0.5
+arousal = 0.6
+
+[classes.valence_disgust]
+words = ["déteste", "pire", "terrible", "affreux", "horrible", "infâme", "poubelle"]
+valence = -0.8
+arousal = 0.5
+
+[classes.valence_joy_intense]
+words = ["aux anges", "comblé", "comblée", "transporté", "transportée", "extasié", "extasiée"]
+valence = 0.9
+arousal = 0.9
+
+[classes.valence_excitement]
+words = ["excité", "excitée", "enthousiasmé", "enthousiasmée", "incroyable", "génial", "géniale"]
+valence = 0.8
+arousal = 0.8
+
+[classes.valence_joy_mild]
+words = ["heureux", "heureuse", "content", "contente", "ravi", "ravie", "super", "chouette"]
+valence = 0.7
+arousal = 0.6
+
+[classes.valence_pride]
+words = ["fier", "fière", "accompli", "accomplie", "réussi", "réussie"]
+valence = 0.7
+arousal = 0.6
+
+[classes.valence_satisfaction]
+words = ["satisfait", "satisfaite", "content", "contente", "bien", "agréable", "confortable"]
+valence = 0.4
+arousal = 0.3
+
+[classes.valence_calm]
+words = ["calme", "détendu", "détendue", "paisible", "serein", "sereine", "tranquille"]
+valence = 0.3
+arousal = 0.1
+
+[classes.valence_gratitude]
+words = ["reconnaissant", "reconnaissante", "merci", "apprécie"]
+valence = 0.6
+arousal = 0.3
+
+[classes.valence_curiosity]
+words = ["curieux", "curieuse", "intéressé", "intéressée", "intrigué", "intriguée", "fasciné", "fascinée"]
+valence = 0.4
+arousal = 0.5
+
+[classes.valence_accomplishment]
+words = ["corrigé", "résolu", "résolue", "fonctionne", "déployé", "livré", "terminé", "fini", "achevé"]
+valence = 0.5
+arousal = 0.5
+
+[classes.valence_admiration]
+words = ["adore", "parfait", "parfaite", "beau", "belle", "élégant", "élégante", "propre", "brillant", "brillante"]
+valence = 0.7
+arousal = 0.4
+
+[classes.valence_surprise]
+words = ["surpris", "surprise", "inattendu", "inattendue", "wow"]
+valence = 0.0
+arousal = 0.7
+
+[classes.sentiment_pos5]
+# Sélection FR équivalente à AFINN +5
+words = ["aimer", "adorer", "excellent", "formidable", "fantastique", "brillant", "merveilleux", "parfait", "incroyable", "magnifique", "exceptionnel", "génial", "sublime", "extraordinaire"]
+
+[classes.sentiment_pos4]
+# +4
+words = ["ravi", "comblé", "enchanté", "extase", "passionné", "triomphe", "triomphant", "victorieux", "délicieux", "fascinant", "inspirant", "radieux", "euphorique"]
+
+[classes.sentiment_pos3]
+# +3
+words = ["bon", "super", "sympa", "plaisant", "agréable", "heureux", "content", "fier", "motivé", "optimiste", "satisfait", "enthousiaste", "joyeux", "fier", "génial", "encouragé", "inspiré", "courageux", "paisible", "élégant", "robuste", "innovant", "puissant"]
+
+[classes.sentiment_pos2]
+# +2
+words = ["bien", "correct", "confortable", "positif", "créatif", "gentil", "honnête", "fiable", "utile", "efficace", "propre", "concis", "lisible", "soutenant", "résilient", "intuitif", "automatisé", "réactif", "rapide", "flexible", "poli", "complet", "documenté", "testé", "sécurisé"]
+
+[classes.sentiment_pos1]
+# +1
+words = ["ok", "décent", "juste", "acceptable", "raisonnable", "stable", "gérable", "clair", "intéressant", "moderne", "calme", "fonctionnel", "constant", "utilisable", "convenable", "pratique", "professionnel", "patché", "fonctionne", "constructif", "cohérent", "capable", "nostalgique", "curieux", "surpris"]
+
+[classes.sentiment_neg1]
+# -1
+words = ["ennuyeux", "médiocre", "fade", "plat", "oubliable", "vague", "faible", "banal", "basique", "répétitif", "ordinaire", "creux", "sec", "moyen", "ennuyeuse", "ennuyée", "redondant", "routinier", "prévisible", "terne", "nerveux", "agité", "suspicieux", "perplexe", "choqué", "verbeux", "déprécié", "obsolète", "rigide", "rugueux", "incomplet", "non_documenté"]
+
+[classes.sentiment_neg2]
+# -2
+words = ["mauvais", "agaçant", "décevant", "difficile", "laid", "pauvre", "lent", "confus", "maladroit", "compliqué", "sale", "échoué", "défectueux", "dur", "ignorant", "paresseux", "limité", "désordonné", "problématique", "déplaisant", "anxieux", "inquiet", "mélancolique", "seul", "isolé", "stressé", "épuisé", "apathique", "découragé", "gêné", "irritable", "regrettable", "envieux", "jaloux", "perturbé", "intimidé", "bricolé", "fragile", "boursouflé", "alambiqué", "lourd", "léthargique", "non_testé"]
+
+[classes.sentiment_neg3]
+# -3
+words = ["frustrant", "cassé", "corrompu", "cruel", "dangereux", "échec", "nuisible", "hostile", "insultant", "trompeur", "offensant", "imprudent", "grossier", "stupide", "terrible", "peu_fiable", "inutile", "désespéré", "dépassé", "submergé", "peureux", "honteux", "rancunier", "offensé", "vulnérable"]
+
+[classes.sentiment_neg4]
+# -4
+words = ["misérable", "toxique", "pathétique", "terrifiant", "insupportable", "inacceptable", "scandaleux", "exaspérant", "agonisant", "déprimant", "déplorable", "démoralisant", "dégradant", "humiliant", "lamentable", "pitoyable", "sans_espoir", "horrifié", "trahi", "humilié"]
+
+[classes.sentiment_neg5]
+# -5
+words = ["haïr", "affreux", "horrible", "dégoûtant", "épouvantable", "dévastateur", "atroce", "abominable", "abject", "catastrophique", "méprisable", "désastreux", "mal", "exécrable", "horrifique", "répugnant", "révoltant", "ruineux", "vil", "monstrueux", "cauchemardesque"]
+
+[classes.domain_food]
+words = ["nourriture", "manger", "cuisiner", "boire", "pizza", "café", "petit-déjeuner", "déjeuner", "dîner", "repas", "restaurant", "recette", "épicerie", "boulangerie"]
+
+[classes.domain_entertainment]
+words = ["film", "série", "regarder", "spectacle", "cinéma"]
+
+[classes.domain_reading]
+words = ["livre", "lire", "auteur", "lecture", "roman"]
+
+[classes.domain_music]
+words = ["musique", "chanson", "groupe", "écouter", "album"]
+
+[classes.domain_gaming]
+words = ["jeu", "jouer", "console"]
+
+[classes.domain_fitness]
+words = ["sport", "exercice", "courir", "gym", "fitness", "course"]
+
+[classes.domain_travel]
+words = ["voyage", "voyager", "visiter", "trajet", "destination"]
+
+[classes.prohibition_marker]
+words = ["interdit", "interdite", "prohibé", "prohibée", "non autorisé", "refusé", "bloqué", "restreint", "ne doit pas", "ne peut pas", "jamais", "ne pas", "banni"]
+
+# ---------------------------------------------------------------------------
+# extraction.rs unit-specific patterns. FR convention:
+# currency goes AFTER the amount (50 euros, 50€).
+# ---------------------------------------------------------------------------
+
+[classes.extract_buy_verbs]
+stem = true
+words = ["acheté", "achetée", "acquis", "acquise", "reçu", "reçue", "commandé", "commandée", "pris", "prise"]
+
+[classes.extract_spent_verbs]
+stem = true
+words = ["dépensé", "dépensée", "payé", "payée", "réglé", "réglée", "déboursé", "déboursée"]
+
+[classes.extract_spent_preposition]
+stem = false
+words = ["pour", "en", "sur"]
+
+[classes.extract_have_verbs]
+stem = true
+words = ["possède", "possèdes", "possèdent", "ai", "avons", "as", "ont"]
+
+[classes.extract_exercise_verbs]
+stem = true
+words = ["couru", "marché", "randonné", "nagé", "pédalé", "fait", "parcouru"]
+
+[classes.extract_made_verbs]
+stem = true
+words = ["fait", "cuit", "cuisiné", "préparé", "préparée", "réalisé", "réalisée"]
+
+[classes.extract_earned_verbs]
+stem = true
+words = ["gagné", "gagnée", "reçu", "reçue", "touché", "touchée", "obtenu", "obtenue"]
+
+[classes.extract_earned_preposition]
+stem = false
+words = ["pour", "par", "en", "de", "depuis"]
+
+[classes.currency_symbols_prefix]
+stem = false
+words = []
+
+[classes.currency_symbols_suffix]
+stem = false
+words = ["€", "EUR", "euros", "euro"]
+
+[classes.time_units]
+stem = false
+words = ["heures", "heure", "minutes", "minute", "mins", "min", "h"]
+
+[classes.distance_units]
+stem = false
+words = ["kilomètres", "kilomètre", "km", "mètres", "mètre"]

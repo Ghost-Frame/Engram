@@ -18,120 +18,76 @@ struct EmotionPattern {
     arousal: f64,
 }
 
-static EMOTION_PATTERNS: LazyLock<Vec<EmotionPattern>> = LazyLock::new(|| {
-    vec![
-        ep(r"\b(furious|enraged|livid|outraged)\b", "anger", -0.9, 0.9),
-        ep(
-            r"\b(angry|pissed|mad|frustrated|annoyed|irritated)\b",
-            "anger",
-            -0.7,
-            0.7,
-        ),
-        ep(r"\b(terrified|panicked|horrified)\b", "fear", -0.8, 0.9),
-        ep(
-            r"\b(anxious|worried|nervous|stressed|afraid|scared)\b",
-            "fear",
-            -0.6,
-            0.6,
-        ),
-        ep(
-            r"\b(devastated|heartbroken|grief|mourning)\b",
-            "sadness",
-            -0.9,
-            0.3,
-        ),
-        ep(
-            r"\b(sad|disappointed|depressed|miserable|upset|bummed)\b",
-            "sadness",
-            -0.6,
-            0.3,
-        ),
-        ep(
-            r"\b(bored|tired|exhausted|drained|burned out|burnt out)\b",
-            "fatigue",
-            -0.3,
-            0.1,
-        ),
-        ep(
-            r"\b(confused|lost|stuck|puzzled|stumped)\b",
-            "confusion",
-            -0.3,
-            0.4,
-        ),
-        ep(
-            r"\b(crashed|broken|failed|down|error|bug|issue|problem)\b",
-            "frustration",
-            -0.5,
-            0.6,
-        ),
-        ep(
-            r"\b(hate|worst|terrible|awful|horrible|garbage|trash)\b",
-            "disgust",
-            -0.8,
-            0.5,
-        ),
-        ep(r"\b(ecstatic|thrilled|elated|overjoyed)\b", "joy", 0.9, 0.9),
-        ep(
-            r"\b(excited|pumped|stoked|hyped|amazing|incredible)\b",
-            "excitement",
-            0.8,
-            0.8,
-        ),
-        ep(
-            r"\b(happy|glad|pleased|delighted|great|awesome|fantastic)\b",
-            "joy",
-            0.7,
-            0.6,
-        ),
-        ep(
-            r"\b(proud|accomplished|nailed|crushed it|killed it)\b",
-            "pride",
-            0.7,
-            0.6,
-        ),
-        ep(
-            r"\b(satisfied|content|good|nice|fine|pleasant|comfortable)\b",
-            "satisfaction",
-            0.4,
-            0.3,
-        ),
-        ep(
-            r"\b(calm|relaxed|peaceful|serene|chill)\b",
-            "calm",
-            0.3,
-            0.1,
-        ),
-        ep(r"\b(grateful|thankful|appreciate)\b", "gratitude", 0.6, 0.3),
-        ep(
-            r"\b(curious|interested|intrigued|fascinated)\b",
-            "curiosity",
-            0.4,
-            0.5,
-        ),
-        ep(
-            r"\b(fixed|resolved|working|deployed|shipped|launched|completed|done|finished)\b",
-            "accomplishment",
-            0.5,
-            0.5,
-        ),
-        ep(
-            r"\b(love|perfect|beautiful|elegant|clean|brilliant)\b",
-            "admiration",
-            0.7,
-            0.4,
-        ),
-        ep(r"\b(surprised|unexpected|wow|whoa)\b", "surprise", 0.0, 0.7),
-    ]
-});
+/// Patch 38 L2.B 4/4 -- valence patterns sourced from the i18n lexicon.
+///
+/// The 21 tuples below name the lexicon class, the canonical emotion
+/// label emitted by analyze_valence, and the default valence + arousal
+/// pair to use when the TOML class does not declare its own metadata.
+/// When the TOML carries `valence = ...` and `arousal = ...`, those win
+/// (cf. `lexicon::class_valence_arousal`).
+const VALENCE_CLASSES: &[(&str, &str, f64, f64)] = &[
+    ("valence_anger_intense", "anger", -0.9, 0.9),
+    ("valence_anger_mild", "anger", -0.7, 0.7),
+    ("valence_fear_intense", "fear", -0.8, 0.9),
+    ("valence_fear_mild", "fear", -0.6, 0.6),
+    ("valence_sadness_intense", "sadness", -0.9, 0.3),
+    ("valence_sadness_mild", "sadness", -0.6, 0.3),
+    ("valence_fatigue", "fatigue", -0.3, 0.1),
+    ("valence_confusion", "confusion", -0.3, 0.4),
+    ("valence_frustration", "frustration", -0.5, 0.6),
+    ("valence_disgust", "disgust", -0.8, 0.5),
+    ("valence_joy_intense", "joy", 0.9, 0.9),
+    ("valence_excitement", "excitement", 0.8, 0.8),
+    ("valence_joy_mild", "joy", 0.7, 0.6),
+    ("valence_pride", "pride", 0.7, 0.6),
+    ("valence_satisfaction", "satisfaction", 0.4, 0.3),
+    ("valence_calm", "calm", 0.3, 0.1),
+    ("valence_gratitude", "gratitude", 0.6, 0.3),
+    ("valence_curiosity", "curiosity", 0.4, 0.5),
+    ("valence_accomplishment", "accomplishment", 0.5, 0.5),
+    ("valence_admiration", "admiration", 0.7, 0.4),
+    ("valence_surprise", "surprise", 0.0, 0.7),
+];
 
-fn ep(pattern: &str, emotion: &'static str, valence: f64, arousal: f64) -> EmotionPattern {
-    EmotionPattern {
-        regex: Regex::new(&format!("(?i){}", pattern)).expect("invalid emotion regex"),
-        emotion,
-        valence,
-        arousal,
+static EMOTION_PATTERNS: LazyLock<Vec<EmotionPattern>> = LazyLock::new(|| {
+    let mut patterns: Vec<EmotionPattern> = Vec::new();
+    for lang in crate::lexicon::supported_languages() {
+        for (class, emotion, default_v, default_a) in VALENCE_CLASSES {
+            let words = crate::lexicon::word_class(&lang, class);
+            if words.is_empty() {
+                continue;
+            }
+            // Patch 38 L2.B wildcard-after-stem: stem each word (one-shot)
+            // and add `\w*` so FR feminine/plural forms (`fatiguee`,
+            // `joyeuses`) match without TOML duplication. Multi-word
+            // entries (`burned out`) keep their inner whitespace; the
+            // case-insensitive flag and trailing `\w*` carry the bulk
+            // of the tolerance.
+            let with_stem = crate::lexicon::class_stem_enabled(&lang, class);
+            let alternation = words
+                .iter()
+                .map(|w| regex::escape(&crate::lexicon::fold_for_matching(w, &lang, with_stem)))
+                .collect::<Vec<_>>()
+                .join("|");
+            let pattern = format!(r"(?i)\b(?:{alternation})\w*\b");
+            let Ok(regex) = Regex::new(&pattern) else {
+                tracing::warn!(class = class, lang = %lang, "valence regex compile failed");
+                continue;
+            };
+            // Prefer the per-class metadata when present; fall back to
+            // the code-side default for the bucket.
+            let (valence, arousal) = crate::lexicon::class_valence_arousal(&lang, class)
+                .unwrap_or((*default_v, *default_a));
+            patterns.push(EmotionPattern {
+                regex,
+                emotion,
+                valence,
+                arousal,
+            });
+        }
     }
-}
+    patterns
+});
 
 pub fn analyze_valence(content: &str) -> ValenceResult {
     let mut matches: Vec<EmotionMatch> = Vec::new();
