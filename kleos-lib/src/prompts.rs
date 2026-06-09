@@ -245,7 +245,7 @@ pub async fn generate_header(
 
 /// Remove credential values from arbitrary text before inserting into prompts.
 ///
-/// Patch 38 L2 site 3 + normalize -- credential keywords from the i18n
+/// Credential keywords from the i18n
 /// lexicon, matched through fold_for_matching so that "Mot de Passe :
 /// xxx" matches "mot de passe" without depending on exact casing or
 /// accent presence. The credential_keywords class declares stem = false
