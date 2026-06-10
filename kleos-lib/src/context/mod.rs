@@ -1221,7 +1221,7 @@ async fn assemble_context_inner(
 
     // Batch-load artifact summaries for context blocks.
     let ctx_mem_ids: Vec<i64> = blocks.iter().map(|b| b.id).collect();
-    let ctx_art_map = crate::artifacts::enrich_with_artifacts(db, &ctx_mem_ids)
+    let ctx_art_map = crate::artifacts::enrich_with_artifacts(db, user_id, &ctx_mem_ids)
         .await
         .unwrap_or_default();
 

@@ -178,6 +178,7 @@ async fn store_memory(
             };
             let art_id = artifacts::store_artifact(
                 &db,
+                auth.effective_user_id(),
                 result.id,
                 &art.filename,
                 &art.filename,
@@ -415,7 +416,7 @@ async fn search_memories(
 
     // Batch-load artifact summaries for all returned memories.
     let memory_ids: Vec<i64> = results.iter().map(|r| r.memory.id).collect();
-    let artifact_map = artifacts::enrich_with_artifacts(&db, &memory_ids)
+    let artifact_map = artifacts::enrich_with_artifacts(&db, auth.effective_user_id(), &memory_ids)
         .await
         .unwrap_or_default();
 
@@ -745,7 +746,7 @@ async fn recall(
 
     // Batch-load artifact summaries for all recalled memories.
     let recall_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
-    let recall_art_map = artifacts::enrich_with_artifacts(&db, &recall_ids)
+    let recall_art_map = artifacts::enrich_with_artifacts(&db, user_id, &recall_ids)
         .await
         .unwrap_or_default();
     for item in &mut output {

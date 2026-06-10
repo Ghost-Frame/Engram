@@ -121,15 +121,18 @@ pub struct StoreArtifactOpts {
     pub metadata: Option<String>,
 }
 
-/// Insert an artifact row attached to `memory_id`.
+/// Insert an artifact row attached to `memory_id` for the owning `user_id`.
 ///
-/// Tenant isolation is handled at the database level (each tenant has its
-/// own DB file). The memory existence check ensures the target memory is
-/// valid within this tenant's database.
+/// In sharded mode the per-tenant DB already isolates data, so the `user_id`
+/// stamp and the ownership predicate below are a no-op. In single-DB (monolith)
+/// mode `state.db` is shared across tenants, so the row must carry `user_id`
+/// and the parent-memory check must be scoped to the caller, otherwise an
+/// artifact could be attached to another tenant's memory.
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument(skip(db, data, disk_path, opts), fields(memory_id, mime_type = %mime_type, size_bytes, sha256 = %sha256, storage_mode = %storage_mode, is_encrypted))]
+#[tracing::instrument(skip(db, data, disk_path, opts), fields(user_id, memory_id, mime_type = %mime_type, size_bytes, sha256 = %sha256, storage_mode = %storage_mode, is_encrypted))]
 pub async fn store_artifact(
     db: &Database,
+    user_id: i64,
     memory_id: i64,
     name: &str,
     filename: &str,
@@ -161,8 +164,8 @@ pub async fn store_artifact(
     db.write(move |conn| {
         let exists = conn
             .query_row(
-                "SELECT 1 FROM memories WHERE id = ?1",
-                params![memory_id],
+                "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+                params![memory_id, user_id],
                 |_| Ok(()),
             )
             .optional()?;
@@ -180,8 +183,8 @@ pub async fn store_artifact(
             "INSERT INTO artifacts \
              (name, memory_id, filename, artifact_type, content, mime_type, \
               size_bytes, sha256, storage_mode, data, disk_path, is_encrypted, \
-              is_indexed, source_url, agent, session_id, metadata) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
+              is_indexed, source_url, agent, session_id, metadata, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18) \
              RETURNING id",
             params![
                 name,
@@ -200,7 +203,8 @@ pub async fn store_artifact(
                 source_url,
                 agent,
                 session_id,
-                metadata
+                metadata,
+                user_id
             ],
             |row| row.get::<_, i64>(0),
         )
@@ -209,35 +213,49 @@ pub async fn store_artifact(
     .await
 }
 
-/// List all artifacts attached to a memory.
-#[tracing::instrument(skip(db), fields(memory_id))]
-pub async fn get_artifacts_by_memory(db: &Database, memory_id: i64) -> Result<Vec<ArtifactRow>> {
+/// List all artifacts attached to a memory, scoped to the owning `user_id`.
+///
+/// The `user_id` predicate is a no-op in a single-owner shard and the tenant
+/// boundary in shared (monolith) mode.
+#[tracing::instrument(skip(db), fields(user_id, memory_id))]
+pub async fn get_artifacts_by_memory(
+    db: &Database,
+    user_id: i64,
+    memory_id: i64,
+) -> Result<Vec<ArtifactRow>> {
     db.read(move |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, memory_id, filename, mime_type, size_bytes, \
                         sha256, storage_mode, disk_path, is_encrypted, is_indexed, created_at \
                  FROM artifacts \
-                 WHERE memory_id = ?1",
+                 WHERE memory_id = ?1 AND user_id = ?2",
         )?;
 
-        let rows = stmt.query_map(params![memory_id], row_to_artifact)?;
+        let rows = stmt.query_map(params![memory_id, user_id], row_to_artifact)?;
 
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }
 
-/// Retrieve a single artifact's metadata by ID.
-#[tracing::instrument(skip(db), fields(artifact_id))]
-pub async fn get_artifact_by_id(db: &Database, artifact_id: i64) -> Result<Option<ArtifactRow>> {
+/// Retrieve a single artifact's metadata by ID, scoped to the owning `user_id`.
+///
+/// The `user_id` predicate is a no-op in a single-owner shard and the tenant
+/// boundary in shared (monolith) mode.
+#[tracing::instrument(skip(db), fields(user_id, artifact_id))]
+pub async fn get_artifact_by_id(
+    db: &Database,
+    user_id: i64,
+    artifact_id: i64,
+) -> Result<Option<ArtifactRow>> {
     db.read(move |conn| {
         Ok(conn
             .query_row(
                 "SELECT id, memory_id, filename, mime_type, size_bytes, \
                     sha256, storage_mode, disk_path, is_encrypted, is_indexed, created_at \
              FROM artifacts \
-             WHERE id = ?1",
-                params![artifact_id],
+             WHERE id = ?1 AND user_id = ?2",
+                params![artifact_id, user_id],
                 row_to_artifact,
             )
             .optional()?)
@@ -245,12 +263,12 @@ pub async fn get_artifact_by_id(db: &Database, artifact_id: i64) -> Result<Optio
     .await
 }
 
-/// Per-tenant artifact statistics.
+/// Per-tenant artifact statistics, scoped to the owning `user_id`.
 ///
-/// Tenant isolation is at the database level -- each tenant DB contains
-/// only that tenant's data, so no user_id filter is needed.
-#[tracing::instrument(skip(db))]
-pub async fn get_artifact_stats(db: &Database) -> Result<ArtifactStats> {
+/// The `user_id` predicate is a no-op in a single-owner shard; in shared
+/// (monolith) mode it keeps the aggregates from spilling across tenants.
+#[tracing::instrument(skip(db), fields(user_id))]
+pub async fn get_artifact_stats(db: &Database, user_id: i64) -> Result<ArtifactStats> {
     db.read(move |conn| {
         Ok(conn.query_row(
             "SELECT COUNT(*), \
@@ -259,8 +277,9 @@ pub async fn get_artifact_stats(db: &Database) -> Result<ArtifactStats> {
                     COALESCE(SUM(CASE WHEN storage_mode='disk' THEN size_bytes ELSE 0 END),0), \
                     COALESCE(SUM(CASE WHEN storage_mode='inline' THEN 1 ELSE 0 END),0), \
                     COALESCE(SUM(CASE WHEN storage_mode='disk' THEN 1 ELSE 0 END),0) \
-             FROM artifacts",
-            [],
+             FROM artifacts \
+             WHERE user_id = ?1",
+            params![user_id],
             stats_from_row,
         )?)
     })
@@ -268,14 +287,15 @@ pub async fn get_artifact_stats(db: &Database) -> Result<ArtifactStats> {
 }
 
 /// Batch-load artifact summaries for a set of memory IDs.
-#[tracing::instrument(skip(db, memory_ids), fields(memory_count = memory_ids.len()))]
+#[tracing::instrument(skip(db, memory_ids), fields(user_id, memory_count = memory_ids.len()))]
 pub async fn enrich_with_artifacts(
     db: &Database,
+    user_id: i64,
     memory_ids: &[i64],
 ) -> Result<std::collections::HashMap<i64, Vec<ArtifactSummary>>> {
     let mut map = std::collections::HashMap::new();
     for &mid in memory_ids {
-        let arts = get_artifacts_by_memory(db, mid).await?;
+        let arts = get_artifacts_by_memory(db, user_id, mid).await?;
         let summaries: Vec<ArtifactSummary> = arts
             .into_iter()
             .map(|a| ArtifactSummary {
@@ -292,14 +312,21 @@ pub async fn enrich_with_artifacts(
     Ok(map)
 }
 
-/// Retrieve the raw binary data for an artifact.
-#[tracing::instrument(skip(db), fields(artifact_id))]
-pub async fn get_artifact_data(db: &Database, artifact_id: i64) -> Result<Option<Vec<u8>>> {
+/// Retrieve the raw binary data for an artifact, scoped to the owning `user_id`.
+///
+/// The `user_id` predicate is a no-op in a single-owner shard and the tenant
+/// boundary in shared (monolith) mode.
+#[tracing::instrument(skip(db), fields(user_id, artifact_id))]
+pub async fn get_artifact_data(
+    db: &Database,
+    user_id: i64,
+    artifact_id: i64,
+) -> Result<Option<Vec<u8>>> {
     db.read(move |conn| {
         Ok(conn
             .query_row(
-                "SELECT data FROM artifacts WHERE id = ?1",
-                params![artifact_id],
+                "SELECT data FROM artifacts WHERE id = ?1 AND user_id = ?2",
+                params![artifact_id, user_id],
                 |row| row.get::<_, Option<Vec<u8>>>(0),
             )
             .optional()
@@ -315,20 +342,30 @@ pub async fn get_artifact_data(db: &Database, artifact_id: i64) -> Result<Option
 /// that ID exists (idempotent). Returns `Ok(Some(path))` when the deleted
 /// row carried a `disk_path` that the caller should unlink from the
 /// filesystem.
-#[tracing::instrument(skip(db), fields(artifact_id))]
-pub async fn delete_artifact(db: &Database, artifact_id: i64) -> Result<Option<String>> {
+///
+/// The `user_id` predicate is a no-op in a single-owner shard; in shared
+/// (monolith) mode it prevents one tenant from destroying another's artifact
+/// (and blob file) by ID.
+#[tracing::instrument(skip(db), fields(user_id, artifact_id))]
+pub async fn delete_artifact(
+    db: &Database,
+    user_id: i64,
+    artifact_id: i64,
+) -> Result<Option<String>> {
     db.write(move |conn| {
         let disk_path: Option<String> = conn
             .query_row(
-                "SELECT disk_path FROM artifacts WHERE id = ?1",
-                params![artifact_id],
+                "SELECT disk_path FROM artifacts WHERE id = ?1 AND user_id = ?2",
+                params![artifact_id, user_id],
                 |row| row.get(0),
             )
             .optional()?
             .flatten();
 
-        let rows_deleted =
-            conn.execute("DELETE FROM artifacts WHERE id = ?1", params![artifact_id])?;
+        let rows_deleted = conn.execute(
+            "DELETE FROM artifacts WHERE id = ?1 AND user_id = ?2",
+            params![artifact_id, user_id],
+        )?;
 
         if rows_deleted == 0 {
             Ok(None)
@@ -346,9 +383,13 @@ pub async fn delete_artifact(db: &Database, artifact_id: i64) -> Result<Option<S
 ///
 /// The caller is responsible for capping `limit` to a sane upper bound before
 /// calling this function (the server layer caps at 100).
-#[tracing::instrument(skip(db), fields(%query, limit, memory_id))]
+///
+/// The `user_id` predicate is a no-op in a single-owner shard and the tenant
+/// boundary in shared (monolith) mode.
+#[tracing::instrument(skip(db), fields(user_id, %query, limit, memory_id))]
 pub async fn search_artifacts(
     db: &Database,
+    user_id: i64,
     query: &str,
     limit: usize,
     memory_id: Option<i64>,
@@ -370,12 +411,13 @@ pub async fn search_artifacts(
                  FROM artifacts a \
                  JOIN artifacts_fts ON artifacts_fts.rowid = a.id \
                  WHERE artifacts_fts MATCH ?1 \
+                   AND a.user_id = ?4 \
                    AND (?2 IS NULL OR a.memory_id = ?2) \
                  ORDER BY bm25(artifacts_fts) \
                  LIMIT ?3",
         )?;
 
-        let rows = stmt.query_map(params![query, memory_id, limit], row_to_artifact)?;
+        let rows = stmt.query_map(params![query, memory_id, limit, user_id], row_to_artifact)?;
 
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
