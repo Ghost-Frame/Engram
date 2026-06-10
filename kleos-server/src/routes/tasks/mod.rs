@@ -313,10 +313,14 @@ async fn remove_dep_handler(
 /// Create path claims for a task.
 async fn create_claims_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
     Json(body): Json<CreateClaimsBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    // Ownership gate on the parent task (see list_deps_handler). claims has no
+    // user_id of its own, so the get_task gate is the tenant boundary in
+    // monolith mode and a no-op in a single-owner shard.
+    let _ = get_task(&db, id, auth.effective_user_id()).await?;
     let ttl = body.ttl_seconds.unwrap_or(1800);
     let path_refs: Vec<&str> = body.paths.iter().map(|s| s.as_str()).collect();
     let claims = kleos_lib::services::chiasm::claims::create_claims(
@@ -338,9 +342,11 @@ async fn create_claims_handler(
 /// List active claims for a task.
 async fn list_task_claims_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
+    // Ownership gate on the parent task (see list_deps_handler).
+    let _ = get_task(&db, id, auth.effective_user_id()).await?;
     let claims = kleos_lib::services::chiasm::claims::get_claims_for_task(&db, id).await?;
     let count = claims.len();
     Ok(Json(json!({ "claims": claims, "count": count })))
@@ -349,9 +355,11 @@ async fn list_task_claims_handler(
 /// Release all claims for a task.
 async fn release_claims_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
+    // Ownership gate on the parent task (see list_deps_handler).
+    let _ = get_task(&db, id, auth.effective_user_id()).await?;
     let released = kleos_lib::services::chiasm::claims::release_claims(&db, id).await?;
     Ok(Json(json!({ "released": released })))
 }
@@ -359,7 +367,7 @@ async fn release_claims_handler(
 /// Check for path conflicts before creating claims.
 async fn check_conflicts_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(body): Json<CheckConflictsBody>,
 ) -> Result<Json<Value>, AppError> {
     let path_refs: Vec<&str> = body.paths.iter().map(|s| s.as_str()).collect();
@@ -368,6 +376,7 @@ async fn check_conflicts_handler(
         &body.project,
         &path_refs,
         body.exclude_task_id,
+        auth.effective_user_id(),
     )
     .await?;
     let has_conflicts = !conflicts.is_empty();
@@ -379,11 +388,15 @@ async fn check_conflicts_handler(
 /// List all active claims in a project.
 async fn list_project_claims_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(params): Query<ClaimsProjectParams>,
 ) -> Result<Json<Value>, AppError> {
-    let claims =
-        kleos_lib::services::chiasm::claims::get_claims_for_project(&db, &params.project).await?;
+    let claims = kleos_lib::services::chiasm::claims::get_claims_for_project(
+        &db,
+        &params.project,
+        auth.effective_user_id(),
+    )
+    .await?;
     let count = claims.len();
     Ok(Json(json!({ "claims": claims, "count": count })))
 }
