@@ -545,6 +545,13 @@ fn build_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(5))
+        // SECURITY (SSRF): the admin cred proxy validates only the initial URL
+        // (proxy.rs resolve_and_validate_url). reqwest's default policy follows
+        // up to 10 redirects with no per-hop revalidation, so an open redirect
+        // on an allowed host could bounce a credential-bearing request to
+        // loopback, RFC1918, or cloud-metadata endpoints. Refuse all redirects;
+        // a 3xx is surfaced to the caller verbatim instead of being chased.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("reqwest::Client::builder failed at cred client startup")
 }
@@ -640,6 +647,47 @@ pub fn shell_escape_value(val: &str) -> String {
     }
     out.push('\'');
     out
+}
+
+#[cfg(test)]
+mod redirect_policy_tests {
+    use super::build_http_client;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// The credd HTTP client must NOT follow redirects: a 3xx is returned
+    /// verbatim so a redirect to an internal host can never carry a resolved
+    /// credential off the validated origin. Regression for the SSRF
+    /// redirect-bounce gap on the admin cred proxy.
+    #[tokio::test]
+    async fn credd_client_does_not_follow_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        // One-shot server: reply 301 -> a link-local metadata address.
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let resp = "HTTP/1.1 301 Moved Permanently\r\n\
+                            Location: http://169.254.169.254/latest/meta-data\r\n\
+                            Content-Length: 0\r\n\r\n";
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        let client = build_http_client();
+        let resp = client
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("request should complete without chasing the redirect");
+
+        // If the policy followed the redirect it would try (and fail) to reach
+        // 169.254.169.254; instead we get the 301 back untouched.
+        assert_eq!(resp.status().as_u16(), 301, "redirect must not be followed");
+    }
 }
 
 #[cfg(test)]
