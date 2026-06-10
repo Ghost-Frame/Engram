@@ -128,7 +128,7 @@ async fn check_handler(
 
     // Agent-tool model preference enrichment
     if result.allowed && body.tool_name.as_deref() == Some("Agent") {
-        if let Some(directive) = agent_model_enrichment(&db).await {
+        if let Some(directive) = agent_model_enrichment(&db, auth.effective_user_id()).await {
             let mut e = result.enrichment.unwrap_or_default();
             if !e.is_empty() {
                 e.push_str("\n\n");
@@ -400,20 +400,21 @@ async fn guard_handler(
         )));
     }
 
-    // Search for high-importance static memories that might conflict.
-    // ResolvedDb hands us the caller's tenant shard; tenant scoping is
-    // implicit. Migration #25 (drop_user_id_memory_core) removed the
-    // per-row user_id column, so a WHERE user_id = ? predicate here
-    // erroneously errors with "no such column".
-    let _ = auth;
+    // Search for high-importance static memories that might conflict. The
+    // user_id predicate is a no-op in a single-owner shard and the tenant
+    // boundary in shared (monolith) mode, where ResolvedDb hands back the
+    // shared state.db; migration 64 re-added memories.user_id (tenant v55), so
+    // without it /guard would disclose every tenant's static rules.
+    let user_id = auth.effective_user_id();
     let rules: Vec<Value> = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, content, importance FROM memories
                  WHERE is_static = 1 AND importance >= 8 AND is_forgotten = 0
+                 AND user_id = ?1
                  ORDER BY importance DESC LIMIT 20",
             )?;
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map(params![user_id], |row| {
                 let id: i64 = row.get(0)?;
                 let content: String = row.get(1)?;
                 let importance: i64 = row.get(2)?;
@@ -590,19 +591,20 @@ async fn complete_latest_handler(
     }
 }
 
-async fn agent_model_enrichment(db: &kleos_lib::db::Database) -> Option<String> {
+async fn agent_model_enrichment(db: &kleos_lib::db::Database, user_id: i64) -> Option<String> {
     let rules: Vec<String> = db
-        .read(|conn| {
+        .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT content FROM memories
                  WHERE is_static = 1 AND is_forgotten = 0 AND importance >= 8
+                 AND user_id = ?1
                  AND (content LIKE '%agent.model.preference%'
                       OR content LIKE '%force-agent-models%'
                       OR content LIKE '%delegate to opencode%'
                       OR content LIKE '%MODEL DELEGATION%')
                  ORDER BY importance DESC LIMIT 3",
             )?;
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            let rows = stmt.query_map(params![user_id], |row| row.get::<_, String>(0))?;
             let mut out = Vec::new();
             for r in rows {
                 out.push(r?);
