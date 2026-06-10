@@ -132,6 +132,13 @@ fn default_backup_retention_daily() -> usize {
     30
 }
 
+/// Default pre-authentication per-IP rate limit (requests per minute).
+/// Kept in sync with the historical hardcoded value so behaviour is unchanged
+/// unless an operator overrides `KLEOS_PREAUTH_IP_RPM`.
+fn default_preauth_ip_rpm() -> i64 {
+    60
+}
+
 /// Default switch for the background dreamer task.
 fn default_dreamer_enabled() -> bool {
     true
@@ -622,6 +629,21 @@ pub struct Config {
     /// the TCP peer address is always used.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// Source networks exempt from BOTH the pre-auth per-IP limit and the
+    /// per-user limit. Entries are bare IPs ("10.50.0.1") or CIDRs
+    /// ("10.50.0.0/24", "127.0.0.0/8", "::1"). Empty (default) means no
+    /// exemption, so any public deployment behaves exactly as before.
+    ///
+    /// Intended for trusted local/mesh callers -- e.g. a VPN-only server where
+    /// a local multi-agent fleet shares one source IP and would otherwise
+    /// throttle itself against limits meant to stop internet brute-force.
+    #[serde(default)]
+    pub rate_limit_exempt_cidrs: Vec<String>,
+    /// Pre-authentication per-IP rate limit (requests per minute). High enough
+    /// for bursty MCP sessions while still blocking brute-force auth attempts.
+    /// Override via `KLEOS_PREAUTH_IP_RPM`.
+    #[serde(default = "default_preauth_ip_rpm")]
+    pub preauth_ip_rpm: i64,
     /// Optional server reference table shown in living prompts.
     #[serde(default)]
     pub servers: Vec<ServerEntry>,
@@ -695,6 +717,8 @@ impl Default for Config {
             encryption: EncryptionConfig::default(),
             eidolon: EidolonConfig::default(),
             trusted_proxies: Vec::new(),
+            rate_limit_exempt_cidrs: Vec::new(),
+            preauth_ip_rpm: default_preauth_ip_rpm(),
             servers: Vec::new(),
             safety: SafetyConfig::default(),
         }
@@ -1174,8 +1198,58 @@ impl Config {
                 tracing::info!("trusted proxies configured: {:?}", config.trusted_proxies);
             }
         }
+        // Source networks (bare IPs or CIDRs) exempt from rate limiting. Lets a
+        // trusted local/mesh agent fleet avoid throttling itself.
+        if let Ok(v) = crate::kleos_env("RATE_LIMIT_EXEMPT_CIDRS") {
+            config.rate_limit_exempt_cidrs = v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !config.rate_limit_exempt_cidrs.is_empty() {
+                tracing::info!(
+                    "rate-limit exempt CIDRs configured: {:?}",
+                    config.rate_limit_exempt_cidrs
+                );
+            }
+        }
+        if let Ok(v) = crate::kleos_env("PREAUTH_IP_RPM") {
+            match v.trim().parse::<i64>() {
+                Ok(n) if n > 0 => config.preauth_ip_rpm = n,
+                _ => tracing::warn!(
+                    "ignoring invalid KLEOS_PREAUTH_IP_RPM={:?} (must be a positive integer)",
+                    v
+                ),
+            }
+        }
         config.eidolon = config.eidolon.apply_env();
         config
+    }
+
+    /// Returns true when `ip` (a resolved client-IP string) falls within any
+    /// configured `rate_limit_exempt_cidrs` entry.
+    ///
+    /// Entries may be bare IPs ("10.50.0.1") or CIDRs ("10.50.0.0/24").
+    /// Unparseable entries and unparseable inputs never match, so a
+    /// misconfigured CIDR fails closed (no exemption granted) rather than
+    /// silently exempting everything.
+    pub fn is_rate_limit_exempt(&self, ip: &str) -> bool {
+        if self.rate_limit_exempt_cidrs.is_empty() {
+            return false;
+        }
+        let addr: std::net::IpAddr = match ip.parse() {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+        self.rate_limit_exempt_cidrs.iter().any(|entry| {
+            if let Ok(net) = entry.parse::<ipnet::IpNet>() {
+                net.contains(&addr)
+            } else if let Ok(single) = entry.parse::<std::net::IpAddr>() {
+                single == addr
+            } else {
+                false
+            }
+        })
     }
 
     /// Returns the resolved model directory for a given model name.
@@ -1217,6 +1291,47 @@ impl Config {
 /// Tests for configuration defaults, file loading, and env precedence.
 mod tests {
     use super::*;
+
+    /// Empty exempt list (the default) never exempts anyone -- preserving the
+    /// pre-existing behaviour for public deployments.
+    #[test]
+    fn rate_limit_exempt_empty_never_matches() {
+        let cfg = Config::default();
+        assert!(cfg.rate_limit_exempt_cidrs.is_empty());
+        assert!(!cfg.is_rate_limit_exempt("10.50.0.4"));
+        assert!(!cfg.is_rate_limit_exempt("127.0.0.1"));
+    }
+
+    /// CIDR entries match addresses inside the range and reject those outside.
+    #[test]
+    fn rate_limit_exempt_cidr_and_bare_ip() {
+        let mut cfg = Config::default();
+        cfg.rate_limit_exempt_cidrs = vec![
+            "127.0.0.0/8".to_string(),
+            "10.50.0.0/24".to_string(),
+            "::1".to_string(), // bare IPv6 loopback (no prefix)
+        ];
+        // Loopback + mesh members are exempt.
+        assert!(cfg.is_rate_limit_exempt("127.0.0.1"));
+        assert!(cfg.is_rate_limit_exempt("10.50.0.4"));
+        assert!(cfg.is_rate_limit_exempt("10.50.0.6"));
+        assert!(cfg.is_rate_limit_exempt("::1"));
+        // Outside the configured ranges -- not exempt.
+        assert!(!cfg.is_rate_limit_exempt("10.50.1.1"));
+        assert!(!cfg.is_rate_limit_exempt("203.0.113.9"));
+    }
+
+    /// Garbage CIDR/IP inputs fail closed (never exempt) instead of panicking
+    /// or matching everything.
+    #[test]
+    fn rate_limit_exempt_invalid_fails_closed() {
+        let mut cfg = Config::default();
+        cfg.rate_limit_exempt_cidrs = vec!["not-an-ip".to_string(), "10.0.0.0/99".to_string()];
+        assert!(!cfg.is_rate_limit_exempt("10.0.0.1"));
+        // A non-parseable client IP is never exempt regardless of config.
+        cfg.rate_limit_exempt_cidrs = vec!["0.0.0.0/0".to_string()];
+        assert!(!cfg.is_rate_limit_exempt("garbage"));
+    }
 
     /// Runs a test body with credential-authority env vars isolated.
     fn with_credential_authority_env(test: impl FnOnce()) {

@@ -5133,6 +5133,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
+ "ipnet",
  "lancedb",
  "lru 0.16.4",
  "metrics",

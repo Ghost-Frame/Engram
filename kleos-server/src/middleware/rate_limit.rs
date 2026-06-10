@@ -6,14 +6,10 @@ use axum::{
 use kleos_lib::auth::AuthContext;
 use kleos_lib::ratelimit;
 
-use crate::middleware::client_ip::client_ip_key;
+use crate::middleware::client_ip::client_ip;
 use crate::state::AppState;
 
 const OPEN_PATHS: &[&str] = &["/health", "/live", "/ready", "/bootstrap"];
-/// Pre-authentication per-IP rate limit (requests per minute). Must be high
-/// enough for MCP sessions that fire many calls in bursts, while still
-/// blocking brute-force auth attempts.
-const PREAUTH_IP_LIMIT: i64 = 60;
 
 fn too_many_requests(retry_after: i64) -> Response {
     let body = serde_json::json!({
@@ -107,8 +103,28 @@ pub async fn preauth_rate_limit_middleware(
         return next.run(request).await;
     }
 
-    let key = client_ip_key(&request, &state.config.trusted_proxies);
-    match ratelimit::check_and_increment(&state.db, &key, PREAUTH_IP_LIMIT, 60).await {
+    // Resolve the caller's IP once. Trusted local/mesh sources (loopback,
+    // WireGuard mesh) are exempt entirely so a local agent fleet sharing one
+    // source IP doesn't throttle itself against a limit meant for untrusted
+    // internet brute-force. Empty exempt list (default) means no exemption.
+    let resolved = client_ip(&request, &state.config.trusted_proxies);
+    if let Some(ip) = &resolved {
+        if state.config.is_rate_limit_exempt(ip) {
+            return next.run(request).await;
+        }
+    }
+    let key = match &resolved {
+        Some(ip) => format!("ip:{}", ip),
+        None => {
+            // Mirror client_ip_key: bucket all unresolved callers together
+            // rather than letting them bypass the limiter.
+            tracing::warn!(
+                "ConnectInfo<SocketAddr> not available; rate-limit key will be \"ip:unknown\""
+            );
+            "ip:unknown".to_string()
+        }
+    };
+    match ratelimit::check_and_increment(&state.db, &key, state.config.preauth_ip_rpm, 60).await {
         Ok(true) => next.run(request).await,
         Ok(false) => too_many_requests(60),
         Err(e) => {
@@ -151,6 +167,15 @@ pub async fn rate_limit_middleware(
         .any(|p| path == *p || path.starts_with(&format!("{}/", p)))
     {
         return next.run(request).await;
+    }
+
+    // Trusted local/mesh callers bypass the per-user limit too: a fleet that
+    // shares one agent key would otherwise exhaust that key's weighted budget
+    // (e.g. /context costs 5 each) even though the traffic is trusted.
+    if let Some(ip) = client_ip(&request, &state.config.trusted_proxies) {
+        if state.config.is_rate_limit_exempt(&ip) {
+            return next.run(request).await;
+        }
     }
 
     let auth_ctx = request.extensions().get::<AuthContext>().cloned();
