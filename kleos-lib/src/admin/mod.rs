@@ -475,24 +475,30 @@ pub async fn list_state(db: &Database) -> Result<Vec<StateRow>> {
 
 #[tracing::instrument(skip(db))]
 pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport> {
-    let memories = export_table(
+    // Every table here carries user_id in both the monolith and tenant-shard
+    // schemas, so the predicate is a no-op in a single-owner shard and the
+    // tenant boundary in shared (monolith) mode where this runs on state.db.
+    let memories = export_table_user(
         db,
         "SELECT id, content, category, source, importance, tags, \
          created_at, updated_at, space_id, is_archived \
-         FROM memories WHERE is_forgotten = 0 \
+         FROM memories WHERE is_forgotten = 0 AND user_id = ?1 \
          ORDER BY created_at DESC",
+        user_id,
     )
     .await?;
-    let conversations = export_table(
+    let conversations = export_table_user(
         db,
         "SELECT id, session_id, agent, title, metadata, started_at, updated_at \
-         FROM conversations ORDER BY started_at DESC",
+         FROM conversations WHERE user_id = ?1 ORDER BY started_at DESC",
+        user_id,
     )
     .await?;
-    let episodes = export_table(
+    let episodes = export_table_user(
         db,
         "SELECT id, title, summary, session_id, created_at \
-         FROM episodes ORDER BY created_at DESC",
+         FROM episodes WHERE user_id = ?1 ORDER BY created_at DESC",
+        user_id,
     )
     .await?;
     let entities = export_table_user(
@@ -510,10 +516,11 @@ pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport>
         user_id,
     )
     .await?;
-    let preferences = export_table(
+    let preferences = export_table_user(
         db,
         "SELECT id, key, value, created_at, updated_at \
-         FROM user_preferences ORDER BY key",
+         FROM user_preferences WHERE user_id = ?1 ORDER BY key",
+        user_id,
     )
     .await?;
     let skills = export_table_user(
@@ -567,32 +574,6 @@ async fn export_table_user(
     .await
 }
 
-/// Serialize all rows of one unscoped table into the export blob format.
-async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>> {
-    let sql_owned = sql.to_string();
-    db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql_owned)?;
-        let mut rows = stmt.query([])?;
-        let mut result = Vec::new();
-        while let Some(row) = rows.next()? {
-            let mut obj = serde_json::Map::new();
-            for i in 0..20usize {
-                match row.get::<_, String>(i) {
-                    Ok(val) => {
-                        obj.insert(format!("col_{}", i), serde_json::Value::String(val));
-                    }
-                    Err(_) => break,
-                }
-            }
-            if !obj.is_empty() {
-                result.push(serde_json::Value::Object(obj));
-            }
-        }
-        Ok(result)
-    })
-    .await
-}
-
 // --- Re-embed: clear embeddings so they get regenerated ---
 
 /// Clear embeddings on every live memory so ingestion regenerates them on
@@ -603,11 +584,15 @@ async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>
 #[tracing::instrument(skip(db))]
 pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
     db.write(move |conn| {
-        let n = if let Some(_uid) = user_id {
+        // A per-user reembed must clear only that user's embeddings; in shared
+        // (monolith) mode the unscoped form would clear every tenant's. The
+        // user_id predicate is a no-op in a single-owner shard. user_id = None
+        // is the deliberate admin-wide reembed.
+        let n = if let Some(uid) = user_id {
             conn.execute(
                 "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
-                 WHERE is_forgotten = 0",
-                [],
+                 WHERE is_forgotten = 0 AND user_id = ?1",
+                params![uid],
             )?
         } else {
             conn.execute(
