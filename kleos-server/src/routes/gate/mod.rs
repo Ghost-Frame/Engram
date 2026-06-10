@@ -282,6 +282,27 @@ async fn respond_handler(
     Auth(auth): Auth,
     Json(body): Json<RespondBody>,
 ) -> Result<Json<Value>, AppError> {
+    // Resolve the responder's bound agent (if the key is agent-scoped) so the
+    // CAS can reject self-approval: an agent must not approve a gate it opened.
+    // A non-agent (human/operator) key has no binding and may approve.
+    let responder_agent: Option<String> = if let Some(bound_id) = auth.key.agent_id {
+        db.read(move |conn| {
+            conn.query_row(
+                "SELECT name FROM agents WHERE id = ?1",
+                params![bound_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(kleos_lib::EngError::DatabaseMessage(other.to_string())),
+            })
+        })
+        .await?
+    } else {
+        None
+    };
+
     // SECURITY (SEC-CRIT-2): the DB CAS in respond_to_gate is the authoritative
     // transition. Persist first; only on success signal the waiter. If another
     // responder or the timeout path already decided, respond_to_gate returns
@@ -292,6 +313,7 @@ async fn respond_handler(
         body.approved,
         body.reason.as_deref(),
         auth.effective_user_id(),
+        responder_agent,
     )
     .await?;
 
