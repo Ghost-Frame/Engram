@@ -270,9 +270,15 @@ async fn generate_plan_handler(
 /// List all dependencies for a task.
 async fn list_deps_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
+    // Verify the caller owns the parent task before touching its dependency
+    // edges. The chiasm_task_dependencies junction has no user_id of its own;
+    // ownership lives on chiasm_tasks (user_id re-added in monolith via
+    // migration 69), so the get_task gate is the tenant boundary in monolith
+    // mode and a no-op in a single-owner shard.
+    let _ = get_task(&db, id, auth.effective_user_id()).await?;
     let deps = kleos_lib::services::chiasm::dependencies::get_dependencies(&db, id).await?;
     Ok(Json(json!({ "dependencies": deps, "count": deps.len() })))
 }
@@ -280,10 +286,12 @@ async fn list_deps_handler(
 /// Add dependencies to a task with circular dependency detection.
 async fn add_deps_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
     Json(body): Json<AddDepsBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    // Ownership gate on the parent task (see list_deps_handler).
+    let _ = get_task(&db, id, auth.effective_user_id()).await?;
     kleos_lib::services::chiasm::dependencies::add_dependencies(&db, id, &body.depends_on).await?;
     let deps = kleos_lib::services::chiasm::dependencies::get_dependencies(&db, id).await?;
     Ok((StatusCode::CREATED, Json(json!({ "dependencies": deps }))))
@@ -292,9 +300,11 @@ async fn add_deps_handler(
 /// Remove a single dependency edge.
 async fn remove_dep_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path((id, dep_id)): Path<(i64, i64)>,
 ) -> Result<Json<Value>, AppError> {
+    // Ownership gate on the parent task (see list_deps_handler).
+    let _ = get_task(&db, id, auth.effective_user_id()).await?;
     let removed =
         kleos_lib::services::chiasm::dependencies::remove_dependency(&db, id, dep_id).await?;
     Ok(Json(json!({ "removed": removed })))
