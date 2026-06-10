@@ -242,7 +242,14 @@ pub fn identity_hash_hex(pubkey_der: &[u8], host: &str, agent: &str, model: &str
 // --- Replay guard ---
 
 const REPLAY_WINDOW_MS: u64 = 60_000;
-const NONCE_TTL: Duration = Duration::from_secs(90);
+// A request is accepted while |now - ts| <= REPLAY_WINDOW_MS, so its signature
+// stays valid across a span of 2 * REPLAY_WINDOW_MS (from ts - window to
+// ts + window). A nonce first recorded at the earliest acceptable instant must
+// therefore survive until the latest, or the entry is GC'd while the request
+// is still replayable. Keep NONCE_TTL >= 2 * REPLAY_WINDOW_MS, with a margin
+// covering the inclusive drift boundary and the GC interval. Coupled to the
+// window so changing one cannot silently reopen the replay gap.
+const NONCE_TTL: Duration = Duration::from_millis(2 * REPLAY_WINDOW_MS + 5_000);
 const GC_INTERVAL: Duration = Duration::from_secs(30);
 
 struct NonceEntry {
@@ -1600,5 +1607,22 @@ mod tests {
         );
         assert_eq!(mgr.ttl, Duration::from_secs(600));
         assert_eq!(mgr.max_lifetime, Duration::from_secs(600));
+    }
+
+    /// Regression for the replay gap: a request is accepted while
+    /// |now - ts| <= REPLAY_WINDOW_MS, so its signature is valid across a span
+    /// of 2 * REPLAY_WINDOW_MS. The nonce must outlive that span, otherwise a
+    /// future-dated request becomes replayable once its entry is GC'd. Locks
+    /// the coupling so neither constant can be changed to reopen the gap.
+    /// (Duplicate-nonce and stale-timestamp behavior is covered by
+    /// replay_rejects_duplicate_nonce and replay_rejects_stale_timestamp.)
+    #[test]
+    fn nonce_ttl_outlives_replay_validity_span() {
+        assert!(
+            NONCE_TTL.as_millis() as u64 >= 2 * REPLAY_WINDOW_MS,
+            "NONCE_TTL ({}ms) must be >= 2 * REPLAY_WINDOW_MS ({}ms) to close the replay gap",
+            NONCE_TTL.as_millis(),
+            2 * REPLAY_WINDOW_MS
+        );
     }
 }
