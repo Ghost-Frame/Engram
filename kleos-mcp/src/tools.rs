@@ -108,6 +108,12 @@ pub fn registry() -> Vec<Value> {
 /// passed straight through; path templates extract the relevant fields.
 #[tracing::instrument(skip(app, args), fields(name = %name))]
 pub async fn dispatch(app: &App, name: &str, args: Value) -> Result<Value, String> {
+    // Secret-bearing routes (e.g. cred resolve/proxy) are dispatchable by name
+    // even though they are absent from the curated tools/list. Refuse them here
+    // so a raw credential never reaches the MCP/model-context channel.
+    if kleos_client::is_mcp_blocked(name) {
+        return Err(format!("tool '{name}' is not available over MCP"));
+    }
     let route = find_by_name(name).ok_or_else(|| format!("unknown tool: {name}"))?;
     app.client.call_route(route, args).await
 }

@@ -257,6 +257,14 @@ async fn dispatch_tool(
     name: &str,
     mut args: Value,
 ) -> Result<Value, String> {
+    // Secret-bearing routes (cred resolve/proxy) are dispatchable by name even
+    // though tools/list omits them. Refuse them so a raw credential never lands
+    // in the MCP response's structuredContent / text and, from there, in model
+    // transcripts and logs.
+    if kleos_client::is_mcp_blocked(name) {
+        return Err(format!("tool '{name}' is not available over MCP"));
+    }
+
     let route = find_by_name(name).ok_or_else(|| format!("unknown tool: {name}"))?;
 
     // Record the required scope in the span.

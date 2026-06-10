@@ -69,6 +69,23 @@ pub fn find_by_name(name: &str) -> Option<&'static Route> {
         .find(|r| r.name == name || r.aliases.contains(&name))
 }
 
+/// Canonical names of routes that must never be reachable over MCP. These
+/// resolve or proxy raw credential values, so dispatching them through the
+/// MCP/model-context channel would land plaintext secrets in transcripts and
+/// logs. They remain available over the authenticated HTTP API, which is their
+/// intended surface.
+pub const MCP_BLOCKED_ROUTES: &[&str] = &["admin.cred_resolve", "admin.cred_proxy"];
+
+/// Returns true if `name` (canonical or alias) resolves to a route that is
+/// blocked from MCP dispatch. Both MCP dispatchers consult this before calling
+/// a tool so an unlisted-but-dispatchable secret route cannot be invoked by
+/// name.
+pub fn is_mcp_blocked(name: &str) -> bool {
+    find_by_name(name)
+        .map(|r| MCP_BLOCKED_ROUTES.contains(&r.name))
+        .unwrap_or(false)
+}
+
 /// Substitutes `{key}` segments in the template with values from `args`,
 /// removing those keys from `args` so they do not duplicate in the body.
 pub fn render_path(template: &str, args: &mut Value) -> Result<String, String> {
@@ -4065,6 +4082,24 @@ pub static ROUTES: &[Route] = &[
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Secret-bearing cred routes must be blocked from MCP dispatch (by
+    /// canonical name and alias), while ordinary tools stay dispatchable.
+    #[test]
+    fn mcp_blocks_secret_routes_only() {
+        assert!(is_mcp_blocked("admin.cred_resolve"));
+        assert!(is_mcp_blocked("admin.cred_proxy"));
+        assert!(!is_mcp_blocked("memory.store"));
+        assert!(!is_mcp_blocked("memory_store"));
+        assert!(!is_mcp_blocked("does.not.exist"));
+        // Every blocked name must resolve to a real route in the registry.
+        for name in MCP_BLOCKED_ROUTES {
+            assert!(
+                find_by_name(name).is_some(),
+                "blocked route {name} missing from registry"
+            );
+        }
+    }
 
     /// Path-segment substitution must percent-encode `/`, `?`, `#`, and `%`
     /// so an LLM-supplied argument cannot pivot the request to another route
