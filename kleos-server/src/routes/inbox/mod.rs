@@ -29,8 +29,9 @@ async fn list_inbox(
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
-    let pending = kleos_lib::inbox::list_pending(&db, limit, offset).await?;
-    let total = kleos_lib::inbox::count_pending(&db, auth.effective_user_id()).await?;
+    let user_id = auth.effective_user_id();
+    let pending = kleos_lib::inbox::list_pending(&db, user_id, limit, offset).await?;
+    let total = kleos_lib::inbox::count_pending(&db, user_id).await?;
     Ok(Json(
         json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),
     ))
@@ -51,9 +52,10 @@ async fn reject(
     Path(id): Path<i64>,
     Json(body): Json<RejectBody>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::inbox::reject_memory(&db, id).await?;
+    let user_id = auth.effective_user_id();
+    kleos_lib::inbox::reject_memory(&db, id, user_id).await?;
     if let Some(reason) = &body.reason {
-        if let Err(e) = kleos_lib::inbox::set_forget_reason(&db, id, reason).await {
+        if let Err(e) = kleos_lib::inbox::set_forget_reason(&db, id, user_id, reason).await {
             tracing::warn!(
                 memory_id = id,
                 user_id = auth.effective_user_id(),
@@ -65,9 +67,11 @@ async fn reject(
     Ok(Json(json!({ "rejected": true, "id": id })))
 }
 
-// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
+// SECURITY: scopes to the caller's user_id so monolith (shared-DB) mode cannot
+// edit another tenant's pending memory by id. The predicate is a no-op in a
+// single-owner shard.
 async fn edit(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<EditBody>,
@@ -75,6 +79,7 @@ async fn edit(
     kleos_lib::inbox::edit_and_approve(
         &db,
         id,
+        auth.effective_user_id(),
         body.content.as_deref(),
         body.category.as_deref(),
         body.importance,
@@ -97,7 +102,7 @@ async fn bulk_action(
                 count += 1;
             }
             "reject" => {
-                kleos_lib::inbox::reject_memory(&db, *id).await?;
+                kleos_lib::inbox::reject_memory(&db, *id, auth.effective_user_id()).await?;
                 count += 1;
             }
             _ => {
@@ -119,8 +124,9 @@ async fn list_pending_legacy(
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
-    let pending = kleos_lib::inbox::list_pending(&db, limit, offset).await?;
-    let total = kleos_lib::inbox::count_pending(&db, auth.effective_user_id()).await?;
+    let user_id = auth.effective_user_id();
+    let pending = kleos_lib::inbox::list_pending(&db, user_id, limit, offset).await?;
+    let total = kleos_lib::inbox::count_pending(&db, user_id).await?;
     Ok(Json(
         json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),
     ))
