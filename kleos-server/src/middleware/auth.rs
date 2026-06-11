@@ -201,7 +201,8 @@ async fn validate_mcp_token(
             let mut stmt = conn.prepare(
                 "SELECT id, user_id, pubkey_pem, scopes
                      FROM identity_keys
-                     WHERE pubkey_fingerprint = ?1 AND is_active = 1",
+                     WHERE pubkey_fingerprint = ?1 AND is_active = 1
+                       AND user_id IN (SELECT id FROM users WHERE is_active = 1)",
             )?;
             let row = stmt
                 .query_row(rusqlite::params![kid], |row| {
@@ -525,7 +526,8 @@ pub async fn auth_middleware(
                 conn.query_row(
                     "SELECT id, user_id, tier, algo, pubkey_pem, scopes
                      FROM identity_keys
-                     WHERE pubkey_fingerprint = ?1 AND is_active = 1",
+                     WHERE pubkey_fingerprint = ?1 AND is_active = 1
+                       AND user_id IN (SELECT id FROM users WHERE is_active = 1)",
                     params![key_fp],
                     |row| {
                         Ok(IdentityKeyRow {
@@ -1046,7 +1048,8 @@ async fn resolve_identity_by_id(
                         i.model_label, ik.user_id, ik.tier, ik.scopes
                  FROM identities i
                  JOIN identity_keys ik ON ik.id = i.identity_key_id
-                 WHERE i.id = ?1 AND i.is_active = 1 AND ik.is_active = 1",
+                 WHERE i.id = ?1 AND i.is_active = 1 AND ik.is_active = 1
+                   AND ik.user_id IN (SELECT id FROM users WHERE is_active = 1)",
                 params![identity_id],
                 |row| {
                     Ok((

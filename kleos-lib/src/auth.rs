@@ -416,7 +416,8 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
                     "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
                             agent_id, last_used_at, expires_at, created_at, hash_version, key_hash
                      FROM api_keys
-                     WHERE key_prefix = ?1 AND is_active = 1",
+                     WHERE key_prefix = ?1 AND is_active = 1
+                       AND user_id IN (SELECT id FROM users WHERE is_active = 1)",
                 )
                 ?;
 
@@ -732,6 +733,37 @@ mod tests {
 
         assert_eq!(api_key.expires_at.as_deref(), Some(expiry.as_str()));
         assert_eq!(api_key.rate_limit, 250);
+    }
+
+    #[tokio::test]
+    async fn validate_key_rejects_deactivated_user() {
+        let db = setup_db().await;
+        let uid = make_user(&db, "carol").await;
+
+        let (_api_key, raw) = create_key(&db, uid, "carol-key", vec![Scope::Read], None)
+            .await
+            .expect("create_key should succeed");
+
+        validate_key(&db, &raw)
+            .await
+            .expect("key must validate while the user is active");
+
+        // Deactivate the user but leave the key row active to prove the
+        // validation chokepoint consults users.is_active.
+        db.write(move |conn| {
+            conn.execute(
+                "UPDATE users SET is_active = 0 WHERE id = ?1",
+                rusqlite::params![uid],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let err = validate_key(&db, &raw)
+            .await
+            .expect_err("key must not validate once the owning user is deactivated");
+        assert!(matches!(err, crate::EngError::Auth(_)));
     }
 
     #[tokio::test]
