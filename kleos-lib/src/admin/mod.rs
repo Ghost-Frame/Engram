@@ -523,10 +523,16 @@ pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport>
         user_id,
     )
     .await?;
+    // The real table is `skill_records`; there is no `skills` table in any
+    // schema, so the old query 500'd in sharded mode. `skill_records` has no
+    // `tags` column, so it is dropped from the projection; every remaining
+    // column exists in both the monolith and tenant-shard schemas. The
+    // `user_id` predicate scopes the export to the caller (a no-op in a
+    // single-owner shard, the tenant boundary in monolith).
     let skills = export_table_user(
         db,
-        "SELECT id, name, description, content, language, tags, created_at \
-         FROM skills WHERE user_id = ?1 ORDER BY name",
+        "SELECT id, name, description, content, language, created_at \
+         FROM skill_records WHERE user_id = ?1 ORDER BY name",
         user_id,
     )
     .await?;
@@ -553,25 +559,55 @@ async fn export_table_user(
     let sql_owned = sql.to_string();
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql_owned)?;
+        // Capture the real column names before stepping rows: `column_name`
+        // borrows the statement, so collect owned strings up front, then take
+        // the `&mut` borrow that `query` needs. These names become the JSON
+        // keys so the export round-trips through the named-key import reader.
+        let column_names: Vec<String> = (0..stmt.column_count())
+            .map(|i| stmt.column_name(i).map(str::to_string))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut rows = stmt.query(params![user_id])?;
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
             let mut obj = serde_json::Map::new();
-            for i in 0..20usize {
-                match row.get::<_, String>(i) {
-                    Ok(val) => {
-                        obj.insert(format!("col_{}", i), serde_json::Value::String(val));
-                    }
-                    Err(_) => break,
-                }
+            // Serialize every column by its real SQLite type. The old path read
+            // each cell as `String` and broke on the first non-text column (the
+            // integer `id` at column 0), which emptied every export array. No
+            // row is dropped now: a NULL becomes JSON null, not a missing key.
+            for (i, name) in column_names.iter().enumerate() {
+                obj.insert(name.clone(), sqlite_value_to_json(row.get_ref(i)?));
             }
-            if !obj.is_empty() {
-                result.push(serde_json::Value::Object(obj));
-            }
+            result.push(serde_json::Value::Object(obj));
         }
         Ok(result)
     })
     .await
+}
+
+/// Convert one SQLite cell into its `serde_json::Value` equivalent, preserving
+/// the column's real storage class. Integers and reals map to JSON numbers,
+/// text to a string, NULL to JSON null, and a blob to a standard-base64 string
+/// so binary columns serialize deterministically. This replaces the prior
+/// read-everything-as-`String` path that errored on the integer `id` and
+/// dropped every row.
+fn sqlite_value_to_json(value: rusqlite::types::ValueRef<'_>) -> serde_json::Value {
+    use rusqlite::types::ValueRef;
+    match value {
+        ValueRef::Null => serde_json::Value::Null,
+        ValueRef::Integer(i) => serde_json::Value::Number(i.into()),
+        // `from_f64` is `None` only for NaN/Inf, which SQLite cannot store in a
+        // REAL column; fall back to null rather than fabricating a number.
+        ValueRef::Real(f) => serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        ValueRef::Text(bytes) => {
+            serde_json::Value::String(String::from_utf8_lossy(bytes).into_owned())
+        }
+        ValueRef::Blob(bytes) => {
+            use base64::Engine;
+            serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(bytes))
+        }
+    }
 }
 
 // --- Re-embed: clear embeddings so they get regenerated ---
@@ -852,4 +888,90 @@ pub async fn get_stats(db: &Database) -> Result<serde_json::Value> {
         "api_keys": key_count,
         "conversations": conv_count,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+
+    /// Exporting a row whose first column is the integer `id` and whose second
+    /// is the text `content` must populate BOTH keys. This pins the col-0 break
+    /// fix: the old serializer read `id` as `String`, errored, and dropped every
+    /// row, so each export array came back empty.
+    #[tokio::test]
+    async fn export_table_user_serializes_integer_and_text_columns() {
+        let db = Database::connect_memory().await.expect("memory db");
+
+        // Insert a synthetic memory owned by user 1 with known content.
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, importance, user_id) \
+                 VALUES ('synthetic content', 'test', 5, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed memory");
+
+        let rows = export_table_user(
+            &db,
+            "SELECT id, content FROM memories WHERE user_id = ?1 ORDER BY id",
+            1,
+        )
+        .await
+        .expect("export rows");
+
+        assert_eq!(rows.len(), 1, "the seeded row must not be dropped");
+        let obj = rows[0].as_object().expect("row is a json object");
+        assert!(
+            obj.get("id").and_then(|v| v.as_i64()).is_some(),
+            "integer id column must serialize to a json number, got {:?}",
+            obj.get("id"),
+        );
+        assert_eq!(
+            obj.get("content").and_then(|v| v.as_str()),
+            Some("synthetic content"),
+            "text content column must serialize to its string value",
+        );
+    }
+
+    /// A NULL cell serializes to JSON null (a present key), not a dropped key,
+    /// and a non-text column never aborts the row.
+    #[tokio::test]
+    async fn export_table_user_keeps_null_columns_as_null() {
+        let db = Database::connect_memory().await.expect("memory db");
+
+        // `session_id` is left unset, so it stays NULL in the row.
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, importance, user_id) \
+                 VALUES ('has null session', 'test', 5, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed memory");
+
+        let rows = export_table_user(
+            &db,
+            "SELECT id, session_id, content FROM memories WHERE user_id = ?1",
+            1,
+        )
+        .await
+        .expect("export rows");
+
+        assert_eq!(rows.len(), 1);
+        let obj = rows[0].as_object().expect("row is a json object");
+        assert!(
+            obj.contains_key("session_id"),
+            "null column must remain a present key",
+        );
+        assert!(
+            obj.get("session_id").map(|v| v.is_null()).unwrap_or(false),
+            "null column must serialize to json null",
+        );
+    }
 }
