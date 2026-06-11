@@ -867,6 +867,9 @@ impl RequestSigner {
         Ok((signer, key_path))
     }
 
+    /// Signs the legacy nonce-less enrollment proof. Only accepted by the
+    /// server for the very first (bootstrap) key; later enrollments must
+    /// use `sign_enrollment_proof_with_nonce`.
     pub fn sign_enrollment_proof(&self) -> Result<String> {
         let proof_msg = format!(
             "KLEOS-ENROLL:{}:{}:{}:{}",
@@ -875,6 +878,25 @@ impl RequestSigner {
             self.host_label,
             self.pubkey_pem,
         );
+        self.sign_proof_message(&proof_msg)
+    }
+
+    /// Signs an enrollment proof bound to a server-issued single-use
+    /// challenge nonce (from POST /identity-keys/enroll/challenge).
+    pub fn sign_enrollment_proof_with_nonce(&self, nonce: &str) -> Result<String> {
+        let proof_msg = format!(
+            "KLEOS-ENROLL:{}:{}:{}:{}:{}",
+            self.algo.as_str(),
+            self.tier(),
+            self.host_label,
+            self.pubkey_pem,
+            nonce,
+        );
+        self.sign_proof_message(&proof_msg)
+    }
+
+    /// Signs an enrollment proof message with the active backend.
+    fn sign_proof_message(&self, proof_msg: &str) -> Result<String> {
         match &self.backend {
             SigningBackend::Ed25519(sk) => {
                 use ed25519_dalek::Signer;

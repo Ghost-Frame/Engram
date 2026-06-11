@@ -1768,14 +1768,30 @@ async fn handle_identity_init(
         }
     }
 
-    let sig_hex = match signer.sign_enrollment_proof() {
+    // Post-bootstrap enrollments must bind the proof to a server-issued
+    // single-use nonce. Try the challenge endpoint first; when it is not
+    // available (bootstrap has no credentials yet, or the server predates
+    // the challenge flow) fall back to the legacy nonce-less proof.
+    let nonce: Option<String> = match client
+        .post("/identity-keys/enroll/challenge", json!({}))
+        .await
+    {
+        Ok(v) => v.get("nonce").and_then(|n| n.as_str()).map(String::from),
+        Err(_) => None,
+    };
+
+    let sig_result = match &nonce {
+        Some(n) => signer.sign_enrollment_proof_with_nonce(n),
+        None => signer.sign_enrollment_proof(),
+    };
+    let sig_hex = match sig_result {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error signing enrollment proof: {}", e);
             std::process::exit(1);
         }
     };
-    let body = json!({
+    let mut body = json!({
         "tier": signer.tier(),
         "algo": signer.algo().as_str(),
         "pubkey_pem": signer.pubkey_pem(),
@@ -1784,6 +1800,11 @@ async fn handle_identity_init(
         "serial": serial,
         "sig_hex": sig_hex,
     });
+    // Only attach the nonce when one was issued; the bootstrap middleware
+    // parses the body strictly and the legacy proof has no nonce field.
+    if let Some(n) = &nonce {
+        body["nonce"] = json!(n);
+    }
 
     let result = client.post("/identity-keys/enroll", body).await;
     match result {

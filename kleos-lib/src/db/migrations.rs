@@ -398,6 +398,12 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_phylax_exec_allowlist,
         tx
     ),
+    migration!(
+        87,
+        "enrollment_challenges",
+        run_migration_enrollment_challenges,
+        tx
+    ),
 ];
 
 // --- Legacy version constants (kept for compatibility with existing call sites) ---
@@ -592,6 +598,8 @@ const MIGRATION_PHYLAX_DECIDE_TOKEN_HASH: i64 = 85;
 /// Version number for the phylax_access_policies.exec_allowlist column (JSON
 /// array of absolute argv[0] paths an exec-mode policy permits).
 const MIGRATION_PHYLAX_EXEC_ALLOWLIST: i64 = 86;
+/// Version number for the single-use identity enrollment challenge table.
+const MIGRATION_ENROLLMENT_CHALLENGES: i64 = 87;
 
 // --- Up path (unchanged behavior) ---
 
@@ -1298,6 +1306,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_PHYLAX_EXEC_ALLOWLIST,
             "phylax_policy_exec_allowlist",
+        )?;
+    }
+
+    if current_version < MIGRATION_ENROLLMENT_CHALLENGES {
+        info!("Running migration 87: enrollment_challenges");
+        run_migration_enrollment_challenges(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_ENROLLMENT_CHALLENGES,
+            "enrollment_challenges",
         )?;
     }
 
@@ -5468,6 +5486,26 @@ fn run_migration_instance_grants(conn: &rusqlite::Connection) -> Result<()> {
     )
     .map_err(|e| EngError::DatabaseMessage(format!("migration 84 instance_grants: {e}")))?;
     info!("Migration 84 complete: instance_grants table created");
+    Ok(())
+}
+
+/// Migration 87: creates the enrollment_challenges table. Each row is a
+/// single-use server-issued nonce bound to the authenticated user that
+/// requested it; consuming it (atomic DELETE) authorizes one identity-key
+/// enrollment, preventing replay of captured enrollment proofs.
+fn run_migration_enrollment_challenges(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS enrollment_challenges (
+            nonce      TEXT PRIMARY KEY,
+            user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_enrollment_challenges_user
+            ON enrollment_challenges(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("migration 87 enrollment_challenges: {e}")))?;
+    info!("Migration 87 complete: enrollment_challenges table created");
     Ok(())
 }
 

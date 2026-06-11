@@ -907,6 +907,17 @@ pub async fn auth_middleware(
             pubkey_pem: String,
             host_label: String,
             sig_hex: String,
+            /// Carried in the full EnrollBody but not part of the bootstrap
+            /// proof message; accepted here so enrollment bodies that
+            /// include them still parse under deny_unknown_fields.
+            #[allow(dead_code)]
+            label: Option<String>,
+            /// See `label`.
+            #[allow(dead_code)]
+            serial: Option<String>,
+            /// See `label`.
+            #[allow(dead_code)]
+            nonce: Option<String>,
         }
 
         let proof: EnrollProof = match serde_json::from_slice(&body_bytes) {
@@ -959,12 +970,26 @@ pub async fn auth_middleware(
             );
         }
 
-        // Optional bootstrap secret: if KLEOS_BOOTSTRAP_SECRET is set, the
-        // caller must provide the matching value in X-Bootstrap-Secret.
-        // When the env var is unset, bootstrap proceeds unauthenticated
-        // (dev-friendly default). When set, the comparison is constant-time
-        // to prevent timing-based secret enumeration.
-        if let Ok(expected_secret) = std::env::var("KLEOS_BOOTSTRAP_SECRET") {
+        // Mandatory bootstrap secret: the caller must provide the matching
+        // value in X-Bootstrap-Secret. Resolved through kleos_env so the
+        // legacy ENGRAM_BOOTSTRAP_SECRET name is honored exactly like
+        // POST /bootstrap; reading only the KLEOS_ name silently skipped
+        // this check on legacy-configured deployments. When the secret is
+        // unset or empty, bootstrap enrollment is disabled entirely (fail
+        // closed, matching /bootstrap) rather than proceeding
+        // unauthenticated. The comparison is constant-time to prevent
+        // timing-based secret enumeration.
+        let expected_secret = match kleos_lib::kleos_env("BOOTSTRAP_SECRET") {
+            Ok(s) if !s.is_empty() => s,
+            _ => {
+                tracing::warn!(client_ip = %req_client_ip,
+                    "bootstrap enrollment rejected: no bootstrap secret configured");
+                return unauthorized(
+                    "bootstrap enrollment disabled: set KLEOS_BOOTSTRAP_SECRET to enable",
+                );
+            }
+        };
+        {
             use sha2::{Digest, Sha256};
             use subtle::ConstantTimeEq;
             let provided = parts

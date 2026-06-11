@@ -13,6 +13,10 @@ pub struct EnrollBody {
     pub label: Option<String>,
     pub serial: Option<String>,
     pub sig_hex: String,
+    /// Server-issued single-use challenge nonce. Required for every
+    /// enrollment after the first (bootstrap) key; obtained from
+    /// POST /identity-keys/enroll/challenge and bound to the caller.
+    pub nonce: Option<String>,
 }
 
 /// Body for POST /identity-keys/{id}/revoke.
