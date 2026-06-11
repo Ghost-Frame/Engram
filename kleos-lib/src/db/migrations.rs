@@ -404,6 +404,12 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_enrollment_challenges,
         tx
     ),
+    migration!(
+        88,
+        "users_active_index",
+        run_migration_users_active_index,
+        tx
+    ),
 ];
 
 // --- Legacy version constants (kept for compatibility with existing call sites) ---
@@ -600,6 +606,8 @@ const MIGRATION_PHYLAX_DECIDE_TOKEN_HASH: i64 = 85;
 const MIGRATION_PHYLAX_EXEC_ALLOWLIST: i64 = 86;
 /// Version number for the single-use identity enrollment challenge table.
 const MIGRATION_ENROLLMENT_CHALLENGES: i64 = 87;
+/// Version number for the partial index backing the active-user auth subquery.
+const MIGRATION_USERS_ACTIVE_INDEX: i64 = 88;
 
 // --- Up path (unchanged behavior) ---
 
@@ -1317,6 +1325,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             MIGRATION_ENROLLMENT_CHALLENGES,
             "enrollment_challenges",
         )?;
+    }
+
+    if current_version < MIGRATION_USERS_ACTIVE_INDEX {
+        info!("Running migration 88: users_active_index");
+        run_migration_users_active_index(conn)?;
+        record_migration(conn, MIGRATION_USERS_ACTIVE_INDEX, "users_active_index")?;
     }
 
     Ok(())
@@ -5506,6 +5520,20 @@ fn run_migration_enrollment_challenges(conn: &rusqlite::Connection) -> Result<()
     )
     .map_err(|e| EngError::DatabaseMessage(format!("migration 87 enrollment_challenges: {e}")))?;
     info!("Migration 87 complete: enrollment_challenges table created");
+    Ok(())
+}
+
+/// Migration 86: partial index on active users. The credential-validation
+/// queries restrict `user_id` to `SELECT id FROM users WHERE is_active = 1`
+/// on every authenticated request; this index lets SQLite resolve that
+/// subquery without scanning the whole users table.
+fn run_migration_users_active_index(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_users_active
+            ON users(id) WHERE is_active = 1;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("migration 88 users_active_index: {e}")))?;
+    info!("Migration 88 complete: idx_users_active created");
     Ok(())
 }
 

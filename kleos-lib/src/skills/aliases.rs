@@ -89,10 +89,16 @@ pub async fn add_alias(
 // Bulk insert helper used by the importer. Each entry is (alias, confidence).
 // Source is fixed to "auto"; user-driven aliases go through `add_alias`
 // so the audit trail stays clean.
+//
+// Ownership comes from `skill_records`: each INSERT only lands when `skill_id`
+// belongs to `user_id` (the same WHERE EXISTS guard as `add_alias`), so an
+// importer fed a skill_id it does not own cannot write cross-tenant aliases.
+// The predicate is a no-op in a single-owner shard.
 pub async fn add_auto_aliases(
     db: &Database,
     skill_id: i64,
     aliases: &[(String, f64)],
+    user_id: i64,
 ) -> Result<()> {
     let aliases: Vec<(String, f64)> = aliases
         .iter()
@@ -107,8 +113,9 @@ pub async fn add_auto_aliases(
         for (a, c) in &aliases {
             tx.execute(
                 "INSERT OR IGNORE INTO skill_aliases (alias, skill_id, confidence, source) \
-                 VALUES (?1, ?2, ?3, 'auto')",
-                params![a, skill_id, c],
+                 SELECT ?1, ?2, ?3, 'auto' \
+                 WHERE EXISTS (SELECT 1 FROM skill_records WHERE id = ?2 AND user_id = ?4)",
+                params![a, skill_id, c, user_id],
             )?;
         }
         tx.commit()?;
@@ -139,11 +146,15 @@ pub async fn remove_alias(db: &Database, skill_id: i64, alias: &str, user_id: i6
 // Drop every auto-generated alias for a skill; used when the importer
 // rewrites a row and wants the alias set rebuilt from scratch. User-added
 // aliases (source='user') are preserved.
-pub async fn clear_auto_aliases(db: &Database, skill_id: i64) -> Result<usize> {
+//
+// Scoped to `user_id` via `skill_records` so a caller cannot clear another
+// tenant's aliases. The predicate is a no-op in a single-owner shard.
+pub async fn clear_auto_aliases(db: &Database, skill_id: i64, user_id: i64) -> Result<usize> {
     db.write(move |conn| {
         let n = conn.execute(
-            "DELETE FROM skill_aliases WHERE skill_id = ?1 AND source = 'auto'",
-            params![skill_id],
+            "DELETE FROM skill_aliases WHERE skill_id = ?1 AND source = 'auto' \
+             AND skill_id IN (SELECT id FROM skill_records WHERE id = ?1 AND user_id = ?2)",
+            params![skill_id, user_id],
         )?;
         Ok(n)
     })

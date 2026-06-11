@@ -12,6 +12,15 @@ use crate::{EngError, Result};
 const HASH_VERSION_LEGACY: i32 = 1;
 const HASH_VERSION_PEPPERED: i32 = 2;
 
+/// Subquery selecting the ids of all active users. Every credential-validation
+/// query restricts its `user_id` to this set so a deactivated user's
+/// still-active credential rows fail closed. Shared from one place so the four
+/// validation sites (api_keys here, plus the identity_keys and identities
+/// lookups in the server auth middleware) cannot drift: if the active-user
+/// definition ever changes, a missed site would silently re-open the
+/// deactivated-user bypass.
+pub const ACTIVE_USER_IDS_SUBQUERY: &str = "SELECT id FROM users WHERE is_active = 1";
+
 /// Cached pepper from ENGRAM_API_KEY_PEPPER environment variable.
 /// Must be 64 hex characters (32 bytes).
 static API_KEY_PEPPER: OnceLock<Option<[u8; 32]>> = OnceLock::new();
@@ -411,15 +420,14 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     let api_key = db
         .read(move |conn| {
             // Fetch candidate keys by prefix (there should typically be only one)
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
-                            agent_id, last_used_at, expires_at, created_at, hash_version, key_hash
-                     FROM api_keys
-                     WHERE key_prefix = ?1 AND is_active = 1
-                       AND user_id IN (SELECT id FROM users WHERE is_active = 1)",
-                )
-                ?;
+            let sql = format!(
+                "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
+                        agent_id, last_used_at, expires_at, created_at, hash_version, key_hash
+                 FROM api_keys
+                 WHERE key_prefix = ?1 AND is_active = 1
+                   AND user_id IN ({ACTIVE_USER_IDS_SUBQUERY})"
+            );
+            let mut stmt = conn.prepare(&sql)?;
 
             let mut rows = stmt
                 .query(rusqlite::params![key_prefix])

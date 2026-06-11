@@ -166,23 +166,31 @@ pub async fn check_and_unblock(
     db: &Database,
     completed_task_id: i64,
 ) -> Result<Vec<super::tasks::Task>> {
-    // Find all tasks that have a dependency on the completed task
-    let dependents: Vec<i64> = db
+    // Find all tasks that have a dependency on the completed task, along with
+    // each dependent task's owner. The owner is needed so the auto-unblock
+    // update is scoped to the task's real tenant: update_task gates on user_id,
+    // so a hardcoded owner would silently fail to unblock any task not owned by
+    // that user. Dependency edges are same-tenant by construction (see
+    // add_dependencies), so the owner is well-defined.
+    let dependents: Vec<(i64, i64)> = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT DISTINCT task_id FROM chiasm_task_dependencies WHERE depends_on = ?1",
+                "SELECT DISTINCT d.task_id, t.user_id \
+                     FROM chiasm_task_dependencies d \
+                     JOIN chiasm_tasks t ON t.id = d.task_id \
+                     WHERE d.depends_on = ?1",
             )?;
             let mut rows = stmt.query(rusqlite::params![completed_task_id])?;
             let mut ids = Vec::new();
             while let Some(row) = rows.next()? {
-                ids.push(row.get(0)?);
+                ids.push((row.get(0)?, row.get(1)?));
             }
             Ok(ids)
         })
         .await?;
 
     let mut unblocked = Vec::new();
-    for task_id in dependents {
+    for (task_id, owner_id) in dependents {
         // Check if ALL dependencies of this task are now completed.
         // The just-completed task is excluded from the "not yet done" count
         // because the caller invokes check_and_unblock before (or without)
@@ -212,7 +220,7 @@ pub async fn check_and_unblock(
                     summary: Some("auto-unblocked: all dependencies completed".into()),
                     agent: None,
                 },
-                1,
+                owner_id,
             )
             .await?;
             super::emit_chiasm_event(
@@ -370,6 +378,40 @@ mod tests {
         // Complete the blocker
         let unblocked = check_and_unblock(&db, t1.id).await.unwrap();
         assert_eq!(unblocked.len(), 1);
+        assert_eq!(unblocked[0].id, t2.id);
+        assert_eq!(unblocked[0].status, "active");
+    }
+
+    /// Test: auto-unblock works for a tenant other than user 1. Regression for
+    /// the hardcoded user_id=1 that silently skipped the update_task ownership
+    /// gate for every other tenant.
+    #[tokio::test]
+    async fn auto_unblock_respects_task_owner() {
+        let db = setup().await;
+        let mut blocker = req("blocker");
+        blocker.user_id = Some(7);
+        let t1 = create_task(&db, blocker).await.unwrap();
+        let mut blocked = req("blocked");
+        blocked.user_id = Some(7);
+        let t2 = create_task(&db, blocked).await.unwrap();
+
+        add_dependencies(&db, t2.id, &[t1.id], 7).await.unwrap();
+        crate::services::chiasm::tasks::update_task(
+            &db,
+            t2.id,
+            crate::services::chiasm::tasks::UpdateTaskRequest {
+                title: None,
+                status: Some("blocked".into()),
+                summary: None,
+                agent: None,
+            },
+            7,
+        )
+        .await
+        .unwrap();
+
+        let unblocked = check_and_unblock(&db, t1.id).await.unwrap();
+        assert_eq!(unblocked.len(), 1, "user 7's task must be auto-unblocked");
         assert_eq!(unblocked[0].id, t2.id);
         assert_eq!(unblocked[0].status, "active");
     }

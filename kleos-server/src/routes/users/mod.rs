@@ -162,9 +162,10 @@ async fn deactivate_user(
     }
 
     // The owner account is the trust root -- deactivating it would lock
-    // everyone out of the admin API.
+    // everyone out of the admin API. The caller is authenticated and holds
+    // admin scope; the action itself is forbidden, so this is 403 not 401.
     if user_id == 1 {
-        return Err(AppError(kleos_lib::EngError::Auth(
+        return Err(AppError(kleos_lib::EngError::Forbidden(
             "cannot deactivate the owner account (user_id=1)".into(),
         )));
     }

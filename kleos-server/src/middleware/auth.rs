@@ -198,12 +198,14 @@ async fn validate_mcp_token(
     let key_row = state
         .db
         .read(move |conn| {
-            let mut stmt = conn.prepare(
+            let sql = format!(
                 "SELECT id, user_id, pubkey_pem, scopes
                      FROM identity_keys
                      WHERE pubkey_fingerprint = ?1 AND is_active = 1
-                       AND user_id IN (SELECT id FROM users WHERE is_active = 1)",
-            )?;
+                       AND user_id IN ({})",
+                kleos_lib::auth::ACTIVE_USER_IDS_SUBQUERY
+            );
+            let mut stmt = conn.prepare(&sql)?;
             let row = stmt
                 .query_row(rusqlite::params![kid], |row| {
                     Ok((
@@ -523,11 +525,15 @@ pub async fn auth_middleware(
         let ik_row = match state
             .db
             .read(move |conn| {
-                conn.query_row(
+                let sql = format!(
                     "SELECT id, user_id, tier, algo, pubkey_pem, scopes
                      FROM identity_keys
                      WHERE pubkey_fingerprint = ?1 AND is_active = 1
-                       AND user_id IN (SELECT id FROM users WHERE is_active = 1)",
+                       AND user_id IN ({})",
+                    kleos_lib::auth::ACTIVE_USER_IDS_SUBQUERY
+                );
+                conn.query_row(
+                    &sql,
                     params![key_fp],
                     |row| {
                         Ok(IdentityKeyRow {
@@ -1068,13 +1074,17 @@ async fn resolve_identity_by_id(
     let row = state
         .db
         .read(move |conn| {
-            Ok(conn.query_row(
+            let sql = format!(
                 "SELECT i.identity_key_id, i.identity_hash, i.host_label, i.agent_label,
                         i.model_label, ik.user_id, ik.tier, ik.scopes
                  FROM identities i
                  JOIN identity_keys ik ON ik.id = i.identity_key_id
                  WHERE i.id = ?1 AND i.is_active = 1 AND ik.is_active = 1
-                   AND ik.user_id IN (SELECT id FROM users WHERE is_active = 1)",
+                   AND ik.user_id IN ({})",
+                kleos_lib::auth::ACTIVE_USER_IDS_SUBQUERY
+            );
+            Ok(conn.query_row(
+                &sql,
                 params![identity_id],
                 |row| {
                     Ok((

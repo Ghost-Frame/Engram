@@ -205,5 +205,5 @@ async fn deactivation_revokes_all_credentials() {
         .body(Body::empty())
         .unwrap();
     let (status, _) = send(&app, request).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "owner must not be deactivatable");
+    assert_eq!(status, StatusCode::FORBIDDEN, "owner must not be deactivatable");
 }
