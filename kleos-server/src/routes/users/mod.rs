@@ -208,6 +208,13 @@ async fn deactivate_user(
                  WHERE user_id = ?1 AND is_active = 1",
                 params![user_id],
             )?;
+            // Drop any outstanding enrollment challenge nonces so a nonce
+            // issued before deactivation cannot be redeemed if the account is
+            // later reactivated within the challenge TTL.
+            tx.execute(
+                "DELETE FROM enrollment_challenges WHERE user_id = ?1",
+                params![user_id],
+            )?;
 
             Ok(true)
         })

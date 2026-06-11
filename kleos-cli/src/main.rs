@@ -1776,7 +1776,23 @@ async fn handle_identity_init(
         .post("/identity-keys/enroll/challenge", json!({}))
         .await
     {
-        Ok(v) => v.get("nonce").and_then(|n| n.as_str()).map(String::from),
+        // A successful response that lacks a usable nonce is a real problem
+        // (mangled by a proxy, or a schema change) -- do not silently degrade
+        // to a nonce-less proof the server will then reject. Abort with a
+        // clear message instead.
+        Ok(v) => match v.get("nonce").and_then(|n| n.as_str()) {
+            Some(n) => Some(n.to_string()),
+            None => {
+                eprintln!(
+                    "Enrollment challenge response did not contain a nonce; aborting. Response: {}",
+                    v
+                );
+                std::process::exit(1);
+            }
+        },
+        // A transport/HTTP error means the endpoint is unavailable: this is
+        // the bootstrap (no credentials yet) or pre-challenge-server case, so
+        // fall back to the legacy nonce-less proof.
         Err(_) => None,
     };
 

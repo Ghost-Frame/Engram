@@ -290,9 +290,13 @@ async fn add_deps_handler(
     Path(id): Path<i64>,
     Json(body): Json<AddDepsBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    // Ownership gate on the parent task (see list_deps_handler).
-    let _ = get_task(&db, id, auth.effective_user_id()).await?;
-    kleos_lib::services::chiasm::dependencies::add_dependencies(&db, id, &body.depends_on).await?;
+    // Ownership gate on the parent task (see list_deps_handler). The same
+    // user_id also scopes each dependency target inside add_dependencies so a
+    // caller cannot point a dependency at another tenant's task.
+    let user_id = auth.effective_user_id();
+    let _ = get_task(&db, id, user_id).await?;
+    kleos_lib::services::chiasm::dependencies::add_dependencies(&db, id, &body.depends_on, user_id)
+        .await?;
     let deps = kleos_lib::services::chiasm::dependencies::get_dependencies(&db, id).await?;
     Ok((StatusCode::CREATED, Json(json!({ "dependencies": deps }))))
 }

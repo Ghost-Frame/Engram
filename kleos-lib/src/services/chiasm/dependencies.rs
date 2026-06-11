@@ -6,6 +6,7 @@
 
 use crate::db::Database;
 use crate::{EngError, Result};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 /// A dependency edge: task `task_id` depends on task `depends_on`.
@@ -57,12 +58,44 @@ pub async fn has_circular_dependency(db: &Database, task_id: i64, target_id: i64
 
 /// Add one or more dependency edges. Each target in `depends_on` is validated
 /// for self-references and circular dependencies before insertion.
-pub async fn add_dependencies(db: &Database, task_id: i64, depends_on: &[i64]) -> Result<()> {
+///
+/// `user_id` is the caller's effective user. Every `depends_on` target must
+/// belong to that user: without this check a caller who owns `task_id` could
+/// point a dependency at another tenant's task, writing a cross-tenant edge
+/// and leaking the target's title and status back through `get_dependencies`
+/// in monolith mode. The predicate is the tenant boundary in monolith mode
+/// and a no-op in a single-owner shard (where every task shares the owner).
+pub async fn add_dependencies(
+    db: &Database,
+    task_id: i64,
+    depends_on: &[i64],
+    user_id: i64,
+) -> Result<()> {
     for &dep_id in depends_on {
         if dep_id == task_id {
             return Err(EngError::InvalidInput(
                 "task cannot depend on itself".into(),
             ));
+        }
+        // Fail closed (NotFound) when the dependency target is not owned by
+        // the caller, mirroring get_task's ownership predicate.
+        let owns_target = db
+            .read(move |conn| {
+                Ok(conn
+                    .query_row(
+                        "SELECT 1 FROM chiasm_tasks WHERE id = ?1 AND user_id = ?2",
+                        rusqlite::params![dep_id, user_id],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some())
+            })
+            .await?;
+        if !owns_target {
+            return Err(EngError::NotFound(format!(
+                "dependency target task {} not found",
+                dep_id
+            )));
         }
         if has_circular_dependency(db, task_id, dep_id).await? {
             return Err(EngError::InvalidInput(format!(
@@ -233,13 +266,38 @@ mod tests {
         let t2 = create_task(&db, req("task-2")).await.unwrap();
         let t3 = create_task(&db, req("task-3")).await.unwrap();
 
-        add_dependencies(&db, t3.id, &[t1.id, t2.id]).await.unwrap();
+        add_dependencies(&db, t3.id, &[t1.id, t2.id], 1).await.unwrap();
 
         let deps = get_dependencies(&db, t3.id).await.unwrap();
         assert_eq!(deps.len(), 2);
         let dep_ids: Vec<i64> = deps.iter().map(|d| d.depends_on).collect();
         assert!(dep_ids.contains(&t1.id));
         assert!(dep_ids.contains(&t2.id));
+    }
+
+    /// Test: a dependency target owned by another user is rejected, so a
+    /// caller cannot create a cross-tenant dependency edge.
+    #[tokio::test]
+    async fn cross_tenant_dependency_target_rejected() {
+        let db = setup().await;
+        let mut mine = req("mine");
+        mine.user_id = Some(1);
+        let t_mine = create_task(&db, mine).await.unwrap();
+        let mut theirs = req("theirs");
+        theirs.user_id = Some(2);
+        let t_theirs = create_task(&db, theirs).await.unwrap();
+
+        // User 1 tries to depend on user 2's task.
+        let result = add_dependencies(&db, t_mine.id, &[t_theirs.id], 1).await;
+        assert!(
+            matches!(result, Err(EngError::NotFound(_))),
+            "cross-tenant dependency target must be rejected, got: {:?}",
+            result
+        );
+
+        // No edge was written.
+        let deps = get_dependencies(&db, t_mine.id).await.unwrap();
+        assert!(deps.is_empty(), "no cross-tenant edge should be inserted");
     }
 
     /// Test: adding a dependency that would create a cycle is rejected with an error.
@@ -249,9 +307,9 @@ mod tests {
         let t1 = create_task(&db, req("task-1")).await.unwrap();
         let t2 = create_task(&db, req("task-2")).await.unwrap();
 
-        add_dependencies(&db, t2.id, &[t1.id]).await.unwrap();
+        add_dependencies(&db, t2.id, &[t1.id], 1).await.unwrap();
 
-        let result = add_dependencies(&db, t1.id, &[t2.id]).await;
+        let result = add_dependencies(&db, t1.id, &[t2.id], 1).await;
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
@@ -266,7 +324,7 @@ mod tests {
     async fn self_dependency_rejected() {
         let db = setup().await;
         let t1 = create_task(&db, req("task-1")).await.unwrap();
-        let result = add_dependencies(&db, t1.id, &[t1.id]).await;
+        let result = add_dependencies(&db, t1.id, &[t1.id], 1).await;
         assert!(result.is_err());
     }
 
@@ -276,7 +334,7 @@ mod tests {
         let db = setup().await;
         let t1 = create_task(&db, req("task-1")).await.unwrap();
         let t2 = create_task(&db, req("task-2")).await.unwrap();
-        add_dependencies(&db, t2.id, &[t1.id]).await.unwrap();
+        add_dependencies(&db, t2.id, &[t1.id], 1).await.unwrap();
 
         let removed = remove_dependency(&db, t2.id, t1.id).await.unwrap();
         assert!(removed);
@@ -292,7 +350,7 @@ mod tests {
         let t1 = create_task(&db, req("blocker")).await.unwrap();
         let t2 = create_task(&db, req("blocked")).await.unwrap();
 
-        add_dependencies(&db, t2.id, &[t1.id]).await.unwrap();
+        add_dependencies(&db, t2.id, &[t1.id], 1).await.unwrap();
 
         // Mark t2 as blocked
         crate::services::chiasm::tasks::update_task(
