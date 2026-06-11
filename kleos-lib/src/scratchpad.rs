@@ -1,4 +1,4 @@
-//! Scratchpad -- session-based key-value store for agents with TTL.
+//! Scratchpad: session-based key-value store for agents with TTL.
 //!
 //! Ports: scratch/db.ts, scratch/types.ts, scratch/routes.ts (logic)
 
@@ -213,8 +213,8 @@ pub async fn promote_entries(
             );
             let source = filtered[0].agent.clone();
             conn.execute(
-                "INSERT INTO memories (content, category, source, importance, source_count, is_latest) VALUES (?1, ?2, ?3, 5, 1, 1)",
-                params![content, category, source],
+                "INSERT INTO memories (content, category, source, importance, source_count, is_latest, user_id) VALUES (?1, ?2, ?3, 5, 1, 1, ?4)",
+                params![content, category, source, user_id],
             )
             ?;
             promoted.push(conn.last_insert_rowid());
@@ -223,8 +223,8 @@ pub async fn promote_entries(
                 let content = format!("{}: {}", r.key, r.value);
                 let source = r.agent.clone();
                 conn.execute(
-                    "INSERT INTO memories (content, category, source, importance, source_count, is_latest) VALUES (?1, ?2, ?3, 5, 1, 1)",
-                    params![content, category, source],
+                    "INSERT INTO memories (content, category, source, importance, source_count, is_latest, user_id) VALUES (?1, ?2, ?3, 5, 1, 1, ?4)",
+                    params![content, category, source, user_id],
                 )
                 ?;
                 promoted.push(conn.last_insert_rowid());
@@ -280,5 +280,96 @@ mod tests {
     #[test]
     fn session_short_prefix_handles_multibyte_boundaries() {
         assert_eq!(session_short_prefix("sess-💥-alpha"), "sess-");
+    }
+
+    /// Regression: promoted memories keep the caller user id in both promotion modes.
+    #[tokio::test]
+    async fn promote_entries_binds_user_id_for_inserted_memories() {
+        let db = crate::db::Database::connect_memory()
+            .await
+            .expect("in-memory db");
+
+        upsert_entry(
+            &db,
+            "combined-session",
+            "agent-a",
+            "model-a",
+            "alpha",
+            "one",
+            30,
+        )
+        .await
+        .expect("combined alpha entry");
+        upsert_entry(
+            &db,
+            "combined-session",
+            "agent-a",
+            "model-a",
+            "beta",
+            "two",
+            30,
+        )
+        .await
+        .expect("combined beta entry");
+        let combined_ids = promote_entries(&db, 2, "combined-session", None, true, "test")
+            .await
+            .expect("combined promotion");
+        assert_eq!(combined_ids.len(), 1);
+        let combined_id = combined_ids[0];
+        let combined_owner = db
+            .read(move |conn| {
+                let owner = conn.query_row(
+                    "SELECT user_id FROM memories WHERE id = ?1",
+                    params![combined_id],
+                    |row| row.get::<_, i64>(0),
+                )?;
+                Ok(owner)
+            })
+            .await
+            .expect("combined memory owner");
+        assert_eq!(combined_owner, 2);
+
+        upsert_entry(
+            &db,
+            "individual-session",
+            "agent-b",
+            "model-b",
+            "gamma",
+            "three",
+            30,
+        )
+        .await
+        .expect("individual gamma entry");
+        upsert_entry(
+            &db,
+            "individual-session",
+            "agent-b",
+            "model-b",
+            "delta",
+            "four",
+            30,
+        )
+        .await
+        .expect("individual delta entry");
+        let individual_ids = promote_entries(&db, 2, "individual-session", None, false, "test")
+            .await
+            .expect("individual promotion");
+        assert_eq!(individual_ids.len(), 2);
+        let individual_owners = db
+            .read(move |conn| {
+                let mut owners = Vec::new();
+                for id in individual_ids {
+                    let owner = conn.query_row(
+                        "SELECT user_id FROM memories WHERE id = ?1",
+                        params![id],
+                        |row| row.get::<_, i64>(0),
+                    )?;
+                    owners.push(owner);
+                }
+                Ok(owners)
+            })
+            .await
+            .expect("individual memory owners");
+        assert_eq!(individual_owners, vec![2, 2]);
     }
 }
