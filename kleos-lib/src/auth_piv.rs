@@ -838,6 +838,13 @@ impl RequestSigner {
         let kleos_dir = home.join(".kleos");
         std::fs::create_dir_all(&kleos_dir)
             .map_err(|e| EngError::Internal(format!("cannot create ~/.kleos: {e}")))?;
+        // Tighten the key directory to owner-only so a sibling secret cannot be
+        // read via a permissive parent dir. Best-effort, never fatal.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&kleos_dir, std::fs::Permissions::from_mode(0o700));
+        }
         let key_path = kleos_dir.join("identity.key");
         if key_path.exists() {
             return Err(EngError::InvalidInput(format!(
@@ -853,15 +860,9 @@ impl RequestSigner {
             .try_fill_bytes(&mut secret)
             .expect("OS CSPRNG must be available");
 
-        std::fs::write(&key_path, hex::encode(secret))
+        // Atomic 0600 creation: no world-readable window between write and chmod.
+        write_owner_only(&key_path, hex::encode(secret).as_bytes())
             .map_err(|e| EngError::Internal(format!("cannot write key file: {e}")))?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| EngError::Internal(format!("cannot chmod key file: {e}")))?;
-        }
 
         let signer = Self::from_key_bytes(secret, host, agent, model);
         Ok((signer, key_path))
@@ -1042,14 +1043,10 @@ impl RequestSigner {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            // Write then tighten perms; best-effort, never fatal.
-            if std::fs::write(&path, &token).is_ok() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-                }
-            }
+            // Atomic 0600 creation: no world-readable window. Best-effort,
+            // never fatal -- an unwritable cache just means the next request
+            // re-signs instead of reusing the token.
+            let _ = write_owner_only(&path, token.as_bytes());
         }
         *self.session_token.lock().unwrap() = Some(token);
     }
@@ -1187,6 +1184,30 @@ fn dirs_for_key_path() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
+/// Create (or truncate) a file containing secret material with owner-only
+/// (0600) permissions applied atomically at creation time. This eliminates the
+/// world-readable window of a write-then-chmod sequence: under the default
+/// umask the plaintext key/token would be 0644 between `fs::write` and
+/// `set_permissions`, and an inotify-armed local user can win that race.
+#[cfg(unix)]
+fn write_owner_only(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(contents)
+}
+
+/// Non-unix fallback: platform perms model differs; best-effort plain write.
+#[cfg(not(unix))]
+fn write_owner_only(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, contents)
+}
+
 /// Decide whether to skip the PIV (hardware) tier and use the software Ed25519
 /// identity instead, based on a requested tier value (typically the
 /// `KLEOS_SIGNER_TIER` env var). Only the literal "soft" (case-insensitive)
@@ -1200,6 +1221,19 @@ fn skip_piv_for_tier(tier: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Secret material written via write_owner_only is 0600 immediately -- no
+    /// world-readable window (the TOCTOU the auth_piv perms fix closes).
+    #[cfg(unix)]
+    #[test]
+    fn write_owner_only_creates_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.key");
+        write_owner_only(&path, b"deadbeef").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "secret file must be owner-only at creation");
+    }
 
     // -- Signer-tier selection --
 
