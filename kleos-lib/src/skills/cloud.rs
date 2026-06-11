@@ -28,7 +28,7 @@ pub async fn search_skills_cloud(
         limit: Some(limit),
         ..Default::default()
     };
-    let results = find_skills(db, query, opts).await?;
+    let results = find_skills(db, query, user_id, opts).await?;
 
     let mut out = Vec::with_capacity(results.len());
     for r in results {
