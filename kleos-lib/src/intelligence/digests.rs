@@ -23,9 +23,10 @@ pub async fn generate_digest(db: &Database, user_id: i64, period: &str) -> Resul
             let mut stmt = conn.prepare(
                 "SELECT id, content, category, importance FROM memories \
                      WHERE is_forgotten = 0 AND created_at >= datetime('now', ?1) \
+                     AND user_id = ?2 \
                      ORDER BY importance DESC LIMIT 50",
             )?;
-            let rows = stmt.query_map(params![interval_owned], |row| {
+            let rows = stmt.query_map(params![interval_owned, user_id], |row| {
                 let content: String = row.get(1)?;
                 let category: String = row.get(2)?;
                 let importance: i32 = row.get(3)?;
