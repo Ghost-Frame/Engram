@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 use rand::rngs::OsRng;
 use rand::TryRngCore;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
@@ -132,7 +133,12 @@ enum Commands {
         dry_run: bool,
     },
     /// Export all secrets as JSON (for backup/migration)
-    Export,
+    Export {
+        /// Write the JSON export to this file (created mode 0600) instead of
+        /// printing plaintext secrets to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Manage agent keys for service authentication
     AgentKey {
         #[command(subcommand)]
@@ -572,10 +578,12 @@ fn has_valid_get_session_grant(path: &Path, token: &str) -> Result<bool> {
     let mut store = load_get_session_grants(path)?;
     let token_hash = hash_get_session_token(token);
     let pruned = prune_expired_get_session_grants(&mut store, now);
-    let valid = store
-        .grants
-        .iter()
-        .any(|grant| grant.token_hash == token_hash && grant.expires_at > now);
+    let valid = store.grants.iter().any(|grant| {
+        // Constant-time hash compare so grant validation does not leak which
+        // bytes of a presented token's hash matched via timing.
+        grant.expires_at > now
+            && bool::from(grant.token_hash.as_bytes().ct_eq(token_hash.as_bytes()))
+    });
     if pruned {
         save_get_session_grants(path, &store)?;
     }
@@ -762,7 +770,7 @@ async fn main() -> Result<()> {
                     yes,
                 } => cmd_delete(&db, &key, &service, &secret_key, yes).await,
                 Commands::Import { dry_run } => cmd_import(&db, &key, dry_run).await,
-                Commands::Export => cmd_export(&db, &key).await,
+                Commands::Export { output } => cmd_export(&db, &key, output).await,
                 Commands::AgentKey { action } => cmd_agent_key(&db, action).await,
                 Commands::Exec {
                     service,
@@ -1378,7 +1386,11 @@ async fn cmd_import_tsv(
     Ok(())
 }
 
-async fn cmd_export(db: &Database, master_key: &[u8; KEY_SIZE]) -> Result<()> {
+async fn cmd_export(
+    db: &Database,
+    master_key: &[u8; KEY_SIZE],
+    output: Option<PathBuf>,
+) -> Result<()> {
     let rows = storage::list_secrets(db, CRED_USER_ID, None).await?;
 
     if rows.is_empty() {
@@ -1414,9 +1426,40 @@ async fn cmd_export(db: &Database, master_key: &[u8; KEY_SIZE]) -> Result<()> {
     }
 
     let json = serde_json::to_string_pretty(&entries)?;
-    println!("{}", json);
 
-    eprintln!("\nexported {} secret(s)", entries.len());
+    match output {
+        Some(path) => {
+            // Write atomically with owner-only perms so the plaintext export
+            // never lands on disk world-readable.
+            let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+            std::fs::write(&tmp, &json)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+            }
+            std::fs::rename(&tmp, &path)?;
+            eprintln!(
+                "exported {} secret(s) to {} (mode 0600)",
+                entries.len(),
+                path.display()
+            );
+        }
+        None => {
+            // Refuse to dump plaintext secrets when stdout is redirected to a
+            // file/pipe (which would be created with the default umask).
+            // Printing is allowed only to an interactive terminal.
+            use std::io::IsTerminal;
+            if !io::stdout().is_terminal() {
+                anyhow::bail!(
+                    "refusing to write plaintext secrets to a non-terminal stdout; \
+                     pass --output <file> (written mode 0600)"
+                );
+            }
+            println!("{}", json);
+            eprintln!("\nexported {} secret(s)", entries.len());
+        }
+    }
     Ok(())
 }
 
@@ -2410,12 +2453,38 @@ fn draw_detail_modal(f: &mut Frame, secret: &TuiSecret, show_value: bool) {
 
 // --- credd fallback for secret resolution ---
 
+/// Refuse to transmit the master key (sent as the credd Bearer token) over a
+/// plaintext connection to a non-loopback host. Loopback http and any https
+/// endpoint are allowed; remote http is rejected.
+fn guard_credd_transport(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).context("invalid CREDD_URL")?;
+    if parsed.scheme() == "https" {
+        return Ok(());
+    }
+    let host = parsed.host_str().unwrap_or("");
+    let is_loopback = host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+    if is_loopback {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "refusing to send the master key over plaintext http to non-loopback host '{host}'; \
+         use an https CREDD_URL or a loopback address"
+    )
+}
+
 async fn resolve_via_credd(
     master_key: &[u8; KEY_SIZE],
     service: &str,
     key: &str,
 ) -> Result<(storage::SecretRow, kleos_cred::types::SecretData)> {
     let credd_url = std::env::var("CREDD_URL").unwrap_or_else(|_| "http://127.0.0.1:4400".into());
+    // The master key authenticates to credd as a Bearer token (credd's auth
+    // model). Refuse to send it over a plaintext non-loopback hop.
+    guard_credd_transport(&credd_url)?;
     let auth_token = hex::encode(master_key);
 
     let resp = reqwest::Client::new()
