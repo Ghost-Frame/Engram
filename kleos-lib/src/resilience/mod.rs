@@ -59,7 +59,7 @@ pub use circuit_breaker::{BreakerConfig, CircuitError, LegacyCircuitBreaker};
 pub use retry::retry_with_backoff;
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -135,13 +135,11 @@ impl ServiceGuard {
         Fut: std::future::Future<Output = Result<T>> + Send,
         T: Send,
     {
-        // Fast-path: circuit already open -- dead-letter immediately.
-        if self.breaker.state() == CircuitState::Open {
-            let err_msg = format!("circuit open for service '{}'", self.service_name);
-            self.write_dead_letter(operation, payload, "circuit_open", 0)
-                .await;
-            return Err(EngError::Internal(err_msg));
-        }
+        // No fast-path on Open here: only breaker.call() evaluates the
+        // reset_timeout and performs the Open -> HalfOpen transition. Short-
+        // circuiting on state() == Open would skip that check and leave the
+        // breaker permanently Open. The retry loop below dead-letters when the
+        // breaker reports open (circuit_now_open), preserving the same outcome.
 
         // Attempt with retry inside the circuit breaker guard.
         let service_name = &self.service_name;
