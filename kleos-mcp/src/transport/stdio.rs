@@ -21,20 +21,50 @@ enum Framing {
 /// buggy Content-Length value.
 const MAX_MCP_MSG_SIZE: usize = 10 * 1024 * 1024;
 
+/// Reads one line (up to and including the `\n`) with a size cap, so a peer
+/// that never sends a newline cannot drive unbounded memory growth. Returns
+/// `None` at EOF, or an error if the line exceeds `MAX_MCP_MSG_SIZE`.
+fn read_line_capped<R: BufRead>(reader: &mut R) -> Result<Option<String>, String> {
+    let mut out: Vec<u8> = Vec::new();
+    loop {
+        let available = reader.fill_buf().map_err(|e| e.to_string())?;
+        if available.is_empty() {
+            return if out.is_empty() {
+                Ok(None)
+            } else {
+                String::from_utf8(out).map(Some).map_err(|e| e.to_string())
+            };
+        }
+        let (chunk_len, found_nl) = match available.iter().position(|&b| b == b'\n') {
+            Some(pos) => (pos + 1, true),
+            None => (available.len(), false),
+        };
+        if out.len() + chunk_len > MAX_MCP_MSG_SIZE {
+            return Err(format!("line exceeds max {MAX_MCP_MSG_SIZE} bytes"));
+        }
+        out.extend_from_slice(&available[..chunk_len]);
+        reader.consume(chunk_len);
+        if found_nl {
+            return String::from_utf8(out).map(Some).map_err(|e| e.to_string());
+        }
+    }
+}
+
 /// Reads the first message and determines the session framing.
 ///
 /// Peeks at the first non-empty line: if it starts with `{` it's NDJSON,
 /// if it starts with `Content-Length:` it's LSP framing.
 fn read_first_message<R: BufRead>(reader: &mut R) -> Result<Option<(Value, Framing)>, String> {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line).map_err(|e| e.to_string())?;
-    if n == 0 {
-        return Ok(None);
-    }
+    // Skip blank lines with a loop, not recursion: a peer streaming many blank
+    // lines before the first message would otherwise overflow the stack.
+    let line = loop {
+        match read_line_capped(reader)? {
+            None => return Ok(None),
+            Some(l) if l.trim().is_empty() => continue,
+            Some(l) => break l,
+        }
+    };
     let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return read_first_message(reader);
-    }
     if trimmed.starts_with('{') {
         let value: Value = serde_json::from_str(trimmed).map_err(|e| e.to_string())?;
         Ok(Some((value, Framing::Ndjson)))
@@ -42,10 +72,10 @@ fn read_first_message<R: BufRead>(reader: &mut R) -> Result<Option<(Value, Frami
         let len = parse_content_length(trimmed)?;
         // Consume remaining headers until the empty separator line.
         loop {
-            let mut hdr = String::new();
-            reader.read_line(&mut hdr).map_err(|e| e.to_string())?;
-            if hdr.trim().is_empty() {
-                break;
+            match read_line_capped(reader)? {
+                None => break,
+                Some(hdr) if hdr.trim().is_empty() => break,
+                Some(_) => {}
             }
         }
         let value = read_content_length_body(reader, len)?;
@@ -58,11 +88,10 @@ fn read_first_message<R: BufRead>(reader: &mut R) -> Result<Option<(Value, Frami
 /// Reads the next NDJSON message, skipping blank lines.
 fn read_ndjson<R: BufRead>(reader: &mut R) -> Result<Option<Value>, String> {
     loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).map_err(|e| e.to_string())?;
-        if n == 0 {
-            return Ok(None);
-        }
+        let line = match read_line_capped(reader)? {
+            None => return Ok(None),
+            Some(l) => l,
+        };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -76,11 +105,10 @@ fn read_ndjson<R: BufRead>(reader: &mut R) -> Result<Option<Value>, String> {
 fn read_content_length_msg<R: BufRead>(reader: &mut R) -> Result<Option<Value>, String> {
     let mut content_length = None;
     loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).map_err(|e| e.to_string())?;
-        if n == 0 {
-            return Ok(None);
-        }
+        let line = match read_line_capped(reader)? {
+            None => return Ok(None),
+            Some(l) => l,
+        };
         let trimmed = line.trim_end();
         if trimmed.is_empty() {
             break;

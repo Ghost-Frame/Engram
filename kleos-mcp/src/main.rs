@@ -27,14 +27,17 @@ async fn main() {
         }
     };
 
-    match args.transport.as_str() {
-        "stdio" => kleos_mcp::transport::stdio::serve(app)
-            .await
-            .expect("stdio transport failed"),
+    let result = match args.transport.as_str() {
+        "stdio" => kleos_mcp::transport::stdio::serve(app).await,
         #[cfg(feature = "http")]
-        "http" => kleos_mcp::transport::http::serve(app, &args.listen)
-            .await
-            .expect("http transport failed"),
-        other => panic!("unknown transport: {other}"),
+        "http" => kleos_mcp::transport::http::serve(app, &args.listen).await,
+        other => {
+            eprintln!("kleos-mcp: unknown transport '{other}' (expected 'stdio' or 'http')");
+            std::process::exit(2);
+        }
+    };
+    if let Err(e) = result {
+        eprintln!("kleos-mcp: {} transport failed: {e}", args.transport);
+        std::process::exit(1);
     }
 }
