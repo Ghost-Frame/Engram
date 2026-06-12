@@ -35,10 +35,14 @@ async fn check_handler(
     // declared agent must match that agent's name. Prevents one agent's key
     // being used under another agent's identity.
     if let Some(bound_id) = auth.key.agent_id {
+        // AND is_active = 1: revoking an agent (agents.is_active = 0) must also
+        // disarm any API key bound to it. Without this predicate a key bound to
+        // a revoked agent still passed the agent-identity gate, since revoke
+        // never touched api_keys.agent_id.
         let expected: Option<String> = db
             .read(move |conn| {
                 conn.query_row(
-                    "SELECT name FROM agents WHERE id = ?1",
+                    "SELECT name FROM agents WHERE id = ?1 AND is_active = 1",
                     params![bound_id],
                     |row| row.get::<_, String>(0),
                 )
@@ -59,7 +63,7 @@ async fn check_handler(
             }
             None => {
                 return Err(AppError::from(kleos_lib::EngError::Forbidden(format!(
-                    "api key bound to agent id {} which no longer exists",
+                    "api key bound to agent id {} which no longer exists or is revoked",
                     bound_id
                 ))));
             }
