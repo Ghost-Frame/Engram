@@ -337,7 +337,10 @@ async fn post_prompt_generate(
 
     // Living prompt: Growth observations
     if include_growth {
-        if let Ok(observations) = list_observations(&db, auth.user_id, growth_limit).await {
+        // Use effective_user_id() like every other fetch in this handler: under
+        // delegation (act_as set) auth.user_id is the delegator, so growth
+        // observations were pulled from the wrong tenant into the prompt.
+        if let Ok(observations) = list_observations(&db, auth.effective_user_id(), growth_limit).await {
             if !observations.is_empty() {
                 let mut buf = String::from("## Growth Observations\n");
                 for obs in &observations {
