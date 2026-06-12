@@ -523,7 +523,7 @@ mod ecdh {
     use std::process::Command;
     use std::time::{Duration, SystemTime};
 
-    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
     use aes_gcm::{Aes256Gcm, Key, Nonce};
     use hkdf::Hkdf;
     use p256::ecdh::EphemeralSecret;
@@ -631,8 +631,17 @@ mod ecdh {
             .map_err(|e| EcdhClientError::Decrypt(format!("hkdf expand: {}", e)))?;
 
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&bearer_key));
+        // AAD MUST match credd's encrypt side (bootstrap_bearer.rs) byte for
+        // byte: protocol|agent. Mismatch => decryption fails.
+        let aad = format!("{}|{}", ECDH_PROTOCOL, agent_slot);
         let plaintext = cipher
-            .decrypt(Nonce::from_slice(&nonce_bytes), ciphertext.as_ref())
+            .decrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: ciphertext.as_ref(),
+                    aad: aad.as_bytes(),
+                },
+            )
             .map_err(|e| EcdhClientError::Decrypt(format!("aes-gcm: {}", e)))?;
         let bearer = String::from_utf8(plaintext)
             .map_err(|e| EcdhClientError::Decrypt(format!("utf8: {}", e)))?;

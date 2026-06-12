@@ -38,6 +38,34 @@ fn is_stripped_response_header(name: &str) -> bool {
         .any(|h| name.eq_ignore_ascii_case(h))
 }
 
+/// Request headers the proxy must never forward verbatim from the caller. These
+/// are hop-by-hop or message-framing headers (RFC 7230 SS6.1 plus length /
+/// encoding controls); relaying caller-controlled values enables request
+/// smuggling / desync and lets the caller override the `Host` of our pinned
+/// connection. `host`, `content-length`, and the auth header are set by the
+/// client or our own injection, never by the caller.
+const STRIPPED_REQUEST_HEADERS: &[&str] = &[
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "upgrade",
+    "expect",
+];
+
+/// True when a caller-supplied request header must be dropped before the proxy
+/// forwards it upstream. Case-insensitive.
+fn is_stripped_request_header(name: &str) -> bool {
+    STRIPPED_REQUEST_HEADERS
+        .iter()
+        .any(|h| name.eq_ignore_ascii_case(h))
+}
+
 /// Pattern for secret placeholders: {{secret:category/name}} or {{secret:category/name.field}}
 fn find_placeholders(text: &str) -> Vec<(usize, usize, String, String, Option<String>)> {
     let mut results = Vec::new();
@@ -218,7 +246,13 @@ pub async fn proxy_handler(
     // DNS so domains pointing at private IPs are also caught. The proxy
     // injects secret headers so an unvalidated URL would let an attacker
     // exfiltrate credentials to internal services.
-    kleos_lib::webhooks::resolve_and_validate_url(&req.url)
+    // Capture the address the hostname validated to. reqwest re-resolves DNS
+    // at request time, so without pinning an attacker could rebind the host to
+    // an internal IP between this check and the request (TOCTOU rebinding). We
+    // pin reqwest's resolver to this IP when building the client below, keeping
+    // the original hostname for TLS SNI and certificate validation. `None`
+    // means the URL already held a literal (already-validated) IP.
+    let pinned_ip = kleos_lib::webhooks::resolve_and_validate_url(&req.url)
         .await
         .map_err(|e| CredError::InvalidInput(format!("proxy target URL rejected: {}", e)))?;
 
@@ -306,14 +340,33 @@ pub async fn proxy_handler(
 
     // SECURITY (SEC-H2): disable redirect following to prevent Authorization
     // header leakage to attacker-controlled hosts via redirect chains.
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+    let mut client_builder =
+        reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+
+    // SECURITY (SSRF-DNS): pin the validated IP so reqwest does not re-resolve
+    // the hostname and cannot be steered to an internal address by a rebind.
+    if let Some(ip) = pinned_ip {
+        let parsed = url::Url::parse(&req.url)
+            .map_err(|e| CredError::InvalidInput(format!("invalid proxy URL: {}", e)))?;
+        if let Some(host) = parsed.host_str() {
+            let port = parsed.port_or_known_default().unwrap_or(443);
+            client_builder = client_builder.resolve(host, std::net::SocketAddr::new(ip, port));
+        }
+    }
+
+    let client = client_builder
         .build()
         .map_err(|e| CredError::InvalidInput(format!("client build failed: {}", e)))?;
     let mut builder = client.request(method, &req.url);
 
+    // SECURITY: forward only safe caller headers. Hop-by-hop and framing
+    // headers are dropped to prevent request smuggling/desync and Host override
+    // of the pinned connection.
     if let Some(headers) = &req.headers {
         for (name, value) in headers {
+            if is_stripped_request_header(name) {
+                continue;
+            }
             builder = builder.header(name, value);
         }
     }
