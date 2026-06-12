@@ -132,6 +132,10 @@ enum Commands {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
+    /// Initialize a random per-deployment KDF salt (opt into KDF v2).
+    /// Writes ~/.config/cred/kdf_salt (mode 0600). Export CRED_KDF_SALT_FILE
+    /// pointing at it in every cred/credd/phylaxd environment to take effect.
+    KdfSaltInit,
     /// Export all secrets as JSON (for backup/migration)
     Export {
         /// Write the JSON export to this file (created mode 0600) instead of
@@ -387,6 +391,46 @@ fn config_dir() -> PathBuf {
 
 fn db_path() -> PathBuf {
     config_dir().join("cred.db")
+}
+
+/// Default path of the persisted KDF salt file (KDF v2).
+fn kdf_salt_path() -> PathBuf {
+    config_dir().join("kdf_salt")
+}
+
+/// Create the random KDF salt (opt into KDF v2) and print activation guidance.
+/// Idempotent: never overwrites an existing salt. DB- and key-free so it can
+/// run on a fresh host before `cred init`.
+fn cmd_kdf_salt_init() -> Result<()> {
+    let path = kdf_salt_path();
+    let existed = path.exists();
+    let hex = kleos_cred::crypto::init_kdf_salt_file(&path)?;
+    if existed {
+        eprintln!(
+            "KDF salt already present at {} (left unchanged).",
+            path.display()
+        );
+    } else {
+        eprintln!(
+            "Wrote a new random KDF salt to {} (mode 0600).",
+            path.display()
+        );
+    }
+    eprintln!();
+    eprintln!("To activate KDF v2, export this in EVERY cred/credd/phylaxd environment:");
+    eprintln!(
+        "    export {}={}",
+        kleos_cred::crypto::KDF_SALT_FILE_ENV,
+        path.display()
+    );
+    eprintln!();
+    eprintln!("WARNING: secrets already stored WITHOUT a salt (legacy KDF v1) were derived with");
+    eprintln!("a different key and will NOT decrypt once the salt is active. Enable this on a");
+    eprintln!("fresh vault, or re-import secrets after enabling. The salt is not secret, but");
+    eprintln!("back it up -- losing it makes v2-encrypted secrets unrecoverable.");
+    // Emit the hex salt on stdout so it can be captured/backed up.
+    println!("{hex}");
+    Ok(())
 }
 
 fn get_session_grants_path() -> PathBuf {
@@ -660,6 +704,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => cmd_init().await,
+        Commands::KdfSaltInit => cmd_kdf_salt_init(),
         Commands::Recover { from } => cmd_recover(&from).await,
         Commands::Session { cmd } => cmd_session(cmd).await,
         Commands::Piv { cmd } => cmd_piv(cmd).await,
@@ -807,6 +852,7 @@ async fn main() -> Result<()> {
                     }
                 },
                 Commands::Init
+                | Commands::KdfSaltInit
                 | Commands::Recover { .. }
                 | Commands::Session { .. }
                 | Commands::Piv { .. }
@@ -2453,29 +2499,6 @@ fn draw_detail_modal(f: &mut Frame, secret: &TuiSecret, show_value: bool) {
 
 // --- credd fallback for secret resolution ---
 
-/// Refuse to transmit the master key (sent as the credd Bearer token) over a
-/// plaintext connection to a non-loopback host. Loopback http and any https
-/// endpoint are allowed; remote http is rejected.
-fn guard_credd_transport(url: &str) -> Result<()> {
-    let parsed = reqwest::Url::parse(url).context("invalid CREDD_URL")?;
-    if parsed.scheme() == "https" {
-        return Ok(());
-    }
-    let host = parsed.host_str().unwrap_or("");
-    let is_loopback = host == "localhost"
-        || host
-            .parse::<std::net::IpAddr>()
-            .map(|ip| ip.is_loopback())
-            .unwrap_or(false);
-    if is_loopback {
-        return Ok(());
-    }
-    anyhow::bail!(
-        "refusing to send the master key over plaintext http to non-loopback host '{host}'; \
-         use an https CREDD_URL or a loopback address"
-    )
-}
-
 async fn resolve_via_credd(
     master_key: &[u8; KEY_SIZE],
     service: &str,
@@ -2484,7 +2507,7 @@ async fn resolve_via_credd(
     let credd_url = std::env::var("CREDD_URL").unwrap_or_else(|_| "http://127.0.0.1:4400".into());
     // The master key authenticates to credd as a Bearer token (credd's auth
     // model). Refuse to send it over a plaintext non-loopback hop.
-    guard_credd_transport(&credd_url)?;
+    kleos_cred::net::guard_credd_transport(&credd_url)?;
     let auth_token = hex::encode(master_key);
 
     let resp = reqwest::Client::new()
