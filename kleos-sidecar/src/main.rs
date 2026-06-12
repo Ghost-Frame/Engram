@@ -77,6 +77,19 @@ fn load_config_file(path: &str) -> ConfigFile {
     }
 }
 
+/// Whether a bind host keeps the listener loopback-only, i.e. safe to run
+/// without a shared secret. "localhost" and any address that parses to a
+/// loopback IP qualify; bind-all ("0.0.0.0"/"::"), concrete external IPs, and
+/// unresolved hostnames are treated as non-loopback so they require a token.
+fn host_is_loopback(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
 // --- CLI ---
 
 #[derive(Parser, Debug, Clone)]
@@ -415,11 +428,23 @@ async fn main() {
         .map(ToOwned::to_owned);
     if token.is_some() {
         tracing::info!("sidecar shared-secret auth enabled");
-    } else {
+    } else if host_is_loopback(&rc.host) {
         tracing::info!(
             host = %rc.host,
-            "no KLEOS_SIDECAR_TOKEN set; running without auth (localhost-only)"
+            "no KLEOS_SIDECAR_TOKEN set; running without auth (loopback-only)"
         );
+    } else {
+        // The sidecar holds a tenant-scoped DB handle; binding it to a
+        // non-loopback address with no shared secret exposes that tenant's
+        // memories to the network unauthenticated (the require_token
+        // middleware skips auth when no token is configured). Fail fast rather
+        // than serve open.
+        eprintln!(
+            "refusing to start: sidecar bound to non-loopback host '{}' without \
+             KLEOS_SIDECAR_TOKEN. Set a token or bind to 127.0.0.1.",
+            rc.host
+        );
+        std::process::exit(1);
     }
 
     let manager = SessionManager::new(session_id);
