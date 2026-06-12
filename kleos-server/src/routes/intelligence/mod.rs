@@ -593,10 +593,10 @@ async fn valence_get_handler(
 /// GET /intelligence/valence/profile -- aggregate emotional profile across the corpus.
 #[tracing::instrument(skip_all)]
 async fn valence_profile_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let profile = get_emotional_profile(&db).await?;
+    let profile = get_emotional_profile(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(profile)))
 }
 
@@ -770,10 +770,10 @@ async fn correct_handler(
 
 #[tracing::instrument(skip_all)]
 async fn memory_health_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let report = memory_health(&db).await?;
+    let report = memory_health(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(report)))
 }
 

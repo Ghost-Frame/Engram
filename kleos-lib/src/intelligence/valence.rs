@@ -195,15 +195,18 @@ pub async fn store_valence(db: &Database, memory_id: i64, content: &str) -> Resu
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_emotional_profile(db: &Database) -> Result<EmotionalProfile> {
+pub async fn get_emotional_profile(db: &Database, user_id: i64) -> Result<EmotionalProfile> {
+    // Scope to the caller: in monolith mode these aggregates ran over every
+    // tenant's memories, leaking global emotion-label counts and averages.
     let emotions = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT dominant_emotion, COUNT(*) as count, AVG(valence), AVG(arousal) \
                      FROM memories WHERE dominant_emotion IS NOT NULL AND is_forgotten = 0 \
+                     AND user_id = ?1 \
                      GROUP BY dominant_emotion ORDER BY count DESC",
             )?;
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map(rusqlite::params![user_id], |row| {
                 Ok(EmotionStat {
                     dominant_emotion: row.get(0)?,
                     count: row.get(1)?,
@@ -222,9 +225,10 @@ pub async fn get_emotional_profile(db: &Database) -> Result<EmotionalProfile> {
                      SUM(CASE WHEN valence > 0.2 THEN 1 ELSE 0 END), \
                      SUM(CASE WHEN valence < -0.2 THEN 1 ELSE 0 END), \
                      SUM(CASE WHEN valence BETWEEN -0.2 AND 0.2 THEN 1 ELSE 0 END) \
-                     FROM memories WHERE valence IS NOT NULL AND is_forgotten = 0",
+                     FROM memories WHERE valence IS NOT NULL AND is_forgotten = 0 \
+                     AND user_id = ?1",
             )?;
-            let result = stmt.query_row([], |row| {
+            let result = stmt.query_row(rusqlite::params![user_id], |row| {
                 Ok(OverallEmotionStats {
                     avg_valence: row.get::<_, Option<f64>>(0)?.unwrap_or(0.0),
                     avg_arousal: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),

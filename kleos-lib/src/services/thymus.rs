@@ -1096,10 +1096,15 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<ThymusStats> {
         )?;
 
         let mut by_rubric = Vec::new();
+        // Scope the joined evaluations to the same user (in the ON clause to
+        // preserve LEFT-join semantics for rubrics with no evals). Without it,
+        // another user's evaluation sharing a rubric_id inflated this user's
+        // count/avg_score in monolith mode.
         let mut stmt = conn.prepare(
             "SELECT r.name, COUNT(e.id) as evaluation_count, \
                  COALESCE(AVG(e.overall_score), 0.0) as avg_score \
-                 FROM rubrics r LEFT JOIN evaluations e ON r.id = e.rubric_id \
+                 FROM rubrics r LEFT JOIN evaluations e \
+                     ON r.id = e.rubric_id AND e.user_id = ?1 \
                  WHERE r.user_id = ?1 \
                  GROUP BY r.id ORDER BY evaluation_count DESC",
         )?;
