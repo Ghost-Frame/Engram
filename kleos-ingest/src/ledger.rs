@@ -61,10 +61,18 @@ impl Ledger {
     pub fn set_offset(&self, path: &str, offset: i64, project: &str, session_id: &str) {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().timestamp();
+        // Reset `summarized` to 0 whenever the offset advances past the previously
+        // recorded position. This ensures that a session file receiving new content
+        // after an idle-triggered summary will be re-summarized on the next idle
+        // window -- without this reset the `summarized` flag stays set permanently
+        // and all subsequent activity goes unsummarized (INGEST-1).
         let _ = conn.execute(
-            "INSERT INTO files (path, project, session_id, last_offset, last_seen_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(path) DO UPDATE SET last_offset = ?4, last_seen_at = ?5",
+            "INSERT INTO files (path, project, session_id, last_offset, last_seen_at, summarized)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)
+             ON CONFLICT(path) DO UPDATE SET
+                 last_offset = ?4,
+                 last_seen_at = ?5,
+                 summarized = CASE WHEN ?4 > last_offset THEN 0 ELSE summarized END",
             params![path, project, session_id, offset, now],
         );
     }

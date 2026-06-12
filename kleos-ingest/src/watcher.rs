@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinHandle;
 
 use crate::config::Config;
 use crate::ledger::Ledger;
@@ -62,6 +63,22 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
     // Track last activity per file for idle detection
     let mut last_activity: HashMap<PathBuf, Instant> = HashMap::new();
 
+    // One active tail task per path (BINGEST-1). When a new event arrives for a
+    // path whose task is still running, we record activity but do not spawn a
+    // second concurrent task -- the running task will read up to EOF and record
+    // the final offset, so no data is lost. A pending-event flag per path
+    // ensures we re-tail once the current task finishes to pick up anything
+    // that arrived after the in-flight read.
+    /// State of a per-path tail slot.
+    struct TailSlot {
+        /// The running tail task.
+        handle: JoinHandle<()>,
+        /// True when at least one event arrived while the task was in-flight.
+        pending: bool,
+    }
+    // One active TailSlot per watched path.
+    let mut active_tails: HashMap<PathBuf, TailSlot> = HashMap::new();
+
     // Idle check ticker (also sends systemd watchdog ping)
     let mut idle_interval = tokio::time::interval(Duration::from_secs(30));
     let notify_socket = std::env::var("NOTIFY_SOCKET").ok();
@@ -74,12 +91,30 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
         tokio::select! {
             Some(path) = rx.recv() => {
                 last_activity.insert(path.clone(), Instant::now());
-                let config = Arc::clone(&config);
-                let ledger = Arc::clone(&ledger);
-                let writer = Arc::clone(&writer);
-                tokio::spawn(async move {
-                    tailer::tail_file(path, config, ledger, writer, dry_run).await;
-                });
+
+                // Reap finished tasks and handle pending-event re-spawn.
+                let finished = active_tails
+                    .get(&path)
+                    .map(|s| s.handle.is_finished())
+                    .unwrap_or(true);
+
+                if finished {
+                    // No in-flight task -- spawn a new one.
+                    let config = Arc::clone(&config);
+                    let ledger = Arc::clone(&ledger);
+                    let writer = Arc::clone(&writer);
+                    let path_clone = path.clone();
+                    let handle = tokio::spawn(async move {
+                        tailer::tail_file(path_clone, config, ledger, writer, dry_run).await;
+                    });
+                    active_tails.insert(path, TailSlot { handle, pending: false });
+                } else {
+                    // Task already running for this path -- mark pending so we
+                    // re-tail once it completes rather than racing on the ledger.
+                    if let Some(slot) = active_tails.get_mut(&path) {
+                        slot.pending = true;
+                    }
+                }
             }
             _ = idle_interval.tick() => {
                 if let Some(ref sock_path) = notify_socket {
@@ -87,6 +122,28 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
                         let _ = sock.send_to(b"WATCHDOG=1", sock_path);
                     }
                 }
+
+                // Re-spawn pending tail tasks for paths whose prior task has finished.
+                // This handles events that were coalesced while a tail was in-flight
+                // (BINGEST-1): we deferred those events instead of racing, so we pick
+                // them up here once the slot is clear.
+                let mut to_respawn: Vec<PathBuf> = Vec::new();
+                for (path, slot) in active_tails.iter() {
+                    if slot.pending && slot.handle.is_finished() {
+                        to_respawn.push(path.clone());
+                    }
+                }
+                for path in to_respawn {
+                    let config = Arc::clone(&config);
+                    let ledger = Arc::clone(&ledger);
+                    let writer = Arc::clone(&writer);
+                    let path_clone = path.clone();
+                    let handle = tokio::spawn(async move {
+                        tailer::tail_file(path_clone, config, ledger, writer, dry_run).await;
+                    });
+                    active_tails.insert(path, TailSlot { handle, pending: false });
+                }
+
                 let idle_threshold = Duration::from_secs(config.summary_idle_secs);
                 let now = Instant::now();
                 let mut to_summarize = Vec::new();
