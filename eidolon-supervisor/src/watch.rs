@@ -140,19 +140,35 @@ fn read_new_entries(
 
     let mut new_pos = start_pos;
     let mut entries = Vec::new();
+    let mut buf = Vec::new();
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-        new_pos += line.len() as u64 + 1;
+    loop {
+        buf.clear();
+        // Read raw bytes rather than reader.lines(): a non-UTF-8 byte makes
+        // lines() yield Err, and the previous `break` left new_pos un-advanced
+        // so every later poll re-hit the same bad byte and silently missed all
+        // subsequent events (a monitoring blind spot).
+        let n = reader.read_until(b'\n', &mut buf)?;
+        if n == 0 {
+            break; // EOF
+        }
+        // A chunk that is not newline-terminated is a partial mid-write line.
+        // Leave new_pos before it so the completed line is read (and parsed) on
+        // the next poll instead of being skipped (TOCTOU drop of a real event).
+        if buf.last() != Some(&b'\n') {
+            break;
+        }
+        new_pos += n as u64;
 
-        if line.trim().is_empty() {
+        // Decode lossily so a bad byte is skipped past (offset advanced) rather
+        // than stalling the watcher forever.
+        let line = String::from_utf8_lossy(&buf);
+        let line = line.trim();
+        if line.is_empty() {
             continue;
         }
 
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
             let obj = value.as_object();
             let is_tool = obj
                 .map(|o| {
