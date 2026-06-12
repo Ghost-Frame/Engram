@@ -366,6 +366,12 @@ fn walk_kind(
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        // Do not follow symlinks: a symlinked directory inside an imported
+        // plugin tree could escape the marketplace root or form a cycle.
+        // DirEntry::file_type does not traverse the link.
+        if entry.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
+            continue;
+        }
         if path.is_dir() {
             walk_kind(
                 &path,
