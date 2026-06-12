@@ -114,6 +114,17 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Refuse a target that is a symlink: a pre-planted symlink could redirect
+    // the freshly written shard to an attacker-chosen location (TOCTOU).
+    if let Ok(meta) = std::fs::symlink_metadata(&args.target) {
+        if meta.file_type().is_symlink() {
+            return Err(anyhow!(
+                "target {:?} is a symlink; refusing to follow it",
+                args.target
+            ));
+        }
+    }
+
     // Phase 2: open / initialize target.
     info!("Phase 2: Opening target tenant shard...");
     let target = target::open(&args.target).await?;

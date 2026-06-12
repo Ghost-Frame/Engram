@@ -81,6 +81,14 @@ pub fn open(path: &Path, key_env: Option<&str>) -> Result<SourceDb> {
 }
 
 fn try_open_encrypted(path: &Path, hex_key: &str, compat: u8) -> Result<SourceDb> {
+    // The key is interpolated into a PRAGMA; restrict it to hex so a value
+    // containing a quote cannot break out of the `x'...'` literal and inject
+    // arbitrary SQL/PRAGMAs.
+    if hex_key.is_empty() || !hex_key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(anyhow!(
+            "source key must be a non-empty hex string (got a non-hex character)"
+        ));
+    }
     let conn = Connection::open(path)?;
     // Compat PRAGMA MUST precede the key pragma. SQLCipher ignores it once
     // the key has been applied.
@@ -119,11 +127,18 @@ pub fn get_tables(db: &SourceDb) -> Result<Vec<String>> {
     Ok(tables)
 }
 
+/// Quote a SQL identifier (table or column name), doubling any embedded
+/// double-quote so a crafted name from the source schema cannot break out of
+/// the quoting and inject SQL.
+pub fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 /// Return column names for the given table.
 pub fn get_columns(db: &SourceDb, table: &str) -> Result<Vec<String>> {
     let mut stmt = db
         .conn
-        .prepare(&format!("PRAGMA table_info(\"{}\")", table))?;
+        .prepare(&format!("PRAGMA table_info({})", quote_ident(table)))?;
     let mut rows = stmt.query([])?;
     let mut columns = Vec::new();
     while let Some(row) = rows.next()? {
