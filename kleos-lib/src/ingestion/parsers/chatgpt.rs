@@ -69,20 +69,21 @@ fn walk_tree(mapping: &HashMap<String, ChatGPTNode>, start_id: &str) -> Vec<(Str
     let mut messages: Vec<(String, String)> = Vec::new();
     let mut visited = HashSet::new();
 
-    fn walk(
-        mapping: &HashMap<String, ChatGPTNode>,
-        node_id: &str,
-        visited: &mut HashSet<String>,
-        messages: &mut Vec<(String, String)>,
-    ) {
-        if visited.contains(node_id) {
-            return;
-        }
-        visited.insert(node_id.to_string());
+    // Explicit heap stack instead of recursion: a deep linear conversation
+    // chain (legitimate or crafted) would overflow the call stack, which
+    // catch_unwind cannot contain. The `visited` set bounds total work to
+    // mapping.len() nodes.
+    let mut stack: Vec<String> = vec![start_id.to_string()];
 
-        let node = match mapping.get(node_id) {
+    while let Some(node_id) = stack.pop() {
+        if visited.contains(&node_id) {
+            continue;
+        }
+        visited.insert(node_id.clone());
+
+        let node = match mapping.get(&node_id) {
             Some(n) => n,
-            None => return,
+            None => continue,
         };
 
         if let Some(ref msg) = node.message {
@@ -106,12 +107,15 @@ fn walk_tree(mapping: &HashMap<String, ChatGPTNode>, start_id: &str) -> Vec<(Str
             }
         }
 
-        for child_id in &node.children {
-            walk(mapping, child_id, visited, messages);
+        // Push children in reverse so they pop in original order, preserving
+        // the previous pre-order depth-first traversal.
+        for child_id in node.children.iter().rev() {
+            if !visited.contains(child_id) {
+                stack.push(child_id.clone());
+            }
         }
     }
 
-    walk(mapping, start_id, &mut visited, &mut messages);
     messages
 }
 

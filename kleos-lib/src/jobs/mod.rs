@@ -264,12 +264,34 @@ pub async fn cleanup_jobs(db: &Database, older_than_days: i64) -> Result<u64> {
 #[tracing::instrument(skip(db))]
 pub async fn recover_stuck_jobs(db: &Database) -> Result<u64> {
     db.write(|conn| {
-        let n = conn
-            .execute(
-                "UPDATE jobs SET status = 'pending', claimed_at = NULL WHERE status = 'running' AND claimed_at < datetime('now', '-5 minutes')",
-                [],
-            )?;
-        Ok(n as u64)
+        // Recover a running job only after its OWN type's timeout (plus a grace
+        // margin) has elapsed, not a blanket 5 minutes. A long-running type like
+        // deprovision_teardown (~30 min) must not be requeued while still
+        // executing -- that would run the same destructive teardown twice.
+        const GRACE_SECS: u64 = 60;
+        let mut stmt = conn.prepare(
+            "SELECT id, type, \
+             CAST((julianday('now') - julianday(claimed_at)) * 86400 AS INTEGER) \
+             FROM jobs WHERE status = 'running' AND claimed_at IS NOT NULL",
+        )?;
+        let rows: Vec<(i64, String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(stmt);
+
+        let mut recovered = 0u64;
+        for (id, job_type, elapsed_secs) in rows {
+            let lease_secs = job_timeout_for(&job_type).as_secs() + GRACE_SECS;
+            if elapsed_secs >= 0 && (elapsed_secs as u64) > lease_secs {
+                let n = conn.execute(
+                    "UPDATE jobs SET status = 'pending', claimed_at = NULL \
+                     WHERE id = ?1 AND status = 'running'",
+                    params![id],
+                )?;
+                recovered += n as u64;
+            }
+        }
+        Ok(recovered)
     })
     .await
 }

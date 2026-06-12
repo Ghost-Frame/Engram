@@ -240,8 +240,22 @@ async fn carry_forward_chunks(db: &Database, old_memory_id: i64, new_memory_id: 
 }
 
 /// Encode a memory id and chunk index into the LanceDB chunk key space.
+///
+/// Guards the multiply so a pathologically large `memory_id` surfaces loudly
+/// rather than silently wrapping into another memory's key space (data
+/// corruption). Only reachable around i64::MAX/1000 memories, so this is
+/// defensive; the clamp keeps the value bounded if it ever fires.
 fn chunk_lance_key(memory_id: i64, chunk_idx: usize) -> i64 {
-    memory_id * 1000 + chunk_idx as i64
+    match memory_id
+        .checked_mul(1000)
+        .and_then(|v| v.checked_add(chunk_idx as i64))
+    {
+        Some(key) => key,
+        None => {
+            tracing::error!(memory_id, chunk_idx, "chunk_lance_key overflow; clamping to i64::MAX");
+            i64::MAX
+        }
+    }
 }
 
 /// Decode a LanceDB chunk key back to the owning memory id.

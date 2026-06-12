@@ -145,11 +145,35 @@ async fn ingest_inner(
         },
     );
 
-    // 2. Parse documents
-    let docs = match parsers::parse_with_format(format, input) {
-        Ok(d) => d,
-        Err(e) => {
+    // 2. Parse documents. Parsers (e.g. pdf_extract) can panic on crafted
+    // input; contain it with catch_unwind so a bad upload fails the job instead
+    // of aborting the ingest future / poisoning shared state.
+    let parse_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parsers::parse_with_format(format, input)
+    }));
+    let docs = match parse_outcome {
+        Ok(Ok(d)) => d,
+        Ok(Err(e)) => {
             let msg = format!("Parser error: {}", e);
+            emit(
+                &progress_tx,
+                IngestProgressEvent::Error {
+                    job_id: job_id.clone(),
+                    message: msg.clone(),
+                },
+            );
+            return Ok(IngestResult {
+                job_id,
+                status: IngestStatus::Failed,
+                total_documents: 0,
+                total_chunks: 0,
+                total_memories: 0,
+                errors: vec![msg],
+                duration_ms: start.elapsed().as_millis(),
+            });
+        }
+        Err(_) => {
+            let msg = format!("Parser panicked on {} input", format);
             emit(
                 &progress_tx,
                 IngestProgressEvent::Error {
@@ -330,11 +354,27 @@ pub async fn ingest_binary(
         });
     }
 
-    // Binary format parsing
-    let docs = match parsers::parse_binary_with_format(format, input) {
-        Ok(d) => d,
-        Err(e) => {
+    // Binary format parsing. Binary parsers (PDF/DOCX) can panic on crafted
+    // input; contain it with catch_unwind so the job fails cleanly.
+    let parse_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parsers::parse_binary_with_format(format, input)
+    }));
+    let docs = match parse_outcome {
+        Ok(Ok(d)) => d,
+        Ok(Err(e)) => {
             let msg = format!("Parser error: {}", e);
+            return Ok(IngestResult {
+                job_id,
+                status: IngestStatus::Failed,
+                total_documents: 0,
+                total_chunks: 0,
+                total_memories: 0,
+                errors: vec![msg],
+                duration_ms: start.elapsed().as_millis(),
+            });
+        }
+        Err(_) => {
+            let msg = format!("Parser panicked on {} input", format);
             return Ok(IngestResult {
                 job_id,
                 status: IngestStatus::Failed,
@@ -353,7 +393,16 @@ pub async fn ingest_binary(
     let mut total_memories = 0;
 
     for doc in &docs {
-        let doc_chunks = chunk_document(doc, options.chunker_options.as_ref());
+        // Contain chunker panics like the text path does.
+        let doc_chunks = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            chunk_document(doc, options.chunker_options.as_ref())
+        })) {
+            Ok(chunks) => chunks,
+            Err(_) => {
+                errors.push(format!("Document \"{}\": chunking error", doc.title));
+                continue;
+            }
+        };
         total_chunks += doc_chunks.len();
 
         let process_options = ProcessOptions {
