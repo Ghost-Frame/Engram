@@ -18,6 +18,11 @@ use crate::{EngError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityReport {
+    // Optional on the wire: the activity hub is documented as an action+summary
+    // quick-call, so a missing agent must not fail JSON deserialization (which
+    // surfaced as an opaque HTTP 422). When omitted the server fills it from the
+    // authenticated caller before validation.
+    #[serde(default)]
     pub agent: String,
     pub action: String,
     pub summary: String,
@@ -483,6 +488,22 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A body omitting `agent` must deserialize (agent defaults to empty) rather
+    /// than failing serde -- the regression that surfaced as HTTP 422 on the
+    /// documented action+summary quick-call. The server fills agent afterward.
+    #[test]
+    fn test_activity_report_deserializes_without_agent() {
+        let body = r#"{"action":"task.started","summary":"did a thing"}"#;
+        let report: ActivityReport = serde_json::from_str(body).expect("must deserialize");
+        assert_eq!(report.agent, "");
+        assert_eq!(report.action, "task.started");
+        assert_eq!(report.summary, "did a thing");
+        // metadata alias still maps onto details.
+        let with_meta = r#"{"action":"x","summary":"y","metadata":{"k":1}}"#;
+        let r2: ActivityReport = serde_json::from_str(with_meta).expect("metadata alias");
+        assert!(r2.details.is_some());
+    }
 
     /// Test: validates that required fields agent, action, and summary must be non-empty.
     #[test]

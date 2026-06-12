@@ -20,9 +20,20 @@ async fn report_activity(
     State(state): State<AppState>,
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
-    Json(body): Json<ActivityReport>,
+    Json(mut body): Json<ActivityReport>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let caller_user_id = auth.effective_user_id();
+    // Attribute to the authenticated caller when the client omits `agent` (the
+    // documented action+summary quick-call), so the minimal MCP form succeeds
+    // instead of failing validation. Fall back to the key id if the key is
+    // unnamed.
+    if body.agent.trim().is_empty() {
+        body.agent = if auth.key.name.trim().is_empty() {
+            format!("key:{}", auth.key.id)
+        } else {
+            auth.key.name.clone()
+        };
+    }
     let memory_id = process_activity(&db, &body, caller_user_id).await?;
 
     // Brain absorption: fire-and-forget, best-effort, never fails the response.
