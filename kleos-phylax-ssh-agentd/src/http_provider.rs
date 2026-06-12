@@ -87,6 +87,9 @@ impl HttpKeyProvider {
         let base_url = base_url.into();
         let bearer = bearer.into();
         let client = Client::builder()
+            // Bound requests so a stalled phylaxd cannot hang signing/listing.
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(20))
             .build()
             .context("failed to build HTTP client")?;
 

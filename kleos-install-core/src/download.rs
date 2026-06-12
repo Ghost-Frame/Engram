@@ -235,6 +235,10 @@ pub fn verify_checksum(path: &Path, expected: &str) -> Result<(), InstallError> 
 fn build_client() -> Result<reqwest::blocking::Client, InstallError> {
     reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
+        // Bound the connect phase so a dead host fails fast; keep the overall
+        // timeout generous since release binaries can be large on slow links.
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(600))
         .build()
         .map_err(|e| InstallError::Download(format!("failed to build HTTP client: {e}")))
 }

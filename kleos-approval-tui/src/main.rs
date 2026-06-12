@@ -79,7 +79,12 @@ impl App {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         Self {
-            client: reqwest::Client::new(),
+            // Bound requests so a stalled server cannot hang the TUI.
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             base_url: url,
             api_key,
             approvals: Vec::new(),
