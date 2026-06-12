@@ -564,10 +564,59 @@ fn format_recent_context(observations: &[Observation]) -> String {
         .join("\n")
 }
 
+/// Default minimum cosine similarity a memory must clear to be injected into a prompt.
+fn default_recall_min_semantic() -> f64 {
+    0.55
+}
+
+/// Default comma-separated categories excluded from per-prompt recall injection.
+fn default_recall_excluded_categories() -> &'static str {
+    "general,state"
+}
+
+/// Reads the semantic-relevance floor for recall injection from the environment.
+fn recall_min_semantic() -> f64 {
+    std::env::var("KLEOS_RECALL_MIN_SEMANTIC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(default_recall_min_semantic)
+}
+
+/// Reads the lowercased set of categories excluded from recall injection.
+fn recall_excluded_categories() -> std::collections::HashSet<String> {
+    std::env::var("KLEOS_RECALL_EXCLUDE_CATEGORIES")
+        .unwrap_or_else(|_| default_recall_excluded_categories().to_string())
+        .split(',')
+        .map(|c| c.trim().to_ascii_lowercase())
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
+/// Decides whether a single search result is relevant enough to inject.
+///
+/// Gates on the raw cosine `semantic_score` rather than the compound `score`,
+/// because the compound value is inflated by recency / decay / personality
+/// boosts -- so a "hot" but off-topic memory (Discord banter, personal facts)
+/// scores high on `score` while its cosine to the prompt is near zero. Results
+/// with no `semantic_score` are kept only when they are an exact lexical hit
+/// (`fts_score` present), which is itself a strong relevance signal; purely
+/// graph- or boost-derived candidates are dropped.
+fn recall_result_is_relevant(result: &Value, min_semantic: f64) -> bool {
+    match result.get("semantic_score").and_then(|v| v.as_f64()) {
+        Some(sem) => sem >= min_semantic,
+        None => result.get("fts_score").and_then(|v| v.as_f64()).is_some(),
+    }
+}
+
 /// Formats returned memories into Claude additionalContext text under a char budget.
 fn format_recall_context(results: &[Value], max_chars: usize) -> String {
     let mut lines = Vec::new();
     let mut used = 0usize;
+
+    // Relevance policy read once per call; both knobs are env-tunable so retuning
+    // never requires a rebuild of the sidecar.
+    let min_semantic = recall_min_semantic();
+    let excluded = recall_excluded_categories();
 
     for result in results {
         let Some(content) = result.get("content").and_then(|v| v.as_str()) else {
@@ -577,6 +626,14 @@ fn format_recall_context(results: &[Value], max_chars: usize) -> String {
             .get("category")
             .and_then(|v| v.as_str())
             .unwrap_or("general");
+        // Drop noise categories (chatter, personal facts) outright.
+        if excluded.contains(&category.to_ascii_lowercase()) {
+            continue;
+        }
+        // Drop memories that are not semantically about the prompt.
+        if !recall_result_is_relevant(result, min_semantic) {
+            continue;
+        }
         let line = format!("[{}] {}", category, truncate_chars(content, 220));
         let extra = if lines.is_empty() {
             line.len()
@@ -1494,5 +1551,66 @@ pub async fn flush_all_sessions(state: &SidecarState) {
 
     for task in tasks {
         let _ = task.await;
+    }
+}
+
+#[cfg(test)]
+mod recall_gate_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A high-cosine on-topic memory passes the default semantic floor.
+    #[test]
+    fn keeps_semantically_relevant() {
+        let r = json!({"content": "zellij layout KDL", "category": "technical", "semantic_score": 0.71});
+        assert!(recall_result_is_relevant(&r, default_recall_min_semantic()));
+    }
+
+    /// A boosted-but-off-topic memory (high compound score, low cosine) is dropped.
+    #[test]
+    fn drops_boosted_offtopic() {
+        let r = json!({"content": "demoted lol", "category": "general", "score": 1.5, "semantic_score": 0.12});
+        assert!(!recall_result_is_relevant(&r, default_recall_min_semantic()));
+    }
+
+    /// An exact lexical hit with no embedding is kept as a strong signal.
+    #[test]
+    fn keeps_exact_lexical_when_no_embedding() {
+        let r = json!({"content": "exact term", "category": "technical", "fts_score": 4.2});
+        assert!(recall_result_is_relevant(&r, default_recall_min_semantic()));
+    }
+
+    /// A graph/boost-only candidate with no semantic or lexical signal is dropped.
+    #[test]
+    fn drops_signalless_candidate() {
+        let r = json!({"content": "tangential", "category": "technical", "score": 0.9});
+        assert!(!recall_result_is_relevant(&r, default_recall_min_semantic()));
+    }
+
+    /// The full formatter excludes noise categories and weak matches together.
+    #[test]
+    fn formatter_filters_noise_and_weak() {
+        let results = vec![
+            json!({"content": "Zan likes spicy food", "category": "state", "semantic_score": 0.9}),
+            json!({"content": "They finally demoted me lol", "category": "general", "semantic_score": 0.8}),
+            json!({"content": "weak match", "category": "technical", "semantic_score": 0.30}),
+            json!({"content": "zellij uses WASM plugins", "category": "technical", "semantic_score": 0.66}),
+        ];
+        let out = format_recall_context(&results, 10_000);
+        assert!(out.contains("zellij uses WASM plugins"));
+        assert!(!out.contains("spicy food"));
+        assert!(!out.contains("demoted"));
+        assert!(!out.contains("weak match"));
+    }
+
+    /// With every result filtered out, the formatter returns an empty string
+    /// (no "Relevant memories:" header injected for an off-topic prompt).
+    #[test]
+    fn formatter_empty_when_all_filtered() {
+        let results = vec![
+            json!({"content": "banter", "category": "general", "semantic_score": 0.9}),
+            json!({"content": "tangent", "category": "technical", "semantic_score": 0.10}),
+        ];
+        assert!(format_recall_context(&results, 10_000).is_empty());
     }
 }
