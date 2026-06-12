@@ -1,6 +1,8 @@
 //! Claude Code hook handlers -- thin shim that routes decisions to kleos-server.
 //! All handlers read JSON from stdin, call the server, emit hookSpecificOutput on stdout.
-//! Network failures are logged (eprintln) but never block -- fail open, exit 0.
+//! Network failures are logged (eprintln) and fail open by default (exit 0);
+//! set KLEOS_HOOK_GATE_FAIL_CLOSED=1 to deny tool use when the gate is
+//! unreachable. A reachable gate that omits `allowed` always denies.
 
 use clap::Subcommand;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -203,6 +205,15 @@ fn extract_tool_result_text(input: &Value, max_chars: usize) -> String {
                 .unwrap_or_default()
         });
     raw.chars().take(max_chars).collect()
+}
+
+/// Whether a gate that cannot be reached should deny (fail closed) rather than
+/// allow (fail open). Defaults to false to preserve the documented fail-open
+/// behavior; security-conscious operators set KLEOS_HOOK_GATE_FAIL_CLOSED=1.
+fn gate_fail_closed() -> bool {
+    std::env::var("KLEOS_HOOK_GATE_FAIL_CLOSED")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 /// Builds a hook response that denies the current tool use with a reason.
@@ -455,15 +466,30 @@ async fn handle_pre_tool(client: &Client, input: &Value) {
     {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("kleos hook pre-tool: gate unreachable ({}), allowing", e);
-            return; // Fail open
+            // The gate is unreachable. By default this fails open (see module
+            // doc): the same hook bundle also drives context injection and
+            // activity reporting, so a Kleos outage must not hard-block every
+            // tool use. Operators who want a gate outage to deny instead set
+            // KLEOS_HOOK_GATE_FAIL_CLOSED=1.
+            if gate_fail_closed() {
+                emit(&build_deny_output(
+                    "PreToolUse",
+                    "kleos gate unreachable and KLEOS_HOOK_GATE_FAIL_CLOSED is set",
+                ));
+            } else {
+                eprintln!("kleos hook pre-tool: gate unreachable ({}), allowing", e);
+            }
+            return;
         }
     };
 
+    // A reachable gate that omits or malforms `allowed` must not be treated as
+    // an implicit allow -- default to deny so a partial response cannot bypass
+    // the gate.
     let allowed = result
         .get("allowed")
         .and_then(|a| a.as_bool())
-        .unwrap_or(true);
+        .unwrap_or(false);
     let reason = result
         .get("reason")
         .and_then(|r| r.as_str())
