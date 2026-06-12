@@ -219,15 +219,18 @@ fn fail_open_allowed(claude_hook: bool) -> bool {
     }
 }
 
-/// Best-effort alert to Eidolon when the gate degrades. Fire-and-forget; we
-/// never block the shell on the alert and we never propagate its errors.
+/// Best-effort alert to Eidolon when the gate degrades. Returns a JoinHandle
+/// so callers that are about to call process::exit can await it with a short
+/// timeout -- otherwise process::exit races the spawned task to zero. Callers
+/// that continue running (fail-open paths) may ignore the handle and let the
+/// runtime drive it naturally.
 fn alert_gate_degraded(
     client: &reqwest::Client,
     server_url: &str,
     api_key: Option<&str>,
     severity: &str,
     summary: &str,
-) {
+) -> tokio::task::JoinHandle<()> {
     let url = format!("{}/activity", server_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "agent": "kleos-sh",
@@ -242,7 +245,21 @@ fn alert_gate_degraded(
     }
     tokio::spawn(async move {
         let _ = req.send().await;
-    });
+    })
+}
+
+/// Await the alert task (up to 500 ms) so it can actually send before the
+/// process exits, then deny and exit. The 500 ms cap keeps the shell
+/// responsive when the server is unreachable. Never propagates alert errors.
+async fn alert_then_deny(
+    alert: tokio::task::JoinHandle<()>,
+    claude_hook: bool,
+    reason: &str,
+) -> ! {
+    // 500 ms is enough for a LAN round-trip; on timeout we proceed to exit
+    // anyway -- telemetry is best-effort, not load-bearing.
+    let _ = tokio::time::timeout(Duration::from_millis(500), alert).await;
+    deny_and_exit(claude_hook, reason)
 }
 
 /// Slot identifier used to look up this agent's credential. Defaults to
@@ -412,7 +429,9 @@ async fn main() {
                                 err_msg
                             );
                         }
-                        alert_gate_degraded(
+                        // Fail-open: runtime continues, so the task will run
+                        // naturally -- no need to await before returning.
+                        let _ = alert_gate_degraded(
                             &client,
                             &server,
                             Some(key),
@@ -425,20 +444,24 @@ async fn main() {
                             gate_id: 0,
                         }
                     } else {
-                        alert_gate_degraded(
+                        // SH-1 fix: await the alert before exit so P0 telemetry
+                        // actually reaches Eidolon instead of being dropped by
+                        // process::exit racing the spawned task.
+                        let alert = alert_gate_degraded(
                             &client,
                             &server,
                             Some(key),
                             "P0",
                             &format!("kleos-sh gate unreachable, fail-closed: {}", err_msg),
                         );
-                        deny_and_exit(
+                        alert_then_deny(
+                            alert,
                             cli.claude_hook,
                             &format!(
                                 "kleos-sh: gate unreachable after retries ({}); failing CLOSED. Set KLEOS_SH_FAIL_OPEN=1 to override.",
                                 err_msg
                             ),
-                        );
+                        ).await;
                     }
                 }
             }
@@ -450,7 +473,8 @@ async fn main() {
                         "kleos-sh: no API key available, failing OPEN per KLEOS_SH_FAIL_OPEN"
                     );
                 }
-                alert_gate_degraded(
+                // Fail-open: runtime continues, handle can be dropped.
+                let _ = alert_gate_degraded(
                     &client,
                     &server,
                     None,
@@ -463,17 +487,20 @@ async fn main() {
                     gate_id: 0,
                 }
             } else {
-                alert_gate_degraded(
+                // SH-1 fix: await the alert before exit (same as the
+                // gate-unreachable path above).
+                let alert = alert_gate_degraded(
                     &client,
                     &server,
                     None,
                     "P0",
                     "kleos-sh missing API key, fail-closed",
                 );
-                deny_and_exit(
+                alert_then_deny(
+                    alert,
                     cli.claude_hook,
                     "kleos-sh: no API key available; failing CLOSED. Set KLEOS_SH_FAIL_OPEN=1 to override (development only).",
-                );
+                ).await;
             }
         }
     };
