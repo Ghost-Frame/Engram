@@ -547,12 +547,17 @@ pub fn body_excerpt(bytes: &[u8]) -> String {
     format!("{}... ({} bytes total)", &s[..end], bytes.len())
 }
 
-/// Truncates a string to the given byte length.
+/// Truncates a string to at most `max` bytes, walking back to a char boundary
+/// so multibyte input cannot panic the slice (matching the sibling helper).
 pub fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         s
     } else {
-        &s[..max]
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
     }
 }
 

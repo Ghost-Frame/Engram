@@ -168,13 +168,17 @@ pub fn verify(db: &Database, input: VerifyInput) -> ToolResult {
         for r in &results {
             let id = format!("ver_{}", &Uuid::new_v4().to_string()[..8]);
             let now = Utc::now().timestamp();
+            // Clip on a char boundary: subprocess output is arbitrary bytes and
+            // a raw &s[..4096] panics when 4096 lands mid-multibyte-char.
+            let stdout_clip = clip_bytes(&r.stdout, 4096);
+            let stderr_clip = clip_bytes(&r.stderr, 4096);
             let _ = db.conn().execute(
                 "INSERT INTO verifications (id, spec_id, created_at, command, exit_code, success, duration_ms, criteria_index, stdout, stderr) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     id, sid, now, r.command, r.exit_code,
                     r.success as i32, r.duration_ms, criteria_index,
-                    &r.stdout[..r.stdout.len().min(4096)],
-                    &r.stderr[..r.stderr.len().min(4096)],
+                    stdout_clip,
+                    stderr_clip,
                 ],
             );
         }
@@ -375,4 +379,18 @@ pub fn session_diff(_db: &Database, input: SessionDiffInput) -> ToolResult {
     }));
 
     Ok(result)
+}
+
+/// Clip a string to at most `max` bytes without splitting a UTF-8 character.
+/// Subprocess output is arbitrary, so a raw byte slice can panic on a
+/// multibyte boundary; this walks back to the nearest char boundary.
+fn clip_bytes(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
