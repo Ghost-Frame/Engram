@@ -671,7 +671,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     if let Some(ref embedding) = req.embedding {
         let prefer_chunks = db.use_chunk_vector_search && db.chunk_vector_index.is_some();
         let vector_hits = if prefer_chunks {
-            match chunk_vector_search(db, embedding, candidate_target).await {
+            match chunk_vector_search(db, embedding, candidate_target, user_id).await {
                 Ok(hits) if !hits.is_empty() => Ok(hits),
                 Ok(_) => {
                     // Empty chunk result. Fall back to centroid index so
