@@ -388,6 +388,15 @@ async fn main() -> io::Result<()> {
         }
     };
 
+    // Restore the terminal on panic: a crash mid-render would otherwise leave
+    // the user's shell in raw mode and the alternate screen.
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        original_hook(info);
+    }));
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
