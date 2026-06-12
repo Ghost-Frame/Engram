@@ -49,7 +49,13 @@ struct StepResult {
 fn run_step(step: &VerifyStep, timeout_secs: Option<u64>) -> Result<StepResult, ToolError> {
     // SECURITY (SEC-C1): parse command into argv and execute directly without
     // a shell. No shell injection from LLM-generated input.
-    let parts: Vec<&str> = step.command.split_whitespace().collect();
+    //
+    // FORGE-2 fix: use shlex::split instead of split_whitespace so that
+    // quoted arguments with embedded spaces are kept intact. For example,
+    // `grep "foo bar" file` must produce ["grep", "foo bar", "file"], not
+    // ["grep", "\"foo", "bar\"", "file"].
+    let parts: Vec<String> = shlex::split(&step.command)
+        .ok_or_else(|| ToolError::InvalidValue(format!("malformed command: {}", step.command)))?;
     if parts.is_empty() {
         return Err(ToolError::InvalidValue("empty command".into()));
     }
@@ -58,7 +64,7 @@ fn run_step(step: &VerifyStep, timeout_secs: Option<u64>) -> Result<StepResult, 
 
     if let Some(secs) = timeout_secs {
         // Timeout path: spawn child, wait on separate thread, kill by PID on timeout
-        let child = Command::new(parts[0])
+        let child = Command::new(&parts[0])
             .args(&parts[1..])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -101,7 +107,7 @@ fn run_step(step: &VerifyStep, timeout_secs: Option<u64>) -> Result<StepResult, 
         }
     } else {
         // No timeout: simple blocking execution
-        let output = Command::new(parts[0])
+        let output = Command::new(&parts[0])
             .args(&parts[1..])
             .output()
             .map_err(|e| ToolError::IoError(e.to_string()))?;

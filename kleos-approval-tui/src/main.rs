@@ -67,6 +67,9 @@ struct App {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
+    /// Identity recorded in audit log for every approve/deny decision.
+    /// Defaults to the $USER environment variable, falling back to "tui-operator".
+    decided_by: String,
     approvals: Vec<Approval>,
     selected: usize,
     list_state: ListState,
@@ -78,6 +81,8 @@ impl App {
     fn new(url: String, api_key: String) -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
+        // Resolve operator identity at startup for audit attribution (TUI-1).
+        let decided_by = std::env::var("USER").unwrap_or_else(|_| "tui-operator".to_string());
         Self {
             // Bound requests so a stalled server cannot hang the TUI.
             client: reqwest::Client::builder()
@@ -87,6 +92,7 @@ impl App {
                 .unwrap_or_else(|_| reqwest::Client::new()),
             base_url: url,
             api_key,
+            decided_by,
             approvals: Vec::new(),
             selected: 0,
             list_state,
@@ -145,7 +151,9 @@ impl App {
 
         let req = DecideRequest {
             decision: decision.to_string(),
-            decided_by: Some("tui-operator".to_string()),
+            // Use the operator identity resolved at startup rather than a hardcoded literal
+            // so audit logs carry real attribution (TUI-1).
+            decided_by: Some(self.decided_by.clone()),
             reason: None,
         };
 
@@ -160,8 +168,6 @@ impl App {
             Ok(resp) => {
                 if resp.status().is_success() {
                     self.last_error = None;
-                    // Refresh list
-                    self.fetch_pending().await;
                 } else {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
@@ -172,6 +178,9 @@ impl App {
                 self.last_error = Some(format!("Request error: {}", e));
             }
         }
+        // Always refresh the pending list regardless of outcome so stale items
+        // do not remain in the display after a failed decide (TUI-2).
+        self.fetch_pending().await;
     }
 
     fn select_next(&mut self) {

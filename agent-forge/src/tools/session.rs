@@ -75,6 +75,22 @@ pub fn rollback(db: &Database, input: RollbackInput) -> ToolResult {
         .map_err(|_| ToolError::InvalidValue(format!("Checkpoint not found: {}", name)))?;
 
     if let Some(ref git_hash) = git_ref {
+        // FORGE-1 fix: refuse to checkout over a dirty working tree. `git checkout
+        // <hash>` aborts when there are uncommitted changes, so we detect the
+        // condition early and report a clear error rather than returning Ok on a
+        // failed checkout. A dirty tree also makes rollback semantics ambiguous --
+        // the agent must commit or stash first.
+        let porcelain = Command::new("git")
+            .args(["status", "--porcelain"])
+            .output()
+            .map_err(|e| ToolError::IoError(e.to_string()))?;
+
+        if !porcelain.stdout.is_empty() {
+            return Err(ToolError::IoError(
+                "Working tree is dirty -- commit or stash changes before rolling back".into(),
+            ));
+        }
+
         let status = Command::new("git")
             .args(["checkout", git_hash])
             .status()
@@ -83,6 +99,15 @@ pub fn rollback(db: &Database, input: RollbackInput) -> ToolResult {
         if !status.success() {
             return Err(ToolError::IoError("git checkout failed".into()));
         }
+
+        // `git checkout <hash>` produces a detached HEAD. Report this explicitly
+        // so the caller knows branch tracking is suspended until they run
+        // `git checkout -b <branch>` or `git switch -`.
+        return Ok(Output::ok(format!(
+            "Rolled back to checkpoint '{}' (detached HEAD at {}). \
+            Run `git checkout -b <branch>` or `git switch -` to reattach.",
+            name, git_hash
+        )));
     }
 
     Ok(Output::ok(format!("Rolled back to checkpoint '{}'", name)))
