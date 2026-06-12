@@ -143,7 +143,7 @@ pub(crate) async fn store_to_kleos(
 /// Guards the V3 content format `[CRED:v3] {category}/{name} = {hex}`: a `/` in
 /// category or ` = ` in name would otherwise parse as a different entry on
 /// re-read (content-format injection, CREDD-1).
-fn is_safe_ident(s: &str) -> bool {
+pub(crate) fn is_safe_ident(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
