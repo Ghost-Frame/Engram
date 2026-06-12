@@ -284,6 +284,15 @@ fn main() -> Result<()> {
     let conn = Connection::open(&args.db)?;
 
     if let Some(ref key) = args.key {
+        // SECURITY: the key is interpolated into a PRAGMA; restrict it to hex so
+        // a value containing a quote cannot break out of the `x'...'` literal
+        // and inject SQL/PRAGMAs.
+        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some("--key/ENGRAM_DB_KEY must be a non-empty hex string".into()),
+            ));
+        }
         // SQLCipher raw-hex key mode, matching the server (kleos-lib pool.rs):
         // emit `PRAGMA key = x'<hex>';` verbatim via execute_batch. pragma_update
         // single-quotes the value, turning the raw key into a passphrase, which
