@@ -1,7 +1,46 @@
 use super::{CheckType, Rule, Violation};
 use regex::Regex;
 
-pub fn check(entry: &serde_json::Value, rules: &[Rule]) -> Vec<Violation> {
+/// A rule whose pattern has been compiled exactly once at startup.
+/// Rules with invalid patterns are stored as `None` (warned at compile time).
+pub struct CompiledRule<'a> {
+    /// Reference to the original rule definition.
+    pub rule: &'a Rule,
+    /// Pre-compiled regex; `None` when the pattern was invalid.
+    pub regex: Option<Regex>,
+}
+
+/// Compile all RuleMatch-typed rules into `CompiledRule`s.
+/// Invalid patterns emit a `tracing::warn` and produce a `None` regex so the
+/// caller can detect and report silently-disabled rules.
+pub fn compile_rules(rules: &[Rule]) -> Vec<CompiledRule<'_>> {
+    rules
+        .iter()
+        .filter(|r| matches!(r.check_type, CheckType::RuleMatch))
+        .map(|rule| {
+            let regex = match Regex::new(&rule.pattern) {
+                Ok(re) => Some(re),
+                Err(err) => {
+                    // Warn loudly -- a mis-typed pattern silently disables a
+                    // security control; operators must know about it.
+                    tracing::warn!(
+                        rule_id = %rule.id,
+                        pattern = %rule.pattern,
+                        error = %err,
+                        "rule pattern failed to compile -- rule will never match"
+                    );
+                    None
+                }
+            };
+            CompiledRule { rule, regex }
+        })
+        .collect()
+}
+
+/// Check `entry` against the pre-compiled rule set.
+/// Accepts `&[CompiledRule]` so regexes are compiled once (at startup) and
+/// reused for every log entry rather than being rebuilt per call.
+pub fn check(entry: &serde_json::Value, compiled: &[CompiledRule<'_>]) -> Vec<Violation> {
     let mut violations = Vec::new();
 
     let text = extract_check_text(entry);
@@ -9,21 +48,22 @@ pub fn check(entry: &serde_json::Value, rules: &[Rule]) -> Vec<Violation> {
         return violations;
     }
 
-    for rule in rules {
-        if !matches!(rule.check_type, CheckType::RuleMatch) {
-            continue;
-        }
+    for cr in compiled {
+        // Skip rules with invalid patterns -- they were already warned about at
+        // compile time.
+        let re = match &cr.regex {
+            Some(r) => r,
+            None => continue,
+        };
 
-        if let Ok(re) = Regex::new(&rule.pattern) {
-            if re.is_match(&text) {
-                violations.push(Violation {
-                    rule_id: rule.id.clone(),
-                    severity: rule.severity.clone(),
-                    message: rule.message.clone(),
-                    context: truncate(&text, 200),
-                    session_id: None,
-                });
-            }
+        if re.is_match(&text) {
+            violations.push(Violation {
+                rule_id: cr.rule.id.clone(),
+                severity: cr.rule.severity.clone(),
+                message: cr.rule.message.clone(),
+                context: truncate(&text, 200),
+                session_id: None,
+            });
         }
     }
 
