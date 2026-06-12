@@ -44,8 +44,23 @@ pub async fn scrub_message(
     {
         Ok(secrets) => secrets,
         Err(err) => {
-            warn!(agent = %agent, user_id, error = %err, "session_secret_scrub_disabled");
-            return Ok(message.to_string());
+            // The secret list could not be loaded AND there was no cached list
+            // to fall back on (load_scrub_secrets already tries the stale cache
+            // on a credd fault). This is the cold-cache case. Fail open or
+            // closed per policy: open (default) keeps message writes working
+            // without a hard credd dependency; closed refuses the write so a
+            // fault cannot persist an unscrubbed secret.
+            if config.eidolon.sessions.scrub_fail_open {
+                warn!(agent = %agent, user_id, error = %err, "session_secret_scrub_fail_open");
+                return Ok(message.to_string());
+            }
+            warn!(agent = %agent, user_id, error = %err, "session_secret_scrub_fail_closed");
+            return Err(crate::EngError::Internal(
+                "secret scrubbing is enabled but the secret list could not be loaded \
+                 and no cached list is available; message rejected to avoid persisting \
+                 unscrubbed content (set EIDOLON_SESSIONS_SCRUB_FAIL_OPEN=1 to allow)"
+                    .into(),
+            ));
         }
     };
     Ok(apply_scrub(message, &secrets))
@@ -77,7 +92,25 @@ async fn load_scrub_secrets(
         return Ok(cached);
     }
 
-    let secrets = credd.list_secret_values(db, user_id, agent).await?;
+    let secrets = match credd.list_secret_values(db, user_id, agent).await {
+        Ok(secrets) => secrets,
+        Err(err) => {
+            // credd is unavailable: fall back to the last-known secret list,
+            // ignoring its TTL, so a transient outage still scrubs known
+            // secrets instead of leaking them. The caller only applies its
+            // fail-open/closed policy when there is no cached list at all.
+            if let Some(stale) = stale_cached_scrub_secrets(&cache_key) {
+                warn!(
+                    agent = %agent,
+                    user_id,
+                    error = %err,
+                    "session_secret_scrub_stale_cache_fallback"
+                );
+                return Ok(stale);
+            }
+            return Err(err);
+        }
+    };
     let mut cache = scrub_cache().lock().expect("scrub cache mutex poisoned");
     cache.insert(
         cache_key,
@@ -87,6 +120,13 @@ async fn load_scrub_secrets(
         },
     );
     Ok(secrets)
+}
+
+/// Last-known secret list for a key, ignoring TTL. Used as a fail-safe fallback
+/// when credd is unavailable so a transient outage does not drop scrubbing.
+fn stale_cached_scrub_secrets(cache_key: &str) -> Option<Vec<String>> {
+    let cache = scrub_cache().lock().expect("scrub cache mutex poisoned");
+    cache.get(cache_key).map(|entry| entry.secrets.clone())
 }
 
 fn cached_scrub_secrets(cache_key: &str, ttl: Duration) -> Option<Vec<String>> {
@@ -137,5 +177,33 @@ mod tests {
         for sample in corpus {
             assert_eq!(apply_scrub(sample, &["alpha-secret".to_string()]), sample);
         }
+    }
+
+    // A TTL-expired cache entry is no longer served as a fresh hit, but the
+    // stale fallback still returns it so a credd outage keeps scrubbing known
+    // secrets instead of leaking them.
+    #[test]
+    fn stale_cache_survives_ttl_expiry() {
+        use super::{cached_scrub_secrets, scrub_cache, stale_cached_scrub_secrets, CachedSecrets};
+        use std::time::{Duration, Instant};
+
+        reset_scrub_cache();
+        let key = "scrub:test:1:agent:60";
+        scrub_cache().lock().unwrap().insert(
+            key.to_string(),
+            CachedSecrets {
+                secrets: vec!["sekret".to_string()],
+                loaded_at: Instant::now(),
+            },
+        );
+
+        // Zero TTL => the fresh lookup treats the entry as expired...
+        assert!(cached_scrub_secrets(key, Duration::ZERO).is_none());
+        // ...but the stale fallback still returns the last-known list.
+        assert_eq!(
+            stale_cached_scrub_secrets(key),
+            Some(vec!["sekret".to_string()])
+        );
+        reset_scrub_cache();
     }
 }

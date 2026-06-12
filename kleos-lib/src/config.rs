@@ -296,6 +296,16 @@ pub struct SessionsConfig {
     pub buffer_size: usize,
     pub stream_timeout_secs: u64,
     pub scrub_secrets: bool,
+    /// Behavior when scrubbing is enabled but the secret list cannot be loaded
+    /// AND no prior list is cached to fall back on (e.g. credd down at cold
+    /// start). `true` (the default) fails OPEN: persist the message and log,
+    /// avoiding a hard dependency on credd for message writes (credd is
+    /// optional, and scrub_secrets defaults on). `false` fails CLOSED: reject
+    /// the write so a fault cannot persist an unscrubbed secret -- appropriate
+    /// for deployments that always run credd. Note: a transient outage with a
+    /// warm cache still scrubs using the last-known secret list, so this policy
+    /// only governs the cold-cache case.
+    pub scrub_fail_open: bool,
 }
 
 /// Default session streaming configuration.
@@ -307,6 +317,10 @@ impl Default for SessionsConfig {
             buffer_size: 4096,
             stream_timeout_secs: 1800,
             scrub_secrets: true,
+            // Fail open by default in the cold-cache case so message writes do
+            // not hard-depend on credd (which is optional). A warm cache still
+            // scrubs via the stale-list fallback; strict deployments set false.
+            scrub_fail_open: true,
         }
     }
 }
@@ -451,6 +465,9 @@ impl EidolonConfig {
         }
         if let Ok(v) = crate::kleos_env("EIDOLON_SESSIONS_SCRUB_SECRETS") {
             c.sessions.scrub_secrets = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
+        }
+        if let Ok(v) = crate::kleos_env("EIDOLON_SESSIONS_SCRUB_FAIL_OPEN") {
+            c.sessions.scrub_fail_open = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
         if let Ok(v) = crate::kleos_env("EIDOLON_PROMPT_MAX_TOKENS") {
             if let Ok(n) = v.parse() {
@@ -1371,6 +1388,9 @@ mod tests {
         assert_eq!(c.sessions.max_concurrent, 64);
         assert_eq!(c.sessions.buffer_size, 4096);
         assert!(c.sessions.scrub_secrets);
+        // Cold-cache scrub policy defaults to fail-open so message writes do
+        // not hard-depend on credd; a warm cache still scrubs via stale fallback.
+        assert!(c.sessions.scrub_fail_open);
         assert_eq!(c.prompt.default_max_tokens, 4000);
         assert_eq!(c.prompt.max_tokens_cap, 128000);
         assert!(c.prompt.default_include_memories);
