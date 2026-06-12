@@ -34,15 +34,15 @@ where
             msg::SSH_AGENTC_SIGN_REQUEST => {
                 handle_sign(&mut stream, &message.payload, provider).await
             }
-            msg::SSH_AGENTC_LOCK => {
-                provider.on_lock().await;
-                wire::write_success(&mut stream).await
-            }
             msg::SSH_AGENTC_ADD_IDENTITY
             | msg::SSH_AGENTC_REMOVE_IDENTITY
             | msg::SSH_AGENTC_REMOVE_ALL_IDENTITIES
+            | msg::SSH_AGENTC_LOCK
             | msg::SSH_AGENTC_UNLOCK => {
-                // Rejected: keys managed through the Phylax UI.
+                // Rejected: keys are managed through the Phylax UI. LOCK is
+                // rejected too -- this agent has no UNLOCK path (above), so
+                // honoring LOCK (which cleared the identity cache) permanently
+                // bricked the agent until restart. Fail cleanly instead.
                 write_failure(&mut stream).await
             }
             _ => {
