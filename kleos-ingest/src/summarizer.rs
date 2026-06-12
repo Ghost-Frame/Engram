@@ -1,23 +1,14 @@
-use crate::config::Config;
 use crate::ledger::Ledger;
 use crate::writer::KleosWriter;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
-/// Build the session file path from project and session_id
-fn session_file_path(config: &Config, project: &str, session_id: &str) -> PathBuf {
-    config
-        .watch_dir
-        .join(project)
-        .join(format!("{}.jsonl", session_id))
-}
 
 /// Extract a condensed transcript from the JSONL file.
 /// Returns user prompts and short assistant text snippets, capped to ~3000 chars
 /// to fit in Ollama's context window reasonably.
-fn extract_transcript(path: &PathBuf) -> Option<String> {
+fn extract_transcript(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let reader = BufReader::new(file);
     let mut parts: Vec<String> = Vec::new();
@@ -136,14 +127,17 @@ async fn summarize_with_ollama(transcript: &str, project: &str) -> Option<String
 pub async fn summarize_session(
     session_id: &str,
     project: &str,
-    config: &Config,
+    session_path: &Path,
     _ledger: &Ledger,
     writer: Arc<Mutex<KleosWriter>>,
 ) {
     tracing::info!(session = %session_id, project = %project, "generating session summary");
 
-    let path = session_file_path(config, project, session_id);
-    let transcript = match extract_transcript(&path) {
+    // Use the watched file's actual path rather than reconstructing it: the
+    // canonical layout is <watch_dir>/<project>/sessions/<id>.jsonl, and a
+    // reconstruction that dropped the `sessions/` segment silently skipped
+    // every summary (the file open failed).
+    let transcript = match extract_transcript(session_path) {
         Some(t) => t,
         None => {
             tracing::debug!(session = %session_id, "no extractable content, skipping summary");

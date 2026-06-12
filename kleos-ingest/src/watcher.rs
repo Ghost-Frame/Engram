@@ -103,7 +103,7 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
                 for (path, project, session_id) in to_summarize {
                     let path_str = path.to_string_lossy().to_string();
                     summarizer::summarize_session(
-                        &session_id, &project, &config, &ledger, Arc::clone(&writer)
+                        &session_id, &project, &path, &ledger, Arc::clone(&writer)
                     ).await;
                     ledger.mark_summarized(&path_str);
                     last_activity.remove(&path);
