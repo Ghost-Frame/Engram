@@ -268,11 +268,16 @@ async fn unix_get_json(
         .await
         .map_err(|e| CredError::Unreachable(format!("write: {}", e)))?;
 
+    // Cap the response and bound the read so a rogue local credd cannot OOM or
+    // stall the caller (CWE-400): the bootstrap socket is local but untrusted.
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .await
-        .map_err(|e| CredError::Unreachable(format!("read: {}", e)))?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        (&mut stream).take(1024 * 1024).read_to_end(&mut response),
+    )
+    .await
+    .map_err(|_| CredError::Unreachable("read: timed out".into()))?
+    .map_err(|e| CredError::Unreachable(format!("read: {}", e)))?;
 
     parse_http_response_body(&response)
 }
@@ -308,11 +313,16 @@ async fn tcp_get_json(bind: &str, path: &str, token: &str) -> Result<serde_json:
         .await
         .map_err(|e| CredError::Unreachable(format!("write: {}", e)))?;
 
+    // Cap the response and bound the read so a rogue local credd cannot OOM or
+    // stall the caller (CWE-400): the bootstrap socket is local but untrusted.
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .await
-        .map_err(|e| CredError::Unreachable(format!("read: {}", e)))?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        (&mut stream).take(1024 * 1024).read_to_end(&mut response),
+    )
+    .await
+    .map_err(|_| CredError::Unreachable("read: timed out".into()))?
+    .map_err(|e| CredError::Unreachable(format!("read: {}", e)))?;
 
     parse_http_response_body(&response)
 }
@@ -772,11 +782,16 @@ with dev.open_connection(SmartCardConnection) as conn:
             .await
             .map_err(|e| EcdhClientError::Unreachable(format!("write: {}", e)))?;
 
+        // Cap the response and bound the read so a rogue local credd cannot OOM
+        // or stall the caller (CWE-400).
         let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .await
-            .map_err(|e| EcdhClientError::Unreachable(format!("read: {}", e)))?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            (&mut stream).take(1024 * 1024).read_to_end(&mut response),
+        )
+        .await
+        .map_err(|_| EcdhClientError::Unreachable("read: timed out".into()))?
+        .map_err(|e| EcdhClientError::Unreachable(format!("read: {}", e)))?;
 
         parse_post_body(&response)
     }
@@ -818,11 +833,16 @@ with dev.open_connection(SmartCardConnection) as conn:
             .await
             .map_err(|e| EcdhClientError::Unreachable(format!("write: {}", e)))?;
 
+        // Cap the response and bound the read so a rogue local credd cannot OOM
+        // or stall the caller (CWE-400).
         let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .await
-            .map_err(|e| EcdhClientError::Unreachable(format!("read: {}", e)))?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            (&mut stream).take(1024 * 1024).read_to_end(&mut response),
+        )
+        .await
+        .map_err(|_| EcdhClientError::Unreachable("read: timed out".into()))?
+        .map_err(|e| EcdhClientError::Unreachable(format!("read: {}", e)))?;
 
         parse_post_body(&response)
     }

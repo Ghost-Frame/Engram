@@ -87,11 +87,13 @@ pub fn derive_key_legacy(yubikey_response: &[u8]) -> [u8; KEY_SIZE] {
 
 /// Derive an encryption key from a password and optional YubiKey response.
 ///
-/// Inputs are bound with Argon2id using a deterministic 16-byte salt derived
-/// from `user_id` and a fixed domain separation tag. The salt is deterministic
-/// because this function must return the same key for the same inputs on every
-/// call; per-user isolation comes from `user_id` being mixed into both the salt
-/// and the password material.
+/// Inputs are bound with Argon2id. The salt is the persisted random salt named
+/// by `CRED_KDF_SALT_FILE` (KDF v2) when one is configured, otherwise a
+/// deterministic 16-byte salt derived from `user_id` and a fixed domain
+/// separation tag (KDF v1, the backward-compatible default). The v1 salt is
+/// deterministic so the same inputs derive the same key on every call; per-user
+/// isolation comes from `user_id` being mixed into both the salt and the
+/// password material. See `resolve_kdf_salt`.
 ///
 /// Parameters: m = 64 MiB, t = 3, p = 1, output = 32 bytes (OWASP 2023).
 ///

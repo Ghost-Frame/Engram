@@ -118,6 +118,8 @@ impl<P: KeyProvider + 'static> AgentServer<P> {
 
         log::info!("SSH agent listening on {}", self.path);
 
+        let conn_limit = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNS));
+
         loop {
             // Create a new pipe instance for each connection.
             let pipe = ServerOptions::new()
@@ -132,10 +134,22 @@ impl<P: KeyProvider + 'static> AgentServer<P> {
                 connect_result = pipe.connect() => {
                     match connect_result {
                         Ok(()) => {
-                            let provider = Arc::clone(&self.provider);
-                            tokio::spawn(async move {
-                                handle_connection(pipe, provider.as_ref()).await;
-                            });
+                            // Bound concurrent handlers; drop the connection when
+                            // at the limit rather than spawning unboundedly.
+                            match Arc::clone(&conn_limit).try_acquire_owned() {
+                                Ok(permit) => {
+                                    let provider = Arc::clone(&self.provider);
+                                    tokio::spawn(async move {
+                                        let _permit = permit;
+                                        handle_connection(pipe, provider.as_ref()).await;
+                                    });
+                                }
+                                Err(_) => {
+                                    log::warn!(
+                                        "SSH agent at connection limit ({MAX_CONCURRENT_CONNS}); dropping connection"
+                                    );
+                                }
+                            }
                         }
                         Err(e) => {
                             log::warn!("SSH agent pipe connect error: {e}");
