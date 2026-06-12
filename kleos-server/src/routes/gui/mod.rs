@@ -688,7 +688,6 @@ const LOGIN_JS: &str = "document.getElementById('login-form').addEventListener('
     try {\n\
         const res = await fetch('/gui/auth', { method: 'POST', body: new URLSearchParams(data) });\n\
         if (res.ok) {\n\
-            window.localStorage.setItem('kleos_api_key', data.get('api_key'));\n\
             window.location.href = '/';\n\
             return;\n\
         }\n\
@@ -1091,13 +1090,17 @@ pub fn router() -> Router<AppState> {
 mod tests {
     use super::*;
 
-    // Verify the login bridge keeps the React bearer token in sync with the GUI cookie login.
+    // The login bridge establishes the cookie session via /gui/auth and
+    // redirects to the app. It must NOT persist the raw API key in localStorage
+    // (the cookie + CSRF token returned by /gui/auth are the credential now).
     #[test]
-    fn login_js_stores_api_key_and_redirects_to_root() {
-        assert!(
-            LOGIN_JS.contains("window.localStorage.setItem('kleos_api_key', data.get('api_key'))")
-        );
+    fn login_js_uses_cookie_session_not_localstorage() {
+        assert!(LOGIN_JS.contains("fetch('/gui/auth'"));
         assert!(LOGIN_JS.contains("window.location.href = '/'"));
+        assert!(
+            !LOGIN_JS.contains("localStorage.setItem('kleos_api_key'"),
+            "the inline login must not persist the raw API key"
+        );
     }
 
     // Verify network failures render a visible login error instead of silently throwing in the page.
