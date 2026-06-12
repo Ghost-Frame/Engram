@@ -223,9 +223,20 @@ impl LocalModelClient {
                 }
             }
         } else {
-            let queue = self.queue_len.fetch_add(1, Ordering::Relaxed);
-            if queue >= self.config.max_queue {
-                self.queue_len.fetch_sub(1, Ordering::Relaxed);
+            // RAII guard: decrement queue_len on drop so a future cancelled
+            // while awaiting the semaphore (e.g. axum dropping the handler on
+            // client disconnect) cannot leak the slot. The previous code only
+            // decremented after the await returned, so a cancelled background
+            // call pumped queue_len to max_queue permanently.
+            struct QueueGuard<'a>(&'a AtomicUsize);
+            impl Drop for QueueGuard<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::Relaxed);
+                }
+            }
+            let prev = self.queue_len.fetch_add(1, Ordering::Relaxed);
+            let guard = QueueGuard(&self.queue_len);
+            if prev >= self.config.max_queue {
                 return Err(EngError::Internal("ollama queue full".into()));
             }
             let permit = self
@@ -234,7 +245,7 @@ impl LocalModelClient {
                 .acquire_owned()
                 .await
                 .map_err(|_| EngError::Internal("semaphore closed".into()))?;
-            self.queue_len.fetch_sub(1, Ordering::Relaxed);
+            drop(guard);
             permit
         };
 
