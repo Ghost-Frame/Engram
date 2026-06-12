@@ -180,6 +180,11 @@ impl InstallPlan {
             #[cfg(unix)]
             set_executable(&dest)?;
 
+            // Record the installed version beside the binary so upgrade
+            // detection can read it without executing the binary.
+            let marker = crate::upgrade::version_marker_path(&dest);
+            let _ = std::fs::write(&marker, format!("{}\n", release.tag_name));
+
             progress.on_component_installed(component_id);
         }
 
@@ -242,15 +247,32 @@ fn setup_system_integration(
     Ok(())
 }
 
-/// Create a temporary working directory for downloaded binaries under the
-/// system temp root.
+/// Create a private temporary working directory for downloaded binaries under
+/// the system temp root.
 ///
-/// Returns the path of the newly created directory. The directory is not
-/// cleaned up automatically -- it will be cleared on the next OS reboot or
-/// when the installer runs again.
+/// The directory name is randomized and created atomically with `create()`
+/// (not `create_dir_all`), which fails if the path already exists. This
+/// defeats a local attacker who pre-creates a fixed `/tmp/kleos-install` (as a
+/// symlink or with planted files) to hijack the downloaded binaries before
+/// they are copied into the install dir (TOCTOU). On Unix it is mode 0700.
 fn make_tempdir() -> Result<PathBuf, InstallError> {
-    let base = std::env::temp_dir().join("kleos-install");
-    std::fs::create_dir_all(&base)?;
+    use rand::rngs::OsRng;
+    use rand::TryRngCore;
+
+    let mut bytes = [0u8; 16];
+    OsRng
+        .try_fill_bytes(&mut bytes)
+        .expect("OS CSPRNG must be available");
+    let suffix: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let base = std::env::temp_dir().join(format!("kleos-install-{suffix}"));
+
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&base)?;
     Ok(base)
 }
 

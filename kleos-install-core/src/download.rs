@@ -181,13 +181,21 @@ pub fn download_component(
         progress.on_progress(component, downloaded, total);
     }
 
-    if let Some(expected) = expected_sha256 {
-        progress.on_verifying(component);
-        verify_checksum(dest, expected).inspect_err(|e| {
-            let msg = e.to_string();
-            progress.on_error(component, &msg);
-        })?;
-    }
+    // A missing checksum must not be treated as success: refuse to install a
+    // binary that is absent from the published SHA256SUMS rather than running
+    // an unverified executable.
+    let Some(expected) = expected_sha256 else {
+        let msg = format!(
+            "no published SHA-256 checksum for {component}; refusing to install unverified binary"
+        );
+        progress.on_error(component, &msg);
+        return Err(InstallError::Download(msg));
+    };
+    progress.on_verifying(component);
+    verify_checksum(dest, expected).inspect_err(|e| {
+        let msg = e.to_string();
+        progress.on_error(component, &msg);
+    })?;
 
     progress.on_complete(component);
     Ok(())

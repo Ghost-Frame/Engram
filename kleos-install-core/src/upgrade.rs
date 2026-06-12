@@ -170,20 +170,25 @@ pub fn backup_config(config_path: &Path) -> Result<PathBuf, InstallError> {
     Ok(backup_path)
 }
 
-/// Run `<binary> --version` and capture the first line of output.
-///
-/// Returns `None` if the binary cannot be executed or produces no output.
+/// Path of the version marker written alongside an installed binary
+/// (`<binary>.version`). Reading the recorded version from this file avoids
+/// executing the binary to learn its version: the probe dirs include
+/// user-writable locations (e.g. `~/.local/bin`), so executing a discovered
+/// binary would run attacker-planted code -- a privilege-escalation vector when
+/// the installer runs as root.
+pub(crate) fn version_marker_path(bin: &Path) -> PathBuf {
+    let mut s = bin.as_os_str().to_owned();
+    s.push(".version");
+    PathBuf::from(s)
+}
+
+/// Read the recorded version of an installed binary from its `<binary>.version`
+/// marker. Returns `None` if no marker exists. The binary is never executed.
 fn read_binary_version(path: &Path) -> Option<String> {
-    std::process::Command::new(path)
-        .arg("--version")
-        .output()
+    std::fs::read_to_string(version_marker_path(path))
         .ok()
-        .and_then(|o| {
-            String::from_utf8(o.stdout)
-                .ok()
-                .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
-                .filter(|s| !s.is_empty())
-        })
+        .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
+        .filter(|s| !s.is_empty())
 }
 
 /// Search common config locations for an `engram.toml` file.
