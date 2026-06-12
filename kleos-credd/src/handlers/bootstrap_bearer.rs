@@ -143,7 +143,9 @@ pub async fn get_bootstrap_kleos_bearer(
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .unwrap_or_default();
+        // Propagate build errors: unwrap_or_default() falls back to a client
+        // with NO timeouts, leaving bootstrap requests unbounded (CREDD-2).
+        .map_err(|e| CredError::InvalidInput(format!("HTTP client build failed: {e}")))?;
     let resp = http
         .get(format!("{}/list", kleos_url.trim_end_matches('/')))
         .header(
@@ -273,7 +275,9 @@ async fn resolve_agent_bearer(state: &AppState, agent: &str) -> Result<String, A
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .unwrap_or_default();
+        // Propagate build errors: unwrap_or_default() falls back to a client
+        // with NO timeouts, leaving bootstrap requests unbounded (CREDD-2).
+        .map_err(|e| CredError::InvalidInput(format!("HTTP client build failed: {e}")))?;
     let resp = http
         .get(format!("{}/list", kleos_url.trim_end_matches('/')))
         .header(
