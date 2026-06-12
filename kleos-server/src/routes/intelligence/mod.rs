@@ -509,22 +509,27 @@ async fn sentiment_analyze_handler(
 /// GET /intelligence/sentiment/history -- list historical sentiment records.
 #[tracing::instrument(skip_all)]
 async fn sentiment_history_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<SentimentHistoryQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20).min(100);
+    let limit =
+        kleos_lib::validation::clamp_signed_limit(params.limit.unwrap_or(20), 20, 100) as i64;
     let since = params.since.as_deref().unwrap_or("1970-01-01");
 
+    // Scope to the caller: in monolith mode ResolvedDb is the shared DB, so
+    // without the user_id predicate this leaked every tenant's memory ids,
+    // timestamps, and derived sentiment scores.
+    let user_id = auth.effective_user_id();
     let since_owned = since.to_string();
     let history = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, content, created_at FROM memories \
-                     WHERE is_forgotten = 0 AND created_at >= ?1 \
+                     WHERE is_forgotten = 0 AND created_at >= ?1 AND user_id = ?3 \
                      ORDER BY created_at DESC LIMIT ?2",
             )?;
-            let rows = stmt.query_map(params![since_owned, limit], |row| {
+            let rows = stmt.query_map(params![since_owned, limit, user_id], |row| {
                 let id: i64 = row.get(0)?;
                 let content: String = row.get(1)?;
                 let created_at: String = row.get(2)?;

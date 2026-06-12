@@ -558,17 +558,25 @@ async fn run_skill_evolution(
 
 async fn recent_memory_contents(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     limit: usize,
 ) -> Result<Vec<String>, EngError> {
     let limit_i64 = limit as i64;
     db.read(move |conn| {
+        // Scope to the user: in monolith mode the growth pass runs on the shared
+        // state.db, so without the user_id predicate every user's reflection
+        // ingested the globally most-recent memories of ALL users (and could
+        // store cross-tenant observations). Harmless in sharded mode (one tenant
+        // per shard), correct in monolith.
         let mut stmt = conn.prepare(
             "SELECT content FROM memories \
                  WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                 AND user_id = ?2 \
                  ORDER BY created_at DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(rusqlite::params![limit_i64], |row| row.get::<_, String>(0))?;
+        let rows = stmt.query_map(rusqlite::params![limit_i64, user_id], |row| {
+            row.get::<_, String>(0)
+        })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await

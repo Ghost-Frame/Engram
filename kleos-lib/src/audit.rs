@@ -43,6 +43,7 @@ pub async fn log_mutation(
     resource_type: &str,
     resource_id: &str,
     actor: Option<&str>,
+    actor_user_id: Option<i64>,
     before: Option<serde_json::Value>,
     after: Option<serde_json::Value>,
 ) -> Result<AuditEntry> {
@@ -75,10 +76,14 @@ pub async fn log_mutation(
 
     db.write(move |conn| {
         Ok(conn.query_row(
-            "INSERT INTO audit_log (action, target_type, target_id, details)
-             VALUES (?1, ?2, ?3, ?4)
+            // Bind the actor's user_id into the queryable column, not just the
+            // details JSON: list_audit_entries/count_audit_entries filter on
+            // user_id, so a NULL here hid every security mutation from the very
+            // actor's own GET /audit view (forensic-completeness gap, CWE-778).
+            "INSERT INTO audit_log (user_id, action, target_type, target_id, details)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              RETURNING id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at",
-            params![operation, target_type, target_id, details],
+            params![actor_user_id, operation, target_type, target_id, details],
             row_to_entry,
         )?)
     })
