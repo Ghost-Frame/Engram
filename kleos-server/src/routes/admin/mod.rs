@@ -1156,19 +1156,18 @@ async fn export_handler(
 
 // --- Reset (user's own data only) ---
 
-// C-R3-002 / H-R3-005: scope to ResolvedDb so the unfiltered DELETEs only
-// hit the caller's shard, not the monolith. Each shard contains exactly one
-// tenant's data; on the monolith path (user_id=1 / system) the operation
-// only affects the caller's own rows because user_id=1 is the only resident
-// of monolith memory tables in a properly-sharded deployment.
-//
-// Previous behavior was a global wipe disguised as per-user: the function
-// name said reset_user, the response echoed user_id, but the SQL ran
-// "DELETE FROM memories" with no predicate against the monolith. Operators
-// reading the JSON saw user_id and assumed scope; they got cross-tenant
-// destruction.
+// Mode-aware wipe. The original ran predicate-less DELETEs ("DELETE FROM
+// memories" etc) against ResolvedDb. In a sharded deployment that is correct
+// (the shard holds exactly one tenant), but in monolith mode ResolvedDb is the
+// shared DB, so the unscoped delete was a cross-tenant global wipe disguised as
+// per-user: the function name and the user_id echoed in the JSON implied scope
+// the SQL never enforced. We now scope every DELETE by user_id in monolith mode
+// (all five tables carry user_id there) and keep the unscoped form in sharded
+// mode -- where a user_id predicate could wrongly no-op against shard rows that
+// carry the default tenant id.
 #[tracing::instrument(skip_all)]
 async fn reset_user(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     crate::extractors::ResolvedDb(db): crate::extractors::ResolvedDb,
     Json(body): Json<ResetBody>,
@@ -1179,21 +1178,40 @@ async fn reset_user(
             "/admin/reset requires {\"confirm\":\"WIPE_ALL_MEMORIES\"} body".into(),
         )));
     }
-    let uid = auth.user_id;
-    // structured_facts dangles off memories and is keyed by memory_id; run
-    // it BEFORE DELETE FROM memories so the inner subquery still finds rows.
-    let tables: &[&str] = &[
-        "DELETE FROM structured_facts WHERE memory_id IN (SELECT id FROM memories)",
-        "DELETE FROM conversations",
-        "DELETE FROM user_preferences",
-        "DELETE FROM episodes",
-        "DELETE FROM memories",
-    ];
+    let uid = auth.effective_user_id();
+    let monolith = state.tenant_registry.is_none();
+    // structured_facts is keyed by memory_id; in sharded mode delete it via the
+    // memories subquery BEFORE memories is emptied. In monolith mode it carries
+    // its own user_id, so order is irrelevant there.
+    let tables: &[&str] = if monolith {
+        &[
+            "DELETE FROM structured_facts WHERE user_id = ?1",
+            "DELETE FROM conversations WHERE user_id = ?1",
+            "DELETE FROM user_preferences WHERE user_id = ?1",
+            "DELETE FROM episodes WHERE user_id = ?1",
+            "DELETE FROM memories WHERE user_id = ?1",
+        ]
+    } else {
+        &[
+            "DELETE FROM structured_facts WHERE memory_id IN (SELECT id FROM memories)",
+            "DELETE FROM conversations",
+            "DELETE FROM user_preferences",
+            "DELETE FROM episodes",
+            "DELETE FROM memories",
+        ]
+    };
     let mut total = 0i64;
     for sql in tables {
         let sql_owned = sql.to_string();
         total += db
-            .write(move |conn| Ok(conn.execute(&sql_owned, [])?))
+            .write(move |conn| {
+                let n = if monolith {
+                    conn.execute(&sql_owned, rusqlite::params![uid])?
+                } else {
+                    conn.execute(&sql_owned, [])?
+                };
+                Ok(n)
+            })
             .await
             .map_err(AppError)? as i64;
     }
