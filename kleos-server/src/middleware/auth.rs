@@ -858,20 +858,29 @@ pub async fn auth_middleware(
     }
 
     // ---------------------------------------------------------------
-    // Path 3c: GUI session cookie (read-only).
+    // Path 3c: GUI session cookie.
     //
     // An EventSource (SSE) cannot send an Authorization header, so the
     // realtime stream (/axon/stream) authenticates via the HMAC-signed,
     // SameSite=Strict GUI cookie that EventSource does send same-origin.
     // `get_gui_session` re-checks the underlying key is still active, so a
-    // revoked key's stale cookie stops working. Restricted to safe
-    // (non-mutating) methods so a cookie alone can never write: CSRF is
-    // already blocked by SameSite=Strict, and this is defense in depth.
+    // revoked key's stale cookie stops working.
+    //
+    // Safe methods need only Read scope (SameSite=Strict blocks cross-site
+    // sends). Mutating methods additionally require Write scope AND a valid
+    // X-CSRF-Token (a token HMAC-bound to the session cookie, double-submit),
+    // so cookie-authenticated writes are CSRF-safe. This lets the GUI SPA
+    // authenticate writes via the cookie instead of persisting a raw API key
+    // in localStorage.
     // ---------------------------------------------------------------
-    if !requires_write_scope(&method) {
+    {
+        let is_write = requires_write_scope(&method);
         if let Some(session) = crate::routes::gui::get_gui_session(&state, request.headers()).await
         {
-            if session.has_scope(&Scope::Read) {
+            let required_scope = if is_write { Scope::Write } else { Scope::Read };
+            let csrf_ok = !is_write
+                || crate::routes::gui::verify_gui_csrf(&state, request.headers()).await;
+            if session.has_scope(&required_scope) && csrf_ok {
                 let scopes_csv = kleos_lib::auth::scopes_to_string(&session.scopes);
                 let auth_ctx = AuthContext {
                     key: synthetic_key_for_identity_with_scopes(session.user_id, Some(&scopes_csv)),
