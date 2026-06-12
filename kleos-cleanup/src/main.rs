@@ -156,9 +156,16 @@ fn step_a_move_activity(conn: &Connection, execute: bool) -> Result<usize> {
 
     if execute {
         for row in &rows {
-            let (agent, _parsed_project, action, summary) = parse_activity_content(&row.content);
-            // Use the row's project column if present, otherwise fall back to parsed project
-            let project = row.project.as_deref().unwrap_or("");
+            let (agent, parsed_project, action, summary) = parse_activity_content(&row.content);
+            // Use the row's project column if present, otherwise fall back to the
+            // project parsed from the activity content (the fallback was being
+            // dropped, permanently blanking project associations for rows with
+            // no project column).
+            let project = row
+                .project
+                .as_deref()
+                .or(parsed_project.as_deref())
+                .unwrap_or("");
             conn.execute(
                 "INSERT INTO activity_log (agent, action, summary, category, importance, project, user_id, created_at) \
                  VALUES (?1, ?2, ?3, 'activity', ?4, ?5, ?6, ?7)",
