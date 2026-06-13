@@ -19,15 +19,32 @@ pub struct TenantMigration {
     pub version: i64,
     pub description: &'static str,
     pub up: fn(&Connection) -> Result<()>,
+    /// When true the up fn is wrapped in a SAVEPOINT so it commits atomically
+    /// with its schema_migrations record (DB-1). Migrations that toggle
+    /// `PRAGMA foreign_keys` for a table rebuild MUST be false: that pragma is a
+    /// silent no-op inside a SAVEPOINT, which would break the rebuild.
+    pub transactional: bool,
 }
 
 /// Shorthand for TenantMigration entries in the registry.
 macro_rules! tenant_migration {
+    // Default: savepoint-wrapped (savepoint-safe migrations).
     ($ver:expr, $desc:expr, $up:expr) => {
         TenantMigration {
             version: $ver,
             description: $desc,
             up: $up,
+            transactional: true,
+        }
+    };
+    // `notx`: NOT savepoint-wrapped -- the migration toggles PRAGMA foreign_keys
+    // (illegal/no-op inside a SAVEPOINT). Relies on idempotent construction.
+    ($ver:expr, $desc:expr, $up:expr, notx) => {
+        TenantMigration {
+            version: $ver,
+            description: $desc,
+            up: $up,
+            transactional: false,
         }
     };
 }
@@ -81,8 +98,7 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         23,
         "scratchpad_user_id_drop",
-        apply_schema_v23_scratchpad_drop
-    ),
+        apply_schema_v23_scratchpad_drop, notx),
     tenant_migration!(24, "sessions_user_id_drop", apply_schema_v24_sessions_drop),
     tenant_migration!(25, "chiasm_user_id_drop", apply_schema_v25_chiasm_drop),
     tenant_migration!(
@@ -91,7 +107,7 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         apply_schema_v26_approvals_drop
     ),
     tenant_migration!(27, "broca_user_id_drop", apply_schema_v27_broca_drop),
-    tenant_migration!(28, "projects_user_id_drop", apply_schema_v28_projects_drop),
+    tenant_migration!(28, "projects_user_id_drop", apply_schema_v28_projects_drop, notx),
     tenant_migration!(29, "activity_user_id_drop", apply_schema_v29_activity_drop),
     tenant_migration!(30, "webhooks_user_id_drop", apply_schema_v30_webhooks_drop),
     tenant_migration!(31, "axon_user_id_drop", apply_schema_v31_axon_drop),
@@ -99,27 +115,23 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         33,
         "ingestion_hashes_user_id_drop",
-        apply_schema_v33_ingestion_hashes_drop
-    ),
-    tenant_migration!(34, "loom_user_id_drop", apply_schema_v34_loom_drop),
+        apply_schema_v33_ingestion_hashes_drop, notx),
+    tenant_migration!(34, "loom_user_id_drop", apply_schema_v34_loom_drop, notx),
     tenant_migration!(
         35,
         "graph_cluster_user_id_drop",
-        apply_schema_v35_graph_drop
-    ),
-    tenant_migration!(36, "thymus_user_id_drop", apply_schema_v36_thymus_drop),
+        apply_schema_v35_graph_drop, notx),
+    tenant_migration!(36, "thymus_user_id_drop", apply_schema_v36_thymus_drop, notx),
     tenant_migration!(
         37,
         "portability_user_id_drop",
-        apply_schema_v37_portability_drop
-    ),
+        apply_schema_v37_portability_drop, notx),
     tenant_migration!(
         38,
         "intelligence_user_id_drop",
-        apply_schema_v38_intelligence_drop
-    ),
-    tenant_migration!(39, "skills_user_id_drop", apply_schema_v39_skills_drop),
-    tenant_migration!(40, "episodes_user_id_drop", apply_schema_v40_episodes_drop),
+        apply_schema_v38_intelligence_drop, notx),
+    tenant_migration!(39, "skills_user_id_drop", apply_schema_v39_skills_drop, notx),
+    tenant_migration!(40, "episodes_user_id_drop", apply_schema_v40_episodes_drop, notx),
     // C-R3-004 / H-R3-006: re-add user_id to projects + broca_actions on
     // shard DBs so the same helper SQL works on shard and monolith. Each
     // shard still belongs to one tenant; the column is redundant per row
@@ -127,8 +139,7 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         41,
         "projects_user_id_readd",
-        apply_schema_v41_projects_readd
-    ),
+        apply_schema_v41_projects_readd, notx),
     tenant_migration!(
         42,
         "broca_actions_user_id_readd",
@@ -219,8 +230,7 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         58,
         "soma_agents_user_id_readd",
-        apply_schema_v58_soma_agents_readd
-    ),
+        apply_schema_v58_soma_agents_readd, notx),
     // Re-add user_id to the shard axon_events table (reverses v29). The runner
     // backfills existing event rows to the shard owner after this runs.
     tenant_migration!(
@@ -256,8 +266,7 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         63,
         "graph_entities_user_id_readd",
-        apply_schema_v63_graph_entities_readd
-    ),
+        apply_schema_v63_graph_entities_readd, notx),
     // Re-add user_id to the shard episodes table (reverses v40). The runner
     // backfills existing rows to the shard owner after this runs.
     tenant_migration!(
@@ -272,13 +281,12 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         65,
         "intelligence_remainder_user_id_readd",
-        apply_schema_v65_intelligence_remainder_readd
-    ),
+        apply_schema_v65_intelligence_remainder_readd, notx),
     // Re-add user_id to the five shard thymus tables -- rubrics (UNIQUE
     // rebuild from UNIQUE(name) to UNIQUE(user_id, name)), evaluations,
     // quality_metrics, session_quality, behavioral_drift_events (reverses v36).
     // The runner backfills existing rows to the shard owner after this runs.
-    tenant_migration!(66, "thymus_user_id_readd", apply_schema_v66_thymus_readd),
+    tenant_migration!(66, "thymus_user_id_readd", apply_schema_v66_thymus_readd, notx),
     // Re-add user_id to entity_cooccurrences and structured_facts in tenant
     // shards. Both were dropped by tenant v35. structured_facts got user_id
     // re-added on the monolith side by v64 but never on the tenant side.
@@ -294,13 +302,12 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         68,
         "user_preferences_user_id_readd",
-        apply_schema_v68_user_preferences_readd
-    ),
+        apply_schema_v68_user_preferences_readd, notx),
     // Re-add user_id to skill_records in tenant shards via REBUILD.
     // v39 dropped it; UNIQUE changes from (name, agent, version) back to
     // (name, agent, version, user_id). Also drops/recreates FTS triggers.
     // The runner backfills existing rows to the shard owner.
-    tenant_migration!(69, "skills_user_id_readd", apply_schema_v69_skills_readd),
+    tenant_migration!(69, "skills_user_id_readd", apply_schema_v69_skills_readd, notx),
     tenant_migration!(70, "tenant_state_counters", apply_schema_v70_tenant_state),
     // Tenant artifacts gained an FTS index. The legacy main-DB schema carried
     // `artifacts_fts` but no tenant migration ever created it, so artifact
@@ -1110,17 +1117,44 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
             "applying tenant migration {} ({})",
             m.version, m.description
         );
-        (m.up)(conn)?;
-        // Migrations that re-add a DEFAULT 1 `user_id` column need their
-        // pre-existing rows backfilled to the shard owner so the uniform
-        // `WHERE user_id = ?` predicate is a no-op on this single-owner shard.
-        if let Some(owner) = owner_user_id {
-            backfill_owner_tables_for_version(conn, m.version, owner)?;
+        // Applies the up fn, the owner backfill, and the schema_migrations
+        // insert as a unit. Migrations that re-add a DEFAULT 1 `user_id` column
+        // need their pre-existing rows backfilled to the shard owner so the
+        // uniform `WHERE user_id = ?` predicate is a no-op on this single-owner
+        // shard.
+        let apply = |conn: &Connection| -> Result<()> {
+            (m.up)(conn)?;
+            if let Some(owner) = owner_user_id {
+                backfill_owner_tables_for_version(conn, m.version, owner)?;
+            }
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )?;
+            Ok(())
+        };
+
+        if m.transactional {
+            // DB-1: wrap apply in one SAVEPOINT so a crash or error between
+            // applying and recording cannot leave an applied-but-unrecorded
+            // migration that re-applies (and may corrupt the shard) on the next
+            // tenant load.
+            let sp_name = format!("sp_tenant_up_{}", m.version);
+            conn.execute_batch(&format!("SAVEPOINT {sp_name}"))?;
+            match apply(conn) {
+                Ok(()) => {
+                    conn.execute_batch(&format!("RELEASE {sp_name}"))?;
+                }
+                Err(e) => {
+                    let _ =
+                        conn.execute_batch(&format!("ROLLBACK TO {sp_name}; RELEASE {sp_name}"));
+                    return Err(e);
+                }
+            }
+        } else {
+            // PRAGMA-foreign_keys-toggling rebuild: must run outside a SAVEPOINT.
+            apply(conn)?;
         }
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
-            rusqlite::params![m.version],
-        )?;
     }
 
     Ok(())

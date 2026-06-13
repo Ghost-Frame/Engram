@@ -416,198 +416,7 @@ pub static MIGRATIONS: &[Migration] = &[
 
 /// Version number for the initial schema creation migration.
 const MIGRATION_CREATE_SCHEMA: i64 = 1;
-/// Version number for the add-missing-indexes migration.
-const MIGRATION_ADD_MISSING_INDEXES: i64 = 2;
-/// Version number for the pagerank tables migration.
-const MIGRATION_PAGERANK_TABLES: i64 = 3;
-/// Version number for the thymus tenant-scope migration.
-const MIGRATION_THYMUS_TENANT_SCOPE: i64 = 4;
-/// Version number for the app_state table migration.
-const MIGRATION_APP_STATE_TABLE: i64 = 5;
-/// Version number for the thymus user_id backfill migration.
-const MIGRATION_BACKFILL_THYMUS_USER_ID: i64 = 6;
-/// Version number for the vector_sync_pending table migration.
-const MIGRATION_VECTOR_SYNC_PENDING: i64 = 7;
-/// Version number for the community_id column migration.
-const MIGRATION_ADD_COMMUNITY_ID: i64 = 8;
-/// Version number for the drop-is_inference migration.
-const MIGRATION_DROP_IS_INFERENCE: i64 = 9;
-/// Version number for the syntheos services schema migration.
-const MIGRATION_SYNTHEOS_SERVICES: i64 = 10;
-/// Version number for the brain_patterns and brain_edges tables migration.
-const MIGRATION_BRAIN_PATTERNS: i64 = 11;
-/// Version number for the approvals table migration.
-const MIGRATION_APPROVALS: i64 = 12;
-/// Version number for the error_events table migration.
-const MIGRATION_ERROR_EVENTS: i64 = 13;
-/// Version number for the brain_meta table migration.
-const MIGRATION_BRAIN_META: i64 = 14;
-/// Version number for the brain_pca_models table migration.
-const MIGRATION_PCA_MODELS: i64 = 15;
-/// Version number for the brain_dream_runs table migration.
-const MIGRATION_BRAIN_DREAM_RUNS: i64 = 16;
-/// Version number for the cred tables migration.
-const MIGRATION_CRED_TABLES: i64 = 17;
-/// Version number for the api_key_hash unique index migration.
-const MIGRATION_API_KEY_HASH_UNIQUE: i64 = 18;
-/// Version number for the api_key hash_version column migration.
-const MIGRATION_API_KEY_HASH_VERSION: i64 = 19;
-/// Version number for the link covering indexes migration.
-const MIGRATION_LINK_COVERING_INDEXES: i64 = 20;
-/// Version number for the upload sessions tables migration.
-const MIGRATION_UPLOAD_SESSIONS: i64 = 21;
-/// Version number for the service_dead_letters table migration.
-const MIGRATION_SERVICE_DEAD_LETTERS: i64 = 22;
-/// Version number for the memories list covering index migration.
-const MIGRATION_MEMORIES_LIST_COVERING_INDEX: i64 = 23;
-/// Version number for the commerce tables migration.
-const MIGRATION_COMMERCE_TABLES: i64 = 24;
-/// Version number for dropping user_id from memory core tables.
-const MIGRATION_DROP_USER_ID_MEMORY_CORE: i64 = 25;
-/// Version number for dropping user_id from scratchpad tables.
-const MIGRATION_DROP_USER_ID_SCRATCHPAD: i64 = 26;
-/// Version number for dropping user_id from session tables.
-const MIGRATION_DROP_USER_ID_SESSIONS: i64 = 27;
-/// Version number for dropping user_id from chiasm tables.
-const MIGRATION_DROP_USER_ID_CHIASM: i64 = 28;
-/// Version number for dropping user_id from approvals tables.
-const MIGRATION_DROP_USER_ID_APPROVALS: i64 = 29;
-/// Version number for dropping user_id from broca tables.
-const MIGRATION_DROP_USER_ID_BROCA: i64 = 30;
-/// Version number for dropping user_id from projects tables.
-const MIGRATION_DROP_USER_ID_PROJECTS: i64 = 31;
-/// Version number for dropping user_id from activity tables.
-const MIGRATION_DROP_USER_ID_ACTIVITY: i64 = 32;
-/// Version number for dropping user_id from webhooks tables.
-const MIGRATION_DROP_USER_ID_WEBHOOKS: i64 = 33;
-/// Version number for dropping user_id from axon tables.
-const MIGRATION_DROP_USER_ID_AXON: i64 = 34;
-/// Version number for dropping user_id from growth tables.
-const MIGRATION_DROP_USER_ID_GROWTH: i64 = 35;
-/// Version number for dropping user_id from ingestion_hashes tables.
-const MIGRATION_DROP_USER_ID_INGESTION_HASHES: i64 = 36;
-/// Version number for dropping user_id from loom tables.
-const MIGRATION_DROP_USER_ID_LOOM: i64 = 37;
-/// Version number for dropping user_id from graph tables.
-const MIGRATION_DROP_USER_ID_GRAPH: i64 = 38;
-/// Version number for dropping user_id from thymus tables.
-const MIGRATION_DROP_USER_ID_THYMUS: i64 = 39;
-/// Version number for dropping user_id from portability tables.
-const MIGRATION_DROP_USER_ID_PORTABILITY: i64 = 40;
-/// Version number for dropping user_id from intelligence tables.
-const MIGRATION_DROP_USER_ID_INTELLIGENCE: i64 = 41;
-/// Version number for dropping user_id from skills tables.
-const MIGRATION_DROP_USER_ID_SKILLS: i64 = 42;
-/// Version number for dropping user_id from episodes tables.
-const MIGRATION_DROP_USER_ID_EPISODES: i64 = 43;
-/// Version number for re-adding user_id to monolith projects tables.
-const MIGRATION_READD_USER_ID_PROJECTS: i64 = 44;
-/// Version number for re-adding user_id to monolith broca tables.
-const MIGRATION_READD_USER_ID_BROCA: i64 = 45;
-/// Version number for the identity_keys and identities tables migration.
-const MIGRATION_IDENTITY_TABLES: i64 = 46;
-/// Version number for the audit_log identity columns migration.
-const MIGRATION_AUDIT_IDENTITY_COLUMNS: i64 = 47;
-/// Version number for dropping the api_keys agent FK migration.
-const MIGRATION_DROP_API_KEYS_AGENT_FK: i64 = 48;
-/// Version number for the supervisor_injections table migration.
-const MIGRATION_SUPERVISOR_INJECTIONS: i64 = 49;
-/// Version number for the gate_requests session_id column migration.
-const MIGRATION_GATE_REQUESTS_SESSION_ID: i64 = 50;
-/// Version number for the memory_chunks table migration.
-const MIGRATION_MEMORY_CHUNKS: i64 = 51;
-/// Version number for the activity_log table migration.
-const MIGRATION_ACTIVITY_LOG_TABLE: i64 = 52;
-/// Version number for the identity_keys scopes column migration.
-const MIGRATION_IDENTITY_KEYS_SCOPES: i64 = 53;
-/// Version number for the tool_manifests table migration.
-const MIGRATION_TOOL_MANIFESTS: i64 = 54;
-/// Version number for the global handoffs table migration.
-const MIGRATION_HANDOFFS_GLOBAL: i64 = 55;
-/// Version number for the user is_active flag and enrollment_invites migration.
-const MIGRATION_USER_ACTIVE_AND_INVITES: i64 = 56;
-/// Version number for the skill_dispatch_configs table migration.
-const MIGRATION_SKILL_DISPATCH_CONFIGS: i64 = 57;
-/// Version number for the api_key hash_version idempotent fixup migration.
-const MIGRATION_API_KEY_HASH_VERSION_FIXUP: i64 = 58;
-/// Version number for adding narrative and axon_event_id columns to broca_actions.
-const MIGRATION_BROCA_NARRATIVE_COLUMNS: i64 = 59;
 
-/// Version number for the Chiasm extended-fields migration.
-const MIGRATION_CHIASM_EXTENDED_FIELDS: i64 = 60;
-/// Version number for creating chiasm path claims and task dependencies tables.
-const MIGRATION_CHIASM_PATH_CLAIMS: i64 = 61;
-const MIGRATION_CHIASM_AGENT_KEYS: i64 = 62;
-/// Version number for creating handoff_atoms and atom_entity_links tables.
-const MIGRATION_HANDOFF_ATOMS: i64 = 63;
-/// Version number for re-adding user_id to the memory core tables (reverses v25).
-const MIGRATION_READD_USER_ID_MEMORY_CORE: i64 = 64;
-/// Version number for re-adding user_id to the webhooks table (single-DB isolation).
-const MIGRATION_READD_USER_ID_WEBHOOKS: i64 = 65;
-/// Version number for re-adding user_id to the approvals table (single-DB isolation).
-const MIGRATION_READD_USER_ID_APPROVALS: i64 = 66;
-/// Version number for re-adding user_id to soma_agents via the UNIQUE(name,user_id) rebuild.
-const MIGRATION_READD_USER_ID_SOMA_AGENTS: i64 = 67;
-/// Version number for re-adding user_id to the axon_events table (single-DB isolation).
-const MIGRATION_READD_USER_ID_AXON_EVENTS: i64 = 68;
-/// Version number for re-adding user_id to the chiasm_tasks table (single-DB isolation).
-const MIGRATION_READD_USER_ID_CHIASM_TASKS: i64 = 69;
-/// Version number for re-adding user_id to the conversations table (single-DB isolation).
-const MIGRATION_READD_USER_ID_CONVERSATIONS: i64 = 70;
-/// Version number for re-adding user_id to the intelligence tables -- reflections,
-/// consolidations, and causal_chains (single-DB isolation).
-const MIGRATION_READD_USER_ID_INTELLIGENCE: i64 = 71;
-/// Version number for re-adding user_id to the graph `entities` table with
-/// UNIQUE(name, entity_type, user_id) so entities isolate per user in single-DB
-/// mode (single-DB isolation).
-const MIGRATION_READD_USER_ID_GRAPH_ENTITIES: i64 = 72;
-/// Version number for re-adding user_id to the episodes table (single-DB isolation).
-const MIGRATION_READD_USER_ID_EPISODES: i64 = 73;
-/// Version number for re-adding user_id to the remaining 5 intelligence tables
-/// (current_state, reconsolidations, temporal_patterns, digests, memory_feedback)
-/// that migration 71 did not cover (single-DB isolation).
-const MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER: i64 = 74;
-/// Version number for re-adding user_id to the 5 thymus tables (rubrics,
-/// evaluations, quality_metrics, session_quality, behavioral_drift_events)
-/// that migration 39 dropped (single-DB isolation).
-const MIGRATION_READD_USER_ID_THYMUS: i64 = 75;
-/// Version number for re-adding `user_id` to `entity_cooccurrences` (dropped
-/// by v38). `structured_facts` already got `user_id` re-added in the CORE
-/// schema (v64 memory-core migration path). Simple ADD COLUMN -- no UNIQUE
-/// constraint changes needed for either table.
-const MIGRATION_READD_USER_ID_GRAPH_REMAINDER: i64 = 76;
-/// Version for the user_preferences user_id re-add migration (REBUILD).
-/// v40 dropped user_id; this restores it with UNIQUE(user_id, key) so
-/// single-DB mode can isolate preferences per user.
-const MIGRATION_READD_USER_ID_USER_PREFERENCES: i64 = 77;
-/// Version for the skill_records user_id re-add migration (REBUILD + FTS).
-/// v42 dropped user_id; this restores it with UNIQUE(name, agent, version, user_id)
-/// so single-DB mode can isolate skills per user.
-const MIGRATION_READD_USER_ID_SKILLS: i64 = 78;
-/// Version for the brain_edges user_id re-add migration.
-/// v38 dropped user_id; this restores it as a simple ADD COLUMN since
-/// UNIQUE(source_id, target_id, edge_type) does not include user_id.
-const MIGRATION_READD_USER_ID_BRAIN: i64 = 79;
-/// Version number for the identity_keys.scopes JSON-to-CSV format migration.
-const MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV: i64 = 80;
-/// Version number for the MCP direct-auth token revocation table.
-const MIGRATION_MCP_TOKENS: i64 = 81;
-/// Version number for the Phylax agent-native credential tables migration.
-const MIGRATION_PHYLAX_TABLES: i64 = 82;
-/// Version number for cred_audit attribution columns.
-const MIGRATION_CRED_AUDIT_ATTRIBUTION_COLUMNS: i64 = 83;
-/// Version number for the Space Sharing `instance_grants` control-DB table.
-const MIGRATION_INSTANCE_GRANTS: i64 = 84;
-/// Version number for the phylax_approvals.decide_token_hash column (single-use
-/// capability-token approval decisions).
-const MIGRATION_PHYLAX_DECIDE_TOKEN_HASH: i64 = 85;
-/// Version number for the phylax_access_policies.exec_allowlist column (JSON
-/// array of absolute argv[0] paths an exec-mode policy permits).
-const MIGRATION_PHYLAX_EXEC_ALLOWLIST: i64 = 86;
-/// Version number for the single-use identity enrollment challenge table.
-const MIGRATION_ENROLLMENT_CHALLENGES: i64 = 87;
-/// Version number for the partial index backing the active-user auth subquery.
-const MIGRATION_USERS_ACTIVE_INDEX: i64 = 88;
 
 // --- Up path (unchanged behavior) ---
 
@@ -629,711 +438,57 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         |row| row.get(0),
     )?;
 
-    if current_version < MIGRATION_CREATE_SCHEMA {
-        info!("Running migration 1: create_tables");
-        super::schema::create_tables(conn)?;
-        record_migration(conn, MIGRATION_CREATE_SCHEMA, "create_tables")?;
-    }
-
-    if current_version < MIGRATION_ADD_MISSING_INDEXES {
-        info!("Running migration 2: add_missing_indexes");
-        run_migration_add_missing_indexes(conn)?;
-        record_migration(conn, MIGRATION_ADD_MISSING_INDEXES, "add_missing_indexes")?;
-    }
-
-    if current_version < MIGRATION_PAGERANK_TABLES {
-        info!("Running migration 3: add_pagerank_tables");
-        run_migration_pagerank_tables(conn)?;
-        record_migration(conn, MIGRATION_PAGERANK_TABLES, "add_pagerank_tables")?;
-    }
-
-    if current_version < MIGRATION_THYMUS_TENANT_SCOPE {
-        info!("Running migration 4: thymus_tenant_scope");
-        run_migration_thymus_tenant_scope(conn)?;
-        record_migration(conn, MIGRATION_THYMUS_TENANT_SCOPE, "thymus_tenant_scope")?;
-    }
-
-    if current_version < MIGRATION_APP_STATE_TABLE {
-        info!("Running migration 5: app_state_table");
-        run_migration_app_state_table(conn)?;
-        record_migration(conn, MIGRATION_APP_STATE_TABLE, "app_state_table")?;
-    }
-
-    if current_version < MIGRATION_BACKFILL_THYMUS_USER_ID {
-        info!("Running migration 6: backfill_thymus_user_id");
-        run_migration_backfill_thymus_user_id(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_BACKFILL_THYMUS_USER_ID,
-            "backfill_thymus_user_id",
-        )?;
-    }
-
-    if current_version < MIGRATION_VECTOR_SYNC_PENDING {
-        info!("Running migration 7: vector_sync_pending");
-        run_migration_vector_sync_pending(conn)?;
-        record_migration(conn, MIGRATION_VECTOR_SYNC_PENDING, "vector_sync_pending")?;
-    }
-
-    if current_version < MIGRATION_ADD_COMMUNITY_ID {
-        info!("Running migration 8: add_community_id");
-        run_migration_add_community_id(conn)?;
-        record_migration(conn, MIGRATION_ADD_COMMUNITY_ID, "add_community_id")?;
-    }
-
-    if current_version < MIGRATION_DROP_IS_INFERENCE {
-        info!("Running migration 9: drop_is_inference");
-        run_migration_drop_is_inference(conn)?;
-        record_migration(conn, MIGRATION_DROP_IS_INFERENCE, "drop_is_inference")?;
-    }
-
-    if current_version < MIGRATION_SYNTHEOS_SERVICES {
-        info!("Running migration 10: syntheos_services");
-        run_migration_syntheos_services(conn)?;
-        record_migration(conn, MIGRATION_SYNTHEOS_SERVICES, "syntheos_services")?;
-    }
-
-    if current_version < MIGRATION_BRAIN_PATTERNS {
-        info!("Running migration 11: brain_patterns");
-        run_migration_brain_patterns(conn)?;
-        record_migration(conn, MIGRATION_BRAIN_PATTERNS, "brain_patterns")?;
-    }
-
-    if current_version < MIGRATION_APPROVALS {
-        info!("Running migration 12: approvals");
-        run_migration_approvals(conn)?;
-        record_migration(conn, MIGRATION_APPROVALS, "approvals")?;
-    }
-
-    if current_version < MIGRATION_ERROR_EVENTS {
-        info!("Running migration 13: error_events");
-        run_migration_error_events(conn)?;
-        record_migration(conn, MIGRATION_ERROR_EVENTS, "error_events")?;
-    }
-
-    if current_version < MIGRATION_BRAIN_META {
-        info!("Running migration 14: brain_meta");
-        run_migration_brain_meta(conn)?;
-        record_migration(conn, MIGRATION_BRAIN_META, "brain_meta")?;
-    }
-
-    if current_version < MIGRATION_PCA_MODELS {
-        info!("Running migration 15: brain_pca_models");
-        run_migration_pca_models(conn)?;
-        record_migration(conn, MIGRATION_PCA_MODELS, "brain_pca_models")?;
-    }
-
-    if current_version < MIGRATION_BRAIN_DREAM_RUNS {
-        info!("Running migration 16: brain_dream_runs");
-        run_migration_brain_dream_runs(conn)?;
-        record_migration(conn, MIGRATION_BRAIN_DREAM_RUNS, "brain_dream_runs")?;
-    }
-
-    if current_version < MIGRATION_CRED_TABLES {
-        info!("Running migration 17: cred_tables");
-        run_migration_cred_tables(conn)?;
-        record_migration(conn, MIGRATION_CRED_TABLES, "cred_tables")?;
-    }
-
-    if current_version < MIGRATION_API_KEY_HASH_UNIQUE {
-        info!("Running migration 18: api_key_hash_unique");
-        run_migration_api_key_hash_unique(conn)?;
-        record_migration(conn, MIGRATION_API_KEY_HASH_UNIQUE, "api_key_hash_unique")?;
-    }
-
-    if current_version < MIGRATION_API_KEY_HASH_VERSION {
-        info!("Running migration 19: api_key_hash_version");
-        run_migration_api_key_hash_version(conn)?;
-        record_migration(conn, MIGRATION_API_KEY_HASH_VERSION, "api_key_hash_version")?;
-    }
-
-    if current_version < MIGRATION_LINK_COVERING_INDEXES {
-        info!("Running migration 20: link_covering_indexes");
-        run_migration_link_covering_indexes(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_LINK_COVERING_INDEXES,
-            "link_covering_indexes",
-        )?;
-    }
-
-    if current_version < MIGRATION_UPLOAD_SESSIONS {
-        info!("Running migration 21: upload_sessions");
-        run_migration_upload_sessions(conn)?;
-        record_migration(conn, MIGRATION_UPLOAD_SESSIONS, "upload_sessions")?;
-    }
-
-    if current_version < MIGRATION_SERVICE_DEAD_LETTERS {
-        info!("Running migration 22: service_dead_letters");
-        run_migration_service_dead_letters(conn)?;
-        record_migration(conn, MIGRATION_SERVICE_DEAD_LETTERS, "service_dead_letters")?;
-    }
-
-    if current_version < MIGRATION_MEMORIES_LIST_COVERING_INDEX {
-        info!("Running migration 23: memories_list_covering_index");
-        run_migration_memories_list_covering_index(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_MEMORIES_LIST_COVERING_INDEX,
-            "memories_list_covering_index",
-        )?;
-    }
-
-    if current_version < MIGRATION_COMMERCE_TABLES {
-        info!("Running migration 24: commerce_tables");
-        run_migration_commerce_tables(conn)?;
-        record_migration(conn, MIGRATION_COMMERCE_TABLES, "commerce_tables")?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_MEMORY_CORE {
-        info!("Running migration 25: drop_user_id_memory_core");
-        run_migration_drop_user_id_memory_core(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_MEMORY_CORE,
-            "drop_user_id_memory_core",
-        )?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_SCRATCHPAD {
-        info!("Running migration 26: drop_user_id_scratchpad");
-        run_migration_drop_user_id_scratchpad(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_SCRATCHPAD,
-            "drop_user_id_scratchpad",
-        )?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_SESSIONS {
-        info!("Running migration 27: drop_user_id_sessions");
-        run_migration_drop_user_id_sessions(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_SESSIONS,
-            "drop_user_id_sessions",
-        )?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_CHIASM {
-        info!("Running migration 28: drop_user_id_chiasm");
-        run_migration_drop_user_id_chiasm(conn)?;
-        record_migration(conn, MIGRATION_DROP_USER_ID_CHIASM, "drop_user_id_chiasm")?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_APPROVALS {
-        info!("Running migration 29: drop_user_id_approvals");
-        run_migration_drop_user_id_approvals(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_APPROVALS,
-            "drop_user_id_approvals",
-        )?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_BROCA {
-        info!("Running migration 30: drop_user_id_broca");
-        run_migration_drop_user_id_broca(conn)?;
-        record_migration(conn, MIGRATION_DROP_USER_ID_BROCA, "drop_user_id_broca")?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_PROJECTS {
-        info!("Running migration 31: drop_user_id_projects");
-        run_migration_drop_user_id_projects(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_PROJECTS,
-            "drop_user_id_projects",
-        )?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_ACTIVITY {
-        info!("Running migration 32: drop_user_id_activity");
-        run_migration_drop_user_id_activity(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_ACTIVITY,
-            "drop_user_id_activity",
-        )?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_WEBHOOKS {
-        info!("Running migration 33: drop_user_id_webhooks");
-        run_migration_drop_user_id_webhooks(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_WEBHOOKS,
-            "drop_user_id_webhooks",
-        )?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_AXON {
-        info!("Running migration 34: drop_user_id_axon");
-        run_migration_drop_user_id_axon(conn)?;
-        record_migration(conn, MIGRATION_DROP_USER_ID_AXON, "drop_user_id_axon")?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_GROWTH {
-        info!("Running migration 35: drop_user_id_growth");
-        run_migration_drop_user_id_growth(conn)?;
-        record_migration(conn, MIGRATION_DROP_USER_ID_GROWTH, "drop_user_id_growth")?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_INGESTION_HASHES {
-        info!("Running migration 36: drop_user_id_ingestion_hashes");
-        run_migration_drop_user_id_ingestion_hashes(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_INGESTION_HASHES,
-            "drop_user_id_ingestion_hashes",
-        )?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_LOOM {
-        info!("Running migration 37: drop_user_id_loom");
-        run_migration_drop_user_id_loom(conn)?;
-        record_migration(conn, MIGRATION_DROP_USER_ID_LOOM, "drop_user_id_loom")?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_GRAPH {
-        info!("Running migration 38: drop_user_id_graph");
-        run_migration_drop_user_id_graph(conn)?;
-        record_migration(conn, MIGRATION_DROP_USER_ID_GRAPH, "drop_user_id_graph")?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_THYMUS {
-        info!("Running migration 39: drop_user_id_thymus");
-        run_migration_drop_user_id_thymus(conn)?;
-        record_migration(conn, MIGRATION_DROP_USER_ID_THYMUS, "drop_user_id_thymus")?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_PORTABILITY {
-        info!("Running migration 40: drop_user_id_portability");
-        run_migration_drop_user_id_portability(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_PORTABILITY,
-            "drop_user_id_portability",
-        )?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_INTELLIGENCE {
-        info!("Running migration 41: drop_user_id_intelligence");
-        run_migration_drop_user_id_intelligence(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_INTELLIGENCE,
-            "drop_user_id_intelligence",
-        )?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_SKILLS {
-        info!("Running migration 42: drop_user_id_skills");
-        run_migration_drop_user_id_skills(conn)?;
-        record_migration(conn, MIGRATION_DROP_USER_ID_SKILLS, "drop_user_id_skills")?;
-    }
-
-    if current_version < MIGRATION_DROP_USER_ID_EPISODES {
-        info!("Running migration 43: drop_user_id_episodes");
-        run_migration_drop_user_id_episodes(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_USER_ID_EPISODES,
-            "drop_user_id_episodes",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_PROJECTS {
-        info!("Running migration 44: readd_user_id_projects");
-        run_migration_readd_user_id_projects(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_PROJECTS,
-            "readd_user_id_projects",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_BROCA {
-        info!("Running migration 45: readd_user_id_broca");
-        run_migration_readd_user_id_broca(conn)?;
-        record_migration(conn, MIGRATION_READD_USER_ID_BROCA, "readd_user_id_broca")?;
-    }
-
-    if current_version < MIGRATION_IDENTITY_TABLES {
-        info!("Running migration 46: identity_keys_and_identities");
-        run_migration_identity_tables(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_IDENTITY_TABLES,
-            "identity_keys_and_identities",
-        )?;
-    }
-
-    if current_version < MIGRATION_AUDIT_IDENTITY_COLUMNS {
-        info!("Running migration 47: audit_log_identity_columns");
-        run_migration_audit_identity_columns(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_AUDIT_IDENTITY_COLUMNS,
-            "audit_log_identity_columns",
-        )?;
-    }
-
-    if current_version < MIGRATION_DROP_API_KEYS_AGENT_FK {
-        info!("Running migration 48: drop_api_keys_agent_fk");
-        run_migration_drop_api_keys_agent_fk(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_DROP_API_KEYS_AGENT_FK,
-            "drop_api_keys_agent_fk",
-        )?;
-    }
-
-    if current_version < MIGRATION_SUPERVISOR_INJECTIONS {
-        info!("Running migration 49: supervisor_injections");
-        run_migration_supervisor_injections(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_SUPERVISOR_INJECTIONS,
-            "supervisor_injections",
-        )?;
-    }
-
-    if current_version < MIGRATION_GATE_REQUESTS_SESSION_ID {
-        info!("Running migration 50: gate_requests_session_id");
-        run_migration_gate_requests_session_id(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_GATE_REQUESTS_SESSION_ID,
-            "gate_requests_session_id",
-        )?;
-    }
-
-    if current_version < MIGRATION_MEMORY_CHUNKS {
-        info!("Running migration 51: memory_chunks");
-        run_migration_memory_chunks(conn)?;
-        record_migration(conn, MIGRATION_MEMORY_CHUNKS, "memory_chunks")?;
-    }
-
-    if current_version < MIGRATION_ACTIVITY_LOG_TABLE {
-        info!("Running migration 52: activity_log_table");
-        run_migration_activity_log_table(conn)?;
-        record_migration(conn, MIGRATION_ACTIVITY_LOG_TABLE, "activity_log_table")?;
-    }
-
-    if current_version < MIGRATION_IDENTITY_KEYS_SCOPES {
-        info!("Running migration 53: identity_keys_scopes");
-        run_migration_identity_keys_scopes(conn)?;
-        record_migration(conn, MIGRATION_IDENTITY_KEYS_SCOPES, "identity_keys_scopes")?;
-    }
-
-    if current_version < MIGRATION_TOOL_MANIFESTS {
-        info!("Running migration 54: tool_manifests");
-        run_migration_tool_manifests(conn)?;
-        record_migration(conn, MIGRATION_TOOL_MANIFESTS, "tool_manifests")?;
-    }
-
-    if current_version < MIGRATION_HANDOFFS_GLOBAL {
-        info!("Running migration 55: handoffs_global");
-        run_migration_handoffs_global(conn)?;
-        record_migration(conn, MIGRATION_HANDOFFS_GLOBAL, "handoffs_global")?;
-    }
-
-    if current_version < MIGRATION_USER_ACTIVE_AND_INVITES {
-        info!("Running migration 56: user_active_and_enrollment_invites");
-        run_migration_user_active_and_invites(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_USER_ACTIVE_AND_INVITES,
-            "user_active_and_enrollment_invites",
-        )?;
-    }
-
-    if current_version < MIGRATION_SKILL_DISPATCH_CONFIGS {
-        info!("Running migration 57: skill_dispatch_configs");
-        run_migration_skill_dispatch_configs(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_SKILL_DISPATCH_CONFIGS,
-            "skill_dispatch_configs",
-        )?;
-    }
-
-    if current_version < MIGRATION_API_KEY_HASH_VERSION_FIXUP {
-        info!("Running migration 58: api_key_hash_version_fixup");
-        run_migration_api_key_hash_version_fixup(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_API_KEY_HASH_VERSION_FIXUP,
-            "api_key_hash_version_fixup",
-        )?;
-    }
-
-    if current_version < MIGRATION_BROCA_NARRATIVE_COLUMNS {
-        info!("Running migration 59: broca_narrative_columns");
-        run_migration_broca_narrative_columns(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_BROCA_NARRATIVE_COLUMNS,
-            "broca_narrative_columns",
-        )?;
-    }
-
-    if current_version < MIGRATION_CHIASM_EXTENDED_FIELDS {
-        info!("Running migration 60: chiasm_extended_fields");
-        run_migration_chiasm_extended_fields(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_CHIASM_EXTENDED_FIELDS,
-            "chiasm_extended_fields",
-        )?;
-    }
-
-    if current_version < MIGRATION_CHIASM_PATH_CLAIMS {
-        info!("Running migration 61: chiasm_path_claims");
-        run_migration_chiasm_path_claims(conn)?;
-        record_migration(conn, MIGRATION_CHIASM_PATH_CLAIMS, "chiasm_path_claims")?;
-    }
-
-    if current_version < MIGRATION_CHIASM_AGENT_KEYS {
-        info!("Running migration 62: chiasm_agent_keys");
-        run_migration_chiasm_agent_keys(conn)?;
-        record_migration(conn, MIGRATION_CHIASM_AGENT_KEYS, "chiasm_agent_keys")?;
-    }
-
-    if current_version < MIGRATION_HANDOFF_ATOMS {
-        info!("Running migration 63: handoff_atoms");
-        run_migration_handoff_atoms(conn)?;
-        record_migration(conn, MIGRATION_HANDOFF_ATOMS, "handoff_atoms")?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_MEMORY_CORE {
-        info!("Running migration 64: readd_user_id_memory_core");
-        run_migration_readd_user_id_memory_core(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_MEMORY_CORE,
-            "readd_user_id_memory_core",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_WEBHOOKS {
-        info!("Running migration 65: readd_user_id_webhooks");
-        run_migration_readd_user_id_webhooks(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_WEBHOOKS,
-            "readd_user_id_webhooks",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_APPROVALS {
-        info!("Running migration 66: readd_user_id_approvals");
-        run_migration_readd_user_id_approvals(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_APPROVALS,
-            "readd_user_id_approvals",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_SOMA_AGENTS {
-        info!("Running migration 67: readd_user_id_soma_agents");
-        run_migration_readd_user_id_soma_agents(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_SOMA_AGENTS,
-            "readd_user_id_soma_agents",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_AXON_EVENTS {
-        info!("Running migration 68: readd_user_id_axon_events");
-        run_migration_readd_user_id_axon_events(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_AXON_EVENTS,
-            "readd_user_id_axon_events",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_CHIASM_TASKS {
-        info!("Running migration 69: readd_user_id_chiasm_tasks");
-        run_migration_readd_user_id_chiasm_tasks(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_CHIASM_TASKS,
-            "readd_user_id_chiasm_tasks",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_CONVERSATIONS {
-        info!("Running migration 70: readd_user_id_conversations");
-        run_migration_readd_user_id_conversations(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_CONVERSATIONS,
-            "readd_user_id_conversations",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_INTELLIGENCE {
-        info!("Running migration 71: readd_user_id_intelligence");
-        run_migration_readd_user_id_intelligence(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_INTELLIGENCE,
-            "readd_user_id_intelligence",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_GRAPH_ENTITIES {
-        info!("Running migration 72: readd_user_id_graph_entities");
-        run_migration_readd_user_id_graph_entities(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_GRAPH_ENTITIES,
-            "readd_user_id_graph_entities",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_EPISODES {
-        info!("Running migration 73: readd_user_id_episodes");
-        run_migration_readd_user_id_episodes(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_EPISODES,
-            "readd_user_id_episodes",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER {
-        info!("Running migration 74: readd_user_id_intelligence_remainder");
-        run_migration_readd_user_id_intelligence_remainder(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER,
-            "readd_user_id_intelligence_remainder",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_THYMUS {
-        info!("Running migration 75: readd_user_id_thymus");
-        run_migration_readd_user_id_thymus(conn)?;
-        record_migration(conn, MIGRATION_READD_USER_ID_THYMUS, "readd_user_id_thymus")?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_GRAPH_REMAINDER {
-        info!("Running migration 76: readd_user_id_graph_remainder");
-        run_migration_readd_user_id_graph_remainder(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_GRAPH_REMAINDER,
-            "readd_user_id_graph_remainder",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_USER_PREFERENCES {
-        info!("Running migration 77: readd_user_id_user_preferences");
-        run_migration_readd_user_id_user_preferences(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_USER_PREFERENCES,
-            "readd_user_id_user_preferences",
-        )?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_SKILLS {
-        info!("Running migration 78: readd_user_id_skills");
-        run_migration_readd_user_id_skills(conn)?;
-        record_migration(conn, MIGRATION_READD_USER_ID_SKILLS, "readd_user_id_skills")?;
-    }
-
-    if current_version < MIGRATION_READD_USER_ID_BRAIN {
-        info!("Running migration 79: readd_user_id_brain_edges");
-        run_migration_readd_user_id_brain_edges(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_BRAIN,
-            "readd_user_id_brain_edges",
-        )?;
-    }
-
-    if current_version < MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV {
-        info!("Running migration 80: identity_keys_scopes_json_to_csv");
-        run_migration_identity_keys_scopes_json_to_csv(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV,
-            "identity_keys_scopes_json_to_csv",
-        )?;
-    }
-
-    if current_version < MIGRATION_MCP_TOKENS {
-        info!("Running migration 81: mcp_tokens");
-        run_migration_mcp_tokens(conn)?;
-        record_migration(conn, MIGRATION_MCP_TOKENS, "mcp_tokens")?;
-    }
-
-    if current_version < MIGRATION_PHYLAX_TABLES {
-        info!("Running migration 82: phylax_tables");
-        run_migration_phylax_tables(conn)?;
-        record_migration(conn, MIGRATION_PHYLAX_TABLES, "phylax_tables")?;
-    }
-
-    if current_version < MIGRATION_CRED_AUDIT_ATTRIBUTION_COLUMNS {
-        info!("Running migration 83: cred_audit_attribution_columns");
-        run_migration_cred_audit_attribution_columns(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_CRED_AUDIT_ATTRIBUTION_COLUMNS,
-            "cred_audit_attribution_columns",
-        )?;
-    }
-
-    if current_version < MIGRATION_INSTANCE_GRANTS {
-        info!("Running migration 84: instance_grants");
-        run_migration_instance_grants(conn)?;
-        record_migration(conn, MIGRATION_INSTANCE_GRANTS, "instance_grants")?;
-    }
-
-    if current_version < MIGRATION_PHYLAX_DECIDE_TOKEN_HASH {
-        info!("Running migration 85: phylax_approval_decide_token_hash");
-        run_migration_phylax_decide_token_hash(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_PHYLAX_DECIDE_TOKEN_HASH,
-            "phylax_approval_decide_token_hash",
-        )?;
-    }
-
-    if current_version < MIGRATION_PHYLAX_EXEC_ALLOWLIST {
-        info!("Running migration 86: phylax_policy_exec_allowlist");
-        run_migration_phylax_exec_allowlist(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_PHYLAX_EXEC_ALLOWLIST,
-            "phylax_policy_exec_allowlist",
-        )?;
-    }
-
-    if current_version < MIGRATION_ENROLLMENT_CHALLENGES {
-        info!("Running migration 87: enrollment_challenges");
-        run_migration_enrollment_challenges(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_ENROLLMENT_CHALLENGES,
-            "enrollment_challenges",
-        )?;
-    }
-
-    if current_version < MIGRATION_USERS_ACTIVE_INDEX {
-        info!("Running migration 88: users_active_index");
-        run_migration_users_active_index(conn)?;
-        record_migration(conn, MIGRATION_USERS_ACTIVE_INDEX, "users_active_index")?;
+    // DB-1: iterate the canonical MIGRATIONS registry rather than a parallel
+    // hand-written if-block ladder, and wrap each transactional migration's up
+    // fn together with its schema_version insert in a single SAVEPOINT. A crash
+    // or error between applying a migration and recording it previously left an
+    // applied-but-unrecorded migration that re-applied (and could corrupt the
+    // schema/data) on the next startup. Non-transactional migrations toggle
+    // PRAGMA foreign_keys, which SQLite forbids inside a SAVEPOINT, so they run
+    // bare and rely on their own idempotent IF NOT EXISTS construction.
+    for m in MIGRATIONS.iter() {
+        if (m.version as i64) <= current_version {
+            continue;
+        }
+        info!("Running migration {}: {}", m.version, m.description);
+        apply_migration_up(conn, m)?;
     }
 
     Ok(())
+}
+
+/// Apply one migration's `up` fn and record it in `schema_version`.
+///
+/// DB-1: for transactional migrations the up fn and the schema_version insert
+/// are wrapped in one SAVEPOINT so they commit atomically; on error the
+/// savepoint is rolled back, leaving neither the partial DDL nor the version
+/// row. Non-transactional migrations (which toggle PRAGMA foreign_keys, illegal
+/// inside a SAVEPOINT) run bare and depend on their own idempotent construction.
+fn apply_migration_up(conn: &rusqlite::Connection, m: &Migration) -> Result<()> {
+    let version = m.version as i64;
+    if m.transactional {
+        let sp_name = format!("sp_up_{}", m.version);
+        conn.execute_batch(&format!("SAVEPOINT {sp_name}"))?;
+        let step = (|| -> Result<()> {
+            (m.up)(conn)?;
+            record_migration(conn, version, m.description)
+        })();
+        match step {
+            Ok(()) => {
+                conn.execute_batch(&format!("RELEASE {sp_name}"))?;
+                Ok(())
+            }
+            Err(e) => {
+                // Best-effort unwind; the outer caller propagates the error.
+                let _ = conn.execute_batch(&format!("ROLLBACK TO {sp_name}; RELEASE {sp_name}"));
+                Err(e)
+            }
+        }
+    } else {
+        (m.up)(conn)?;
+        record_migration(conn, version, m.description)?;
+        Ok(())
+    }
 }
 
 /// Inserts a row into schema_version to record that a migration has been applied.
@@ -5549,11 +4704,60 @@ mod tests {
         rusqlite::Connection::open_in_memory().expect("open in-memory test db")
     }
 
-    /// Regression: every entry in MIGRATIONS must have a matching dispatch
-    /// block in `run_migrations()`. Without this test, a future contributor
-    /// could add a Migration entry but forget the `if current_version < ...`
-    /// block and the migration would silently never apply (this is what
-    /// blocker B1 was: v52 was registered but never dispatched).
+    /// DB-1: a transactional migration that fails partway must leave neither the
+    /// partial DDL nor a schema_version row, so it does not re-apply (and
+    /// possibly corrupt the schema) on the next startup.
+    #[test]
+    fn failed_transactional_migration_rolls_back_and_records_nothing() {
+        let conn = open_test_db();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+
+        let failing = Migration {
+            version: 9999,
+            description: "failing_test_migration",
+            up: |c| {
+                // Apply some DDL, then fail: the savepoint must undo the DDL.
+                c.execute_batch("CREATE TABLE db1_probe (id INTEGER);")?;
+                Err(crate::EngError::Internal("boom".into()))
+            },
+            down: None,
+            transactional: true,
+        };
+
+        let r = apply_migration_up(&conn, &failing);
+        assert!(r.is_err(), "the migration's up fn returned Err");
+
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_version WHERE version = 9999",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 0, "failed migration must not be recorded");
+
+        let probe_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='db1_probe'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(probe_exists, 0, "partial DDL must be rolled back by the savepoint");
+    }
+
+    /// Regression: a fresh `run_migrations` must reach the highest version in
+    /// the MIGRATIONS registry. `run_migrations` now iterates MIGRATIONS
+    /// directly (DB-1), so a registered migration can no longer be silently
+    /// undispatched (blocker B1: v52 was registered but never dispatched by the
+    /// old hand-written if-block ladder).
     #[test]
     fn every_static_migration_is_dispatched() {
         let conn = open_test_db();
