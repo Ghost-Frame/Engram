@@ -929,11 +929,11 @@ mod tests {
 
         let survivors: i64 = db
             .read(|conn| {
-                Ok(conn.query_row(
-                    "SELECT COUNT(*) FROM memories WHERE user_id = 2",
-                    [],
-                    |r| r.get(0),
-                )?)
+                Ok(
+                    conn.query_row("SELECT COUNT(*) FROM memories WHERE user_id = 2", [], |r| {
+                        r.get(0)
+                    })?,
+                )
             })
             .await
             .expect("count user 2 rows");

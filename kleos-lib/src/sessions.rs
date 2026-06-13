@@ -518,7 +518,9 @@ mod tests {
         let req = SessionCreateRequest {
             agent: "owned-by-user-1".to_string(),
         };
-        let s1 = create_session(&db, &req, 1).await.expect("create as user 1");
+        let s1 = create_session(&db, &req, 1)
+            .await
+            .expect("create as user 1");
 
         // User 2 must not be able to fetch user 1's session by id.
         let cross = get_session(&db, &s1.id, 2).await;
