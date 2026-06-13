@@ -5,6 +5,7 @@
 //! errors since those are deterministic.
 
 use crate::{EngError, Result};
+use rand::Rng;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -96,9 +97,9 @@ where
                 let backoff_ms = base_ms.saturating_mul(1u64 << exp);
                 let capped_ms = backoff_ms.min(policy.max_delay.as_millis() as u64);
 
-                // Add up to 25% jitter. pseudo_rand_percent returns 0..=100, so
+                // Add up to 25% jitter. rand_jitter_percent returns 0..=100, so
                 // (capped_ms / 4) * percent / 100 yields 0..=capped_ms/4.
-                let jitter_ms = (capped_ms / 4).saturating_mul(pseudo_rand_percent(attempt)) / 100;
+                let jitter_ms = (capped_ms / 4).saturating_mul(rand_jitter_percent()) / 100;
                 let sleep_ms = capped_ms.saturating_add(jitter_ms);
 
                 tracing::debug!(
@@ -113,13 +114,16 @@ where
     }
 }
 
-/// Deterministic pseudo-random integer percent (0..=100) based on attempt
-/// number. Not crypto-quality; only used for jitter spread.
-fn pseudo_rand_percent(attempt: u32) -> u64 {
-    let v = attempt
-        .wrapping_mul(2_654_435_761)
-        .wrapping_add(1_013_904_223);
-    (v % 101) as u64
+/// Uniform random integer percent (0..=100) for retry jitter.
+///
+/// CB-5: the previous implementation derived the percent deterministically from
+/// the attempt number, so every client retrying at attempt N computed the SAME
+/// jitter and woke at the same instant -- the thundering herd the jitter was
+/// meant to break up was not broken up at all. Drawing from the thread-local RNG
+/// gives each caller an independent value across processes and attempts. Not
+/// crypto-quality; jitter spread only.
+fn rand_jitter_percent() -> u64 {
+    rand::rng().random_range(0..=100)
 }
 
 // --- Legacy adapter (re-exported as retry_with_backoff from resilience::) ---
@@ -229,34 +233,42 @@ mod tests {
     }
 
     #[test]
-    fn pseudo_rand_percent_is_bounded() {
-        for attempt in 0u32..256 {
-            let p = pseudo_rand_percent(attempt);
-            assert!(
-                p <= 100,
-                "percent {} exceeded 100 at attempt {}",
-                p,
-                attempt
-            );
+    fn rand_jitter_percent_is_bounded() {
+        for _ in 0..4096 {
+            let p = rand_jitter_percent();
+            assert!(p <= 100, "percent {} exceeded 100", p);
         }
     }
 
     #[test]
+    fn rand_jitter_percent_is_not_deterministic() {
+        // The CB-5 regression: a jitter that is a pure function of the attempt
+        // number produces an identical sequence every run, defeating spread.
+        // Over a large sample the RNG must produce more than one distinct value.
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..256 {
+            seen.insert(rand_jitter_percent());
+        }
+        assert!(
+            seen.len() > 1,
+            "jitter percent must vary; got a single constant value"
+        );
+    }
+
+    #[test]
     fn jitter_never_exceeds_quarter_of_capped() {
-        // Walk a range of capped_ms values and every attempt index that
-        // exercises the full 0..=100 output of pseudo_rand_percent. The
-        // computed jitter must never exceed capped_ms / 4.
+        // Walk a range of capped_ms values; whatever percent the RNG returns,
+        // the computed jitter must never exceed capped_ms / 4.
         for capped_ms in [0u64, 1, 4, 100, 500, 5_000, 1_000_000] {
             let limit = capped_ms / 4;
-            for attempt in 0u32..1024 {
-                let jitter = (capped_ms / 4).saturating_mul(pseudo_rand_percent(attempt)) / 100;
+            for _ in 0u32..1024 {
+                let jitter = (capped_ms / 4).saturating_mul(rand_jitter_percent()) / 100;
                 assert!(
                     jitter <= limit,
-                    "jitter {} exceeded capped_ms/4 ({}) at capped_ms={} attempt={}",
+                    "jitter {} exceeded capped_ms/4 ({}) at capped_ms={}",
                     jitter,
                     limit,
                     capped_ms,
-                    attempt
                 );
             }
         }
