@@ -412,9 +412,12 @@ pub static MIGRATIONS: &[Migration] = &[
     ),
 ];
 
-// --- Legacy version constants (kept for compatibility with existing call sites) ---
+// --- Version constants ---
 
-/// Version number for the initial schema creation migration.
+/// Version number for the initial schema creation migration. Only referenced by
+/// tests now that run_migrations iterates the MIGRATIONS registry directly
+/// (DB-1), so gate it to test builds to avoid a dead-code warning.
+#[cfg(test)]
 const MIGRATION_CREATE_SCHEMA: i64 = 1;
 
 
