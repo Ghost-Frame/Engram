@@ -350,11 +350,27 @@ async fn main() {
                 (command, tool_name, parsed.tool_input)
             }
             None => {
-                // Unparseable payload (not valid JSON or unreadable stdin):
-                // allow rather than block over a parse hiccup. A well-formed
-                // payload with no command is NOT this case -- it returns Some
-                // with command == None and is forwarded to the gate below.
-                process::exit(0);
+                // SH-2: unparseable payload (invalid JSON or unreadable stdin).
+                // A malformed hook payload is a potential gate-bypass primitive,
+                // not a benign infra hiccup, so fail CLOSED by default rather
+                // than silently allowing. Operators can still opt into fail-open
+                // with KLEOS_SH_FAIL_OPEN=1/true (e.g. to match the legacy bash
+                // hook). A well-formed payload with no command is NOT this case:
+                // it returns Some with command == None and reaches the gate below.
+                let opt_in_open = matches!(
+                    std::env::var("KLEOS_SH_FAIL_OPEN").as_deref(),
+                    Ok("1") | Ok("true")
+                );
+                if opt_in_open {
+                    eprintln!(
+                        "kleos-sh: unparseable hook payload, failing OPEN per KLEOS_SH_FAIL_OPEN"
+                    );
+                    process::exit(0);
+                }
+                deny_and_exit(
+                    cli.claude_hook,
+                    "unparseable hook payload; failing closed (set KLEOS_SH_FAIL_OPEN=1 to override)",
+                );
             }
         }
     } else {
@@ -580,7 +596,8 @@ mod tests {
         assert_eq!(parsed.tool_name.as_deref(), Some("Bash"));
     }
 
-    /// Only genuinely unparseable JSON returns None (the fail-open case).
+    /// Only genuinely unparseable JSON returns None. main() now treats None as
+    /// fail-closed by default (SH-2), with KLEOS_SH_FAIL_OPEN as the opt-out.
     #[test]
     fn malformed_payload_returns_none() {
         assert!(parse_claude_hook("not valid json {{{").is_none());
