@@ -1322,12 +1322,14 @@ mod tests {
     /// CIDR entries match addresses inside the range and reject those outside.
     #[test]
     fn rate_limit_exempt_cidr_and_bare_ip() {
-        let mut cfg = Config::default();
-        cfg.rate_limit_exempt_cidrs = vec![
-            "127.0.0.0/8".to_string(),
-            "10.50.0.0/24".to_string(),
-            "::1".to_string(), // bare IPv6 loopback (no prefix)
-        ];
+        let cfg = Config {
+            rate_limit_exempt_cidrs: vec![
+                "127.0.0.0/8".to_string(),
+                "10.50.0.0/24".to_string(),
+                "::1".to_string(), // bare IPv6 loopback (no prefix)
+            ],
+            ..Config::default()
+        };
         // Loopback + mesh members are exempt.
         assert!(cfg.is_rate_limit_exempt("127.0.0.1"));
         assert!(cfg.is_rate_limit_exempt("10.50.0.4"));
@@ -1342,8 +1344,10 @@ mod tests {
     /// or matching everything.
     #[test]
     fn rate_limit_exempt_invalid_fails_closed() {
-        let mut cfg = Config::default();
-        cfg.rate_limit_exempt_cidrs = vec!["not-an-ip".to_string(), "10.0.0.0/99".to_string()];
+        let mut cfg = Config {
+            rate_limit_exempt_cidrs: vec!["not-an-ip".to_string(), "10.0.0.0/99".to_string()],
+            ..Config::default()
+        };
         assert!(!cfg.is_rate_limit_exempt("10.0.0.1"));
         // A non-parseable client IP is never exempt regardless of config.
         cfg.rate_limit_exempt_cidrs = vec!["0.0.0.0/0".to_string()];

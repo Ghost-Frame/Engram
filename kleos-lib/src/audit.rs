@@ -36,6 +36,9 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEntry> {
 ///
 /// Maps legacy "operation/resource" terminology onto the DB schema columns.
 /// The `before`/`after` snapshots and `actor` are merged into the `details` JSON field.
+// Each parameter is a distinct, non-groupable audit field (actor, ids, before
+// and after snapshots); a params struct would add indirection without clarity.
+#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(db, before, after), fields(operation = %operation, resource_type = %resource_type, resource_id = %resource_id))]
 pub async fn log_mutation(
     db: &Database,

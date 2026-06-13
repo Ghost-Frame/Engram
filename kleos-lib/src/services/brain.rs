@@ -1135,12 +1135,6 @@ async fn load_brain_memory(db: &Database, memory_id: i64) -> Result<BrainMemory>
     .await
 }
 
-/// Factory function to create the appropriate brain backend based on the
-/// `ENGRAM_BRAIN_MODE` environment variable.
-///
-/// - `"hopfield"` (default when feature enabled): In-process Hopfield network
-/// - `"subprocess"`: External eidolon binary via stdin/stdout JSON
-/// - `"none"`: No brain backend
 /// Pure parse of the `TENANT_SHARDING` value. Sharding is the default (None),
 /// and only the explicit off-values disable it. Mirrors the parse in
 /// kleos-server/src/main.rs.
@@ -1177,6 +1171,12 @@ fn subprocess_brain_permitted() -> bool {
     }
 }
 
+/// Factory function to create the appropriate brain backend based on the
+/// `ENGRAM_BRAIN_MODE` environment variable.
+///
+/// - `"hopfield"` (default when feature enabled): In-process Hopfield network
+/// - `"subprocess"`: External eidolon binary via stdin/stdout JSON
+/// - `"none"`: No brain backend
 #[cfg(feature = "brain_hopfield")]
 #[tracing::instrument(skip(db), fields(data_dir = %data_dir))]
 pub async fn create_brain_backend(

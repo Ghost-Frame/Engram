@@ -446,8 +446,10 @@ async fn main() {
                             );
                         }
                         // Fail-open: runtime continues, so the task will run
-                        // naturally -- no need to await before returning.
-                        let _ = alert_gate_degraded(
+                        // naturally. Bind the JoinHandle to a named var (not
+                        // `let _`) to intentionally detach without tripping
+                        // clippy::let_underscore_future.
+                        let _alert_handle = alert_gate_degraded(
                             &client,
                             &server,
                             Some(key),
@@ -489,8 +491,10 @@ async fn main() {
                         "kleos-sh: no API key available, failing OPEN per KLEOS_SH_FAIL_OPEN"
                     );
                 }
-                // Fail-open: runtime continues, handle can be dropped.
-                let _ = alert_gate_degraded(
+                // Fail-open: runtime continues. Bind the JoinHandle to a named
+                // var (not `let _`) to intentionally detach without tripping
+                // clippy::let_underscore_future.
+                let _alert_handle = alert_gate_degraded(
                     &client,
                     &server,
                     None,
