@@ -57,7 +57,10 @@ impl PlatformInfo {
         // Derive from XDG_DATA_HOME (or ~/.local/share on Unix, ~/AppData/Local on
         // Windows) so the path is absolute and stable regardless of the server's CWD.
         let default_data_dir = if cfg!(windows) {
-            home.join("AppData").join("Local").join("kleos").join("data")
+            home.join("AppData")
+                .join("Local")
+                .join("kleos")
+                .join("data")
         } else {
             xdg_data_dir().join("engram").join("data")
         };

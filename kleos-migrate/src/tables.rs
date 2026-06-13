@@ -118,7 +118,10 @@ fn copy_table(
         .join(", ");
 
     let select_sql = if has_user_id {
-        format!("SELECT {} FROM {} WHERE user_id = ?1", select_cols, quoted_table)
+        format!(
+            "SELECT {} FROM {} WHERE user_id = ?1",
+            select_cols, quoted_table
+        )
     } else {
         format!("SELECT {} FROM {}", select_cols, quoted_table)
     };

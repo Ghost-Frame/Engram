@@ -251,7 +251,10 @@ async fn gui_cookie_write_rejected_with_wrong_csrf() {
                 .method("POST")
                 .uri("/projects")
                 .header("Cookie", &cookie)
-                .header("X-CSRF-Token", "0000000000000000000000000000000000000000000000000000000000000000")
+                .header(
+                    "X-CSRF-Token",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                )
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     json!({ "name": "csrf-bad", "status": "active" }).to_string(),

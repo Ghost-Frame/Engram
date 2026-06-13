@@ -105,8 +105,8 @@ pub async fn run(state: Arc<SupervisorState>, watch_dir: PathBuf) {
                 // Obtain (or insert) the per-file RetryTracker, then check.
                 // `get_or_insert_mut` gives a mutable reference so that
                 // RetryTracker can update its internal command history.
-                let tracker = retry_trackers
-                    .get_or_insert_mut(path.to_path_buf(), RetryTracker::new);
+                let tracker =
+                    retry_trackers.get_or_insert_mut(path.to_path_buf(), RetryTracker::new);
                 violations.extend(tracker.check(&entry, &state.rules));
 
                 for mut violation in violations {

@@ -274,7 +274,9 @@ mod tests {
         let t2 = create_task(&db, req("task-2")).await.unwrap();
         let t3 = create_task(&db, req("task-3")).await.unwrap();
 
-        add_dependencies(&db, t3.id, &[t1.id, t2.id], 1).await.unwrap();
+        add_dependencies(&db, t3.id, &[t1.id, t2.id], 1)
+            .await
+            .unwrap();
 
         let deps = get_dependencies(&db, t3.id).await.unwrap();
         assert_eq!(deps.len(), 2);

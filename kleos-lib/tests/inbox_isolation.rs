@@ -16,7 +16,10 @@ async fn one_tenant() -> Arc<TenantHandle> {
     let dir = tempfile::tempdir().expect("tempdir");
     let registry = TenantRegistry::new(dir.path(), TenantConfig::default(), 128, false, None)
         .expect("registry");
-    let handle = registry.get_or_create("inbox_tenant").await.expect("tenant");
+    let handle = registry
+        .get_or_create("inbox_tenant")
+        .await
+        .expect("tenant");
     std::mem::forget(dir);
     handle
 }
@@ -69,13 +72,19 @@ async fn list_pending_is_scoped_to_caller() {
         .await
         .expect("owner list");
     assert_eq!(owner_list.len(), 2, "owner sees only its two pending rows");
-    assert_eq!(kleos_lib::inbox::count_pending(&db, OWNER).await.unwrap(), 2);
+    assert_eq!(
+        kleos_lib::inbox::count_pending(&db, OWNER).await.unwrap(),
+        2
+    );
 
     let other_list = kleos_lib::inbox::list_pending(&db, OTHER, 50, 0)
         .await
         .expect("other list");
     assert_eq!(other_list.len(), 1, "other tenant sees only its one row");
-    assert_eq!(kleos_lib::inbox::count_pending(&db, OTHER).await.unwrap(), 1);
+    assert_eq!(
+        kleos_lib::inbox::count_pending(&db, OTHER).await.unwrap(),
+        1
+    );
 }
 
 /// approve/reject/edit must not mutate another tenant's pending memory by id.
@@ -133,5 +142,8 @@ async fn inbox_mutations_are_scoped_to_caller() {
         })
         .await
         .expect("read content");
-    assert_eq!(edited_content, "owned edit", "intruder edit must not persist");
+    assert_eq!(
+        edited_content, "owned edit",
+        "intruder edit must not persist"
+    );
 }

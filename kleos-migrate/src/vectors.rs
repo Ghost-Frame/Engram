@@ -347,9 +347,7 @@ pub async fn extract_from_source_lance(
             let floats = values
                 .as_any()
                 .downcast_ref::<PrimitiveArray<Float32Type>>()
-                .ok_or_else(|| {
-                    anyhow!("vector inner values are not Float32 -- schema mismatch")
-                })?;
+                .ok_or_else(|| anyhow!("vector inner values are not Float32 -- schema mismatch"))?;
             if floats.len() != DIMENSIONS {
                 warn!(
                     "skipping memory {}: vector length {} != {}",

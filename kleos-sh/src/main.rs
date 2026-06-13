@@ -251,11 +251,7 @@ fn alert_gate_degraded(
 /// Await the alert task (up to 500 ms) so it can actually send before the
 /// process exits, then deny and exit. The 500 ms cap keeps the shell
 /// responsive when the server is unreachable. Never propagates alert errors.
-async fn alert_then_deny(
-    alert: tokio::task::JoinHandle<()>,
-    claude_hook: bool,
-    reason: &str,
-) -> ! {
+async fn alert_then_deny(alert: tokio::task::JoinHandle<()>, claude_hook: bool, reason: &str) -> ! {
     // 500 ms is enough for a LAN round-trip; on timeout we proceed to exit
     // anyway -- telemetry is best-effort, not load-bearing.
     let _ = tokio::time::timeout(Duration::from_millis(500), alert).await;

@@ -207,7 +207,13 @@ pub async fn fail_job(db: &Database, id: i64, claimed_at: &str, err_msg: &str) -
 /// Lease-gated on `claimed_at` for the same reason as [`complete_job`] (JOB-2):
 /// a stale worker must not requeue a job a newer attempt now owns.
 #[tracing::instrument(skip(db, err_msg))]
-pub async fn retry_job(db: &Database, id: i64, claimed_at: &str, err_msg: &str, delay_sec: i64) -> Result<()> {
+pub async fn retry_job(
+    db: &Database,
+    id: i64,
+    claimed_at: &str,
+    err_msg: &str,
+    delay_sec: i64,
+) -> Result<()> {
     let err_msg = err_msg.to_string();
     let claimed_at = claimed_at.to_string();
     let modifier = format!("+{} seconds", delay_sec);
@@ -221,7 +227,10 @@ pub async fn retry_job(db: &Database, id: i64, claimed_at: &str, err_msg: &str, 
         })
         .await?;
     if affected == 0 {
-        warn!(job_id = id, "retry_job: lease lost (job reclaimed by another worker); not requeuing");
+        warn!(
+            job_id = id,
+            "retry_job: lease lost (job reclaimed by another worker); not requeuing"
+        );
     } else {
         warn!(job_id = id, retry_in = delay_sec, "job scheduled for retry");
     }
@@ -774,19 +783,25 @@ mod tests {
             .expect("seed running job");
 
         // Wrong lease token -> no-op, job stays running.
-        complete_job(&db, id, "LEASE_B").await.expect("complete (stale)");
+        complete_job(&db, id, "LEASE_B")
+            .await
+            .expect("complete (stale)");
         let stats = get_job_stats(&db).await.expect("stats");
         assert_eq!(stats.running, 1, "stale-lease complete must not finalize");
         assert_eq!(stats.completed, 0);
 
         // fail_job with the wrong token is equally a no-op.
-        fail_job(&db, id, "LEASE_B", "boom").await.expect("fail (stale)");
+        fail_job(&db, id, "LEASE_B", "boom")
+            .await
+            .expect("fail (stale)");
         let stats = get_job_stats(&db).await.expect("stats");
         assert_eq!(stats.running, 1, "stale-lease fail must not finalize");
         assert_eq!(stats.failed, 0);
 
         // Correct lease token -> completes.
-        complete_job(&db, id, "LEASE_A").await.expect("complete (owner)");
+        complete_job(&db, id, "LEASE_A")
+            .await
+            .expect("complete (owner)");
         let stats = get_job_stats(&db).await.expect("stats");
         assert_eq!(stats.completed, 1, "owner lease must finalize");
         assert_eq!(stats.running, 0);

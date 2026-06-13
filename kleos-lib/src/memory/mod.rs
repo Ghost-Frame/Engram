@@ -252,7 +252,11 @@ fn chunk_lance_key(memory_id: i64, chunk_idx: usize) -> i64 {
     {
         Some(key) => key,
         None => {
-            tracing::error!(memory_id, chunk_idx, "chunk_lance_key overflow; clamping to i64::MAX");
+            tracing::error!(
+                memory_id,
+                chunk_idx,
+                "chunk_lance_key overflow; clamping to i64::MAX"
+            );
             i64::MAX
         }
     }

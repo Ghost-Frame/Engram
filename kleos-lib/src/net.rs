@@ -260,18 +260,36 @@ mod tests {
         // process-wide cached env flag.
         let meta_v4: Ipv4Addr = "169.254.169.254".parse().unwrap();
         let link_v4: Ipv4Addr = "169.254.10.1".parse().unwrap();
-        assert!(ipv4_outbound_denied(&meta_v4, true), "AWS metadata stays denied under flag");
-        assert!(ipv4_outbound_denied(&link_v4, true), "link-local stays denied under flag");
+        assert!(
+            ipv4_outbound_denied(&meta_v4, true),
+            "AWS metadata stays denied under flag"
+        );
+        assert!(
+            ipv4_outbound_denied(&link_v4, true),
+            "link-local stays denied under flag"
+        );
 
         // RFC1918 IS permitted under the flag (WireGuard mesh peer).
         let mesh: Ipv4Addr = "10.0.0.1".parse().unwrap();
-        assert!(!ipv4_outbound_denied(&mesh, true), "mesh RFC1918 allowed under flag");
-        assert!(ipv4_outbound_denied(&mesh, false), "mesh RFC1918 denied without flag");
+        assert!(
+            !ipv4_outbound_denied(&mesh, true),
+            "mesh RFC1918 allowed under flag"
+        );
+        assert!(
+            ipv4_outbound_denied(&mesh, false),
+            "mesh RFC1918 denied without flag"
+        );
 
         // IPv6 link-local and the AWS IMDSv2 alias stay denied under the flag.
         let ll_v6: Ipv6Addr = "fe80::1".parse().unwrap();
         let imds_v6: Ipv6Addr = "fd00:ec2::254".parse().unwrap();
-        assert!(ipv6_outbound_denied(&ll_v6, true), "IPv6 link-local stays denied under flag");
-        assert!(ipv6_outbound_denied(&imds_v6, true), "AWS IMDSv2 alias stays denied under flag");
+        assert!(
+            ipv6_outbound_denied(&ll_v6, true),
+            "IPv6 link-local stays denied under flag"
+        );
+        assert!(
+            ipv6_outbound_denied(&imds_v6, true),
+            "AWS IMDSv2 alias stays denied under flag"
+        );
     }
 }

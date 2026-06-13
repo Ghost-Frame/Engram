@@ -634,10 +634,16 @@ mod passport_tests {
             .expect("memory db");
 
         let past = json!({ "agent_id": 999, "expires_at": "2000-01-01 00:00:00" });
-        assert!(!passport_is_current(&db, &past).await, "expired passport must be invalid");
+        assert!(
+            !passport_is_current(&db, &past).await,
+            "expired passport must be invalid"
+        );
 
         let null_exp = json!({ "agent_id": 999, "expires_at": null });
-        assert!(!passport_is_current(&db, &null_exp).await, "null-expiry passport must be invalid");
+        assert!(
+            !passport_is_current(&db, &null_exp).await,
+            "null-expiry passport must be invalid"
+        );
 
         let future_unknown = json!({ "agent_id": 999, "expires_at": "2999-01-01 00:00:00" });
         assert!(

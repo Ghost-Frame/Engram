@@ -1570,7 +1570,10 @@ mod recall_gate_tests {
     #[test]
     fn drops_boosted_offtopic() {
         let r = json!({"content": "demoted lol", "category": "general", "score": 1.5, "semantic_score": 0.12});
-        assert!(!recall_result_is_relevant(&r, default_recall_min_semantic()));
+        assert!(!recall_result_is_relevant(
+            &r,
+            default_recall_min_semantic()
+        ));
     }
 
     /// An exact lexical hit with no embedding is kept as a strong signal.
@@ -1584,7 +1587,10 @@ mod recall_gate_tests {
     #[test]
     fn drops_signalless_candidate() {
         let r = json!({"content": "tangential", "category": "technical", "score": 0.9});
-        assert!(!recall_result_is_relevant(&r, default_recall_min_semantic()));
+        assert!(!recall_result_is_relevant(
+            &r,
+            default_recall_min_semantic()
+        ));
     }
 
     /// The full formatter excludes noise categories and weak matches together.

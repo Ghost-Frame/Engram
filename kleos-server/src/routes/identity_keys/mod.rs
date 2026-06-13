@@ -106,9 +106,9 @@ async fn enroll_handler(
     // making captured proofs worthless to anyone else.
     let key_count: i64 = state
         .db
-        .read(|conn| {
-            Ok(conn.query_row("SELECT COUNT(*) FROM identity_keys", [], |row| row.get(0))?)
-        })
+        .read(
+            |conn| Ok(conn.query_row("SELECT COUNT(*) FROM identity_keys", [], |row| row.get(0))?),
+        )
         .await?;
 
     let proof_msg = if key_count == 0 {

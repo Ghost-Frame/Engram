@@ -714,8 +714,16 @@ async fn import_json(
         // so rows could escape archival). Fall back to now() when absent or not
         // RFC3339.
         let valid_rfc3339 = |s: &String| chrono::DateTime::parse_from_rfc3339(s).is_ok();
-        let created_at = m.created_at.clone().filter(valid_rfc3339).unwrap_or_else(|| now.clone());
-        let updated_at = m.updated_at.clone().filter(valid_rfc3339).unwrap_or_else(|| now.clone());
+        let created_at = m
+            .created_at
+            .clone()
+            .filter(valid_rfc3339)
+            .unwrap_or_else(|| now.clone());
+        let updated_at = m
+            .updated_at
+            .clone()
+            .filter(valid_rfc3339)
+            .unwrap_or_else(|| now.clone());
         let category = m.category.clone().unwrap_or_else(|| "general".to_string());
         let source = m.source.clone().unwrap_or_else(|| "import".to_string());
         let session_id = m.session_id.clone();

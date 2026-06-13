@@ -52,7 +52,10 @@ fn living_excluded_categories() -> std::collections::HashSet<String> {
 /// Gates on raw cosine (`semantic_score`) rather than the boosted compound
 /// `score`, so recent/personality-boosted but off-topic memories are dropped.
 /// Results with no embedding survive only on an exact lexical hit (`fts_score`).
-fn living_result_is_relevant(r: &kleos_lib::memory::types::SearchResult, min_semantic: f64) -> bool {
+fn living_result_is_relevant(
+    r: &kleos_lib::memory::types::SearchResult,
+    min_semantic: f64,
+) -> bool {
     match r.semantic_score {
         Some(sem) => sem >= min_semantic,
         None => r.fts_score.is_some(),
@@ -390,7 +393,9 @@ async fn post_prompt_generate(
         // Use effective_user_id() like every other fetch in this handler: under
         // delegation (act_as set) auth.user_id is the delegator, so growth
         // observations were pulled from the wrong tenant into the prompt.
-        if let Ok(observations) = list_observations(&db, auth.effective_user_id(), growth_limit).await {
+        if let Ok(observations) =
+            list_observations(&db, auth.effective_user_id(), growth_limit).await
+        {
             if !observations.is_empty() {
                 let mut buf = String::from("## Growth Observations\n");
                 for obs in &observations {

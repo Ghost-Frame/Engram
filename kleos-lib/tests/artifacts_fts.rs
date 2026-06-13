@@ -421,9 +421,10 @@ async fn search_artifacts_respects_memory_filter() {
     assert_eq!(all.len(), 2, "unfiltered search should find both artifacts");
 
     // Filtered search should find only mem_a's artifact.
-    let filtered = kleos_lib::artifacts::search_artifacts(&db, TEST_USER, "synchronization", 10, Some(mem_a))
-        .await
-        .expect("filtered search");
+    let filtered =
+        kleos_lib::artifacts::search_artifacts(&db, TEST_USER, "synchronization", 10, Some(mem_a))
+            .await
+            .expect("filtered search");
     assert_eq!(
         filtered.len(),
         1,
@@ -578,25 +579,37 @@ async fn artifacts_are_isolated_across_tenants_in_shared_db() {
     let by_id = kleos_lib::artifacts::get_artifact_by_id(&db, INTRUDER, artifact_id)
         .await
         .expect("get_artifact_by_id");
-    assert!(by_id.is_none(), "intruder must not read owner's artifact by id");
+    assert!(
+        by_id.is_none(),
+        "intruder must not read owner's artifact by id"
+    );
 
     // The intruder cannot read its raw data.
     let data = kleos_lib::artifacts::get_artifact_data(&db, INTRUDER, artifact_id)
         .await
         .expect("get_artifact_data");
-    assert!(data.is_none(), "intruder must not read owner's artifact data");
+    assert!(
+        data.is_none(),
+        "intruder must not read owner's artifact data"
+    );
 
     // The intruder cannot list it via the owner's memory.
     let listed = kleos_lib::artifacts::get_artifacts_by_memory(&db, INTRUDER, owner_mem)
         .await
         .expect("get_artifacts_by_memory");
-    assert!(listed.is_empty(), "intruder must not list owner's artifacts");
+    assert!(
+        listed.is_empty(),
+        "intruder must not list owner's artifacts"
+    );
 
     // The intruder cannot find it via FTS.
     let found = kleos_lib::artifacts::search_artifacts(&db, INTRUDER, "confidential", 10, None)
         .await
         .expect("search_artifacts");
-    assert!(found.is_empty(), "intruder must not search owner's artifacts");
+    assert!(
+        found.is_empty(),
+        "intruder must not search owner's artifacts"
+    );
 
     // The intruder cannot attach an artifact to the owner's memory.
     let cross_attach = store_artifact(
@@ -646,7 +659,10 @@ async fn artifacts_are_isolated_across_tenants_in_shared_db() {
     let owner_delete = kleos_lib::artifacts::delete_artifact(&db, OWNER, artifact_id)
         .await
         .expect("owner delete");
-    assert!(owner_delete.is_none(), "inline artifact carries no disk path");
+    assert!(
+        owner_delete.is_none(),
+        "inline artifact carries no disk path"
+    );
     assert_eq!(
         fts_rowid_count(&db, artifact_id).await,
         0,

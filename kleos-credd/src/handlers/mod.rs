@@ -99,11 +99,9 @@ pub async fn resolve_from_kleos(
     // a `/` in category or ` = ` in name could shadow or skip a different entry
     // (read-path sibling of the CREDD-1 write-path injection).
     if !kleos_sync::is_safe_ident(category) || !kleos_sync::is_safe_ident(name) {
-        return Err(CredError::InvalidInput(format!(
-            "unsafe characters in {}/{}",
-            category, name
-        ))
-        .into());
+        return Err(
+            CredError::InvalidInput(format!("unsafe characters in {}/{}", category, name)).into(),
+        );
     }
 
     let kleos_url = kleos_lib::kleos_env("URL").map_err(|_| {

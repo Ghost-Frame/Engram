@@ -245,7 +245,10 @@ mod tests {
             respect_structure: Some(false),
         };
         let chunks = chunk_document(&doc, Some(&opts));
-        assert!(!chunks.is_empty(), "must produce at least one chunk and terminate");
+        assert!(
+            !chunks.is_empty(),
+            "must produce at least one chunk and terminate"
+        );
     }
 
     #[test]
@@ -258,6 +261,9 @@ mod tests {
             respect_structure: Some(false),
         };
         let chunks = chunk_document(&doc, Some(&opts));
-        assert!(!chunks.is_empty(), "must terminate on tiny size with multibyte input");
+        assert!(
+            !chunks.is_empty(),
+            "must terminate on tiny size with multibyte input"
+        );
     }
 }

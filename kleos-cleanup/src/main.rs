@@ -164,8 +164,7 @@ fn step_a_move_activity(conn: &Connection, execute: bool) -> Result<usize> {
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let moved = (|| -> Result<()> {
             for row in &rows {
-                let (agent, parsed_project, action, summary) =
-                    parse_activity_content(&row.content);
+                let (agent, parsed_project, action, summary) = parse_activity_content(&row.content);
                 // Use the row's project column if present, otherwise fall back to
                 // the project parsed from the activity content (the fallback was
                 // being dropped, permanently blanking project associations for

@@ -914,9 +914,15 @@ async fn add_alias_handler(
         "auto" | "user" => source,
         _ => "user",
     };
-    let alias_id =
-        skill_aliases::add_alias(&db, id, &body.alias, confidence, source, auth.effective_user_id())
-            .await?;
+    let alias_id = skill_aliases::add_alias(
+        &db,
+        id,
+        &body.alias,
+        confidence,
+        source,
+        auth.effective_user_id(),
+    )
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({ "id": alias_id, "skill_id": id, "alias": body.alias })),

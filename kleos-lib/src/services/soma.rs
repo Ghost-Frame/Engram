@@ -1062,7 +1062,10 @@ mod tests {
 
         // delete_group on an owned group succeeds; non-owner delete is a no-op.
         add_agent_to_group(&db, a1.id, g1.id, 1).await.unwrap();
-        assert!(!delete_group(&db, g1.id, 2).await.unwrap(), "non-owner delete");
+        assert!(
+            !delete_group(&db, g1.id, 2).await.unwrap(),
+            "non-owner delete"
+        );
         assert!(delete_group(&db, g1.id, 1).await.unwrap(), "owner delete");
         assert!(get_group(&db, g1.id, 1).await.is_err(), "group gone");
     }

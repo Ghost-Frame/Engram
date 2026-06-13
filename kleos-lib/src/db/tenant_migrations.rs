@@ -98,7 +98,9 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         23,
         "scratchpad_user_id_drop",
-        apply_schema_v23_scratchpad_drop, notx),
+        apply_schema_v23_scratchpad_drop,
+        notx
+    ),
     tenant_migration!(24, "sessions_user_id_drop", apply_schema_v24_sessions_drop),
     tenant_migration!(25, "chiasm_user_id_drop", apply_schema_v25_chiasm_drop),
     tenant_migration!(
@@ -107,7 +109,12 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         apply_schema_v26_approvals_drop
     ),
     tenant_migration!(27, "broca_user_id_drop", apply_schema_v27_broca_drop),
-    tenant_migration!(28, "projects_user_id_drop", apply_schema_v28_projects_drop, notx),
+    tenant_migration!(
+        28,
+        "projects_user_id_drop",
+        apply_schema_v28_projects_drop,
+        notx
+    ),
     tenant_migration!(29, "activity_user_id_drop", apply_schema_v29_activity_drop),
     tenant_migration!(30, "webhooks_user_id_drop", apply_schema_v30_webhooks_drop),
     tenant_migration!(31, "axon_user_id_drop", apply_schema_v31_axon_drop),
@@ -115,23 +122,46 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         33,
         "ingestion_hashes_user_id_drop",
-        apply_schema_v33_ingestion_hashes_drop, notx),
+        apply_schema_v33_ingestion_hashes_drop,
+        notx
+    ),
     tenant_migration!(34, "loom_user_id_drop", apply_schema_v34_loom_drop, notx),
     tenant_migration!(
         35,
         "graph_cluster_user_id_drop",
-        apply_schema_v35_graph_drop, notx),
-    tenant_migration!(36, "thymus_user_id_drop", apply_schema_v36_thymus_drop, notx),
+        apply_schema_v35_graph_drop,
+        notx
+    ),
+    tenant_migration!(
+        36,
+        "thymus_user_id_drop",
+        apply_schema_v36_thymus_drop,
+        notx
+    ),
     tenant_migration!(
         37,
         "portability_user_id_drop",
-        apply_schema_v37_portability_drop, notx),
+        apply_schema_v37_portability_drop,
+        notx
+    ),
     tenant_migration!(
         38,
         "intelligence_user_id_drop",
-        apply_schema_v38_intelligence_drop, notx),
-    tenant_migration!(39, "skills_user_id_drop", apply_schema_v39_skills_drop, notx),
-    tenant_migration!(40, "episodes_user_id_drop", apply_schema_v40_episodes_drop, notx),
+        apply_schema_v38_intelligence_drop,
+        notx
+    ),
+    tenant_migration!(
+        39,
+        "skills_user_id_drop",
+        apply_schema_v39_skills_drop,
+        notx
+    ),
+    tenant_migration!(
+        40,
+        "episodes_user_id_drop",
+        apply_schema_v40_episodes_drop,
+        notx
+    ),
     // C-R3-004 / H-R3-006: re-add user_id to projects + broca_actions on
     // shard DBs so the same helper SQL works on shard and monolith. Each
     // shard still belongs to one tenant; the column is redundant per row
@@ -139,7 +169,9 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         41,
         "projects_user_id_readd",
-        apply_schema_v41_projects_readd, notx),
+        apply_schema_v41_projects_readd,
+        notx
+    ),
     tenant_migration!(
         42,
         "broca_actions_user_id_readd",
@@ -230,7 +262,9 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         58,
         "soma_agents_user_id_readd",
-        apply_schema_v58_soma_agents_readd, notx),
+        apply_schema_v58_soma_agents_readd,
+        notx
+    ),
     // Re-add user_id to the shard axon_events table (reverses v29). The runner
     // backfills existing event rows to the shard owner after this runs.
     tenant_migration!(
@@ -266,7 +300,9 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         63,
         "graph_entities_user_id_readd",
-        apply_schema_v63_graph_entities_readd, notx),
+        apply_schema_v63_graph_entities_readd,
+        notx
+    ),
     // Re-add user_id to the shard episodes table (reverses v40). The runner
     // backfills existing rows to the shard owner after this runs.
     tenant_migration!(
@@ -281,12 +317,19 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         65,
         "intelligence_remainder_user_id_readd",
-        apply_schema_v65_intelligence_remainder_readd, notx),
+        apply_schema_v65_intelligence_remainder_readd,
+        notx
+    ),
     // Re-add user_id to the five shard thymus tables -- rubrics (UNIQUE
     // rebuild from UNIQUE(name) to UNIQUE(user_id, name)), evaluations,
     // quality_metrics, session_quality, behavioral_drift_events (reverses v36).
     // The runner backfills existing rows to the shard owner after this runs.
-    tenant_migration!(66, "thymus_user_id_readd", apply_schema_v66_thymus_readd, notx),
+    tenant_migration!(
+        66,
+        "thymus_user_id_readd",
+        apply_schema_v66_thymus_readd,
+        notx
+    ),
     // Re-add user_id to entity_cooccurrences and structured_facts in tenant
     // shards. Both were dropped by tenant v35. structured_facts got user_id
     // re-added on the monolith side by v64 but never on the tenant side.
@@ -302,12 +345,19 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         68,
         "user_preferences_user_id_readd",
-        apply_schema_v68_user_preferences_readd, notx),
+        apply_schema_v68_user_preferences_readd,
+        notx
+    ),
     // Re-add user_id to skill_records in tenant shards via REBUILD.
     // v39 dropped it; UNIQUE changes from (name, agent, version) back to
     // (name, agent, version, user_id). Also drops/recreates FTS triggers.
     // The runner backfills existing rows to the shard owner.
-    tenant_migration!(69, "skills_user_id_readd", apply_schema_v69_skills_readd, notx),
+    tenant_migration!(
+        69,
+        "skills_user_id_readd",
+        apply_schema_v69_skills_readd,
+        notx
+    ),
     tenant_migration!(70, "tenant_state_counters", apply_schema_v70_tenant_state),
     // Tenant artifacts gained an FTS index. The legacy main-DB schema carried
     // `artifacts_fts` but no tenant migration ever created it, so artifact

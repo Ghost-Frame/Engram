@@ -615,8 +615,7 @@ mod tests {
     #[tokio::test]
     async fn legacy_half_open_failure_reopens() {
         let cb = make_legacy(1, 30);
-        let _: std::result::Result<(), CircuitError<&str>> =
-            cb.call(|| async { Err("x") }).await;
+        let _: std::result::Result<(), CircuitError<&str>> = cb.call(|| async { Err("x") }).await;
         assert_eq!(cb.state(), "open");
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -632,8 +631,7 @@ mod tests {
         // occupy the single half-open slot (in_flight: 1), so a concurrent
         // second call is rejected instead of also slipping through.
         let cb = make_legacy(1, 50);
-        let _: std::result::Result<(), CircuitError<&str>> =
-            cb.call(|| async { Err("x") }).await;
+        let _: std::result::Result<(), CircuitError<&str>> = cb.call(|| async { Err("x") }).await;
         assert_eq!(cb.state(), "open");
         tokio::time::sleep(Duration::from_millis(80)).await;
 
@@ -649,8 +647,7 @@ mod tests {
         }
 
         // Second concurrent half-open call must be rejected (slot taken).
-        let r: std::result::Result<i32, CircuitError<&str>> =
-            cb.call(|| async { Ok(2) }).await;
+        let r: std::result::Result<i32, CircuitError<&str>> = cb.call(|| async { Ok(2) }).await;
         assert!(
             matches!(r, Err(CircuitError::Open)),
             "second half-open call must be rejected while the probe holds the slot"

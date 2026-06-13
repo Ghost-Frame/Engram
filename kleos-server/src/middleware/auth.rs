@@ -532,20 +532,16 @@ pub async fn auth_middleware(
                        AND user_id IN ({})",
                     kleos_lib::auth::ACTIVE_USER_IDS_SUBQUERY
                 );
-                conn.query_row(
-                    &sql,
-                    params![key_fp],
-                    |row| {
-                        Ok(IdentityKeyRow {
-                            id: row.get(0)?,
-                            user_id: row.get(1)?,
-                            tier: row.get(2)?,
-                            algo: row.get(3)?,
-                            pubkey_pem: row.get(4)?,
-                            scopes_json: row.get(5)?,
-                        })
-                    },
-                )
+                conn.query_row(&sql, params![key_fp], |row| {
+                    Ok(IdentityKeyRow {
+                        id: row.get(0)?,
+                        user_id: row.get(1)?,
+                        tier: row.get(2)?,
+                        algo: row.get(3)?,
+                        pubkey_pem: row.get(4)?,
+                        scopes_json: row.get(5)?,
+                    })
+                })
                 .map_err(|e| match e {
                     rusqlite::Error::QueryReturnedNoRows => {
                         kleos_lib::EngError::Auth("unknown key fingerprint".into())
@@ -878,8 +874,8 @@ pub async fn auth_middleware(
         if let Some(session) = crate::routes::gui::get_gui_session(&state, request.headers()).await
         {
             let required_scope = if is_write { Scope::Write } else { Scope::Read };
-            let csrf_ok = !is_write
-                || crate::routes::gui::verify_gui_csrf(&state, request.headers()).await;
+            let csrf_ok =
+                !is_write || crate::routes::gui::verify_gui_csrf(&state, request.headers()).await;
             if session.has_scope(&required_scope) && csrf_ok {
                 let scopes_csv = kleos_lib::auth::scopes_to_string(&session.scopes);
                 let auth_ctx = AuthContext {
@@ -1092,22 +1088,18 @@ async fn resolve_identity_by_id(
                    AND ik.user_id IN ({})",
                 kleos_lib::auth::ACTIVE_USER_IDS_SUBQUERY
             );
-            Ok(conn.query_row(
-                &sql,
-                params![identity_id],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, i64>(5)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, Option<String>>(7)?,
-                    ))
-                },
-            )?)
+            Ok(conn.query_row(&sql, params![identity_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            })?)
         })
         .await
         .map_err(|e| e.to_string())?;

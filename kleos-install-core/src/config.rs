@@ -264,7 +264,10 @@ impl InstallerConfig {
 
         if let Some(EmbeddingConfig::Remote { url, api_key, .. }) = &self.embedding {
             out.push_str(&format!("KLEOS_EMBEDDING_URL={}\n", env_value(url)?));
-            out.push_str(&format!("KLEOS_EMBEDDING_API_KEY={}\n", env_value(api_key)?));
+            out.push_str(&format!(
+                "KLEOS_EMBEDDING_API_KEY={}\n",
+                env_value(api_key)?
+            ));
         }
 
         if let Some(RerankerConfig::Remote {
@@ -283,7 +286,10 @@ impl InstallerConfig {
                 "ENGRAM_RERANKER_HTTP_API_KEY={}\n",
                 env_value(api_key)?
             ));
-            out.push_str(&format!("ENGRAM_RERANKER_HTTP_MODEL={}\n", env_value(model)?));
+            out.push_str(&format!(
+                "ENGRAM_RERANKER_HTTP_MODEL={}\n",
+                env_value(model)?
+            ));
         }
 
         Ok(out)

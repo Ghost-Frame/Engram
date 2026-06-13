@@ -16,7 +16,10 @@ async fn one_tenant() -> Arc<TenantHandle> {
     let dir = tempfile::tempdir().expect("tempdir");
     let registry = TenantRegistry::new(dir.path(), TenantConfig::default(), 128, false, None)
         .expect("registry");
-    let handle = registry.get_or_create("export_tenant").await.expect("tenant");
+    let handle = registry
+        .get_or_create("export_tenant")
+        .await
+        .expect("tenant");
     std::mem::forget(dir);
     handle
 }

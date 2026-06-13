@@ -162,24 +162,28 @@ async fn decay_scores_isolated_between_tenants() {
     .await;
 
     // Refresh decay for alice
-    let (status, body) = post(
-        &app,
-        "/decay/refresh",
-        &alice_key,
-        json!({}),
-    )
-    .await;
+    let (status, body) = post(&app, "/decay/refresh", &alice_key, json!({})).await;
     assert!(status.is_success(), "alice decay refresh failed: {body}");
 
     // Bob shouldn't see alice's memories in decay scores
     let (status, body) = common::get(&app, "/decay/scores", &bob_key).await;
     assert!(status.is_success(), "bob decay scores list failed: {body}");
     let memories = body["memories"].as_array().expect("memories array");
-    assert!(memories.is_empty(), "bob should not see alice's decay scores, got {body}");
+    assert!(
+        memories.is_empty(),
+        "bob should not see alice's decay scores, got {body}"
+    );
 
     // Alice SHOULD see her own
     let (status, body) = common::get(&app, "/decay/scores", &alice_key).await;
-    assert!(status.is_success(), "alice decay scores list failed: {body}");
+    assert!(
+        status.is_success(),
+        "alice decay scores list failed: {body}"
+    );
     let memories = body["memories"].as_array().expect("memories array");
-    assert_eq!(memories.len(), 1, "alice should see her decay score, got {body}");
+    assert_eq!(
+        memories.len(),
+        1,
+        "alice should see her decay score, got {body}"
+    );
 }

@@ -190,11 +190,7 @@ pub async fn chunk_vector_search(
 /// Return the subset of `ids` that belong to `user_id` and are currently
 /// visible (is_latest, not forgotten). One batched query; preserves nothing
 /// about order (caller re-orders against its candidate list).
-async fn filter_owned_visible(
-    db: &Database,
-    ids: &[i64],
-    user_id: i64,
-) -> Result<HashSet<i64>> {
+async fn filter_owned_visible(db: &Database, ids: &[i64], user_id: i64) -> Result<HashSet<i64>> {
     if ids.is_empty() {
         return Ok(HashSet::new());
     }
@@ -318,7 +314,10 @@ mod tests {
         let owned = super::filter_owned_visible(&db, &ids, 1).await.unwrap();
         assert!(owned.contains(&ids[0]), "owned + visible must be kept");
         assert!(!owned.contains(&ids[1]), "foreign user excluded");
-        assert!(!owned.contains(&ids[2]), "superseded (is_latest=0) excluded");
+        assert!(
+            !owned.contains(&ids[2]),
+            "superseded (is_latest=0) excluded"
+        );
         assert!(!owned.contains(&ids[3]), "forgotten excluded");
         assert_eq!(owned.len(), 1);
     }

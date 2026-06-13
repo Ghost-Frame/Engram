@@ -340,8 +340,7 @@ pub async fn proxy_handler(
 
     // SECURITY (SEC-H2): disable redirect following to prevent Authorization
     // header leakage to attacker-controlled hosts via redirect chains.
-    let mut client_builder =
-        reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    let mut client_builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
 
     // SECURITY (SSRF-DNS): pin the validated IP so reqwest does not re-resolve
     // the hostname and cannot be steered to an internal address by a rebind.

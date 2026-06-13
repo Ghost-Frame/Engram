@@ -71,7 +71,14 @@ async fn synthesis_excludes_other_tenants_facts_and_memories() {
     insert_static_memory(&db, 1, "TENANT_ONE_IDENTITY_MARKER").await;
 
     // User 2 has their own distinctive fact and memory that must never leak.
-    insert_fact(&db, 2, "tenant_two_subject", "likes", "TENANT_TWO_FACT_LEAK").await;
+    insert_fact(
+        &db,
+        2,
+        "tenant_two_subject",
+        "likes",
+        "TENANT_TWO_FACT_LEAK",
+    )
+    .await;
     insert_static_memory(&db, 2, "TENANT_TWO_IDENTITY_LEAK").await;
 
     let profile = synthesize_personality_profile(&db, 1)
@@ -105,7 +112,14 @@ async fn synthesis_for_empty_tenant_does_not_borrow_other_data() {
     insert_signal(&db, 1, "lonely_topic").await;
 
     // User 2 has facts and memories that must stay private.
-    insert_fact(&db, 2, "tenant_two_subject", "likes", "TENANT_TWO_FACT_LEAK").await;
+    insert_fact(
+        &db,
+        2,
+        "tenant_two_subject",
+        "likes",
+        "TENANT_TWO_FACT_LEAK",
+    )
+    .await;
     insert_static_memory(&db, 2, "TENANT_TWO_IDENTITY_LEAK").await;
 
     let profile = synthesize_personality_profile(&db, 1)

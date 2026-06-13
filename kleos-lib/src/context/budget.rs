@@ -220,7 +220,11 @@ mod tests {
         let cjk = "中文字符"; // 4 chars, 12 bytes
         assert_eq!(cjk.chars().count(), 4);
         assert_eq!(cjk.len(), 12);
-        assert_eq!(estimate_tokens(cjk), 1, "should count 4 chars, not 12 bytes");
+        assert_eq!(
+            estimate_tokens(cjk),
+            1,
+            "should count 4 chars, not 12 bytes"
+        );
 
         // A 4-emoji string is 4 chars (>=16 bytes) -> still ~1 token.
         assert_eq!(estimate_tokens("😀😀😀😀"), 1);

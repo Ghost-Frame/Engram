@@ -493,9 +493,14 @@ async fn search_artifacts_handler(
     Json(body): Json<types::ArtifactSearchBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.map(|l| l.min(100)).unwrap_or(20);
-    let results =
-        artifacts::search_artifacts(&db, auth.effective_user_id(), &body.query, limit, body.memory_id)
-            .await?;
+    let results = artifacts::search_artifacts(
+        &db,
+        auth.effective_user_id(),
+        &body.query,
+        limit,
+        body.memory_id,
+    )
+    .await?;
     let total = results.len();
     Ok(Json(json!({ "results": results, "total": total })))
 }

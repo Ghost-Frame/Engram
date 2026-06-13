@@ -68,7 +68,8 @@ async fn deactivation_revokes_all_credentials() {
 
     // Identity-key credential for the victim user (soft Ed25519). The
     // identities row is auto-registered on the first signed request.
-    let signer = RequestSigner::from_key_bytes([7u8; 32], "victim-host", "victim-agent", "victim-model");
+    let signer =
+        RequestSigner::from_key_bytes([7u8; 32], "victim-host", "victim-agent", "victim-model");
     let pem = signer.pubkey_pem().to_string();
     let fp = signer.fingerprint().to_string();
     let ik_id = state
@@ -100,9 +101,17 @@ async fn deactivation_revokes_all_credentials() {
 
     // Both credentials work while the user is active.
     let (status, _) = get(&app, "/projects", &raw_key).await;
-    assert_eq!(status, StatusCode::OK, "bearer auth must work pre-deactivation");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "bearer auth must work pre-deactivation"
+    );
     let (status, body) = send(&app, signed_get(&signer, "/projects")).await;
-    assert_eq!(status, StatusCode::OK, "signed auth must work pre-deactivation: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "signed auth must work pre-deactivation: {body}"
+    );
 
     // Chokepoint isolation: flip users.is_active directly (no cascade) and
     // verify validation fails for rows that are still active themselves.
@@ -119,9 +128,17 @@ async fn deactivation_revokes_all_credentials() {
         .await
         .unwrap();
     let (status, _) = get(&app, "/projects", &raw_key).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "bearer chokepoint must consult users.is_active");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "bearer chokepoint must consult users.is_active"
+    );
     let (status, _) = send(&app, signed_get(&signer, "/projects")).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "signed chokepoint must consult users.is_active");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "signed chokepoint must consult users.is_active"
+    );
 
     // Reactivate and confirm the chokepoint is non-destructive.
     let uid_on = uid;
@@ -137,7 +154,11 @@ async fn deactivation_revokes_all_credentials() {
         .await
         .unwrap();
     let (status, _) = get(&app, "/projects", &raw_key).await;
-    assert_eq!(status, StatusCode::OK, "bearer auth must recover after reactivation");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "bearer auth must recover after reactivation"
+    );
 
     // Deactivate through the admin endpoint: the cascade must revoke
     // every credential row in the same transaction.
@@ -152,9 +173,17 @@ async fn deactivation_revokes_all_credentials() {
     assert_eq!(body["deactivated"], json!(true));
 
     let (status, _) = get(&app, "/projects", &raw_key).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "bearer auth must fail after deactivation");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "bearer auth must fail after deactivation"
+    );
     let (status, _) = send(&app, signed_get(&signer, "/projects")).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "signed auth must fail after deactivation");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "signed auth must fail after deactivation"
+    );
 
     // Every credential row belonging to the user is now revoked.
     let uid_check = uid;
@@ -193,8 +222,14 @@ async fn deactivation_revokes_all_credentials() {
         .unwrap();
     assert_eq!(api_active, 0, "api_keys must be revoked");
     assert_eq!(ik_active, 0, "identity_keys must be revoked");
-    assert!(ik_revoked_at_set >= 1, "identity_keys must record revoked_at");
-    assert_eq!(identities_active, 0, "identities must be revoked via identity_keys join");
+    assert!(
+        ik_revoked_at_set >= 1,
+        "identity_keys must record revoked_at"
+    );
+    assert_eq!(
+        identities_active, 0,
+        "identities must be revoked via identity_keys join"
+    );
     assert_eq!(mcp_active, 0, "mcp_tokens must be revoked");
 
     // The owner account stays protected.
@@ -205,5 +240,9 @@ async fn deactivation_revokes_all_credentials() {
         .body(Body::empty())
         .unwrap();
     let (status, _) = send(&app, request).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "owner must not be deactivatable");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "owner must not be deactivatable"
+    );
 }

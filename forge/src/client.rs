@@ -233,8 +233,16 @@ fn percent_encode_query(s: &str) -> String {
             out.push(byte as char);
         } else {
             out.push('%');
-            out.push(char::from_digit((byte >> 4) as u32, 16).unwrap_or('0').to_ascii_uppercase());
-            out.push(char::from_digit((byte & 0xF) as u32, 16).unwrap_or('0').to_ascii_uppercase());
+            out.push(
+                char::from_digit((byte >> 4) as u32, 16)
+                    .unwrap_or('0')
+                    .to_ascii_uppercase(),
+            );
+            out.push(
+                char::from_digit((byte & 0xF) as u32, 16)
+                    .unwrap_or('0')
+                    .to_ascii_uppercase(),
+            );
         }
     }
     out

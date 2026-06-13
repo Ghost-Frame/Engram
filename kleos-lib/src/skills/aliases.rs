@@ -130,7 +130,12 @@ pub async fn add_auto_aliases(
 // belongs to `user_id`, so a caller cannot remove aliases from another tenant's
 // skill (the delete affects 0 rows). The predicate is a no-op in a single-owner
 // shard.
-pub async fn remove_alias(db: &Database, skill_id: i64, alias: &str, user_id: i64) -> Result<usize> {
+pub async fn remove_alias(
+    db: &Database,
+    skill_id: i64,
+    alias: &str,
+    user_id: i64,
+) -> Result<usize> {
     let alias = alias.trim().to_lowercase();
     db.write(move |conn| {
         let n = conn.execute(

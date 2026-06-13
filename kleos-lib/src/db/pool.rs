@@ -496,7 +496,10 @@ mod tests {
         // A non-existent / unreadable path must never report verified, so the
         // backup is never deleted on a failed migration.
         let key = [7u8; crate::encryption::KEY_SIZE];
-        assert!(!verify_encrypted_readable(&temp_db_path("nope-missing"), &key));
+        assert!(!verify_encrypted_readable(
+            &temp_db_path("nope-missing"),
+            &key
+        ));
     }
 
     #[tokio::test]

@@ -1489,8 +1489,15 @@ mod assembly_tests {
         }];
         let block = build_working_memory_block(&rows).expect("block");
         // Exactly one real closing tag (the legitimate trailer); no injected one.
-        assert_eq!(block.matches("</working-memory>").count(), 1, "no breakout: {block}");
+        assert_eq!(
+            block.matches("</working-memory>").count(),
+            1,
+            "no breakout: {block}"
+        );
         assert!(!block.contains("<system>"), "no injected tags: {block}");
-        assert!(block.contains("&lt;/working-memory&gt;"), "fields escaped: {block}");
+        assert!(
+            block.contains("&lt;/working-memory&gt;"),
+            "fields escaped: {block}"
+        );
     }
 }

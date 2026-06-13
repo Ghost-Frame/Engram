@@ -200,10 +200,22 @@ mod tests {
     #[test]
     fn rfc1918_and_cgnat_reserved_by_default() {
         // The prior implementation let these through -- the SSRF gap this fix closes.
-        assert!(is_ipv4_reserved("10.0.0.1".parse().unwrap()), "10/8 must be blocked by default");
-        assert!(is_ipv4_reserved("172.16.0.1".parse().unwrap()), "172.16/12 must be blocked");
-        assert!(is_ipv4_reserved("192.168.1.1".parse().unwrap()), "192.168/16 must be blocked");
-        assert!(is_ipv4_reserved("100.64.0.1".parse().unwrap()), "100.64/10 CGNAT must be blocked");
+        assert!(
+            is_ipv4_reserved("10.0.0.1".parse().unwrap()),
+            "10/8 must be blocked by default"
+        );
+        assert!(
+            is_ipv4_reserved("172.16.0.1".parse().unwrap()),
+            "172.16/12 must be blocked"
+        );
+        assert!(
+            is_ipv4_reserved("192.168.1.1".parse().unwrap()),
+            "192.168/16 must be blocked"
+        );
+        assert!(
+            is_ipv4_reserved("100.64.0.1".parse().unwrap()),
+            "100.64/10 CGNAT must be blocked"
+        );
     }
 
     #[test]

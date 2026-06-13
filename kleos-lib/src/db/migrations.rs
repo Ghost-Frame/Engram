@@ -420,7 +420,6 @@ pub static MIGRATIONS: &[Migration] = &[
 #[cfg(test)]
 const MIGRATION_CREATE_SCHEMA: i64 = 1;
 
-
 // --- Up path (unchanged behavior) ---
 
 /// Run ordered, idempotent migrations and record applied versions.
@@ -4753,7 +4752,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(probe_exists, 0, "partial DDL must be rolled back by the savepoint");
+        assert_eq!(
+            probe_exists, 0,
+            "partial DDL must be rolled back by the savepoint"
+        );
     }
 
     /// Regression: a fresh `run_migrations` must reach the highest version in

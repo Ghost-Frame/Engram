@@ -1941,9 +1941,10 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
             } else {
                 // DB-backed three-tier resolve agent key.
                 let perms = kleos_cred::AgentKeyPermissions::default();
-                let (key_str, agent_key) = agent_keys::create_agent_key(db, CRED_USER_ID, &name, &perms)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                let (key_str, agent_key) =
+                    agent_keys::create_agent_key(db, CRED_USER_ID, &name, &perms)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
                 eprintln!("generated agent key for '{}'", name);
                 if !description.is_empty() {
                     eprintln!("description: {}", description);

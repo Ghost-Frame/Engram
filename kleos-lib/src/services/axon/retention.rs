@@ -161,6 +161,9 @@ mod tests {
         .expect("backdate");
 
         let deleted = prune_expired_events(&db).await.expect("prune");
-        assert_eq!(deleted, 1, "expired event on unregistered channel must be pruned");
+        assert_eq!(
+            deleted, 1,
+            "expired event on unregistered channel must be pruned"
+        );
     }
 }

@@ -150,7 +150,8 @@ async fn list_entities_handler(
     // clamp_signed_limit rejects negative values: a negative LIMIT is treated
     // as unlimited by SQLite, so .min(1000) alone (which a negative passes
     // through) let a caller pull their entire row set unbounded.
-    let limit = kleos_lib::validation::clamp_signed_limit(params.limit.unwrap_or(50), 50, 1000) as i64;
+    let limit =
+        kleos_lib::validation::clamp_signed_limit(params.limit.unwrap_or(50), 50, 1000) as i64;
     let offset = params.offset.unwrap_or(0);
     let user_id = auth.effective_user_id();
 

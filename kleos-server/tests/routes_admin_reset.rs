@@ -64,7 +64,11 @@ async fn admin_reset_wipes_only_the_caller_in_monolith_mode() {
     assert_eq!(status, StatusCode::OK, "reset failed: {body}");
 
     // The owner's data is gone; the other tenant's data is untouched.
-    assert_eq!(memory_count(&state, 1).await, 0, "caller's memories must be wiped");
+    assert_eq!(
+        memory_count(&state, 1).await,
+        0,
+        "caller's memories must be wiped"
+    );
     assert_eq!(
         memory_count(&state, 2).await,
         1,
