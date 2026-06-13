@@ -176,7 +176,7 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
                 // not grow unboundedly for a long-lived process watching many
                 // session files. A later event for a pruned path simply spawns a
                 // fresh slot (the absent-entry branch treats "no slot" as "spawn").
-                active_tails.retain(|_, slot| !(slot.handle.is_finished() && !slot.pending));
+                active_tails.retain(|_, slot| !slot.handle.is_finished() || slot.pending);
             }
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("received SIGINT, shutting down");

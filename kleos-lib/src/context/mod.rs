@@ -1370,7 +1370,7 @@ mod assembly_tests {
     /// arbitrarily by being treated as Equal.
     #[test]
     fn cmp_score_desc_sinks_nan_to_bottom() {
-        let mut v = vec![(0.5_f64), f64::NAN, 0.9, 0.1, f64::NAN];
+        let mut v = [0.5_f64, f64::NAN, 0.9, 0.1, f64::NAN];
         v.sort_by(|a, b| cmp_score_desc(*a, *b));
         // Finite values come first, descending.
         assert_eq!(v[0], 0.9);
