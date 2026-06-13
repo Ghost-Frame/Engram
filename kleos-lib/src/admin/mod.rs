@@ -59,10 +59,18 @@ pub async fn compact(db: &Database) -> Result<CompactResult> {
 
 #[tracing::instrument(skip(db))]
 pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
+    // Scope per-user GC to the caller: `gc(Some(uid))` must only reap that
+    // owner's rows. The arms were previously identical (the `_uid` param was
+    // dead), so a per-user GC ran an unscoped DELETE and reaped every tenant's
+    // forgotten/expired memories in shared (monolith) mode. The predicate is a
+    // no-op in a single-owner shard. `gc(None)` stays global maintenance.
     let forgotten: i64 = db
         .write(move |conn| {
-            let n = if let Some(_uid) = user_id {
-                conn.execute("DELETE FROM memories WHERE is_forgotten = 1", [])?
+            let n = if let Some(uid) = user_id {
+                conn.execute(
+                    "DELETE FROM memories WHERE is_forgotten = 1 AND user_id = ?1",
+                    rusqlite::params![uid],
+                )?
             } else {
                 conn.execute("DELETE FROM memories WHERE is_forgotten = 1", [])?
             };
@@ -72,10 +80,11 @@ pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
 
     let expired: i64 = db
         .write(move |conn| {
-            let n = if let Some(_uid) = user_id {
+            let n = if let Some(uid) = user_id {
                 conn.execute(
-                    "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now')",
-                    [],
+                    "DELETE FROM memories WHERE forget_after IS NOT NULL \
+                     AND forget_after < datetime('now') AND user_id = ?1",
+                    rusqlite::params![uid],
                 )
                 ?
             } else {
@@ -894,6 +903,42 @@ pub async fn get_stats(db: &Database) -> Result<serde_json::Value> {
 mod tests {
     use super::*;
     use crate::db::Database;
+
+    /// `gc(Some(uid))` must reap only that owner's forgotten/expired rows, never
+    /// another tenant's. Pins the monolith-mode BOLA fix: the dead `_uid` param
+    /// previously ran an unscoped DELETE for every caller.
+    #[tokio::test]
+    async fn gc_scopes_deletes_to_the_requested_user() {
+        let db = Database::connect_memory().await.expect("memory db");
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, importance, user_id, is_forgotten) \
+                 VALUES ('mine', 'test', 5, 1, 1), ('theirs', 'test', 5, 2, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed forgotten rows for two users");
+
+        let res = gc(&db, Some(1)).await.expect("gc user 1");
+        assert_eq!(
+            res.breakdown.forgotten_memories, 1,
+            "only user 1's forgotten row should be reaped"
+        );
+
+        let survivors: i64 = db
+            .read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM memories WHERE user_id = 2",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .expect("count user 2 rows");
+        assert_eq!(survivors, 1, "user 2's row must survive a scoped gc");
+    }
 
     /// Exporting a row whose first column is the integer `id` and whose second
     /// is the text `content` must populate BOTH keys. This pins the col-0 break
