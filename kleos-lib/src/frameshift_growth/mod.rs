@@ -14,6 +14,19 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+/// Feature gate for the Frameshift growth tenant.
+///
+/// The growth log ships dormant: the `/frameshift-growth/*` routes are mounted
+/// and the reserved tenant shard is pre-warmed only when this returns `true`.
+/// Enable with `KLEOS_FRAMESHIFT_GROWTH=1`. This is a new feature with no legacy
+/// `ENGRAM_` name, so it is read directly under the `KLEOS_` prefix rather than
+/// through the dual-prefix `kleos_env` fallback. Default off keeps the reserved
+/// tenant from being created until opted in, unlike the always-on `handoffs`
+/// tenant this module otherwise mirrors.
+pub fn enabled() -> bool {
+    std::env::var("KLEOS_FRAMESHIFT_GROWTH").as_deref() == Ok("1")
+}
+
 /// A stored growth entry as returned to clients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrowthEntry {
