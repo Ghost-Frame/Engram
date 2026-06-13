@@ -81,6 +81,10 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
 
     // Idle check ticker (also sends systemd watchdog ping)
     let mut idle_interval = tokio::time::interval(Duration::from_secs(30));
+    // Fast ticker that re-spawns pending tail slots and prunes finished ones
+    // (NEW-2/BF-2). Decoupled from the 30s idle/summarize cadence so coalesced
+    // events are picked up within ~2s instead of waiting up to 30s.
+    let mut respawn_interval = tokio::time::interval(Duration::from_secs(2));
     let notify_socket = std::env::var("NOTIFY_SOCKET").ok();
 
     // Signal handler
@@ -123,27 +127,6 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
                     }
                 }
 
-                // Re-spawn pending tail tasks for paths whose prior task has finished.
-                // This handles events that were coalesced while a tail was in-flight
-                // (BINGEST-1): we deferred those events instead of racing, so we pick
-                // them up here once the slot is clear.
-                let mut to_respawn: Vec<PathBuf> = Vec::new();
-                for (path, slot) in active_tails.iter() {
-                    if slot.pending && slot.handle.is_finished() {
-                        to_respawn.push(path.clone());
-                    }
-                }
-                for path in to_respawn {
-                    let config = Arc::clone(&config);
-                    let ledger = Arc::clone(&ledger);
-                    let writer = Arc::clone(&writer);
-                    let path_clone = path.clone();
-                    let handle = tokio::spawn(async move {
-                        tailer::tail_file(path_clone, config, ledger, writer, dry_run).await;
-                    });
-                    active_tails.insert(path, TailSlot { handle, pending: false });
-                }
-
                 let idle_threshold = Duration::from_secs(config.summary_idle_secs);
                 let now = Instant::now();
                 let mut to_summarize = Vec::new();
@@ -165,6 +148,35 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
                     ledger.mark_summarized(&path_str);
                     last_activity.remove(&path);
                 }
+            }
+            _ = respawn_interval.tick() => {
+                // Re-spawn pending tail tasks whose prior task has finished
+                // (BINGEST-1): events coalesced while a tail was in-flight were
+                // deferred instead of raced, so we pick them up here. NEW-2: this
+                // runs every ~2s rather than only on the 30s idle tick, bounding
+                // coalesced-event latency.
+                let mut to_respawn: Vec<PathBuf> = Vec::new();
+                for (path, slot) in active_tails.iter() {
+                    if slot.pending && slot.handle.is_finished() {
+                        to_respawn.push(path.clone());
+                    }
+                }
+                for path in to_respawn {
+                    let config = Arc::clone(&config);
+                    let ledger = Arc::clone(&ledger);
+                    let writer = Arc::clone(&writer);
+                    let path_clone = path.clone();
+                    let handle = tokio::spawn(async move {
+                        tailer::tail_file(path_clone, config, ledger, writer, dry_run).await;
+                    });
+                    active_tails.insert(path, TailSlot { handle, pending: false });
+                }
+
+                // BF-2: drop finished, non-pending tail slots so active_tails does
+                // not grow unboundedly for a long-lived process watching many
+                // session files. A later event for a pruned path simply spawns a
+                // fresh slot (the absent-entry branch treats "no slot" as "spawn").
+                active_tails.retain(|_, slot| !(slot.handle.is_finished() && !slot.pending));
             }
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("received SIGINT, shutting down");
