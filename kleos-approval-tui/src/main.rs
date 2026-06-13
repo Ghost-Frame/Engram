@@ -48,6 +48,16 @@ struct Approval {
     seconds_remaining: i64,
 }
 
+impl Approval {
+    /// Total approval window in seconds (`expires_at - created_at`), floored at
+    /// 1 to avoid division by zero. BF-5: the timer gauges divide by this real
+    /// window instead of a hardcoded 120s, so the bar stays accurate when the
+    /// server's approval timeout differs from 120s.
+    fn window_secs(&self) -> f64 {
+        (self.expires_at - self.created_at).num_seconds().max(1) as f64
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct PendingResponse {
@@ -216,7 +226,7 @@ fn ui(frame: &mut Frame, app: &App) {
 
     // Title bar
     let title = Paragraph::new(format!(
-        " ENGRAM APPROVAL CONSOLE                                    Pending: {}",
+        " KLEOS APPROVAL CONSOLE                                     Pending: {}",
         app.approvals.len()
     ))
     .style(Style::default().fg(Color::White).bg(Color::Blue).bold())
@@ -274,7 +284,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, a)| {
             let marker = if i == app.selected { ">" } else { " " };
-            let time_bar = make_time_bar(a.seconds_remaining);
+            let time_bar = make_time_bar(a.seconds_remaining, a.window_secs());
             ListItem::new(vec![
                 Line::from(vec![
                     Span::raw(format!("{} [{}] ", marker, i + 1)),
@@ -326,8 +336,8 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    // Timer gauge
-    let ratio = (approval.seconds_remaining as f64 / 120.0).clamp(0.0, 1.0);
+    // Timer gauge (BF-5: denominator is the real approval window, not 120s).
+    let ratio = (approval.seconds_remaining as f64 / approval.window_secs()).clamp(0.0, 1.0);
     let gauge = Gauge::default()
         .block(
             Block::default()
@@ -371,8 +381,10 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(detail, chunks[1]);
 }
 
-fn make_time_bar(seconds: i64) -> String {
-    let filled = ((seconds as f64 / 120.0) * 6.0).ceil() as usize;
+fn make_time_bar(seconds: i64, window_secs: f64) -> String {
+    // BF-5: scale against the real approval window rather than a hardcoded 120s.
+    let window = window_secs.max(1.0);
+    let filled = ((seconds as f64 / window) * 6.0).ceil() as usize;
     let filled = filled.min(6);
     let empty = 6 - filled;
     format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
