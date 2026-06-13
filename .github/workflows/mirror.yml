@@ -6,6 +6,16 @@ on:
   delete:
   workflow_dispatch:
 
+# Serialize mirror runs. Every run force-pushes the FULL set of branches and
+# tags, so the newest run always carries complete state -- cancel any older
+# in-flight run rather than letting two concurrent force-pushes race on the
+# server-side ref-lock CAS ("cannot lock ref 'refs/heads/main'"), which failed
+# the mirror on nearly every rapid push sequence. Cancelled runs do not send
+# failure emails, unlike the rejected pushes they replace.
+concurrency:
+  group: mirror-to-syntheos
+  cancel-in-progress: true
+
 jobs:
   mirror:
     runs-on: ubuntu-latest
