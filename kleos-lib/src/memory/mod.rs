@@ -45,7 +45,7 @@ pub use vector_sync::{
 
 // -- Constants ---
 
-use crate::validation::MAX_CONTENT_SIZE;
+use crate::validation::{MAX_CONTENT_SIZE, MAX_SEARCH_LIMIT};
 
 // -- Helpers ---
 
@@ -1539,6 +1539,11 @@ pub async fn search_by_tags(
     match_all: bool,
     limit: usize,
 ) -> Result<Vec<Memory>> {
+    // MEM-4: cap the caller-supplied limit before it is interpolated into the
+    // SQL LIMIT clause (and used as the result-Vec capacity hint), matching the
+    // clamp every other search entry point applies. An uncapped limit lets a
+    // caller request an unbounded result set and exhaust memory.
+    let limit = limit.min(MAX_SEARCH_LIMIT);
     let normalized: Vec<String> = tags
         .iter()
         .map(|tag| tag.trim().to_lowercase())

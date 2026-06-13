@@ -1657,10 +1657,18 @@ fn compute_tag_cooccurrence(results: &[SearchResult], limit: usize) -> Vec<TagCo
 
 /// Parse an ISO-8601 date string into a comparable string (normalize format).
 fn parse_iso_date(s: &str) -> Option<String> {
-    // Accept both "2024-01-15" and "2024-01-15T00:00:00Z" formats.
-    // Return normalized form for string comparison against created_at.
+    // MEM-3: actually validate the input is a date before using it as a SQL
+    // string bound against created_at. The old `len() >= 10` check let any
+    // 10+ char string (e.g. "AAAAAAAAAA") through, silently widening or
+    // suppressing the date filter. Accept a bare date ("2024-01-15"), an
+    // RFC3339 timestamp ("2024-01-15T00:00:00Z"), or the DB's own
+    // "YYYY-MM-DD HH:MM:SS" form, and return the comparable string only when one
+    // of those parses succeeds.
     let trimmed = s.trim();
-    if trimmed.len() >= 10 {
+    let is_valid = chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d").is_ok()
+        || chrono::DateTime::parse_from_rfc3339(trimmed).is_ok()
+        || chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S").is_ok();
+    if is_valid {
         Some(trimmed.to_string())
     } else {
         None
@@ -1672,9 +1680,37 @@ fn parse_iso_date(s: &str) -> Option<String> {
 mod tests {
     use super::{
         apply_graph_rrf_increment, apply_personality_boost, hash_search_params,
-        inject_graph_hop1_neighbors, semantic_score_from_distance, Candidate, GraphExpansionRow,
+        inject_graph_hop1_neighbors, parse_iso_date, semantic_score_from_distance, Candidate,
+        GraphExpansionRow,
     };
     use crate::memory::types::{SearchBudget, SearchRequest, SearchStrategy};
+
+    /// MEM-3: only real dates are accepted as date-range bounds; arbitrary
+    /// long strings must be rejected so they cannot silently alter SQL filters.
+    #[test]
+    fn parse_iso_date_validates_real_dates() {
+        // Valid forms round-trip to the trimmed comparable string.
+        assert_eq!(parse_iso_date("2024-01-15").as_deref(), Some("2024-01-15"));
+        assert_eq!(
+            parse_iso_date("  2024-01-15  ").as_deref(),
+            Some("2024-01-15")
+        );
+        assert_eq!(
+            parse_iso_date("2024-01-15T00:00:00Z").as_deref(),
+            Some("2024-01-15T00:00:00Z")
+        );
+        assert_eq!(
+            parse_iso_date("2024-01-15 13:45:00").as_deref(),
+            Some("2024-01-15 13:45:00")
+        );
+
+        // Garbage that the old len()>=10 check let through is now rejected.
+        assert_eq!(parse_iso_date("AAAAAAAAAA"), None);
+        assert_eq!(parse_iso_date("not-a-date!"), None);
+        assert_eq!(parse_iso_date("2024-13-99"), None);
+        assert_eq!(parse_iso_date("2024-01"), None);
+        assert_eq!(parse_iso_date(""), None);
+    }
 
     /// Keeps cache entries distinct when callers trim the search pipeline differently.
     #[test]
