@@ -43,6 +43,28 @@ use modes::*;
 use scoring::cosine_similarity;
 pub use types::*;
 
+// --- Scoring helpers ---
+
+/// Descending comparator over relevance scores that sinks NaN to the bottom.
+///
+/// CTX-2: `partial_cmp(...).unwrap_or(Ordering::Equal)` mapped a NaN score to
+/// Equal, so a degenerate (NaN) embedding score ranked arbitrarily and could
+/// displace valid results. This orders higher scores first and pushes any NaN
+/// to the end deterministically, so a broken score is de-prioritized rather than
+/// surfacing in place of real content.
+fn cmp_score_desc(a: f64, b: f64) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match b.partial_cmp(&a) {
+        Some(ord) => ord,
+        // Exactly one side is NaN (or both): the NaN element sorts last.
+        None => match (a.is_nan(), b.is_nan()) {
+            (true, false) => Ordering::Greater, // a is NaN -> a after b
+            (false, true) => Ordering::Less,    // b is NaN -> b after a
+            _ => Ordering::Equal,
+        },
+    }
+}
+
 // --- Attribution helper ---
 
 /// Build an attribution tag string for a context block.
@@ -530,7 +552,7 @@ async fn assemble_context_inner(
             relevance += (s.source_count as f64 / 20.0).min(0.1);
             scored.push((i, relevance, static_emb));
         }
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| cmp_score_desc(a.1, b.1));
 
         let static_budget_fraction = resolve_static_budget_fraction(&context_strategy);
         for (idx, relevance, static_emb) in scored {
@@ -1180,8 +1202,7 @@ async fn assemble_context_inner(
                         })
                         .collect();
 
-                    scored
-                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    scored.sort_by(|a, b| cmp_score_desc(a.1, b.1));
 
                     let sf_lines: Vec<String> = scored
                         .iter()
@@ -1344,6 +1365,20 @@ fn format_structured_fact(sf: &StructuredFact, is_stale: bool) -> String {
 #[cfg(test)]
 mod assembly_tests {
     use super::*;
+
+    /// CTX-2: NaN scores must sink to the bottom of a descending sort, not rank
+    /// arbitrarily by being treated as Equal.
+    #[test]
+    fn cmp_score_desc_sinks_nan_to_bottom() {
+        let mut v = vec![(0.5_f64), f64::NAN, 0.9, 0.1, f64::NAN];
+        v.sort_by(|a, b| cmp_score_desc(*a, *b));
+        // Finite values come first, descending.
+        assert_eq!(v[0], 0.9);
+        assert_eq!(v[1], 0.5);
+        assert_eq!(v[2], 0.1);
+        // NaNs are last, never displacing a real score.
+        assert!(v[3].is_nan() && v[4].is_nan());
+    }
 
     fn mk(source: ContextBlockSource, content: &str) -> ContextBlock {
         ContextBlock {
