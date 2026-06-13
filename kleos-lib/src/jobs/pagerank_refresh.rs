@@ -11,7 +11,8 @@ use tracing::{error, info, warn};
 use crate::config::Config;
 use crate::db::Database;
 use crate::graph::pagerank::{
-    compute_pagerank_for_user, persist_pagerank_with_snapshot, snapshot_pagerank_dirty,
+    clear_pagerank_dirty, compute_pagerank_for_user, persist_pagerank_with_snapshot,
+    snapshot_pagerank_dirty,
 };
 
 /// Check whether the pagerank cache needs refreshing based on dirty_count or
@@ -76,6 +77,15 @@ async fn run_once(
         return Ok(Vec::new());
     }
 
+    // JOB-4: take ONE dirty snapshot for the whole refresh cycle, BEFORE any
+    // compute starts. The dirty_count is a singleton-row counter shared across
+    // all users; the previous code had each per-user task snapshot AND subtract
+    // it independently, so N users subtracted N*snapshot and any
+    // mark_pagerank_dirty that arrived mid-cycle was clamped away (graph updates
+    // silently lost). We now subtract this single snapshot exactly once, after
+    // the batch, so concurrent increments survive to schedule the next cycle.
+    let batch_snapshot = snapshot_pagerank_dirty(db.as_ref()).await?;
+
     let sem = Arc::new(Semaphore::new(config.pagerank_max_concurrent));
     let mut handles: Vec<(i64, _)> = Vec::with_capacity(users.len());
 
@@ -85,22 +95,13 @@ async fn run_once(
         let handle = tokio::spawn(async move {
             // Acquire before doing work so at most max_concurrent tasks compute at once.
             let _permit = sem_arc.acquire_owned().await;
-            // Snapshot dirty_count BEFORE compute. Any mark_pagerank_dirty
-            // that fires while compute is in flight will not be cleared by
-            // persist_pagerank_with_snapshot below, so the next refresh
-            // cycle picks it up instead of silently dropping it.
-            let dirty_snapshot = match snapshot_pagerank_dirty(db_arc.as_ref()).await {
-                Ok(n) => n,
-                Err(e) => {
-                    warn!(user_id, error = %e, "pagerank dirty snapshot failed");
-                    return false;
-                }
-            };
             match compute_pagerank_for_user(db_arc.as_ref(), user_id).await {
                 Ok(scores) => {
+                    // Persist scores only. Passing snapshot=0 leaves the shared
+                    // dirty counter untouched here; it is cleared once for the
+                    // whole batch below.
                     if let Err(e) =
-                        persist_pagerank_with_snapshot(db_arc.as_ref(), &scores, dirty_snapshot)
-                            .await
+                        persist_pagerank_with_snapshot(db_arc.as_ref(), &scores, 0).await
                     {
                         warn!(user_id, error = %e, "pagerank persist failed");
                         return false;
@@ -127,6 +128,16 @@ async fn run_once(
             }
         }
     }
+
+    // Clear the single batch snapshot exactly once, and only if at least one
+    // user refreshed -- a total failure leaves the dirty signal in place so the
+    // next cycle retries instead of silently dropping it.
+    if outcomes.iter().any(|(_, ok)| *ok) {
+        if let Err(e) = clear_pagerank_dirty(db.as_ref(), batch_snapshot).await {
+            warn!(error = %e, "pagerank dirty clear failed");
+        }
+    }
+
     Ok(outcomes)
 }
 
