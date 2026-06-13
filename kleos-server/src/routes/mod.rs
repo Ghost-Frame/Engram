@@ -17,6 +17,7 @@ pub mod docs;
 pub mod episodes;
 pub mod errors;
 pub mod fsrs;
+pub mod frameshift_growth;
 pub mod gate;
 pub mod graph;
 pub mod grounding;

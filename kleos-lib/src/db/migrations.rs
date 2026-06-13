@@ -416,6 +416,12 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_readd_user_id_sessions,
         tx
     ),
+    migration!(
+        90,
+        "frameshift_growth",
+        run_migration_frameshift_growth,
+        tx
+    ),
 ];
 
 // --- Version constants ---
@@ -3721,6 +3727,32 @@ fn run_migration_readd_user_id_sessions(conn: &rusqlite::Connection) -> Result<(
         info!("Re-added sessions.user_id (migration 89)");
     }
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);")?;
+    Ok(())
+}
+
+/// Migration 90: Frameshift cross-machine growth log on the monolith/system DB,
+/// so the /frameshift-growth/* monolith fallback works (mirrors the tenant
+/// schema_v73 table). New append-only table; plain idempotent CREATE.
+fn run_migration_frameshift_growth(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS frameshift_growth (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            persona TEXT,
+            project_id TEXT,
+            scope TEXT,
+            content TEXT NOT NULL,
+            metadata TEXT,
+            host TEXT,
+            content_hash TEXT NOT NULL,
+            UNIQUE(user_id, content_hash)
+         );
+         CREATE INDEX IF NOT EXISTS idx_fsgrowth_user_cursor ON frameshift_growth(user_id, id);
+         CREATE INDEX IF NOT EXISTS idx_fsgrowth_persona ON frameshift_growth(user_id, persona, created_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_fsgrowth_project ON frameshift_growth(user_id, project_id, created_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_fsgrowth_scope ON frameshift_growth(user_id, scope, created_at DESC);",
+    )?;
     Ok(())
 }
 

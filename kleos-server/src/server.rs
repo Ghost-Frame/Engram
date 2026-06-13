@@ -117,6 +117,7 @@ fn merge_api_routes() -> Router<AppState> {
     Router::new()
         .merge(routes::health::router())
         .merge(routes::handoffs::router())
+        .merge(routes::frameshift_growth::router())
         .merge(routes::docs::router())
         .merge(routes::dispatch::router())
         .merge(routes::memory::router())
