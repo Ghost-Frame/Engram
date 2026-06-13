@@ -1648,30 +1648,33 @@ fn prompt_secret_data(secret_type: &str) -> Result<SecretData> {
 }
 
 fn program_yubikey_slot2(secret_hex: &str) -> Result<()> {
-    #[cfg(windows)]
-    {
-        std::process::Command::new("ykman")
-            .args(["otp", "chalresp", "2", "--force", secret_hex])
-            .status()
-            .context("failed to run ykman")?;
+    // The ykman invocation is identical on every platform; the previous
+    // #[cfg(windows)] / #[cfg(not(windows))] split was dead duplication.
+    // Treat a non-zero exit as a hard error: a silently-discarded failure
+    // (wrong YubiKey state, auth error, busy) would let `cred init` / `cred
+    // recover` report success while the vault key is left unrecoverable via
+    // hardware.
+    let status = std::process::Command::new("ykman")
+        .args(["otp", "chalresp", "2", "--force", secret_hex])
+        .status()
+        .context("failed to run ykman")?;
+    if !status.success() {
+        anyhow::bail!(
+            "ykman exited with {} while programming YubiKey slot 2; \
+             the challenge-response secret was not written",
+            status
+        );
     }
-
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new("ykman")
-            .args(["otp", "chalresp", "2", "--force", secret_hex])
-            .status()
-            .context("failed to run ykman")?;
-    }
-
     Ok(())
 }
 
-/// One-shot migration that lifts pre-existing `cred_secrets.user_id = 0`
-/// rows up to `CRED_USER_ID = 1`, the post-fix canonical id.
+/// One-shot migration that lifts pre-existing `user_id = 0` rows in both
+/// `cred_secrets` and `cred_agent_keys` up to `CRED_USER_ID = 1`, the post-fix
+/// canonical id. Returns the combined count of rows promoted across both tables.
 ///
-/// Pre-fix builds wrote `user_id=0` from `cmd_store`/`cmd_get`/etc and
-/// `user_id=1` from `cmd_bootstrap_wrap`. After the fix every site uses
+/// Pre-fix builds wrote `user_id=0` from `cmd_store`/`cmd_get`/etc (and from the
+/// agent-key generate/list/revoke commands) while `cmd_bootstrap_wrap` and the
+/// secret operations used `user_id=1`. After the fix every site uses
 /// `CRED_USER_ID`; rows produced by old binaries would otherwise become
 /// invisible. This function brings them into the visible namespace.
 ///
@@ -1771,7 +1774,84 @@ async fn migrate_legacy_user_id_zero_rows(db: &Database) -> Result<usize> {
                )",
             [],
         )?;
-        Ok(rows_promoted)
+
+        // cred_agent_keys carries the same legacy divergence: pre-fix binaries
+        // wrote keys at user_id=0 while every other cred operation uses
+        // user_id=1, so old keys are invisible to list/revoke. Promote them with
+        // the same collision-safe logic. Its UNIQUE constraint is (user_id, name),
+        // so keys are keyed on `name` alone (no category column).
+        let mut key_collision_stmt = conn.prepare(
+            "SELECT a.id, a.name FROM cred_agent_keys a
+             WHERE a.user_id = 0
+               AND EXISTS (
+                   SELECT 1 FROM cred_agent_keys b
+                   WHERE b.user_id = 1 AND b.name = a.name
+               )",
+        )?;
+        let key_collisions: Vec<(i64, String)> = key_collision_stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(key_collision_stmt);
+
+        for (id, name) in &key_collisions {
+            eprintln!(
+                "warning: legacy cred agent key id={} ({}) cannot be promoted; \
+                 a user_id=1 key with the same name already exists. \
+                 Resolve manually with sqlite3 cred.db (DELETE the legacy key \
+                 or rename one of the entries).",
+                id, name
+            );
+        }
+
+        // Duplicate uid=0 keys sharing a name: promote only the oldest, park the rest.
+        let mut key_dup_stmt = conn.prepare(
+            "SELECT a.id, a.name FROM cred_agent_keys a
+             WHERE a.user_id = 0
+               AND EXISTS (
+                   SELECT 1 FROM cred_agent_keys d
+                   WHERE d.user_id = 0 AND d.name = a.name AND d.id < a.id
+               )",
+        )?;
+        let key_dups: Vec<(i64, String)> = key_dup_stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(key_dup_stmt);
+
+        for (id, name) in &key_dups {
+            eprintln!(
+                "warning: legacy cred agent key id={} ({}) is a duplicate uid=0 entry; \
+                 leaving it in place and promoting only the oldest key for this name. \
+                 Resolve manually with sqlite3 cred.db once access is restored.",
+                id, name
+            );
+        }
+
+        let keys_promoted = conn.execute(
+            "UPDATE cred_agent_keys
+             SET user_id = 1
+             WHERE id IN (
+                 SELECT a.id
+                 FROM cred_agent_keys a
+                 WHERE a.user_id = 0
+                   AND a.id = (
+                       SELECT MIN(d.id)
+                       FROM cred_agent_keys d
+                       WHERE d.user_id = 0 AND d.name = a.name
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM cred_agent_keys b
+                       WHERE b.user_id = 1 AND b.name = a.name
+                   )
+             )
+             AND user_id = 0
+               AND NOT EXISTS (
+                   SELECT 1 FROM cred_agent_keys b
+                   WHERE b.user_id = 1 AND b.name = cred_agent_keys.name
+               )",
+            [],
+        )?;
+
+        Ok(rows_promoted + keys_promoted)
     })
     .await
     .context("failed to run user_id=0 -> 1 migration")
@@ -1861,7 +1941,7 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
             } else {
                 // DB-backed three-tier resolve agent key.
                 let perms = kleos_cred::AgentKeyPermissions::default();
-                let (key_str, agent_key) = agent_keys::create_agent_key(db, 0, &name, &perms)
+                let (key_str, agent_key) = agent_keys::create_agent_key(db, CRED_USER_ID, &name, &perms)
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
                 eprintln!("generated agent key for '{}'", name);
@@ -1877,7 +1957,7 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
             }
         }
         AgentKeyAction::List => {
-            let keys = agent_keys::list_agent_keys(db, 0)
+            let keys = agent_keys::list_agent_keys(db, CRED_USER_ID)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             if keys.is_empty() {
@@ -1913,7 +1993,7 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
                     return Ok(());
                 }
             }
-            agent_keys::revoke_agent_key(db, 0, &name)
+            agent_keys::revoke_agent_key(db, CRED_USER_ID, &name)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             eprintln!("revoked agent key: {}", name);
@@ -3358,6 +3438,70 @@ mod user_id_migration_tests {
         // Pin the chosen canonical id so future refactors don't silently
         // drift back to 0.
         assert_eq!(CRED_USER_ID, 1);
+    }
+
+    /// Insert a raw cred_agent_keys row at an explicit user_id (test-only).
+    async fn insert_agent_key(db: &Database, user_id: i64, name: &str, key_hash: &str) {
+        let name = name.to_string();
+        let key_hash = key_hash.to_string();
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO cred_agent_keys (user_id, key_hash, name, permissions, created_at)
+                 VALUES (?1, ?2, ?3, '{}', '2026-01-01 00:00:00')",
+                rusqlite::params![user_id, key_hash, name],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn count_agent_keys(db: &Database, user_id: i64) -> i64 {
+        db.read(move |conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM cred_agent_keys WHERE user_id = ?1",
+                rusqlite::params![user_id],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn migration_promotes_legacy_agent_keys() {
+        // connect_memory runs the full Kleos migration chain, which creates
+        // cred_agent_keys, so we can insert directly.
+        let db = fresh_cred_db().await;
+        // Two legacy uid=0 keys (the CRED-1 orphaned namespace) ...
+        insert_agent_key(&db, 0, "ci-runner", "hash-a").await;
+        insert_agent_key(&db, 0, "deployer", "hash-b").await;
+        // ... one already-correct uid=1 key that must be left untouched.
+        insert_agent_key(&db, 1, "existing", "hash-c").await;
+
+        let promoted = migrate_legacy_user_id_zero_rows(&db).await.unwrap();
+        assert_eq!(promoted, 2, "both legacy agent keys should be promoted");
+        assert_eq!(count_agent_keys(&db, 0).await, 0, "no uid=0 keys remain");
+        assert_eq!(count_agent_keys(&db, 1).await, 3, "all keys now at uid=1");
+    }
+
+    #[tokio::test]
+    async fn migration_skips_colliding_agent_keys() {
+        let db = fresh_cred_db().await;
+        // A uid=1 key whose name collides with a legacy uid=0 key (UNIQUE(user_id, name)).
+        insert_agent_key(&db, 1, "ci-runner", "hash-live").await;
+        insert_agent_key(&db, 0, "ci-runner", "hash-legacy").await;
+        // A non-colliding legacy key promotes cleanly.
+        insert_agent_key(&db, 0, "deployer", "hash-b").await;
+
+        let promoted = migrate_legacy_user_id_zero_rows(&db).await.unwrap();
+        assert_eq!(promoted, 1, "only the non-colliding legacy key is promoted");
+        assert_eq!(
+            count_agent_keys(&db, 0).await,
+            1,
+            "the colliding legacy key stays parked at uid=0"
+        );
+        assert_eq!(count_agent_keys(&db, 1).await, 2);
     }
 }
 
