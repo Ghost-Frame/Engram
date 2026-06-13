@@ -376,11 +376,7 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     // Frameshift cross-machine growth log. New append-only table; only the
     // reserved "frameshift-growth" tenant is wired through /frameshift-growth/*.
     // No backfill: it is a new table with no pre-existing rows.
-    tenant_migration!(
-        73,
-        "frameshift_growth",
-        apply_schema_v73_frameshift_growth
-    ),
+    tenant_migration!(73, "frameshift_growth", apply_schema_v73_frameshift_growth),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory

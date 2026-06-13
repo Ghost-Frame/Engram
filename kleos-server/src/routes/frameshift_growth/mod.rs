@@ -39,7 +39,9 @@ async fn get_db(state: &AppState) -> Result<FrameshiftGrowthDb, AppError> {
                 .get_or_create(FRAMESHIFT_GROWTH_TENANT_ID)
                 .await
                 .map_err(|e| {
-                    AppError(EngError::Internal(format!("frameshift-growth tenant load: {e}")))
+                    AppError(EngError::Internal(format!(
+                        "frameshift-growth tenant load: {e}"
+                    )))
                 })?;
             Ok(FrameshiftGrowthDb::new(handle.database()))
         }
@@ -74,7 +76,9 @@ async fn list(
     let entries = db.list(filters, auth.effective_user_id()).await?;
     // Surface the highest id returned so the client can advance its cursor.
     let next_cursor = entries.iter().map(|e| e.id).max();
-    Ok(Json(json!({ "entries": entries, "next_cursor": next_cursor })))
+    Ok(Json(
+        json!({ "entries": entries, "next_cursor": next_cursor }),
+    ))
 }
 
 /// Query params for the search endpoint.
@@ -92,16 +96,17 @@ async fn search(
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state).await?;
     let entries = db
-        .search(&query.q, auth.effective_user_id(), query.limit.unwrap_or(50))
+        .search(
+            &query.q,
+            auth.effective_user_id(),
+            query.limit.unwrap_or(50),
+        )
         .await?;
     Ok(Json(json!({ "entries": entries })))
 }
 
 #[tracing::instrument(skip_all)]
-async fn cursor(
-    State(state): State<AppState>,
-    Auth(auth): Auth,
-) -> Result<Json<Value>, AppError> {
+async fn cursor(State(state): State<AppState>, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
     let db = get_db(&state).await?;
     let cursor = db.max_cursor(auth.effective_user_id()).await?;
     Ok(Json(json!({ "cursor": cursor })))

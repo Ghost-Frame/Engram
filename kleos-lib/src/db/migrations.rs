@@ -416,12 +416,7 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_readd_user_id_sessions,
         tx
     ),
-    migration!(
-        90,
-        "frameshift_growth",
-        run_migration_frameshift_growth,
-        tx
-    ),
+    migration!(90, "frameshift_growth", run_migration_frameshift_growth, tx),
 ];
 
 // --- Version constants ---

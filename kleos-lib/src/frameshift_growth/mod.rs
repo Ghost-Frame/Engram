@@ -170,7 +170,10 @@ impl FrameshiftGrowthDb {
         let limit = limit.clamp(1, 1000);
         let pat = format!(
             "%{}%",
-            query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+            query
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
         );
         self.db
             .read(move |conn| {
@@ -180,8 +183,7 @@ impl FrameshiftGrowthDb {
                      WHERE user_id = ?1 AND content LIKE ?2 ESCAPE '\\' \
                      ORDER BY created_at DESC LIMIT ?3",
                 )?;
-                let rows =
-                    stmt.query_map(rusqlite::params![user_id, pat, limit], row_to_entry)?;
+                let rows = stmt.query_map(rusqlite::params![user_id, pat, limit], row_to_entry)?;
                 let mut out = Vec::new();
                 for r in rows {
                     out.push(r?);
@@ -266,10 +268,7 @@ mod tests {
         g.store(params("other-user"), 2).await.unwrap();
 
         // User 1 sees only their two entries, not user 2's.
-        let u1 = g
-            .list(GrowthFilters::default(), 1)
-            .await
-            .expect("list u1");
+        let u1 = g.list(GrowthFilters::default(), 1).await.expect("list u1");
         assert_eq!(u1.len(), 2, "user 1 must not see user 2's growth");
         assert!(u1.iter().all(|e| e.user_id == 1));
 
