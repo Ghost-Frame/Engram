@@ -410,6 +410,12 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_users_active_index,
         tx
     ),
+    migration!(
+        89,
+        "sessions_user_id_readd",
+        run_migration_readd_user_id_sessions,
+        tx
+    ),
 ];
 
 // --- Version constants ---
@@ -3692,6 +3698,29 @@ fn run_migration_readd_user_id_broca(conn: &rusqlite::Connection) -> Result<()> 
     )?;
 
     info!("Migration 45 complete: user_id re-added to broca_actions");
+    Ok(())
+}
+
+/// Migration 89: re-adds `user_id` to `sessions` so session read/enumerate is
+/// owner-scoped in shared (monolith) mode (BOLA fix). `sessions` carries no
+/// UNIQUE/FK on the column, so a plain ADD COLUMN suffices; non-nullable with
+/// DEFAULT 1 backfills legacy rows to the system user. The pragma guard keeps a
+/// fresh DB (where the base schema already includes the column) from
+/// double-adding. A no-op in a single-owner shard.
+fn run_migration_readd_user_id_sessions(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )?;
+        info!("Re-added sessions.user_id (migration 89)");
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);")?;
     Ok(())
 }
 

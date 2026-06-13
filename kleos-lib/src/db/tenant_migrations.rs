@@ -365,6 +365,14 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     // tenant split. v71 adds the virtual table + triggers and rebuilds the
     // index from any artifacts already in the shard.
     tenant_migration!(71, "artifacts_fts", apply_schema_v71_artifacts_fts),
+    // Re-add user_id to the shard sessions table (reverses v24). The runner
+    // backfills existing session rows to the shard owner after this runs; see
+    // TENANT_MIGRATION_READD_USER_ID_SESSIONS / backfill_owner_tables_for_version.
+    tenant_migration!(
+        72,
+        "sessions_user_id_readd",
+        apply_schema_v72_sessions_readd
+    ),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -438,6 +446,11 @@ const TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES: i64 = 68;
 /// Also drops and recreates FTS triggers. The runner backfills existing rows
 /// to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_SKILLS: i64 = 69;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard sessions
+/// table (reverses v24). The runner backfills existing session rows to the
+/// shard owner after this runs.
+const TENANT_MIGRATION_READD_USER_ID_SESSIONS: i64 = 72;
 
 /// Generates a tenant migration function that loads SQL from an external file.
 macro_rules! tenant_migration_sql {
@@ -744,6 +757,11 @@ tenant_migration_sql!(
     apply_schema_v69_skills_readd,
     "v69",
     "../tenant/schema_v69_skills_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v72_sessions_readd,
+    "v72",
+    "../tenant/schema_v72_sessions_readd.sql"
 );
 
 /// Tenant v37: drops user_id from portability tables including conversations.
@@ -1301,6 +1319,7 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         }
         TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES => &["user_preferences"],
         TENANT_MIGRATION_READD_USER_ID_SKILLS => &["skill_records"],
+        TENANT_MIGRATION_READD_USER_ID_SESSIONS => &["sessions"],
         _ => &[],
     };
     for table in tables {
@@ -1756,9 +1775,10 @@ mod tests {
         assert_eq!(line, "hello");
     }
 
-    /// v24: sessions must NOT have a user_id column after the full chain.
+    /// v72 re-adds user_id to sessions (reverses the v24 drop) so the column is
+    /// present after the full chain -- this is the monolith-mode BOLA repair.
     #[test]
-    fn user_id_absent_from_sessions_after_v24() {
+    fn user_id_present_on_sessions_after_v72_readd() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
 
@@ -1769,12 +1789,12 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(count, 0, "sessions still has user_id column after v24");
+        assert_eq!(count, 1, "sessions must have user_id re-added by v72");
     }
 
-    /// v24: the post-drop sessions table supports the SQL shape kleos-lib
-    /// sessions.rs now uses (no user_id on INSERT, no user_id predicate on
-    /// SELECT). session_output remains untouched and writable.
+    /// After the full chain (v72 re-adds user_id with DEFAULT 1), an INSERT that
+    /// omits user_id still works (defaults to the system user) and session_output
+    /// remains writable. The idx_sessions_user index v24 dropped is restored.
     #[test]
     fn sessions_usable_after_v24() {
         let conn = Connection::open_in_memory().unwrap();
@@ -1810,7 +1830,7 @@ mod tests {
             .unwrap();
         assert_eq!(line, "test-value");
 
-        // idx_sessions_user is gone.
+        // idx_sessions_user is restored by v72.
         let idx: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_sessions_user'",
@@ -1818,7 +1838,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx, 0, "idx_sessions_user still present after v24");
+        assert_eq!(idx, 1, "idx_sessions_user must be restored by v72");
     }
 
     /// v24: rows inserted under the v3 shim shape survive the drop with
@@ -4842,7 +4862,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre_output, 0);
 
-        // Run chain; v3 adds the shim, v24 later drops it. End state: absent.
+        // Run chain; v3 adds the shim, v24 drops it, v72 re-adds it. End: present.
         run_tenant_migrations(&conn, None).unwrap();
 
         let post_user: i64 = conn
@@ -4852,7 +4872,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(post_user, 0);
+        assert_eq!(post_user, 1);
 
         let post_output: i64 = conn
             .query_row(
