@@ -592,6 +592,17 @@ fn recall_excluded_categories() -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// Returns true for curated sources that are exempt from the category denylist.
+///
+/// The plans ingest pipeline labels memories `plan:<relpath>`, but the server's
+/// auto-categorizer overrides the explicit `--category plan` and relabels the
+/// chunks general/reference. Without this exemption the recall denylist would
+/// drop the very plan documents the ingest exists to surface. The semantic
+/// floor still applies, so off-topic plans are not injected.
+fn is_curated_source(source: &str) -> bool {
+    source.starts_with("plan:")
+}
+
 /// Decides whether a single search result is relevant enough to inject.
 ///
 /// Gates on the raw cosine `semantic_score` rather than the compound `score`,
@@ -626,8 +637,12 @@ fn format_recall_context(results: &[Value], max_chars: usize) -> String {
             .get("category")
             .and_then(|v| v.as_str())
             .unwrap_or("general");
-        // Drop noise categories (chatter, personal facts) outright.
-        if excluded.contains(&category.to_ascii_lowercase()) {
+        let source = result.get("source").and_then(|v| v.as_str()).unwrap_or("");
+        // Curated plan documents ingest as `plan:<path>` but the server's
+        // auto-categorizer relabels them general/reference, so the category
+        // denylist would silently drop them. Exempt plan sources from category
+        // exclusion -- they still must clear the semantic floor below.
+        if !is_curated_source(source) && excluded.contains(&category.to_ascii_lowercase()) {
             continue;
         }
         // Drop memories that are not semantically about the prompt.
@@ -1618,5 +1633,21 @@ mod recall_gate_tests {
             json!({"content": "tangent", "category": "technical", "semantic_score": 0.10}),
         ];
         assert!(format_recall_context(&results, 10_000).is_empty());
+    }
+
+    /// A curated plan source survives the category denylist (it ingests as
+    /// plan:<path> but is auto-relabeled general), while a non-plan general
+    /// memory and a sub-floor plan are both still dropped.
+    #[test]
+    fn formatter_exempts_plan_sources_from_category_denylist() {
+        let results = vec![
+            json!({"content": "BAV documents feature design", "category": "general", "semantic_score": 0.78, "source": "plan:bav-assistant/design.md"}),
+            json!({"content": "off-topic banter", "category": "general", "semantic_score": 0.80, "source": "discord"}),
+            json!({"content": "stale plan chunk", "category": "general", "semantic_score": 0.20, "source": "plan:old/thing.md"}),
+        ];
+        let out = format_recall_context(&results, 10_000);
+        assert!(out.contains("BAV documents feature design"));
+        assert!(!out.contains("off-topic banter"));
+        assert!(!out.contains("stale plan chunk"));
     }
 }

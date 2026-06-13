@@ -47,6 +47,15 @@ fn living_excluded_categories() -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// Returns true for curated sources that are exempt from the category denylist.
+///
+/// Plan documents ingest as `plan:<relpath>`, but the auto-categorizer relabels
+/// them general/reference; without this exemption the denylist would drop the
+/// curated plans the ingest exists to surface. The semantic floor still applies.
+fn is_curated_source(source: &str) -> bool {
+    source.starts_with("plan:")
+}
+
 /// Decides whether a search result is relevant enough for the living prompt.
 ///
 /// Gates on raw cosine (`semantic_score`) rather than the boosted compound
@@ -221,7 +230,10 @@ async fn post_prompt_generate(
         let excluded = living_excluded_categories();
         let relevant: Vec<&kleos_lib::memory::types::SearchResult> = results
             .iter()
-            .filter(|r| !excluded.contains(&r.memory.category.to_ascii_lowercase()))
+            .filter(|r| {
+                is_curated_source(&r.memory.source)
+                    || !excluded.contains(&r.memory.category.to_ascii_lowercase())
+            })
             .filter(|r| living_result_is_relevant(r, min_semantic))
             .collect();
         if !relevant.is_empty() {
@@ -546,6 +558,19 @@ mod tests {
         assert!(req.include_instincts.is_none());
         assert!(req.brain_limit.is_none());
         assert!(req.growth_limit.is_none());
+    }
+
+    /// Curated plan sources are exempt from the category denylist; other
+    /// sources (and the empty/default source) are not.
+    #[test]
+    fn curated_source_exemption_matches_plan_prefix_only() {
+        assert!(is_curated_source("plan:bav-assistant/design.md"));
+        assert!(is_curated_source("plan:henosis/phase-3.md"));
+        assert!(!is_curated_source("claude-code"));
+        assert!(!is_curated_source("synapse@Verse"));
+        assert!(!is_curated_source(""));
+        // The prefix must be exact: a category named "plan" is not a source.
+        assert!(!is_curated_source("planning-notes"));
     }
 
     #[test]
