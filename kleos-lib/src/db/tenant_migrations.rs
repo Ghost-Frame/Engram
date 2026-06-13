@@ -373,6 +373,14 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         "sessions_user_id_readd",
         apply_schema_v72_sessions_readd
     ),
+    // Frameshift cross-machine growth log. New append-only table; only the
+    // reserved "frameshift-growth" tenant is wired through /frameshift-growth/*.
+    // No backfill: it is a new table with no pre-existing rows.
+    tenant_migration!(
+        73,
+        "frameshift_growth",
+        apply_schema_v73_frameshift_growth
+    ),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -762,6 +770,11 @@ tenant_migration_sql!(
     apply_schema_v72_sessions_readd,
     "v72",
     "../tenant/schema_v72_sessions_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v73_frameshift_growth,
+    "v73",
+    "../tenant/schema_v73_frameshift_growth.sql"
 );
 
 /// Tenant v37: drops user_id from portability tables including conversations.
