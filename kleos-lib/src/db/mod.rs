@@ -1,8 +1,10 @@
 pub mod backup;
+pub mod converge;
 pub mod migrations;
 pub mod pitr;
 pub mod pool;
 pub mod schema;
+pub mod schema_manifest;
 pub mod schema_sql;
 pub mod tenant_migrations;
 pub mod types;
@@ -89,6 +91,11 @@ impl Database {
                 EngError::DatabaseMessage(format!("writer pool migration failed: {e}"))
             })??;
 
+        writer
+            .interact(|conn| crate::db::converge::converge_schema(conn, crate::db::schema_manifest::SCHEMA_MANIFEST).map(|_| ()))
+            .await
+            .map_err(|e| EngError::DatabaseMessage(format!("writer pool converge failed: {e}")))??;
+
         let encrypted_label = if encryption_key.is_some() {
             " (encrypted)"
         } else {
@@ -130,6 +137,11 @@ impl Database {
             .interact(|conn| migrations::run_migrations(conn))
             .await
             .map_err(|e| EngError::DatabaseMessage(format!("migration failed: {e}")))??;
+
+        writer
+            .interact(|conn| crate::db::converge::converge_schema(conn, crate::db::schema_manifest::SCHEMA_MANIFEST).map(|_| ()))
+            .await
+            .map_err(|e| EngError::DatabaseMessage(format!("writer pool converge failed: {e}")))??;
 
         Ok(Self {
             db_path: ":memory:".to_string(),
@@ -183,6 +195,11 @@ impl Database {
                 EngError::DatabaseMessage(format!("tenant pool migration failed: {e}"))
             })??;
 
+        writer
+            .interact(|conn| crate::db::converge::converge_schema(conn, crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST).map(|_| ()))
+            .await
+            .map_err(|e| EngError::DatabaseMessage(format!("tenant converge failed: {e}")))??;
+
         let encrypted_label = if encryption_key.is_some() {
             " (encrypted)"
         } else {
@@ -227,6 +244,11 @@ impl Database {
             .interact(|conn| tenant_migrations::run_tenant_migrations(conn, None))
             .await
             .map_err(|e| EngError::DatabaseMessage(format!("tenant migration failed: {e}")))??;
+
+        writer
+            .interact(|conn| crate::db::converge::converge_schema(conn, crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST).map(|_| ()))
+            .await
+            .map_err(|e| EngError::DatabaseMessage(format!("tenant converge failed: {e}")))??;
 
         Ok(Self {
             db_path: uri,
@@ -312,6 +334,38 @@ impl Database {
             Ok(result)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod converge_boot_tests {
+    use super::*;
+
+    /// Keystone invariant: against a fully-migrated DB, converge of the real
+    /// SCHEMA_MANIFEST must take ZERO actions. If a manifest entry contradicts
+    /// the migrated schema (e.g. someone added a numbered structural migration
+    /// without updating the manifest, or vice versa), this fails.
+    #[tokio::test]
+    async fn schema_manifest_matches_migrated_schema() -> Result<()> {
+        let db = Database::connect_memory().await?;
+        let actions = db
+            .read(|conn| crate::db::converge::converge_schema(conn, crate::db::schema_manifest::SCHEMA_MANIFEST))
+            .await?;
+        assert!(actions.is_empty(), "global manifest drifted: {actions:?}");
+        Ok(())
+    }
+
+    /// Same invariant for the tenant manifest against a freshly-migrated shard.
+    #[test]
+    fn tenant_manifest_matches_migrated_schema() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::tenant_migrations::run_tenant_migrations(&conn, None).unwrap();
+        let actions = crate::db::converge::converge_schema(
+            &conn,
+            crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST,
+        )
+        .unwrap();
+        assert!(actions.is_empty(), "tenant manifest drifted: {actions:?}");
     }
 }
 
