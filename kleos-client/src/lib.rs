@@ -8,5 +8,6 @@ pub mod routes;
 
 pub use client::{body_excerpt, format_error_chain, format_reqwest_error, truncate, Client};
 pub use routes::{
-    find_by_name, is_mcp_blocked, render_path, Method, Route, Scope, MCP_BLOCKED_ROUTES, ROUTES,
+    find_by_name, is_mcp_blocked, render_path, resolve_tool_name, Method, Route, Scope,
+    MCP_BLOCKED_ROUTES, ROUTES,
 };

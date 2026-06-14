@@ -18,27 +18,29 @@ fn registry_names() -> Vec<String> {
         .collect()
 }
 
-/// The tool registry must include the core daily-driver tools.
+/// The tool registry must include the core daily-driver tools. Names are
+/// advertised in underscore form (`.` -> `_`) so strict MCP clients (VS Code)
+/// accept them; `tools/call` resolves them back via `resolve_tool_name`.
 #[test]
 fn registry_includes_core_tools() {
     let names = registry_names();
     for required in [
-        "memory.store",
-        "memory.search",
-        "memory.recall",
-        "activity.report",
-        "prompts.generate",
-        "context.get_header",
-        "tasks.list",
-        "broca.feed",
-        "soma.list_agents",
-        "loom.list_runs",
-        "thymus.get_metrics",
-        "handoffs.store",
-        "scratchpad.put",
-        "skills.find_skills",
-        "agents.verify",
-        "mcp_schema.get",
+        "memory_store",
+        "memory_search",
+        "memory_recall",
+        "activity_report",
+        "prompts_generate",
+        "context_get_header",
+        "tasks_list",
+        "broca_feed",
+        "soma_list_agents",
+        "loom_list_runs",
+        "thymus_get_metrics",
+        "handoffs_store",
+        "scratchpad_put",
+        "skills_find_skills",
+        "agents_verify",
+        "mcp_schema_get",
     ] {
         assert!(
             names.iter().any(|name| name == required),
@@ -48,7 +50,8 @@ fn registry_includes_core_tools() {
     }
 }
 
-/// The tool registry must keep important compatibility aliases for existing clients.
+/// The tool registry must keep important compatibility aliases for existing
+/// clients, advertised in underscore form like everything else.
 #[test]
 fn registry_includes_daily_workflow_aliases() {
     let names = registry_names();
@@ -56,12 +59,12 @@ fn registry_includes_daily_workflow_aliases() {
         "memory_store",
         "memory_search",
         "memory_recall",
-        "context.generate_prompt",
-        "context.get_header",
-        "services.chiasm_create_task",
-        "tasks.update",
-        "services.soma_register",
-        "handoffs.dump",
+        "context_generate_prompt",
+        "context_get_header",
+        "services_chiasm_create_task",
+        "tasks_update",
+        "services_soma_register",
+        "handoffs_dump",
     ] {
         assert!(
             names.iter().any(|name| name == alias),

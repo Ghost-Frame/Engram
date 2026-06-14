@@ -69,6 +69,25 @@ pub fn find_by_name(name: &str) -> Option<&'static Route> {
         .find(|r| r.name == name || r.aliases.contains(&name))
 }
 
+/// Resolve an MCP tool name to its route, accepting the canonical dot-name, any
+/// explicit alias, or the underscore-normalized form (`.` -> `_`).
+///
+/// Strict MCP clients (notably VS Code's, whose validator enforces
+/// `[a-z0-9_-]`) reject dot-notation tool names, so `tools/list` advertises the
+/// underscore form. Resolution is unambiguous because it reverses the
+/// deterministic `route.name.replace('.', '_')` used to generate those names --
+/// method segments that themselves contain underscores (e.g. `find_skills`,
+/// `search_preset`) round-trip correctly, which a naive `_`->`.` replace would
+/// not. Used at every MCP dispatch boundary so both forms invoke the same tool.
+pub fn resolve_tool_name(name: &str) -> Option<&'static Route> {
+    ROUTES.iter().find(|r| {
+        r.name == name
+            || r.aliases.contains(&name)
+            || r.name.replace('.', "_") == name
+            || r.aliases.iter().any(|a| a.replace('.', "_") == name)
+    })
+}
+
 /// Canonical names of routes that must never be reachable over MCP. These
 /// resolve or proxy raw credential values, so dispatching them through the
 /// MCP/model-context channel would land plaintext secrets in transcripts and
@@ -76,12 +95,15 @@ pub fn find_by_name(name: &str) -> Option<&'static Route> {
 /// intended surface.
 pub const MCP_BLOCKED_ROUTES: &[&str] = &["admin.cred_resolve", "admin.cred_proxy"];
 
-/// Returns true if `name` (canonical or alias) resolves to a route that is
-/// blocked from MCP dispatch. Both MCP dispatchers consult this before calling
-/// a tool so an unlisted-but-dispatchable secret route cannot be invoked by
-/// name.
+/// Returns true if `name` resolves to a route that is blocked from MCP
+/// dispatch. Both MCP dispatchers consult this before calling a tool so an
+/// unlisted-but-dispatchable secret route cannot be invoked by name.
+///
+/// Resolution goes through [`resolve_tool_name`], so the underscore form of a
+/// blocked route (e.g. `admin_cred_resolve`) is caught too -- otherwise the
+/// underscore alias added for strict clients would be a block-list bypass.
 pub fn is_mcp_blocked(name: &str) -> bool {
-    find_by_name(name)
+    resolve_tool_name(name)
         .map(|r| MCP_BLOCKED_ROUTES.contains(&r.name))
         .unwrap_or(false)
 }
@@ -4262,6 +4284,48 @@ mod tests {
                 "blocked route {name} missing from registry"
             );
         }
+    }
+
+    /// `resolve_tool_name` must accept the underscore-normalized form that
+    /// strict MCP clients (VS Code) send, and resolve it to the same route as
+    /// the canonical dot-name -- including method segments that themselves
+    /// contain underscores, which a naive `_`->`.` replace would mis-resolve.
+    #[test]
+    fn resolve_tool_name_accepts_underscore_aliases() {
+        let canonical = find_by_name("memory.search").expect("memory.search exists");
+        assert_eq!(
+            resolve_tool_name("memory_search").map(|r| r.name),
+            Some(canonical.name),
+            "underscore form must resolve to the dot route"
+        );
+        // Dot form and explicit aliases still resolve unchanged.
+        assert_eq!(
+            resolve_tool_name("memory.search").map(|r| r.name),
+            Some(canonical.name)
+        );
+
+        // Method segment with an internal underscore must round-trip: the
+        // underscore name is derived as name.replace('.', '_'), so the reverse
+        // is an exact match, not a positional `_`->`.` guess.
+        let multi = find_by_name("memory.search_memories").expect("route exists");
+        assert_eq!(
+            resolve_tool_name("memory_search_memories").map(|r| r.name),
+            Some(multi.name),
+        );
+        // `memory.search.memories` (naive reverse) must NOT exist / mis-resolve.
+        assert!(resolve_tool_name("definitely_not_a_tool").is_none());
+    }
+
+    /// The underscore alias must not become a block-list bypass: the underscore
+    /// form of a secret cred route has to be blocked just like the dot-name.
+    #[test]
+    fn underscore_form_does_not_bypass_mcp_block() {
+        assert!(is_mcp_blocked("admin.cred_resolve"));
+        assert!(
+            is_mcp_blocked("admin_cred_resolve"),
+            "underscore alias of a blocked route must also be blocked"
+        );
+        assert!(is_mcp_blocked("admin_cred_proxy"));
     }
 
     /// Path-segment substitution must percent-encode `/`, `?`, `#`, and `%`

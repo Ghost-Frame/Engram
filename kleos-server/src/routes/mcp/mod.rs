@@ -11,7 +11,7 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use kleos_client::{find_by_name, render_path, Method, Scope as RouteScope};
+use kleos_client::{render_path, resolve_tool_name, Method, Scope as RouteScope};
 use kleos_lib::auth::{AuthContext, Scope};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
@@ -160,7 +160,7 @@ async fn handle_single_rpc(
                 .unwrap_or_else(|| json!({}));
 
             // Charge per-tool rate-limit tokens before dispatch.
-            if let Some(route) = find_by_name(&name) {
+            if let Some(route) = resolve_tool_name(&name) {
                 let http_method = match route.method {
                     Method::Get => axum::http::Method::GET,
                     Method::Post => axum::http::Method::POST,
@@ -265,7 +265,7 @@ async fn dispatch_tool(
         return Err(format!("tool '{name}' is not available over MCP"));
     }
 
-    let route = find_by_name(name).ok_or_else(|| format!("unknown tool: {name}"))?;
+    let route = resolve_tool_name(name).ok_or_else(|| format!("unknown tool: {name}"))?;
 
     // Record the required scope in the span.
     tracing::Span::current().record(
