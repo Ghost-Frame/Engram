@@ -147,6 +147,7 @@ fn merge_api_routes() -> Router<AppState> {
         .merge(routes::prompts::router())
         .merge(routes::scratchpad::router())
         .merge(routes::activity::router())
+        .merge(routes::forge::router())
         .merge(routes::gate::router())
         .merge(routes::supervisor::router())
         .merge(routes::growth::router())

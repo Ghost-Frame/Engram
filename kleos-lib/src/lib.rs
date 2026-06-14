@@ -18,6 +18,7 @@ pub mod encryption;
 pub mod episodes;
 pub mod errors_log;
 pub mod facts;
+pub mod forge;
 pub mod frameshift_growth;
 pub mod fsrs;
 pub mod gate;

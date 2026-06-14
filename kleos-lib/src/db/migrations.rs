@@ -417,6 +417,10 @@ pub static MIGRATIONS: &[Migration] = &[
         tx
     ),
     migration!(90, "frameshift_growth", run_migration_frameshift_growth, tx),
+    // agent-forge absorption: stateful reasoning tables now live in
+    // the Kleos tenant DB so forge.db can be deleted. All tables are prefixed
+    // `forge_` and carry `user_id` for monolith-mode row isolation.
+    migration!(91, "forge_tables", run_migration_forge_tables, tx),
 ];
 
 // --- Version constants ---
@@ -3763,6 +3767,96 @@ fn run_migration_frameshift_growth(conn: &rusqlite::Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_fsgrowth_persona ON frameshift_growth(user_id, persona, created_at DESC);
          CREATE INDEX IF NOT EXISTS idx_fsgrowth_project ON frameshift_growth(user_id, project_id, created_at DESC);
          CREATE INDEX IF NOT EXISTS idx_fsgrowth_scope ON frameshift_growth(user_id, scope, created_at DESC);",
+    )?;
+    Ok(())
+}
+
+/// Migration 91: agent-forge stateful reasoning tables absorbed into the Kleos
+/// monolith DB. Mirrors the agent-forge local schema (agent-forge/src/db.rs:32-103)
+/// with `forge_` prefixes and `user_id` columns for monolith-mode row isolation.
+/// `session_id` on forge_specs/forge_hypotheses enables the gate enforcement query.
+fn run_migration_forge_tables(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS forge_specs (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            session_id TEXT,
+            created_at INTEGER NOT NULL,
+            task_description TEXT NOT NULL,
+            task_type TEXT NOT NULL,
+            acceptance_criteria TEXT NOT NULL,
+            interface_contract TEXT,
+            edge_cases TEXT,
+            files_to_touch TEXT,
+            dependencies TEXT,
+            status TEXT DEFAULT 'active',
+            completed_at INTEGER,
+            status_note TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS forge_hypotheses (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            session_id TEXT,
+            created_at INTEGER NOT NULL,
+            bug_description TEXT NOT NULL,
+            hypothesis TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            outcome TEXT,
+            outcome_notes TEXT,
+            verified_at INTEGER,
+            spec_id TEXT REFERENCES forge_specs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS forge_approaches (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            spec_id TEXT REFERENCES forge_specs(id),
+            created_at INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            pros TEXT,
+            cons TEXT,
+            score REAL,
+            chosen INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS forge_verifications (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            spec_id TEXT REFERENCES forge_specs(id),
+            created_at INTEGER NOT NULL,
+            command TEXT NOT NULL,
+            exit_code INTEGER NOT NULL,
+            success INTEGER NOT NULL,
+            duration_ms INTEGER,
+            criteria_index INTEGER,
+            stdout TEXT,
+            stderr TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS forge_checkpoints (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            name TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            git_ref TEXT,
+            files_snapshot TEXT,
+            description TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS forge_session_learns (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            discovery TEXT NOT NULL,
+            context TEXT,
+            tags TEXT,
+            spec_id TEXT REFERENCES forge_specs(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_forge_specs_gate ON forge_specs(user_id, session_id, status);
+        CREATE INDEX IF NOT EXISTS idx_forge_specs_user ON forge_specs(user_id, created_at DESC);",
     )?;
     Ok(())
 }

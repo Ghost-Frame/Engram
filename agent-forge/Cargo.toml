@@ -6,6 +6,10 @@ rust-version.workspace = true
 license = "Elastic-2.0"
 description = "Protocol CLI that gates agent coding work behind spec + hypothesis + verification steps"
 
+[lib]
+name = "agent_forge"
+path = "src/lib.rs"
+
 [[bin]]
 name = "agent-forge"
 path = "src/main.rs"

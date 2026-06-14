@@ -150,6 +150,34 @@ pub async fn delete_session_key(db: &Database, session: &str, key: &str) -> Resu
 }
 
 #[tracing::instrument(skip(db))]
+/// Looks up a non-expired scratchpad entry by namespace (agent column) and
+/// entry_key, ignoring session boundaries since the session is embedded in the
+/// key by the `ke` edit-gate (`format!("{session_id}:{path}")`).
+///
+/// Returns `Some(value)` when found, `None` when absent or expired.
+#[tracing::instrument(skip(db, namespace, key))]
+pub async fn get_by_namespace_key(
+    db: &Database,
+    namespace: &str,
+    key: &str,
+) -> Result<Option<String>> {
+    let namespace = namespace.to_string();
+    let key = key.to_string();
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT value FROM scratchpad WHERE agent = ?1 AND entry_key = ?2 AND expires_at > datetime('now') LIMIT 1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![namespace, key])?;
+        if let Some(row) = rows.next()? {
+            let value: String = row.get(0)?;
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
+    })
+    .await
+}
+
 /// Removes expired scratchpad entries and returns the number deleted.
 pub async fn purge_expired(db: &Database) -> Result<i64> {
     db.write(move |conn| {

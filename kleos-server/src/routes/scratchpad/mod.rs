@@ -10,14 +10,18 @@ use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 
 mod types;
-use types::{PromoteBody, ScratchQuery};
+use types::{PromoteBody, ScratchGetQuery, ScratchQuery};
 
+/// Register all scratchpad routes on the shared application state.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/scratch", get(list_scratch).put(put_scratch))
         .route("/scratch/{session}", delete(delete_session))
         .route("/scratch/{session}/{key}", delete(delete_key))
         .route("/scratch/{session}/promote", post(promote))
+        // Ledger read used by the `ke` edit-gate.  Path must match
+        // `GET /scratchpad/get?namespace=spec-task&key=<session>:<path>`.
+        .route("/scratchpad/get", get(get_scratch))
 }
 
 async fn list_scratch(
@@ -97,4 +101,78 @@ async fn promote(
     Ok(Json(
         json!({ "promoted": true, "memory_ids": ids, "count": ids.len() }),
     ))
+}
+
+/// Read one ledger entry for the `ke` edit-gate.
+///
+/// `GET /scratchpad/get?namespace=<agent>&key=<entry_key>`
+///
+/// - Returns 200 `{"value": "<spec_id>", "key": "<key>"}` when a non-expired
+///   row is found whose `agent = namespace` and `entry_key = key`.
+/// - Returns 404 `{"value": null, "key": "<key>"}` otherwise so `ke` can
+///   distinguish "not found" (HTTP 404) from a genuine server error.
+///
+/// The response shape is designed to satisfy ke's exact success conditions:
+/// HTTP 200, body non-empty, no `"value":null`, no `not found`.
+async fn get_scratch(
+    Auth(_auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Query(q): Query<ScratchGetQuery>,
+) -> Result<(axum::http::StatusCode, Json<Value>), AppError> {
+    match kleos_lib::scratchpad::get_by_namespace_key(&db, &q.namespace, &q.key).await? {
+        Some(value) => Ok((
+            axum::http::StatusCode::OK,
+            Json(json!({ "value": value, "key": q.key })),
+        )),
+        None => Ok((
+            axum::http::StatusCode::NOT_FOUND,
+            Json(json!({ "value": null, "key": q.key })),
+        )),
+    }
+}
+
+/// Unit tests for the scratchpad ledger read helper.
+#[cfg(test)]
+mod tests {
+    use kleos_lib::scratchpad::{get_by_namespace_key, upsert_entry};
+
+    /// Inserting an entry under namespace="spec-task" and querying by the same
+    /// namespace+key must return the stored value.  A different key returns None.
+    #[tokio::test]
+    async fn scratchpad_get_by_namespace_key_hit_and_miss() {
+        let db = kleos_lib::db::Database::connect_memory()
+            .await
+            .expect("in-memory db");
+
+        // Write a ledger entry the way the forge spec-task handler does.
+        upsert_entry(
+            &db,
+            "S",           // session
+            "spec-task",   // agent == namespace ke queries
+            "",            // model
+            "S:/x/a.rs",   // entry_key == `format!("{session_id}:{path}")` ke builds
+            "spec_1",      // value == spec id
+            1440,
+        )
+        .await
+        .expect("upsert spec-task ledger entry");
+
+        // Hit: correct namespace + key returns the spec id.
+        let found = get_by_namespace_key(&db, "spec-task", "S:/x/a.rs")
+            .await
+            .expect("query hit");
+        assert_eq!(found, Some("spec_1".to_string()));
+
+        // Miss: different key under same namespace returns None.
+        let miss = get_by_namespace_key(&db, "spec-task", "S:/x/b.rs")
+            .await
+            .expect("query miss");
+        assert_eq!(miss, None);
+
+        // Miss: same key but wrong namespace returns None.
+        let miss2 = get_by_namespace_key(&db, "forge", "S:/x/a.rs")
+            .await
+            .expect("query wrong namespace");
+        assert_eq!(miss2, None);
+    }
 }

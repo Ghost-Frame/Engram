@@ -142,6 +142,184 @@ async fn check_handler(
         }
     }
 
+    // Agent-forge spec enforcement: Write/Edit tool calls for code files must
+    // be covered by an active forge spec for the session. This mirrors the
+    // enforce-agent-forge.sh hook but runs server-side so it cannot be bypassed
+    // by a client that omits the hook.
+    //
+    // Only applied when the existing checks have already allowed the request --
+    // no point overriding an existing block.
+    if result.allowed {
+        let tool = body.tool_name.as_deref().unwrap_or("");
+        if tool == "Write" || tool == "Edit" {
+            // Extract the target file path. Primary source: parse `"Write /path"`
+            // or `"Edit /path"` from body.command (the format derive_command
+            // produces). Fallback: scan body.context for a `"file_path":` JSON
+            // field embedded by the hook as `tool_input: {...}`.
+            let maybe_path = extract_write_edit_path(&body.command, body.context.as_deref());
+
+            match maybe_path {
+                None => {
+                    // Cannot determine the target path -- fail open to avoid
+                    // blocking legitimate calls where the hook built a non-standard
+                    // command string. Log so the operator can investigate.
+                    tracing::warn!(
+                        "forge-gate: could not extract file path from Write/Edit; \
+                         allowing (tool={} command={:?})",
+                        tool,
+                        body.command
+                    );
+                }
+                Some(ref file_path) if is_forge_exempt(file_path) => {
+                    // Non-code file (docs, config, etc.) -- exempt from the spec
+                    // requirement, matching the original enforce-agent-forge.sh
+                    // allow-list.
+                    tracing::debug!(
+                        "forge-gate: exempt path {:?} (tool={})",
+                        file_path,
+                        tool
+                    );
+                }
+                Some(ref file_path) => {
+                    // Code file that requires an active spec. session_id must be
+                    // present; a missing session_id means we cannot look up the
+                    // spec, so we fail closed (no session context = cannot prove
+                    // coverage). This is intentionally strict; relax here if it
+                    // proves too aggressive in practice.
+                    let session_id = match body.session_id.as_deref().filter(|s| !s.is_empty()) {
+                        Some(sid) => sid.to_string(),
+                        None => {
+                            let reason = format!(
+                                "BLOCKED: Write/Edit to code file {:?} requires an active \
+                                 agent-forge spec but no session_id was provided -- \
+                                 cannot verify spec coverage. Ensure the hook sets \
+                                 session_id and run `kleos-cli forge spec-task` first.",
+                                file_path
+                            );
+                            tracing::warn!("forge-gate: no session_id for {:?}", file_path);
+                            let gate_id = store_gate_request(
+                                &db,
+                                GateRequestInsert {
+                                    user_id: auth.effective_user_id(),
+                                    agent: &body.agent,
+                                    command: &body.command,
+                                    context: body.context.as_deref(),
+                                    status: "blocked",
+                                    reason: Some(&reason),
+                                    session_id: None,
+                                },
+                            )
+                            .await?;
+                            result = GateCheckResult {
+                                allowed: false,
+                                reason: Some(reason),
+                                resolved_command: Some(body.command.clone()),
+                                gate_id,
+                                requires_approval: false,
+                                enrichment: None,
+                            };
+                            return Ok((StatusCode::CREATED, Json(json!(result))));
+                        }
+                    };
+
+                    match kleos_lib::forge::spec::spec_covers(
+                        &db,
+                        auth.effective_user_id(),
+                        &session_id,
+                        file_path,
+                    )
+                    .await
+                    {
+                        Ok(true) => {
+                            // Spec covers this file -- leave result.allowed as-is.
+                            tracing::debug!(
+                                "forge-gate: covered {:?} session={:?}",
+                                file_path,
+                                session_id
+                            );
+                        }
+                        Ok(false) => {
+                            let reason = format!(
+                                "BLOCKED: no active agent-forge spec covers this file this \
+                                 session. Run `kleos-cli forge spec-task` (or the \
+                                 forge.spec_task MCP tool) declaring this file in \
+                                 files_to_touch, then retry. ZERO code without agent-forge. \
+                                 [file={:?} session={:?}]",
+                                file_path, session_id
+                            );
+                            tracing::info!(
+                                "forge-gate: BLOCKED {:?} -- no spec (session={:?})",
+                                file_path,
+                                session_id
+                            );
+                            let gate_id = store_gate_request(
+                                &db,
+                                GateRequestInsert {
+                                    user_id: auth.effective_user_id(),
+                                    agent: &body.agent,
+                                    command: &body.command,
+                                    context: body.context.as_deref(),
+                                    status: "blocked",
+                                    reason: Some(&reason),
+                                    session_id: Some(&session_id),
+                                },
+                            )
+                            .await?;
+                            result = GateCheckResult {
+                                allowed: false,
+                                reason: Some(reason),
+                                resolved_command: Some(body.command.clone()),
+                                gate_id,
+                                requires_approval: false,
+                                enrichment: None,
+                            };
+                            return Ok((StatusCode::CREATED, Json(json!(result))));
+                        }
+                        Err(e) => {
+                            // Fail closed: a forge DB error must not silently allow
+                            // unspecced writes. Surface as a blocked result with
+                            // a diagnostic reason so the agent (and operator) can
+                            // investigate.
+                            let reason = format!(
+                                "BLOCKED: forge spec coverage check failed with an internal \
+                                 error -- failing closed. Error: {}. Contact the operator \
+                                 or retry. [file={:?} session={:?}]",
+                                e, file_path, session_id
+                            );
+                            tracing::error!(
+                                "forge-gate: spec_covers error for {:?}: {}",
+                                file_path,
+                                e
+                            );
+                            let gate_id = store_gate_request(
+                                &db,
+                                GateRequestInsert {
+                                    user_id: auth.effective_user_id(),
+                                    agent: &body.agent,
+                                    command: &body.command,
+                                    context: body.context.as_deref(),
+                                    status: "blocked",
+                                    reason: Some(&reason),
+                                    session_id: Some(&session_id),
+                                },
+                            )
+                            .await?;
+                            result = GateCheckResult {
+                                allowed: false,
+                                reason: Some(reason),
+                                resolved_command: Some(body.command.clone()),
+                                gate_id,
+                                requires_approval: false,
+                                enrichment: None,
+                            };
+                            return Ok((StatusCode::CREATED, Json(json!(result))));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // DNS rebinding / SSRF defense: if the static check allowed an SSH command,
     // resolve the hostname and reject if any A/AAAA record is internal.
     if result.allowed && (resolved_command.contains("ssh ") || resolved_command.starts_with("ssh"))
@@ -638,11 +816,211 @@ async fn agent_model_enrichment(db: &kleos_lib::db::Database, user_id: i64) -> O
     ))
 }
 
+/// Extract the target file path from a Write/Edit gate request.
+///
+/// Primary strategy: the command string produced by `derive_command` in
+/// `kleos-cli/src/hook.rs` has the form `"Write /abs/path"` or
+/// `"Edit /abs/path"`, so splitting on the first space after the verb yields
+/// the path.
+///
+/// Fallback: the hook places raw tool_input JSON in the context field as
+/// `"tool_input: {...}"`. If the command parse yields nothing, scan that JSON
+/// blob for a `"file_path"` key.
+///
+/// Returns `None` when both strategies fail -- callers should fail open.
+pub(crate) fn extract_write_edit_path(command: &str, context: Option<&str>) -> Option<String> {
+    // Primary: `"Write /some/path"` or `"Edit /some/path"`
+    let stripped = command
+        .strip_prefix("Write ")
+        .or_else(|| command.strip_prefix("Edit "));
+
+    if let Some(path) = stripped {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() && trimmed != "<unknown>" {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    // Fallback: parse file_path from the context JSON blob.
+    // The context field looks like `"tool_input: {\"file_path\":\"/foo/bar.rs\",...}"`.
+    let ctx = context?;
+    // Strip the `tool_input: ` prefix if present, leaving raw JSON.
+    let json_start = ctx.find('{').unwrap_or(ctx.len());
+    let json_str = &ctx[json_start..];
+    let v: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    v.get("file_path")
+        .and_then(|p| p.as_str())
+        .filter(|p| !p.is_empty() && *p != "<unknown>")
+        .map(|p| p.to_string())
+}
+
+/// File-extension and basename exemptions that mirror enforce-agent-forge.sh.
+///
+/// Returns `true` when the path does NOT require an active forge spec --
+/// i.e. the file is documentation, configuration, tooling, or a named
+/// special file that agents are allowed to touch without a spec.
+///
+/// Exempt categories (matching the original shell script):
+/// - Extensions: .md .txt .json .yaml .yml .toml .lock .env .cfg .ini
+///   .conf .csv .xml .html .css .svg .sh
+/// - Paths containing `.claude/hooks/` (hook scripts are meta-tooling)
+/// - Basenames: CLAUDE.md AGENTS.md GEMINI.md README.md
+pub(crate) fn is_forge_exempt(file_path: &str) -> bool {
+    // Exempt basenames (case-sensitive, matching the shell script).
+    const EXEMPT_BASENAMES: &[&str] = &["CLAUDE.md", "AGENTS.md", "GEMINI.md", "README.md"];
+
+    // Exempt extensions (lowercase for case-insensitive comparison).
+    const EXEMPT_EXTS: &[&str] = &[
+        ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".lock", ".env", ".cfg", ".ini",
+        ".conf", ".csv", ".xml", ".html", ".css", ".svg", ".sh",
+    ];
+
+    // Check path component for hook directory.
+    if file_path.contains(".claude/hooks/") {
+        return true;
+    }
+
+    // Extract basename.
+    let basename = std::path::Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    // Check exempt basenames first (exact match).
+    if EXEMPT_BASENAMES.contains(&basename) {
+        return true;
+    }
+
+    // Check extension (case-insensitive).
+    let lower = basename.to_lowercase();
+    EXEMPT_EXTS.iter().any(|ext| lower.ends_with(ext))
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
         let end: String = s.chars().take(max).collect();
         format!("{}...", end)
+    }
+}
+
+#[cfg(test)]
+mod forge_gate_tests {
+    use super::{extract_write_edit_path, is_forge_exempt};
+
+    // -- is_forge_exempt: exempt paths --
+
+    /// Markdown file (by extension) must be exempt.
+    #[test]
+    fn exempt_readme_md() {
+        assert!(is_forge_exempt("/x/README.md"), "/x/README.md must be exempt");
+    }
+
+    /// Notes .md file must be exempt (any .md extension, not just special basenames).
+    #[test]
+    fn exempt_notes_md() {
+        assert!(is_forge_exempt("/x/notes.md"), "/x/notes.md must be exempt");
+    }
+
+    /// YAML config file must be exempt.
+    #[test]
+    fn exempt_yaml_config() {
+        assert!(
+            is_forge_exempt("/x/config.yaml"),
+            "/x/config.yaml must be exempt"
+        );
+    }
+
+    /// File inside the .claude/hooks/ directory must be exempt regardless of extension.
+    #[test]
+    fn exempt_hooks_dir() {
+        assert!(
+            is_forge_exempt("/home/user/.claude/hooks/foo.sh"),
+            "/home/user/.claude/hooks/foo.sh must be exempt (hooks dir)"
+        );
+    }
+
+    /// CLAUDE.md is an exempt basename.
+    #[test]
+    fn exempt_claude_md() {
+        assert!(
+            is_forge_exempt("/x/CLAUDE.md"),
+            "/x/CLAUDE.md must be exempt (exempt basename)"
+        );
+    }
+
+    // -- is_forge_exempt: non-exempt (real code) paths --
+
+    /// Rust source file is NOT exempt -- requires a forge spec.
+    #[test]
+    fn not_exempt_rust_source() {
+        assert!(
+            !is_forge_exempt("/x/src/lib.rs"),
+            "/x/src/lib.rs must NOT be exempt"
+        );
+    }
+
+    /// Python source file is NOT exempt.
+    #[test]
+    fn not_exempt_python_source() {
+        assert!(!is_forge_exempt("/x/main.py"), "/x/main.py must NOT be exempt");
+    }
+
+    /// TypeScript source file is NOT exempt.
+    #[test]
+    fn not_exempt_ts_source() {
+        assert!(!is_forge_exempt("/x/app.ts"), "/x/app.ts must NOT be exempt");
+    }
+
+    // -- extract_write_edit_path --
+
+    /// "Write /abs/path/lib.rs" command must extract the path.
+    #[test]
+    fn extract_write_path_from_command() {
+        let got = extract_write_edit_path("Write /abs/path/lib.rs", None);
+        assert_eq!(
+            got.as_deref(),
+            Some("/abs/path/lib.rs"),
+            "expected Some(\"/abs/path/lib.rs\"), got {:?}",
+            got
+        );
+    }
+
+    /// "Edit /a/b.rs" command must extract the path.
+    #[test]
+    fn extract_edit_path_from_command() {
+        let got = extract_write_edit_path("Edit /a/b.rs", None);
+        assert_eq!(
+            got.as_deref(),
+            Some("/a/b.rs"),
+            "expected Some(\"/a/b.rs\"), got {:?}",
+            got
+        );
+    }
+
+    /// A Bash command must return None (not a Write/Edit verb).
+    #[test]
+    fn extract_bash_command_returns_none() {
+        let got = extract_write_edit_path("Bash cargo build --release", None);
+        assert!(
+            got.is_none(),
+            "Bash command must return None, got {:?}",
+            got
+        );
+    }
+
+    /// When command does not match, file_path from context JSON fallback is used.
+    #[test]
+    fn extract_path_from_context_json_fallback() {
+        // Simulate what the hook embeds: `tool_input: {"file_path":"/some/path.rs",...}`
+        let ctx = r#"tool_input: {"file_path":"/some/path.rs","content":"..."}"#;
+        let got = extract_write_edit_path("UnknownVerb something", Some(ctx));
+        assert_eq!(
+            got.as_deref(),
+            Some("/some/path.rs"),
+            "expected path from context JSON fallback, got {:?}",
+            got
+        );
     }
 }

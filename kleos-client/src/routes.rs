@@ -597,6 +597,14 @@ pub static ROUTES: &[Route] = &[
         "Promote a scratchpad session to durable memory.",
         r#"{"type": "object", "properties": {"session": {"type":"string"}}, "required": ["session"]}"#
     ),
+    route!(
+        Get,
+        Read,
+        "scratchpad.get",
+        "/scratchpad/get",
+        "Read one scratchpad ledger entry by namespace (agent) and key. Used by the ke edit-gate to verify spec-task coverage before allowing a file edit.",
+        r#"{"type": "object", "properties": {"namespace": {"type":"string"}, "key": {"type":"string"}}, "required": ["namespace", "key"]}"#
+    ),
     // -- episodes ---------------------------------------------------------
     route!(
         Get,
@@ -2033,6 +2041,161 @@ pub static ROUTES: &[Route] = &[
         "/users/{id}",
         "Deactivate a user account.",
         r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
+    ),
+    // -- forge (agent-forge stateful operations) ----------------------------------
+    route!(
+        Post,
+        Write,
+        "forge.spec_task",
+        "/forge/spec-task",
+        "Create a new task spec with acceptance criteria and file coverage for gate enforcement.",
+        ["forge_spec_task"],
+        r#"{"type":"object","properties":{"session_id":{"type":"string"},"task_description":{"type":"string"},"task_type":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"interface_contract":{"type":"string"},"edge_cases":{"type":"array","items":{"type":"string"}},"files_to_touch":{"type":"array","items":{"type":"string"}},"dependencies":{"type":"string"}},"required":["task_description","task_type","acceptance_criteria","interface_contract","edge_cases"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.update_spec",
+        "/forge/update-spec",
+        "Transition a spec to a new lifecycle status (active, completed, failed, blocked).",
+        ["forge_update_spec"],
+        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"status":{"type":"string"},"note":{"type":"string"}},"required":["spec_id","status"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "forge.list_specs",
+        "/forge/specs",
+        "List forge specs for the authenticated user, optionally filtered by status.",
+        ["forge_list_specs"],
+        r#"{"type":"object","properties":{"status":{"type":"string"},"limit":{"type":"integer"}}}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "forge.get_spec",
+        "/forge/spec/{id}",
+        "Fetch one full spec by ID including related sub-records.",
+        ["forge_get_spec"],
+        r#"{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.log_hypothesis",
+        "/forge/log-hypothesis",
+        "Record a new hypothesis before touching code in response to a bug.",
+        ["forge_log_hypothesis"],
+        r#"{"type":"object","properties":{"session_id":{"type":"string"},"bug_description":{"type":"string"},"hypothesis":{"type":"string"},"confidence":{"type":"number"},"spec_id":{"type":"string"}},"required":["bug_description","hypothesis"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.log_outcome",
+        "/forge/log-outcome",
+        "Record the outcome of an existing hypothesis (correct, incorrect, or partial).",
+        ["forge_log_outcome"],
+        r#"{"type":"object","properties":{"hypothesis_id":{"type":"string"},"outcome":{"type":"string"},"notes":{"type":"string"}},"required":["hypothesis_id","outcome"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "forge.recall_errors",
+        "/forge/recall-errors",
+        "Search past hypotheses by keyword across bug description and hypothesis text.",
+        ["forge_recall_errors"],
+        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}}}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.consider_approaches",
+        "/forge/consider-approaches",
+        "Store two or more named design alternatives and return a structured comparison prompt.",
+        ["forge_consider_approaches"],
+        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"problem":{"type":"string"},"approaches":{"type":"array","items":{"type":"object"}},"chosen_index":{"type":"integer"}},"required":["problem","approaches"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.verify",
+        "/forge/verify",
+        "Record the result of a client-side verification run against a spec criterion.",
+        ["forge_verify"],
+        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"command":{"type":"string"},"exit_code":{"type":"integer"},"success":{"type":"boolean"},"duration_ms":{"type":"integer"},"criteria_index":{"type":"integer"},"stdout":{"type":"string"},"stderr":{"type":"string"}},"required":["command","exit_code","success"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.session_learn",
+        "/forge/session-learn",
+        "Persist a mid-session discovery to forge_session_learns.",
+        ["forge_session_learn"],
+        r#"{"type":"object","properties":{"discovery":{"type":"string"},"context":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"spec_id":{"type":"string"}},"required":["discovery"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "forge.session_recall",
+        "/forge/session-recall",
+        "Search forge_session_learns by keyword in the discovery text.",
+        ["forge_session_recall"],
+        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}}}"#
+    ),
+    // -- forge compute (stateless, backed by agent_forge library) ---------
+    route!(
+        Post,
+        Read,
+        "forge.think",
+        "/forge/think",
+        "Pure structured-reasoning prompt builder. Accepts a problem statement, optional constraints, and optional context.",
+        ["forge_think"],
+        r#"{"type":"object","properties":{"problem":{"type":"string"},"constraints":{"type":"array","items":{"type":"string"}},"context":{"type":"string"}}}"#
+    ),
+    route!(
+        Post,
+        Read,
+        "forge.declare_unknowns",
+        "/forge/declare-unknowns",
+        "Partition unknowns into blocking and non-blocking sets and return a clear action directive.",
+        ["forge_declare_unknowns"],
+        r#"{"type":"object","properties":{"unknowns":{"type":"array","items":{"type":"object","properties":{"description":{"type":"string"},"blocking":{"type":"boolean"},"resolution_hint":{"type":"string"}},"required":["description","blocking"]}}}}"#
+    ),
+    route!(
+        Post,
+        Read,
+        "forge.comment_check",
+        "/forge/comment-check",
+        "Scan a source file for declarations that lack a preceding comment and return a coverage report.",
+        ["forge_comment_check"],
+        r#"{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"extension":{"type":"string"}}}"#
+    ),
+    route!(
+        Post,
+        Read,
+        "forge.challenge_code",
+        "/forge/challenge-code",
+        "Build an adversarial review prompt for a source file, embedding a mechanical comment-coverage report.",
+        ["forge_challenge_code"],
+        r#"{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"extension":{"type":"string"}}}"#
+    ),
+    route!(
+        Post,
+        Read,
+        "forge.repo_map",
+        "/forge/repo-map",
+        "Walk a directory tree, extract named symbols, and return a ranked symbol map within a configurable token budget.",
+        ["forge_repo_map"],
+        r#"{"type":"object","properties":{"path":{"type":"string"},"focus":{"type":"array","items":{"type":"string"}},"max_tokens":{"type":"integer"}},"required":["path"]}"#
+    ),
+    route!(
+        Post,
+        Read,
+        "forge.search_code",
+        "/forge/search-code",
+        "Walk a directory tree and return symbols whose names contain the supplied query string (case-insensitive).",
+        ["forge_search_code"],
+        r#"{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string"},"symbol_type":{"type":"string"},"limit":{"type":"integer"}},"required":["path"]}"#
     ),
     // ===== auto-generated long-tail entries (mechanical, refine schemas/descriptions over time) =====
     // -- admin (generated) --

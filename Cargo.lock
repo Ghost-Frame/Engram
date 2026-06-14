@@ -4947,6 +4947,7 @@ dependencies = [
  "percent-encoding",
  "reqwest",
  "rpassword",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
@@ -5304,6 +5305,7 @@ dependencies = [
 name = "kleos-server"
 version = "1.7.0"
 dependencies = [
+ "agent-forge",
  "async-stream",
  "axum 0.8.9",
  "base64 0.22.1",

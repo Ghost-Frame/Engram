@@ -25,6 +25,7 @@ kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["sqlcipher"]
 kleos-cred = { path = "../kleos-cred", version = "1.2.1" }
 kleos-client = { path = "../kleos-client", version = "1.2.1", default-features = false }
 kleos-mcp = { path = "../kleos-mcp", version = "1.2.1", default-features = false }
+agent-forge = { path = "../agent-forge", version = "1.2.1" }
 percent-encoding = "2.3"
 axum = { workspace = true, features = ["ws"] }
 hmac = { workspace = true }

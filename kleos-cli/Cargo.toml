@@ -31,6 +31,7 @@ toml = { workspace = true }
 percent-encoding = "2"
 hostname = "0.4"
 ed25519-dalek = { workspace = true }
+rusqlite = { workspace = true }
 
 # Windows needs bundled SQLCipher since there's no system sqlite3.lib
 [target.'cfg(windows)'.dependencies]

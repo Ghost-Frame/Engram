@@ -16,6 +16,7 @@ pub mod dispatch;
 pub mod docs;
 pub mod episodes;
 pub mod errors;
+pub mod forge;
 pub mod frameshift_growth;
 pub mod fsrs;
 pub mod gate;
