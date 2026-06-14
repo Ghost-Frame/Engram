@@ -41,6 +41,8 @@ fn registry_includes_core_tools() {
         "skills_find_skills",
         "agents_verify",
         "mcp_schema_get",
+        "artifacts_list_for_memory",
+        "artifacts_search",
     ] {
         assert!(
             names.iter().any(|name| name == required),

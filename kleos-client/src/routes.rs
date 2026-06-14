@@ -174,7 +174,7 @@ pub static ROUTES: &[Route] = &[
         "/store",
         "Store a new memory.",
         ["memory_store"],
-        r#"{"type":"object","properties":{"content":{"type":"string"},"category":{"type":"string"},"source":{"type":"string"},"importance":{"type":"integer"},"tags":{"type":"array","items":{"type":"string"}},"session_id":{"type":"string"},"is_static":{"type":"boolean"},"space_id":{"type":"integer"}},"required":["content"]}"#
+        r#"{"type":"object","properties":{"content":{"type":"string"},"category":{"type":"string"},"source":{"type":"string"},"importance":{"type":"integer"},"tags":{"type":"array","items":{"type":"string"}},"session_id":{"type":"string"},"is_static":{"type":"boolean"},"space_id":{"type":"integer"},"artifacts":{"type":"array","description":"Optional inline file attachments stored with the memory (max 10), each base64-encoded.","items":{"type":"object","properties":{"filename":{"type":"string"},"mime_type":{"type":"string"},"data_base64":{"type":"string","description":"Base64-encoded file contents"}},"required":["filename","data_base64"]}}},"required":["content"]}"#
     ),
     route!(
         Post,
@@ -2547,7 +2547,7 @@ pub static ROUTES: &[Route] = &[
         Read,
         "artifacts.list_for_memory",
         "/artifacts/{memory_id}",
-        "Auto: GET /artifacts/{memory_id}.",
+        "List the file artifacts attached to a memory.",
         r#"{"type":"object","additionalProperties":true,"properties":{"memory_id":{}},"required":["memory_id"]}"#
     ),
     route!(
@@ -4314,6 +4314,31 @@ mod tests {
         );
         // `memory.search.memories` (naive reverse) must NOT exist / mis-resolve.
         assert!(resolve_tool_name("definitely_not_a_tool").is_none());
+    }
+
+    /// `memory.store` must advertise the inline `artifacts` attachment field so
+    /// MCP clients (which only ever see the tool schema) can store files with a
+    /// memory -- the standalone upload endpoint is multipart and unreachable
+    /// over MCP, so this inline path is the only way to attach via MCP.
+    #[test]
+    fn memory_store_schema_exposes_inline_artifacts() {
+        let route = find_by_name("memory.store").expect("memory.store exists");
+        let schema: serde_json::Value =
+            serde_json::from_str(route.input_schema).expect("schema parses");
+        let arts = &schema["properties"]["artifacts"];
+        assert_eq!(arts["type"], "array", "artifacts must be an array property");
+        let item_required = arts["items"]["required"]
+            .as_array()
+            .expect("artifact items declare required fields");
+        for field in ["filename", "data_base64"] {
+            assert!(
+                item_required.iter().any(|v| v == field),
+                "inline artifact must require {field}"
+            );
+        }
+        // The read-side artifact tools must resolve for MCP dispatch.
+        assert!(resolve_tool_name("artifacts_list_for_memory").is_some());
+        assert!(resolve_tool_name("artifacts_search").is_some());
     }
 
     /// The underscore alias must not become a block-list bypass: the underscore

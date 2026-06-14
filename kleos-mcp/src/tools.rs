@@ -73,6 +73,10 @@ const DAILY_TOOL_NAMES: &[&str] = &[
     "mcp_schema.get",
     "errors.report",
     "agents.verify",
+    // -- artifacts (read side: attach is inline via memory.store's `artifacts`
+    //    field; the standalone upload endpoint is multipart, not MCP-dispatchable) --
+    "artifacts.list_for_memory",
+    "artifacts.search",
     // -- forge (agent-forge stateful operations) --
     "forge.spec_task",
     "forge_spec_task",
