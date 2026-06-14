@@ -1,8 +1,15 @@
 # Woodpecker CI pipeline for Kleos
 # Runs on a self-hosted local runner (Podman backend)
 
+# Run exactly one pipeline per change: pull_request for PR branches, push only
+# on main, and tags. This avoids firing a push pipeline AND a pull_request
+# pipeline for the same PR-branch commit, which ran two full builds at once and
+# exhausted the 2-slot runner (SIGBUS in ld). See the per-step notes below.
 when:
-  - event: [push, pull_request, tag]
+  - event: pull_request
+  - event: push
+    branch: main
+  - event: tag
 
 variables:
   - &rust_image "rust:1.94-bookworm"
