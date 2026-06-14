@@ -597,11 +597,7 @@ pub fn run_migrations_to(conn: &rusqlite::Connection, target_version: u32) -> Re
         ",
     )?;
 
-    let current_version: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-        [],
-        |row| row.get(0),
-    )?;
+    let applied = applied_versions(conn)?;
 
     // DB-1: iterate the canonical MIGRATIONS registry rather than a parallel
     // hand-written if-block ladder, and wrap each transactional migration's up
@@ -612,7 +608,7 @@ pub fn run_migrations_to(conn: &rusqlite::Connection, target_version: u32) -> Re
     // PRAGMA foreign_keys, which SQLite forbids inside a SAVEPOINT, so they run
     // bare and rely on their own idempotent IF NOT EXISTS construction.
     for m in MIGRATIONS.iter() {
-        if (m.version as i64) <= current_version {
+        if applied.contains(&m.version) {
             continue;
         }
         if m.version > target_version {
@@ -741,6 +737,21 @@ fn record_migration(conn: &rusqlite::Connection, version: i64, name: &str) -> Re
     Ok(())
 }
 
+/// Returns the set of migration versions already recorded in `schema_version`.
+/// Replaces the `MAX(version)` high-water mark: a migration is pending iff its
+/// version is absent from this set, so a deleted/never-applied lower version
+/// self-heals and a fork may reserve a high version band without skipping
+/// upstream's lower additions.
+fn applied_versions(conn: &rusqlite::Connection) -> Result<std::collections::HashSet<u32>> {
+    let mut stmt = conn.prepare("SELECT version FROM schema_version")?;
+    let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+    let mut set = std::collections::HashSet::new();
+    for v in rows {
+        set.insert(v? as u32);
+    }
+    Ok(set)
+}
+
 /// Deletes the schema_version row for `version`, used by the down-migration path.
 fn remove_migration_record(conn: &rusqlite::Connection, version: u32) -> Result<()> {
     conn.execute(
@@ -866,9 +877,11 @@ pub async fn migration_status(db: &super::Database) -> Result<MigrationStatus> {
         })
         .await?;
 
+    let applied = db.read(|conn| applied_versions(conn)).await?;
+
     let pending_up: Vec<MigrationInfo> = MIGRATIONS
         .iter()
-        .filter(|m| m.version > current_version)
+        .filter(|m| !applied.contains(&m.version))
         .map(|m| MigrationInfo {
             version: m.version,
             description: m.description.to_string(),
@@ -6543,6 +6556,29 @@ mod tests {
         assert_eq!(col_exists, 0, "hash_version column should be dropped");
     }
 
+    /// Regression: with per-version gating, a recorded high version must NOT cause
+    /// a lower, unrecorded migration to be skipped. Under the old MAX() gate this
+    /// left the lower migration permanently unapplied.
+    #[test]
+    fn gap_below_recorded_version_self_heals() -> Result<()> {
+        let conn = open_test_db();
+        run_migrations(&conn)?;
+        let victim: u32 = MIGRATIONS
+            .iter()
+            .map(|m| m.version)
+            .find(|&v| v >= 40 && v <= 60)
+            .expect("a mid-chain version exists");
+        conn.execute("DELETE FROM schema_version WHERE version = ?1", [victim])?;
+        run_migrations(&conn)?;
+        let recorded: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM schema_version WHERE version = ?1",
+            [victim],
+            |r| r.get(0),
+        )?;
+        assert_eq!(recorded, 1, "victim version must be re-recorded after gap heal");
+        Ok(())
+    }
+
     /// Verify that attempting to roll back past a migration with no down fn
     /// returns an error.
     #[test]
@@ -6558,5 +6594,28 @@ mod tests {
             err_msg.contains("migration 18") || err_msg.contains("no down"),
             "error message should mention migration 18 or 'no down': {err_msg}"
         );
+    }
+
+    /// migration_status must report a deleted mid-chain version as pending, not hide
+    /// it behind MAX(version).
+    #[tokio::test]
+    async fn status_reports_gap_as_pending() -> Result<()> {
+        let db = crate::db::Database::connect_memory().await?;
+        let victim: u32 = MIGRATIONS
+            .iter()
+            .map(|m| m.version)
+            .find(|&v| v >= 40 && v <= 60)
+            .unwrap();
+        db.write(move |conn| {
+            conn.execute("DELETE FROM schema_version WHERE version = ?1", [victim])?;
+            Ok(())
+        })
+        .await?;
+        let status = migration_status(&db).await?;
+        assert!(
+            status.pending_up.iter().any(|m| m.version == victim),
+            "deleted version must appear in pending_up"
+        );
+        Ok(())
     }
 }
