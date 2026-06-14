@@ -19,12 +19,15 @@ pub fn converge_schema(conn: &rusqlite::Connection, manifest: &[TableDef]) -> Re
     let run = (|| -> Result<()> {
         for t in manifest {
             if !table_exists(conn, t.name)? {
-                conn.execute_batch(&create_table_sql(t))
-                    .map_err(|e| EngError::DatabaseMessage(format!("converge create {}: {e}", t.name)))?;
+                conn.execute_batch(&create_table_sql(t)).map_err(|e| {
+                    EngError::DatabaseMessage(format!("converge create {}: {e}", t.name))
+                })?;
                 actions.push(format!("create table {}", t.name));
                 for idx in t.indexes {
                     conn.execute_batch(&create_index_sql(t.name, idx))
-                        .map_err(|e| EngError::DatabaseMessage(format!("converge index {}: {e}", idx.name)))?;
+                        .map_err(|e| {
+                            EngError::DatabaseMessage(format!("converge index {}: {e}", idx.name))
+                        })?;
                     actions.push(format!("create index {}", idx.name));
                 }
                 continue;
@@ -35,14 +38,22 @@ pub fn converge_schema(conn: &rusqlite::Connection, manifest: &[TableDef]) -> Re
                     continue;
                 }
                 guard_add_column(t.name, c)?;
-                conn.execute_batch(&format!("ALTER TABLE {} ADD COLUMN {}", t.name, column_sql(c)))
-                    .map_err(|e| EngError::DatabaseMessage(format!("converge add {}.{}: {e}", t.name, c.name)))?;
+                conn.execute_batch(&format!(
+                    "ALTER TABLE {} ADD COLUMN {}",
+                    t.name,
+                    column_sql(c)
+                ))
+                .map_err(|e| {
+                    EngError::DatabaseMessage(format!("converge add {}.{}: {e}", t.name, c.name))
+                })?;
                 actions.push(format!("add column {}.{}", t.name, c.name));
             }
             for idx in t.indexes {
                 if !index_exists(conn, idx.name)? {
                     conn.execute_batch(&create_index_sql(t.name, idx))
-                        .map_err(|e| EngError::DatabaseMessage(format!("converge index {}: {e}", idx.name)))?;
+                        .map_err(|e| {
+                            EngError::DatabaseMessage(format!("converge index {}: {e}", idx.name))
+                        })?;
                     actions.push(format!("create index {}", idx.name));
                 }
             }
@@ -55,7 +66,11 @@ pub fn converge_schema(conn: &rusqlite::Connection, manifest: &[TableDef]) -> Re
             conn.execute_batch("RELEASE converge_schema")
                 .map_err(|e| EngError::DatabaseMessage(format!("converge release: {e}")))?;
             if !actions.is_empty() {
-                info!("schema converge applied {} change(s): {:?}", actions.len(), actions);
+                info!(
+                    "schema converge applied {} change(s): {:?}",
+                    actions.len(),
+                    actions
+                );
             }
             Ok(actions)
         }
@@ -102,7 +117,10 @@ fn index_exists(conn: &rusqlite::Connection, name: &str) -> Result<bool> {
     Ok(n > 0)
 }
 
-fn table_columns(conn: &rusqlite::Connection, table: &str) -> Result<std::collections::HashSet<String>> {
+fn table_columns(
+    conn: &rusqlite::Connection,
+    table: &str,
+) -> Result<std::collections::HashSet<String>> {
     let mut stmt = conn.prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
     let mut set = std::collections::HashSet::new();
@@ -127,7 +145,12 @@ fn column_sql(c: &ColumnDef) -> String {
 }
 
 fn create_table_sql(t: &TableDef) -> String {
-    let cols = t.columns.iter().map(column_sql).collect::<Vec<_>>().join(", ");
+    let cols = t
+        .columns
+        .iter()
+        .map(column_sql)
+        .collect::<Vec<_>>()
+        .join(", ");
     format!("CREATE TABLE IF NOT EXISTS {} ({cols})", t.name)
 }
 
@@ -151,10 +174,26 @@ mod tests {
     static T_CREATE: &[TableDef] = &[TableDef {
         name: "widget",
         columns: &[
-            ColumnDef { name: "id", sql_type: "INTEGER", not_null: false, default: None, primary_key: true },
-            ColumnDef { name: "label", sql_type: "TEXT", not_null: true, default: Some("''"), primary_key: false },
+            ColumnDef {
+                name: "id",
+                sql_type: "INTEGER",
+                not_null: false,
+                default: None,
+                primary_key: true,
+            },
+            ColumnDef {
+                name: "label",
+                sql_type: "TEXT",
+                not_null: true,
+                default: Some("''"),
+                primary_key: false,
+            },
         ],
-        indexes: &[IndexDef { name: "idx_widget_label", columns: &["label"], unique: false }],
+        indexes: &[IndexDef {
+            name: "idx_widget_label",
+            columns: &["label"],
+            unique: false,
+        }],
     }];
 
     #[test]
@@ -170,7 +209,9 @@ mod tests {
         assert_eq!(cols, vec!["id".to_string(), "label".to_string()]);
         let idx: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_widget_label'",
-            [], |r| r.get(0))?;
+            [],
+            |r| r.get(0),
+        )?;
         assert_eq!(idx, 1);
         let again = converge_schema(&conn, T_CREATE)?;
         assert!(again.is_empty(), "converge must be idempotent");
@@ -184,8 +225,20 @@ mod tests {
         static T: &[TableDef] = &[TableDef {
             name: "gadget",
             columns: &[
-                ColumnDef { name: "id", sql_type: "INTEGER", not_null: false, default: None, primary_key: true },
-                ColumnDef { name: "note", sql_type: "TEXT", not_null: true, default: Some("''"), primary_key: false },
+                ColumnDef {
+                    name: "id",
+                    sql_type: "INTEGER",
+                    not_null: false,
+                    default: None,
+                    primary_key: true,
+                },
+                ColumnDef {
+                    name: "note",
+                    sql_type: "TEXT",
+                    not_null: true,
+                    default: Some("''"),
+                    primary_key: false,
+                },
             ],
             indexes: &[],
         }];
@@ -199,12 +252,25 @@ mod tests {
     #[test]
     fn refuses_not_null_without_default_on_existing_table() {
         let conn = mem();
-        conn.execute_batch("CREATE TABLE thing (id INTEGER PRIMARY KEY)").unwrap();
+        conn.execute_batch("CREATE TABLE thing (id INTEGER PRIMARY KEY)")
+            .unwrap();
         static T: &[TableDef] = &[TableDef {
             name: "thing",
             columns: &[
-                ColumnDef { name: "id", sql_type: "INTEGER", not_null: false, default: None, primary_key: true },
-                ColumnDef { name: "required", sql_type: "TEXT", not_null: true, default: None, primary_key: false },
+                ColumnDef {
+                    name: "id",
+                    sql_type: "INTEGER",
+                    not_null: false,
+                    default: None,
+                    primary_key: true,
+                },
+                ColumnDef {
+                    name: "required",
+                    sql_type: "TEXT",
+                    not_null: true,
+                    default: None,
+                    primary_key: false,
+                },
             ],
             indexes: &[],
         }];

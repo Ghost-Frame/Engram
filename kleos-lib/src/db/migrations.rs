@@ -877,7 +877,7 @@ pub async fn migration_status(db: &super::Database) -> Result<MigrationStatus> {
         })
         .await?;
 
-    let applied = db.read(|conn| applied_versions(conn)).await?;
+    let applied = db.read(applied_versions).await?;
 
     let pending_up: Vec<MigrationInfo> = MIGRATIONS
         .iter()
@@ -6566,7 +6566,7 @@ mod tests {
         let victim: u32 = MIGRATIONS
             .iter()
             .map(|m| m.version)
-            .find(|&v| v >= 40 && v <= 60)
+            .find(|&v| (40..=60).contains(&v))
             .expect("a mid-chain version exists");
         conn.execute("DELETE FROM schema_version WHERE version = ?1", [victim])?;
         run_migrations(&conn)?;
@@ -6575,7 +6575,10 @@ mod tests {
             [victim],
             |r| r.get(0),
         )?;
-        assert_eq!(recorded, 1, "victim version must be re-recorded after gap heal");
+        assert_eq!(
+            recorded, 1,
+            "victim version must be re-recorded after gap heal"
+        );
         Ok(())
     }
 
@@ -6604,7 +6607,7 @@ mod tests {
         let victim: u32 = MIGRATIONS
             .iter()
             .map(|m| m.version)
-            .find(|&v| v >= 40 && v <= 60)
+            .find(|&v| (40..=60).contains(&v))
             .unwrap();
         db.write(move |conn| {
             conn.execute("DELETE FROM schema_version WHERE version = ?1", [victim])?;
