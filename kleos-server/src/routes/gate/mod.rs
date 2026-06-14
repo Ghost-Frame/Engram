@@ -174,11 +174,7 @@ async fn check_handler(
                     // Non-code file (docs, config, etc.) -- exempt from the spec
                     // requirement, matching the original enforce-agent-forge.sh
                     // allow-list.
-                    tracing::debug!(
-                        "forge-gate: exempt path {:?} (tool={})",
-                        file_path,
-                        tool
-                    );
+                    tracing::debug!("forge-gate: exempt path {:?} (tool={})", file_path, tool);
                 }
                 Some(ref file_path) => {
                     // Code file that requires an active spec. session_id must be
@@ -871,8 +867,8 @@ pub(crate) fn is_forge_exempt(file_path: &str) -> bool {
 
     // Exempt extensions (lowercase for case-insensitive comparison).
     const EXEMPT_EXTS: &[&str] = &[
-        ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".lock", ".env", ".cfg", ".ini",
-        ".conf", ".csv", ".xml", ".html", ".css", ".svg", ".sh",
+        ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".lock", ".env", ".cfg", ".ini", ".conf",
+        ".csv", ".xml", ".html", ".css", ".svg", ".sh",
     ];
 
     // Check path component for hook directory.
@@ -914,7 +910,10 @@ mod forge_gate_tests {
     /// Markdown file (by extension) must be exempt.
     #[test]
     fn exempt_readme_md() {
-        assert!(is_forge_exempt("/x/README.md"), "/x/README.md must be exempt");
+        assert!(
+            is_forge_exempt("/x/README.md"),
+            "/x/README.md must be exempt"
+        );
     }
 
     /// Notes .md file must be exempt (any .md extension, not just special basenames).
@@ -964,13 +963,19 @@ mod forge_gate_tests {
     /// Python source file is NOT exempt.
     #[test]
     fn not_exempt_python_source() {
-        assert!(!is_forge_exempt("/x/main.py"), "/x/main.py must NOT be exempt");
+        assert!(
+            !is_forge_exempt("/x/main.py"),
+            "/x/main.py must NOT be exempt"
+        );
     }
 
     /// TypeScript source file is NOT exempt.
     #[test]
     fn not_exempt_ts_source() {
-        assert!(!is_forge_exempt("/x/app.ts"), "/x/app.ts must NOT be exempt");
+        assert!(
+            !is_forge_exempt("/x/app.ts"),
+            "/x/app.ts must NOT be exempt"
+        );
     }
 
     // -- extract_write_edit_path --

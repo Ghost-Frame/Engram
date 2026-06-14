@@ -2898,7 +2898,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(has_user_id, 0, "precondition: memories has no user_id at v54");
+        assert_eq!(
+            has_user_id, 0,
+            "precondition: memories has no user_id at v54"
+        );
 
         // Seed pre-existing rows the way a populated production shard would have.
         for i in 0..3 {
@@ -2925,7 +2928,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(owned, 3, "every pre-existing row backfilled to the shard owner");
+        assert_eq!(
+            owned, 3,
+            "every pre-existing row backfilled to the shard owner"
+        );
 
         let integrity: String = conn
             .query_row("PRAGMA integrity_check", [], |r| r.get(0))

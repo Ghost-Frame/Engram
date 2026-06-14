@@ -93,7 +93,8 @@ pub async fn mark_stale_tasks(
                               > (?2 / 86400.0)) \
                        )",
             )?;
-            let mut rows = stmt.query(rusqlite::params![grace_multiplier, no_heartbeat_idle_secs])?;
+            let mut rows =
+                stmt.query(rusqlite::params![grace_multiplier, no_heartbeat_idle_secs])?;
             let mut ids = Vec::new();
             while let Some(row) = rows.next()? {
                 let id: i64 = row.get(0)?;

@@ -404,14 +404,9 @@ async fn update_spec_handler(
     Json(body): Json<UpdateSpecBody>,
 ) -> Result<Json<Value>, AppError> {
     let user_id = auth.effective_user_id();
-    let result = kleos_lib::forge::spec::update_spec(
-        &db,
-        user_id,
-        body.spec_id,
-        body.status,
-        body.note,
-    )
-    .await?;
+    let result =
+        kleos_lib::forge::spec::update_spec(&db, user_id, body.spec_id, body.status, body.note)
+            .await?;
     Ok(Json(result))
 }
 
@@ -422,8 +417,7 @@ async fn list_specs_handler(
     Query(q): Query<ListSpecsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let user_id = auth.effective_user_id();
-    let result =
-        kleos_lib::forge::spec::list_specs(&db, user_id, q.status, q.limit).await?;
+    let result = kleos_lib::forge::spec::list_specs(&db, user_id, q.status, q.limit).await?;
     Ok(Json(result))
 }
 
@@ -566,7 +560,6 @@ async fn session_recall_handler(
     Query(q): Query<SessionRecallQuery>,
 ) -> Result<Json<Value>, AppError> {
     let user_id = auth.effective_user_id();
-    let result =
-        kleos_lib::forge::session::session_recall(&db, user_id, q.query, q.limit).await?;
+    let result = kleos_lib::forge::session::session_recall(&db, user_id, q.query, q.limit).await?;
     Ok(Json(result))
 }

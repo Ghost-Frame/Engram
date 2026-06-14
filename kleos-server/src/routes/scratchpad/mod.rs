@@ -147,11 +147,11 @@ mod tests {
         // Write a ledger entry the way the forge spec-task handler does.
         upsert_entry(
             &db,
-            "S",           // session
-            "spec-task",   // agent == namespace ke queries
-            "",            // model
-            "S:/x/a.rs",   // entry_key == `format!("{session_id}:{path}")` ke builds
-            "spec_1",      // value == spec id
+            "S",         // session
+            "spec-task", // agent == namespace ke queries
+            "",          // model
+            "S:/x/a.rs", // entry_key == `format!("{session_id}:{path}")` ke builds
+            "spec_1",    // value == spec id
             1440,
         )
         .await

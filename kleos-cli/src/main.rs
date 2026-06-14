@@ -4437,12 +4437,10 @@ async fn handle_forge_command(client: &Client, cmd: &ForgeCommands) {
             }
         }
 
-        ForgeCommands::GetSpec { id } => {
-            match client.get(&format!("/forge/spec/{}", id)).await {
-                Ok(v) => pretty(v),
-                Err(e) => eprintln!("Error: {}", e),
-            }
-        }
+        ForgeCommands::GetSpec { id } => match client.get(&format!("/forge/spec/{}", id)).await {
+            Ok(v) => pretty(v),
+            Err(e) => eprintln!("Error: {}", e),
+        },
 
         ForgeCommands::LogHypothesis {
             bug_description,
@@ -4627,9 +4625,8 @@ async fn handle_forge_command(client: &Client, cmd: &ForgeCommands) {
             let parsed: Vec<Value> = unknowns
                 .iter()
                 .map(|s| {
-                    serde_json::from_str(s).unwrap_or_else(|_| {
-                        json!({"description": s, "blocking": false})
-                    })
+                    serde_json::from_str(s)
+                        .unwrap_or_else(|_| json!({"description": s, "blocking": false}))
                 })
                 .collect();
             let body = json!({ "unknowns": parsed });
@@ -4801,9 +4798,7 @@ async fn handle_forge_command(client: &Client, cmd: &ForgeCommands) {
                         task_description: row.get::<_, String>(1)?,
                         task_type: row.get::<_, String>(2)?,
                         acceptance_criteria: parse_json_array(row.get::<_, Option<String>>(3)?),
-                        interface_contract: row
-                            .get::<_, Option<String>>(4)?
-                            .unwrap_or_default(),
+                        interface_contract: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
                         edge_cases: parse_json_array(row.get::<_, Option<String>>(5)?),
                         files_to_touch: parse_json_array(row.get::<_, Option<String>>(6)?),
                         dependencies: row.get::<_, Option<String>>(7)?,
@@ -4825,10 +4820,7 @@ async fn handle_forge_command(client: &Client, cmd: &ForgeCommands) {
             }
 
             // The session ID used on every imported spec.
-            let sid = session_id
-                .as_deref()
-                .unwrap_or("import-local")
-                .to_string();
+            let sid = session_id.as_deref().unwrap_or("import-local").to_string();
 
             // Track import outcomes: (local_id, reason) for skipped rows.
             let mut imported = 0usize;

@@ -152,7 +152,11 @@ fn bootstrap_task_query(input: &Value) -> String {
         .get("cwd")
         .and_then(|c| c.as_str())
         .map(|s| s.to_string())
-        .or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string()));
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.display().to_string())
+        });
     let Some(cwd) = cwd else {
         return LEGACY_BOOTSTRAP_QUERY.to_string();
     };
@@ -179,7 +183,11 @@ fn cwd_project(input: &Value) -> Option<String> {
         .get("cwd")
         .and_then(|c| c.as_str())
         .map(|s| s.to_string())
-        .or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string()))?;
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.display().to_string())
+        })?;
     std::path::Path::new(&cwd)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())

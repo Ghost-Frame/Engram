@@ -126,8 +126,11 @@ pub async fn update_spec(
     }
 
     let now = Utc::now().timestamp();
-    let completed_at: Option<i64> =
-        if status == "completed" || status == "failed" { Some(now) } else { None };
+    let completed_at: Option<i64> = if status == "completed" || status == "failed" {
+        Some(now)
+    } else {
+        None
+    };
     let spec_id_for_err = spec_id.clone();
 
     let rows = db
@@ -142,7 +145,9 @@ pub async fn update_spec(
         .await?;
 
     if rows == 0 {
-        return Err(EngError::NotFound(format!("Spec not found: {spec_id_for_err}")));
+        return Err(EngError::NotFound(format!(
+            "Spec not found: {spec_id_for_err}"
+        )));
     }
 
     Ok(serde_json::json!({ "message": format!("Spec marked as {}", rows) }))
@@ -533,7 +538,10 @@ mod tests {
             .await
             .expect("spec_covers should not error");
 
-        assert!(covered, "spec_covers must be true for declared file src/lib.rs");
+        assert!(
+            covered,
+            "spec_covers must be true for declared file src/lib.rs"
+        );
     }
 
     /// TEST 1d: spec_covers returns false for a file not declared in files_to_touch.
@@ -602,7 +610,10 @@ mod tests {
         let before = spec_covers(&db, 1, "S1", "src/lib.rs")
             .await
             .expect("spec_covers before completion");
-        assert!(before, "precondition: spec_covers must be true before completing");
+        assert!(
+            before,
+            "precondition: spec_covers must be true before completing"
+        );
 
         // Mark as completed.
         update_spec(&db, 1, spec_id, "completed".to_string(), None)

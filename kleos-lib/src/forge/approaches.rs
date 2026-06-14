@@ -136,9 +136,19 @@ pub async fn consider_approaches(
                 i,
                 a.name,
                 a.description,
-                if a.pros.is_empty() { "(none)".to_string() } else { a.pros.join("; ") },
-                if a.cons.is_empty() { "(none)".to_string() } else { a.cons.join("; ") },
-                a.score.map(|s| s.to_string()).unwrap_or_else(|| "n/a".into()),
+                if a.pros.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    a.pros.join("; ")
+                },
+                if a.cons.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    a.cons.join("; ")
+                },
+                a.score
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "n/a".into()),
             ))
             .collect::<Vec<_>>()
             .join("\n\n"),
