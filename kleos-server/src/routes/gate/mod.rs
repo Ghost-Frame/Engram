@@ -169,12 +169,18 @@ async fn check_handler(
                         tool,
                         body.command
                     );
+                    // Fail open, but return now so this allowed Write/Edit bypasses
+                    // the human approval-wait below (forge governs Write/Edit here).
+                    return Ok((StatusCode::CREATED, Json(json!(result))));
                 }
                 Some(ref file_path) if is_forge_exempt(file_path) => {
                     // Non-code file (docs, config, etc.) -- exempt from the spec
                     // requirement, matching the original enforce-agent-forge.sh
                     // allow-list.
                     tracing::debug!("forge-gate: exempt path {:?} (tool={})", file_path, tool);
+                    // Exempt (docs/config/.claude-hooks/CLAUDE.md) -- allow and return
+                    // now so it bypasses the human approval-wait below.
+                    return Ok((StatusCode::CREATED, Json(json!(result))));
                 }
                 Some(ref file_path) => {
                     // Code file that requires an active spec. session_id must be
@@ -227,12 +233,15 @@ async fn check_handler(
                     .await
                     {
                         Ok(true) => {
-                            // Spec covers this file -- leave result.allowed as-is.
+                            // Spec covers this file -- the spec IS the authorization,
+                            // so allow and return now to bypass the human approval-wait
+                            // that Write/Edit would otherwise hit below.
                             tracing::debug!(
                                 "forge-gate: covered {:?} session={:?}",
                                 file_path,
                                 session_id
                             );
+                            return Ok((StatusCode::CREATED, Json(json!(result))));
                         }
                         Ok(false) => {
                             let reason = format!(
