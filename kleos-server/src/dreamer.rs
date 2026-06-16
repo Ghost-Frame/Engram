@@ -275,7 +275,8 @@ async fn run_cycle(
     }
 
     let mut brain_results: std::collections::HashMap<i64, Value> = std::collections::HashMap::new();
-    let mut brain_ok = false;
+    let mut brain_cycle_ok = 0u64;
+    let mut brain_cycle_err = 0u64;
     let mut evolution_ran = false;
     if let Some(b) = brain {
         if b.is_ready() {
@@ -284,13 +285,18 @@ async fn run_cycle(
             for user_id in &users {
                 match b.dream_cycle(*user_id).await {
                     Ok(resp) => {
-                        brain_ok = resp.ok;
+                        if resp.ok {
+                            brain_cycle_ok += 1;
+                        } else {
+                            brain_cycle_err += 1;
+                        }
                         info!(user_id, data = ?resp.data, "dreamer: brain dream_cycle complete");
                         if let Some(data) = resp.data {
                             brain_results.insert(*user_id, data);
                         }
                     }
                     Err(e) => {
+                        brain_cycle_err += 1;
                         warn!(user_id, error = %e, "dreamer: brain dream_cycle failed");
                     }
                 }
@@ -407,11 +413,8 @@ async fn run_cycle(
     s.totals.pipeline_ok += total_ok as u64;
     s.totals.pipeline_failed += total_failed as u64;
     if brain.is_some() {
-        if brain_ok {
-            s.totals.brain_cycles += 1;
-        } else {
-            s.totals.brain_errors += 1;
-        }
+        s.totals.brain_cycles += brain_cycle_ok;
+        s.totals.brain_errors += brain_cycle_err;
         if evolution_ran {
             s.totals.evolution_trainings += 1;
         }
