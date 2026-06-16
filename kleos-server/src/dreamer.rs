@@ -109,7 +109,7 @@ pub fn new_stats_handle() -> DreamerStatsHandle {
     Arc::new(RwLock::new(DreamerStats::default()))
 }
 
-async fn active_user_ids(db: &Database) -> Result<Vec<i64>, EngError> {
+pub(crate) async fn active_user_ids(db: &Database) -> Result<Vec<i64>, EngError> {
     db.read(|conn| {
         let mut stmt = conn.prepare("SELECT id FROM users ORDER BY id")?;
         let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
@@ -279,14 +279,18 @@ async fn run_cycle(
     let mut evolution_ran = false;
     if let Some(b) = brain {
         if b.is_ready() {
-            match b.dream_cycle().await {
-                Ok(resp) => {
-                    brain_ok = resp.ok;
-                    info!(data = ?resp.data, "dreamer: brain dream_cycle complete");
-                    brain_result = resp.data;
-                }
-                Err(e) => {
-                    warn!(error = %e, "dreamer: brain dream_cycle failed");
+            // Fan out dream_cycle over every active tenant so patterns are
+            // consolidated per-user, not only for the operator namespace.
+            for user_id in &users {
+                match b.dream_cycle(*user_id).await {
+                    Ok(resp) => {
+                        brain_ok = resp.ok;
+                        info!(user_id, data = ?resp.data, "dreamer: brain dream_cycle complete");
+                        brain_result = resp.data;
+                    }
+                    Err(e) => {
+                        warn!(user_id, error = %e, "dreamer: brain dream_cycle failed");
+                    }
                 }
             }
             // Post-dream hook 1: evolution training step.

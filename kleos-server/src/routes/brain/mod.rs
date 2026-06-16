@@ -3,6 +3,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
+use crate::dreamer::active_user_ids;
 use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
@@ -124,10 +125,11 @@ async fn absorb_handler(
     Ok(Json(json!({ "ok": true, "id": body.id })))
 }
 
-// H-R3-001: dream_cycle is a global mutation; admin only.
+// H-R3-001: dream_cycle fans out over all active tenants; admin only.
 async fn dream_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
     require_brain(&state).await?;
@@ -135,8 +137,17 @@ async fn dream_handler(
         .brain
         .as_ref()
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("brain not configured".into())))?;
-    let result = brain.dream_cycle().await?;
-    Ok(Json(json!({ "ok": true, "result": result })))
+    let users = active_user_ids(&db)
+        .await
+        .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string().into())))?;
+    let mut last_result = serde_json::Value::Null;
+    for user_id in users {
+        let resp = brain.dream_cycle(user_id).await?;
+        if let Some(data) = resp.data {
+            last_result = data;
+        }
+    }
+    Ok(Json(json!({ "ok": true, "result": last_result })))
 }
 
 // C-R3-001: feedback verifies that every memory_id in the body is owned by

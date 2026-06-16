@@ -47,8 +47,10 @@ pub trait BrainBackend: Send + Sync {
     async fn decay_tick(&self, user_id: i64, ticks: u32) -> Result<()>;
     /// Per-tenant brain statistics.
     async fn stats(&self, user_id: i64) -> Result<BrainStats>;
-    /// Global dream cycle (admin-only at the route layer).
-    async fn dream_cycle(&self) -> Result<BrainResponse>;
+    /// Per-tenant dream cycle. `user_id` scopes the consolidation to one
+    /// tenant's pattern space. The route/dreamer layer fans out over all
+    /// active users; admin scope is still required at the route boundary.
+    async fn dream_cycle(&self, user_id: i64) -> Result<BrainResponse>;
     async fn feedback_signal(
         &self,
         user_id: i64,
@@ -162,6 +164,7 @@ pub enum BrainCommand {
         seq: Option<i64>,
     },
     DreamCycle {
+        user_id: i64,
         #[serde(skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
     },
@@ -318,7 +321,7 @@ impl BrainManager {
             BrainCommand::DecayTick { seq, .. } => *seq = Some(this_seq),
             BrainCommand::GetStats { seq, .. } => *seq = Some(this_seq),
             BrainCommand::Shutdown { seq, .. } => *seq = Some(this_seq),
-            BrainCommand::DreamCycle { seq, .. } => *seq = Some(this_seq),
+            BrainCommand::DreamCycle { seq, .. } => *seq = Some(this_seq), // user_id forwarded as-is
             BrainCommand::FeedbackSignal { seq, .. } => *seq = Some(this_seq),
             BrainCommand::EvolutionTrain { seq, .. } => *seq = Some(this_seq),
             BrainCommand::EvolutionStats { seq, .. } => *seq = Some(this_seq),
@@ -671,8 +674,8 @@ impl BrainManager {
         Ok(resp.data.unwrap_or(Value::Null))
     }
 
-    pub async fn dream_cycle(&self) -> Result<BrainResponse> {
-        self.send_command(BrainCommand::DreamCycle { seq: None })
+    pub async fn dream_cycle(&self, user_id: i64) -> Result<BrainResponse> {
+        self.send_command(BrainCommand::DreamCycle { user_id, seq: None })
             .await
     }
 
@@ -742,8 +745,8 @@ impl BrainBackend for BrainManager {
         self.stats().await
     }
 
-    async fn dream_cycle(&self) -> Result<BrainResponse> {
-        self.dream_cycle().await
+    async fn dream_cycle(&self, user_id: i64) -> Result<BrainResponse> {
+        self.dream_cycle(user_id).await
     }
 
     async fn feedback_signal(
@@ -962,14 +965,12 @@ impl BrainBackend for HopfieldBrainManager {
         }))
     }
 
-    async fn dream_cycle(&self) -> Result<BrainResponse> {
+    async fn dream_cycle(&self, user_id: i64) -> Result<BrainResponse> {
         use crate::brain::dream::run_dream_cycle;
 
-        // Dream is a global maintenance pass on the shared network. Per-tenant
-        // dream scoping needs the route layer to fan out per active user; for
-        // now this consolidates against pattern-owner 1 (operator namespace)
-        // and is gated to admin scope at the route boundary.
-        let user_id: i64 = 1;
+        // Dream scoped to a single tenant's pattern space. The route/dreamer
+        // layer fans out over all active users; admin scope required at the
+        // route boundary (H-R3-001).
         let mut network = self.network.write().await;
 
         // Full 6-stage consolidation: replay, merge, prune, discover, decorrelate, resolve.
