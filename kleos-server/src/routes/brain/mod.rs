@@ -129,7 +129,6 @@ async fn absorb_handler(
 async fn dream_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
-    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
     require_brain(&state).await?;
@@ -137,7 +136,9 @@ async fn dream_handler(
         .brain
         .as_ref()
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("brain not configured".into())))?;
-    let users = active_user_ids(&db)
+    // Use the monolith DB (state.db) — users table lives in the registry,
+    // not in tenant shards (ResolvedDb would point to the wrong shard).
+    let users = active_user_ids(&state.db)
         .await
         .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string().into())))?;
     let mut last_result = serde_json::Value::Null;

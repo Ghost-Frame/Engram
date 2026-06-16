@@ -847,7 +847,6 @@ async fn run_pipeline_handler(
 async fn dream_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
-    ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     if !auth.has_scope(&kleos_lib::auth::Scope::Admin) {
         return Err(AppError(kleos_lib::EngError::Auth(
@@ -855,7 +854,8 @@ async fn dream_handler(
         )));
     }
     if let Some(ref brain) = state.brain {
-        let users = active_user_ids(&db)
+        // Use the monolith DB — users table lives in the registry, not tenant shards.
+        let users = active_user_ids(&state.db)
             .await
             .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string().into())))?;
         let mut last_result = String::new();

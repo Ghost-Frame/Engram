@@ -274,7 +274,7 @@ async fn run_cycle(
         }
     }
 
-    let mut brain_result: Option<Value> = None;
+    let mut brain_results: std::collections::HashMap<i64, Value> = std::collections::HashMap::new();
     let mut brain_ok = false;
     let mut evolution_ran = false;
     if let Some(b) = brain {
@@ -286,7 +286,9 @@ async fn run_cycle(
                     Ok(resp) => {
                         brain_ok = resp.ok;
                         info!(user_id, data = ?resp.data, "dreamer: brain dream_cycle complete");
-                        brain_result = resp.data;
+                        if let Some(data) = resp.data {
+                            brain_results.insert(*user_id, data);
+                        }
                     }
                     Err(e) => {
                         warn!(user_id, error = %e, "dreamer: brain dream_cycle failed");
@@ -334,17 +336,6 @@ async fn run_cycle(
         }
     }
 
-    // Deserialize dream cycle result for growth context enrichment.
-    let dream_cycle: Option<DreamCycleResult> = brain_result.as_ref().and_then(|v| {
-        match serde_json::from_value::<DreamCycleResult>(v.clone()) {
-            Ok(c) => Some(c),
-            Err(e) => {
-                warn!(error = %e, "dreamer: failed to deserialize dream cycle for growth context");
-                None
-            }
-        }
-    });
-
     // Post-dream hook 2: probabilistic growth reflection per user.
     let mut growth_calls = 0u64;
     let mut growth_stored = 0u64;
@@ -353,6 +344,16 @@ async fn run_cycle(
         if roll >= GROWTH_REFLECT_CHANCE {
             continue;
         }
+        // Deserialize this user's own dream result for growth context.
+        let dream_cycle: Option<DreamCycleResult> = brain_results.get(user_id).and_then(|v| {
+            match serde_json::from_value::<DreamCycleResult>(v.clone()) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    warn!(user_id, error = %e, "dreamer: failed to deserialize dream cycle for growth context");
+                    None
+                }
+            }
+        });
         match recent_memory_contents(db, *user_id, GROWTH_CONTEXT_SIZE).await {
             Ok(ctx) if !ctx.is_empty() => {
                 let mut merged_ctx = Vec::new();
@@ -402,7 +403,7 @@ async fn run_cycle(
     s.last_pipeline_ok = total_ok;
     s.last_pipeline_failed = total_failed;
     s.last_pipeline_report = last_report;
-    s.last_brain_result = brain_result;
+    s.last_brain_result = brain_results.into_values().next();
     s.totals.pipeline_ok += total_ok as u64;
     s.totals.pipeline_failed += total_failed as u64;
     if brain.is_some() {
