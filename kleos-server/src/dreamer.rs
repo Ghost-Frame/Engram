@@ -409,6 +409,8 @@ async fn run_cycle(
     s.last_pipeline_ok = total_ok;
     s.last_pipeline_failed = total_failed;
     s.last_pipeline_report = last_report;
+    // last_brain_result is display/debug only; stores one arbitrary tenant
+    // result. A future refactor can expose Vec<Value> indexed by user_id.
     s.last_brain_result = brain_results.into_values().next();
     s.totals.pipeline_ok += total_ok as u64;
     s.totals.pipeline_failed += total_failed as u64;
