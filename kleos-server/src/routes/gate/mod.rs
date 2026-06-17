@@ -244,40 +244,65 @@ async fn check_handler(
                             return Ok((StatusCode::CREATED, Json(json!(result))));
                         }
                         Ok(false) => {
-                            let reason = format!(
-                                "BLOCKED: no active agent-forge spec covers this file this \
-                                 session. Run `kleos-cli forge spec-task` (or the \
-                                 forge.spec_task MCP tool) declaring this file in \
-                                 files_to_touch, then retry. ZERO code without agent-forge. \
-                                 [file={:?} session={:?}]",
-                                file_path, session_id
-                            );
+                            // Mode: "deny" hard-blocks (strict ZERO-code stance); "warn"
+                            // (default) allows the edit but surfaces a reminder via
+                            // enrichment. Set KLEOS_FORGE_GATE_MODE=deny to harden.
+                            let mode = std::env::var("KLEOS_FORGE_GATE_MODE")
+                                .unwrap_or_else(|_| "warn".to_string());
+                            if mode == "deny" {
+                                let reason = format!(
+                                    "BLOCKED: no active agent-forge spec covers this file this \
+                                     session. Run `kleos-cli forge spec-task` (or the \
+                                     forge.spec_task MCP tool) declaring this file in \
+                                     files_to_touch, then retry. ZERO code without agent-forge. \
+                                     [file={:?} session={:?}]",
+                                    file_path, session_id
+                                );
+                                tracing::info!(
+                                    "forge-gate: BLOCKED {:?} -- no spec (session={:?})",
+                                    file_path,
+                                    session_id
+                                );
+                                let gate_id = store_gate_request(
+                                    &db,
+                                    GateRequestInsert {
+                                        user_id: auth.effective_user_id(),
+                                        agent: &body.agent,
+                                        command: &body.command,
+                                        context: body.context.as_deref(),
+                                        status: "blocked",
+                                        reason: Some(&reason),
+                                        session_id: Some(&session_id),
+                                    },
+                                )
+                                .await?;
+                                result = GateCheckResult {
+                                    allowed: false,
+                                    reason: Some(reason),
+                                    resolved_command: Some(body.command.clone()),
+                                    gate_id,
+                                    requires_approval: false,
+                                    enrichment: None,
+                                };
+                                return Ok((StatusCode::CREATED, Json(json!(result))));
+                            }
+                            // warn mode: allow the edit, but nudge toward a spec.
                             tracing::info!(
-                                "forge-gate: BLOCKED {:?} -- no spec (session={:?})",
+                                "forge-gate: WARN {:?} -- no spec (session={:?}), allowing",
                                 file_path,
                                 session_id
                             );
-                            let gate_id = store_gate_request(
-                                &db,
-                                GateRequestInsert {
-                                    user_id: auth.effective_user_id(),
-                                    agent: &body.agent,
-                                    command: &body.command,
-                                    context: body.context.as_deref(),
-                                    status: "blocked",
-                                    reason: Some(&reason),
-                                    session_id: Some(&session_id),
-                                },
-                            )
-                            .await?;
-                            result = GateCheckResult {
-                                allowed: false,
-                                reason: Some(reason),
-                                resolved_command: Some(body.command.clone()),
-                                gate_id,
-                                requires_approval: false,
-                                enrichment: None,
-                            };
+                            let warn = format!(
+                                "agent-forge: no spec covers {:?} this session -- allowed in \
+                                 warn mode. Run `kleos-cli forge spec-task` to track this work.",
+                                file_path
+                            );
+                            let mut e = result.enrichment.unwrap_or_default();
+                            if !e.is_empty() {
+                                e.push('\n');
+                            }
+                            e.push_str(&warn);
+                            result.enrichment = Some(e);
                             return Ok((StatusCode::CREATED, Json(json!(result))));
                         }
                         Err(e) => {
@@ -882,6 +907,13 @@ pub(crate) fn is_forge_exempt(file_path: &str) -> bool {
 
     // Check path component for hook directory.
     if file_path.contains(".claude/hooks/") {
+        return true;
+    }
+
+    // Scope: non-code working areas are exempt. Plans live in ~/projects/plans/
+    // (house rule: never inside project repos) and /tmp is scratch. Forge
+    // enforcement targets real project code, not these.
+    if file_path.contains("/projects/plans/") || file_path.contains("/tmp/") {
         return true;
     }
 
