@@ -149,7 +149,11 @@ async fn check_handler(
     //
     // Only applied when the existing checks have already allowed the request --
     // no point overriding an existing block.
-    if result.allowed {
+    // Operator policy, OFF by default: a stock kleos-server enforces nothing, so
+    // cloners are never forced into agent-forge. Opt in per deployment with
+    // KLEOS_FORGE_GATE_MODE=warn (allow + remind) or =deny (strict ZERO-code block).
+    let forge_mode = std::env::var("KLEOS_FORGE_GATE_MODE").unwrap_or_else(|_| "off".to_string());
+    if result.allowed && forge_mode != "off" {
         let tool = body.tool_name.as_deref().unwrap_or("");
         if tool == "Write" || tool == "Edit" {
             // Extract the target file path. Primary source: parse `"Write /path"`
@@ -244,12 +248,10 @@ async fn check_handler(
                             return Ok((StatusCode::CREATED, Json(json!(result))));
                         }
                         Ok(false) => {
-                            // Mode: "deny" hard-blocks (strict ZERO-code stance); "warn"
-                            // (default) allows the edit but surfaces a reminder via
-                            // enrichment. Set KLEOS_FORGE_GATE_MODE=deny to harden.
-                            let mode = std::env::var("KLEOS_FORGE_GATE_MODE")
-                                .unwrap_or_else(|_| "warn".to_string());
-                            if mode == "deny" {
+                            // forge_mode is "warn" or "deny" here (we never enter the
+                            // block when it is "off"). "deny" hard-blocks; "warn" allows
+                            // the edit but surfaces a reminder via enrichment.
+                            if forge_mode == "deny" {
                                 let reason = format!(
                                     "BLOCKED: no active agent-forge spec covers this file this \
                                      session. Run `kleos-cli forge spec-task` (or the \
@@ -910,11 +912,18 @@ pub(crate) fn is_forge_exempt(file_path: &str) -> bool {
         return true;
     }
 
-    // Scope: non-code working areas are exempt. Plans live in ~/projects/plans/
-    // (house rule: never inside project repos) and /tmp is scratch. Forge
-    // enforcement targets real project code, not these.
-    if file_path.contains("/projects/plans/") || file_path.contains("/tmp/") {
-        return true;
+    // Operator-configured exempt path substrings (comma-separated). Empty by
+    // default so no operator-specific paths are baked into the shared binary;
+    // a deployment sets e.g. KLEOS_FORGE_EXEMPT_CONTAINS="/projects/plans/,/tmp/".
+    if let Ok(extra) = std::env::var("KLEOS_FORGE_EXEMPT_CONTAINS") {
+        if extra
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .any(|frag| file_path.contains(frag))
+        {
+            return true;
+        }
     }
 
     // Extract basename.
