@@ -857,7 +857,7 @@ async fn dream_handler(
         // Use the monolith DB — users table lives in the registry, not tenant shards.
         let users = active_user_ids(&state.db)
             .await
-            .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string().into())))?;
+            .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?;
         let mut last_result = String::new();
         for user_id in users {
             match brain.dream_cycle(user_id).await {

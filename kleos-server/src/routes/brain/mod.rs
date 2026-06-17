@@ -140,7 +140,7 @@ async fn dream_handler(
     // not in tenant shards (ResolvedDb would point to the wrong shard).
     let users = active_user_ids(&state.db)
         .await
-        .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string().into())))?;
+        .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?;
     let mut last_result = serde_json::Value::Null;
     for user_id in users {
         let resp = brain.dream_cycle(user_id).await?;
