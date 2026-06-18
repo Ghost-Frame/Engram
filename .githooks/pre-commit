@@ -8,6 +8,35 @@
 
 set -euo pipefail
 
+# --- rustfmt gate ----------------------------------------------------------
+# Auto-format every staged Rust file so CI's `cargo fmt --all -- --check` can
+# never fail on a push. Scoped to staged files: rustfmt runs in place and the
+# file is re-staged, so the working tree is untouched beyond what is committed.
+# All workspace crates are edition 2021, so --edition 2021 matches `cargo fmt`.
+# Bypass: FMT_SKIP=1 git commit ...   (use sparingly; record why)
+if [[ "${FMT_SKIP:-0}" != "1" ]] && command -v rustfmt >/dev/null 2>&1; then
+    FMT_ROOT="$(git rev-parse --show-toplevel)"
+    mapfile -t FMT_STAGED < <(
+        git diff --cached --name-only --diff-filter=ACMR -- '*.rs' \
+        | grep -Ev '^(target/|build-cache/|.*\.pb\.rs$|.*_generated\.rs$)' || true
+    )
+    fmt_restaged=0
+    for rel in "${FMT_STAGED[@]}"; do
+        abs="$FMT_ROOT/$rel"
+        [[ -f "$abs" ]] || continue
+        before="$(git hash-object "$abs")"
+        rustfmt --edition 2021 "$abs" 2>/dev/null || true
+        after="$(git hash-object "$abs")"
+        if [[ "$before" != "$after" ]]; then
+            git add -- "$rel"
+            fmt_restaged=1
+            echo "[rustfmt] reformatted and re-staged: $rel" >&2
+        fi
+    done
+    [[ $fmt_restaged -eq 1 ]] && echo "[rustfmt] staged files auto-formatted; commit continues." >&2
+fi
+# ---------------------------------------------------------------------------
+
 if [[ "${COMMENT_CHECK_SKIP:-0}" == "1" ]]; then
     echo "[comment-check] SKIPPED via COMMENT_CHECK_SKIP=1" >&2
     exit 0
