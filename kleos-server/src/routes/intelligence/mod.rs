@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 use rusqlite::params;
 
 use crate::{
+    dreamer::active_user_ids,
     error::AppError,
     extractors::{Auth, ResolvedDb},
     state::AppState,
@@ -853,17 +854,29 @@ async fn dream_handler(
         )));
     }
     if let Some(ref brain) = state.brain {
-        // Brain manager is available -- invoke dream cycle
-        match brain.dream_cycle().await {
-            Ok(result) => Ok(Json(json!({
-                "status": "completed",
-                "result": format!("{:?}", result),
-            }))),
-            Err(e) => Ok(Json(json!({
-                "status": "error",
-                "error": format!("{}", e),
-            }))),
+        // Use the monolith DB — users table lives in the registry, not tenant shards.
+        let users = active_user_ids(&state.db)
+            .await
+            .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?;
+        let mut last_result = String::new();
+        for user_id in users {
+            match brain.dream_cycle(user_id).await {
+                Ok(result) => {
+                    last_result = format!("{:?}", result);
+                }
+                Err(e) => {
+                    return Ok(Json(json!({
+                        "status": "error",
+                        "user_id": user_id,
+                        "error": format!("{}", e),
+                    })));
+                }
+            }
         }
+        Ok(Json(json!({
+            "status": "completed",
+            "result": last_result,
+        })))
     } else {
         Ok(Json(json!({
             "status": "unavailable",

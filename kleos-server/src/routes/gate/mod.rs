@@ -149,7 +149,11 @@ async fn check_handler(
     //
     // Only applied when the existing checks have already allowed the request --
     // no point overriding an existing block.
-    if result.allowed {
+    // Operator policy, OFF by default: a stock kleos-server enforces nothing, so
+    // cloners are never forced into agent-forge. Opt in per deployment with
+    // KLEOS_FORGE_GATE_MODE=warn (allow + remind) or =deny (strict ZERO-code block).
+    let forge_mode = std::env::var("KLEOS_FORGE_GATE_MODE").unwrap_or_else(|_| "off".to_string());
+    if result.allowed && forge_mode != "off" {
         let tool = body.tool_name.as_deref().unwrap_or("");
         if tool == "Write" || tool == "Edit" {
             // Extract the target file path. Primary source: parse `"Write /path"`
@@ -244,40 +248,63 @@ async fn check_handler(
                             return Ok((StatusCode::CREATED, Json(json!(result))));
                         }
                         Ok(false) => {
-                            let reason = format!(
-                                "BLOCKED: no active agent-forge spec covers this file this \
-                                 session. Run `kleos-cli forge spec-task` (or the \
-                                 forge.spec_task MCP tool) declaring this file in \
-                                 files_to_touch, then retry. ZERO code without agent-forge. \
-                                 [file={:?} session={:?}]",
-                                file_path, session_id
-                            );
+                            // forge_mode is "warn" or "deny" here (we never enter the
+                            // block when it is "off"). "deny" hard-blocks; "warn" allows
+                            // the edit but surfaces a reminder via enrichment.
+                            if forge_mode == "deny" {
+                                let reason = format!(
+                                    "BLOCKED: no active agent-forge spec covers this file this \
+                                     session. Run `kleos-cli forge spec-task` (or the \
+                                     forge.spec_task MCP tool) declaring this file in \
+                                     files_to_touch, then retry. ZERO code without agent-forge. \
+                                     [file={:?} session={:?}]",
+                                    file_path, session_id
+                                );
+                                tracing::info!(
+                                    "forge-gate: BLOCKED {:?} -- no spec (session={:?})",
+                                    file_path,
+                                    session_id
+                                );
+                                let gate_id = store_gate_request(
+                                    &db,
+                                    GateRequestInsert {
+                                        user_id: auth.effective_user_id(),
+                                        agent: &body.agent,
+                                        command: &body.command,
+                                        context: body.context.as_deref(),
+                                        status: "blocked",
+                                        reason: Some(&reason),
+                                        session_id: Some(&session_id),
+                                    },
+                                )
+                                .await?;
+                                result = GateCheckResult {
+                                    allowed: false,
+                                    reason: Some(reason),
+                                    resolved_command: Some(body.command.clone()),
+                                    gate_id,
+                                    requires_approval: false,
+                                    enrichment: None,
+                                };
+                                return Ok((StatusCode::CREATED, Json(json!(result))));
+                            }
+                            // warn mode: allow the edit, but nudge toward a spec.
                             tracing::info!(
-                                "forge-gate: BLOCKED {:?} -- no spec (session={:?})",
+                                "forge-gate: WARN {:?} -- no spec (session={:?}), allowing",
                                 file_path,
                                 session_id
                             );
-                            let gate_id = store_gate_request(
-                                &db,
-                                GateRequestInsert {
-                                    user_id: auth.effective_user_id(),
-                                    agent: &body.agent,
-                                    command: &body.command,
-                                    context: body.context.as_deref(),
-                                    status: "blocked",
-                                    reason: Some(&reason),
-                                    session_id: Some(&session_id),
-                                },
-                            )
-                            .await?;
-                            result = GateCheckResult {
-                                allowed: false,
-                                reason: Some(reason),
-                                resolved_command: Some(body.command.clone()),
-                                gate_id,
-                                requires_approval: false,
-                                enrichment: None,
-                            };
+                            let warn = format!(
+                                "agent-forge: no spec covers {:?} this session -- allowed in \
+                                 warn mode. Run `kleos-cli forge spec-task` to track this work.",
+                                file_path
+                            );
+                            let mut e = result.enrichment.unwrap_or_default();
+                            if !e.is_empty() {
+                                e.push('\n');
+                            }
+                            e.push_str(&warn);
+                            result.enrichment = Some(e);
                             return Ok((StatusCode::CREATED, Json(json!(result))));
                         }
                         Err(e) => {
@@ -883,6 +910,20 @@ pub(crate) fn is_forge_exempt(file_path: &str) -> bool {
     // Check path component for hook directory.
     if file_path.contains(".claude/hooks/") {
         return true;
+    }
+
+    // Operator-configured exempt path substrings (comma-separated). Empty by
+    // default so no operator-specific paths are baked into the shared binary;
+    // a deployment sets e.g. KLEOS_FORGE_EXEMPT_CONTAINS="/projects/plans/,/tmp/".
+    if let Ok(extra) = std::env::var("KLEOS_FORGE_EXEMPT_CONTAINS") {
+        if extra
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .any(|frag| file_path.contains(frag))
+        {
+            return true;
+        }
     }
 
     // Extract basename.
