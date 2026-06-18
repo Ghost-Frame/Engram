@@ -70,7 +70,10 @@ pub fn deliver_webhooks(
     targets: &[WebhookTarget],
     event_json: &serde_json::Value,
 ) -> tokio::task::JoinSet<()> {
-    let client = reqwest::Client::builder()
+    // F01: build an SSRF-hardened client (revalidates every redirect hop)
+    // instead of a bare reqwest client. Each target URL is additionally
+    // DNS-resolved and pinned per delivery below to close the rebinding window.
+    let client = crate::net::safe_client_builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap_or_default();
@@ -84,7 +87,36 @@ pub fn deliver_webhooks(
         let body = event_json.clone();
 
         set.spawn(async move {
-            match client.post(&url).json(&body).send().await {
+            // F01: validate + pin the subscription-supplied URL at delivery time
+            // so the fan-out cannot be steered at loopback/RFC1918/link-local or
+            // cloud-metadata endpoints (confused-deputy SSRF). resolve_and_validate_url
+            // resolves DNS, so a hostname pointing at a private IP is rejected too.
+            let pinned_ip = match crate::webhooks::resolve_and_validate_url(&url).await {
+                Ok(ip) => ip,
+                Err(err) => {
+                    tracing::warn!(
+                        agent = %agent,
+                        url = %url,
+                        error = %err,
+                        "webhook delivery rejected by SSRF check"
+                    );
+                    return;
+                }
+            };
+            let (pinned_url, pinned_host_header) = crate::webhooks::pin_url_to_ip(&url, pinned_ip);
+
+            // pin_url_to_ip rewrote the URL host to the validated literal IP
+            // (closing the DNS-rebinding window); the original hostname is sent
+            // as the Host header for vhost routing. NOTE: TLS SNI and certificate
+            // validation derive from the URL host (now the IP), so an https
+            // webhook to a domain name validates against the IP -- this matches
+            // the shared webhooks.rs delivery path and is a known limitation.
+            let mut req = client.post(&pinned_url).json(&body);
+            if let Some(ref host) = pinned_host_header {
+                req = req.header("Host", host.as_str());
+            }
+
+            match req.send().await {
                 Ok(resp) => {
                     if !resp.status().is_success() {
                         tracing::warn!(
