@@ -42,7 +42,6 @@ fn is_read_only_post(path: &str) -> bool {
             | "/search/explain"
             | "/search/faceted"
             | "/recall"
-            | "/recall-due"
             | "/tags/search"
             | "/graph/search"
             | "/skills/search"
@@ -283,7 +282,10 @@ async fn validate_mcp_token(
     {
         return Err("write scope required for this method".to_string());
     }
-    if !requires_write_scope(method)
+    // F34: read-only POSTs are POSTs, so requires_write_scope() is true and the
+    // write gate above lets them through; without this clause they would also
+    // skip the read gate and require no scope at all. Gate them on Read here.
+    if (!requires_write_scope(method) || is_read_only_post(path))
         && !token_scopes.contains(&Scope::Read)
         && !token_scopes.contains(&Scope::Admin)
     {
@@ -450,7 +452,10 @@ pub async fn auth_middleware(
                     {
                         return forbid("write scope required for this method");
                     }
-                    if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
+                    // F34: also gate read-only POSTs on Read (see MCP-token path).
+                    if (!requires_write_scope(&method) || is_read_only_post(&path))
+                        && !auth_ctx.has_scope(&Scope::Read)
+                    {
                         return forbid("read scope required for this method");
                     }
 
@@ -771,7 +776,10 @@ pub async fn auth_middleware(
         {
             return forbid("write scope required for this method");
         }
-        if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
+        // F34: also gate read-only POSTs on Read (see MCP-token path).
+        if (!requires_write_scope(&method) || is_read_only_post(&path))
+            && !auth_ctx.has_scope(&Scope::Read)
+        {
             return forbid("read scope required for this method");
         }
 
@@ -836,7 +844,10 @@ pub async fn auth_middleware(
                 {
                     return forbid("write scope required for this method");
                 }
-                if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
+                // F34: also gate read-only POSTs on Read (see MCP-token path).
+                if (!requires_write_scope(&method) || is_read_only_post(&path))
+                    && !auth_ctx.has_scope(&Scope::Read)
+                {
                     return forbid("read scope required for this method");
                 }
                 let user_id = auth_ctx.user_id;
