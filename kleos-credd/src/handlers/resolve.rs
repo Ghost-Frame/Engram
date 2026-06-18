@@ -230,6 +230,59 @@ pub async fn resolve_text_handler(
     }))
 }
 
+/// True when `host` matches an allowlist `pattern`: `*` (any), `*.suffix`
+/// (the suffix itself or any subdomain of it), or an exact match.
+fn proxy_domain_matches(pattern: &str, host: &str) -> bool {
+    if pattern == "*" {
+        true
+    } else if let Some(suffix) = pattern.strip_prefix("*.") {
+        host == suffix || host.ends_with(&format!(".{}", suffix))
+    } else {
+        host == pattern
+    }
+}
+
+/// F09: decide whether the proxy may forward a secret to `host` for `category`.
+///
+/// Pure (no env, no I/O) so the deny-by-default policy is unit-testable without
+/// standing up an `AppState`. Returns `Ok(())` to allow, `Err(reason)` to deny.
+///
+/// - With an allowlist: permit only when a pattern under `category` (or the
+///   wildcard `"*"` category) matches `host`. A category with no entry denies.
+/// - Without an allowlist: deny unless `allow_any` (set from
+///   `CREDD_PROXY_ALLOW_ANY=1` by the caller). This is the deny-by-default flip;
+///   the old behavior forwarded to any SSRF-passing host.
+fn proxy_gate_decision(
+    allowlist: Option<&crate::state::ProxyDomainAllowlist>,
+    category: &str,
+    host: &str,
+    allow_any: bool,
+) -> std::result::Result<(), String> {
+    match allowlist {
+        Some(allowlist) => {
+            let allowed_domains = allowlist.get(category).or_else(|| allowlist.get("*"));
+            let permitted = match allowed_domains {
+                Some(domains) => domains
+                    .iter()
+                    .any(|pattern| proxy_domain_matches(pattern, host)),
+                None => false,
+            };
+            if permitted {
+                Ok(())
+            } else {
+                Err(format!(
+                    "proxy target domain '{}' not in allowlist for category '{}'",
+                    host, category
+                ))
+            }
+        }
+        None if allow_any => Ok(()),
+        None => Err("proxy denied: no proxy domain allowlist configured (set a per-category \
+                     allowlist, or CREDD_PROXY_ALLOW_ANY=1 to allow any host)"
+            .to_string()),
+    }
+}
+
 /// Proxy HTTP request with injected credentials.
 ///
 /// SECURITY: validates the target URL against SSRF deny lists (loopback,
@@ -256,40 +309,27 @@ pub async fn proxy_handler(
         .await
         .map_err(|e| CredError::InvalidInput(format!("proxy target URL rejected: {}", e)))?;
 
-    // SECURITY (H4): per-category domain binding. When an allowlist is
-    // configured, only forward credentials to explicitly permitted domains.
-    if let Some(allowlist) = &state.proxy_domain_allowlist {
-        let target_host = url::Url::parse(&req.url)
-            .ok()
-            .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
-        let target_host = target_host.as_deref().unwrap_or("");
-        let allowed_domains = allowlist
-            .get(&req.secret_category)
-            .or_else(|| allowlist.get("*"));
-        let permitted = match allowed_domains {
-            Some(domains) => domains.iter().any(|pattern| {
-                if pattern == "*" {
-                    true
-                } else if let Some(suffix) = pattern.strip_prefix("*.") {
-                    target_host == suffix || target_host.ends_with(&format!(".{}", suffix))
-                } else {
-                    target_host == pattern
-                }
-            }),
-            None => false,
-        };
-        if !permitted {
-            return Err(CredError::PermissionDenied(format!(
-                "proxy target domain '{}' not in allowlist for category '{}'",
-                target_host, req.secret_category
-            ))
-            .into());
-        }
-    } else if std::env::var("CREDD_PROXY_STRICT").as_deref() == Ok("1") {
-        return Err(CredError::PermissionDenied(
-            "proxy denied: no domain allowlist configured and CREDD_PROXY_STRICT=1 is set".into(),
-        )
-        .into());
+    // SECURITY (H4) + F09: per-category domain binding with deny-by-default.
+    // The decision is computed by the pure `proxy_gate_decision` helper so it is
+    // unit-testable without a live AppState. The CREDD_PROXY_ALLOW_ANY opt-out is
+    // read here (env access stays out of the pure helper).
+    let target_host = url::Url::parse(&req.url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
+    let target_host = target_host.as_deref().unwrap_or("");
+    let allow_any = std::env::var("CREDD_PROXY_ALLOW_ANY").as_deref() == Ok("1");
+    if state.proxy_domain_allowlist.is_none() && allow_any {
+        tracing::warn!(
+            "CREDD_PROXY_ALLOW_ANY=1: proxy forwarding credentials without a domain allowlist"
+        );
+    }
+    if let Err(reason) = proxy_gate_decision(
+        state.proxy_domain_allowlist.as_deref(),
+        &req.secret_category,
+        target_host,
+        allow_any,
+    ) {
+        return Err(CredError::PermissionDenied(reason).into());
     }
 
     if !auth.can_access_category(&req.secret_category) {
@@ -519,5 +559,53 @@ mod tests {
         assert_eq!(placeholders[1].2, "db");
         assert_eq!(placeholders[1].3, "creds");
         assert_eq!(placeholders[1].4, Some("username".to_string()));
+    }
+
+    use std::collections::HashMap;
+
+    /// F09: with no allowlist and no opt-out, the proxy denies by default.
+    #[test]
+    fn proxy_gate_denies_without_allowlist_or_optout() {
+        let decision = proxy_gate_decision(None, "aws", "example.com", false);
+        assert!(decision.is_err(), "no allowlist + no opt-out must deny");
+        assert!(decision.unwrap_err().contains("no proxy domain allowlist configured"));
+    }
+
+    /// F09: CREDD_PROXY_ALLOW_ANY (allow_any=true) restores forward-to-any-host.
+    #[test]
+    fn proxy_gate_allows_with_optout() {
+        assert!(proxy_gate_decision(None, "aws", "example.com", true).is_ok());
+    }
+
+    /// An allowlist permits only matching hosts (exact, *. subdomain, * wildcard)
+    /// and denies everything else, regardless of the allow_any flag.
+    #[test]
+    fn proxy_gate_enforces_allowlist_patterns() {
+        let mut allowlist: HashMap<String, Vec<String>> = HashMap::new();
+        allowlist.insert("aws".to_string(), vec!["*.amazonaws.com".to_string()]);
+        allowlist.insert("github".to_string(), vec!["api.github.com".to_string()]);
+        allowlist.insert("any".to_string(), vec!["*".to_string()]);
+
+        // Subdomain wildcard: suffix itself and any subdomain match; siblings do not.
+        assert!(proxy_gate_decision(Some(&allowlist), "aws", "amazonaws.com", false).is_ok());
+        assert!(proxy_gate_decision(Some(&allowlist), "aws", "s3.amazonaws.com", false).is_ok());
+        assert!(proxy_gate_decision(Some(&allowlist), "aws", "evil.com", false).is_err());
+        // Prefix-spoofing must NOT satisfy the suffix wildcard (the ends_with
+        // check requires a leading dot, so "evil-amazonaws.com" is rejected).
+        assert!(proxy_gate_decision(Some(&allowlist), "aws", "evil-amazonaws.com", false).is_err());
+        // Patterns are lowercased at load (see state.rs); the helper compares a
+        // lowercased host against lowercased patterns.
+        assert!(proxy_gate_decision(Some(&allowlist), "aws", "S3.AMAZONAWS.COM".to_lowercase().as_str(), false).is_ok());
+
+        // Exact match only.
+        assert!(proxy_gate_decision(Some(&allowlist), "github", "api.github.com", false).is_ok());
+        assert!(proxy_gate_decision(Some(&allowlist), "github", "github.com", false).is_err());
+
+        // "*" pattern allows any host for that category.
+        assert!(proxy_gate_decision(Some(&allowlist), "any", "whatever.example", false).is_ok());
+
+        // A category absent from the allowlist (and no "*" category entry) denies,
+        // even with allow_any set -- a configured allowlist is authoritative.
+        assert!(proxy_gate_decision(Some(&allowlist), "unknown", "api.github.com", true).is_err());
     }
 }
