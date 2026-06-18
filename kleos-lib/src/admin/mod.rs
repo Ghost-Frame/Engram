@@ -1047,10 +1047,15 @@ mod tests {
         // owner-survives assertion below is meaningful and the test fails loudly
         // if that seeding ever changes.
         let owner_before: i64 = db
-            .read(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM users WHERE id = 1", [], |r| r.get(0))?))
+            .read(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM users WHERE id = 1", [], |r| r.get(0))?)
+            })
             .await
             .expect("count owner rows before");
-        assert_eq!(owner_before, 1, "connect_memory() is expected to seed user id=1");
+        assert_eq!(
+            owner_before, 1,
+            "connect_memory() is expected to seed user id=1"
+        );
 
         // The owner account is protected: deprovisioning user_id=1 is Forbidden.
         let owner = deprovision_tenant(&db, 1).await;
@@ -1060,7 +1065,9 @@ mod tests {
         );
 
         // A normal tenant is unaffected by the guard and is removed.
-        let removed = deprovision_tenant(&db, 2).await.expect("deprovision tenant 2");
+        let removed = deprovision_tenant(&db, 2)
+            .await
+            .expect("deprovision tenant 2");
         assert!(removed, "a non-owner tenant must be deprovisioned");
 
         // The owner row must still exist after the refused call.
@@ -1070,6 +1077,9 @@ mod tests {
             })
             .await
             .expect("count owner rows");
-        assert_eq!(owner_rows, 1, "owner account must survive the refused deprovision");
+        assert_eq!(
+            owner_rows, 1,
+            "owner account must survive the refused deprovision"
+        );
     }
 }

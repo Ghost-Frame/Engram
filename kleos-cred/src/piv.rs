@@ -253,10 +253,7 @@ pub fn export_pubkey_pem(slot: PivSlot) -> Result<String> {
 /// Cheap probe of whether `slot` has a key provisioned. Discards stdout.
 pub fn slot_has_key(slot: PivSlot) -> bool {
     // Private temp dir (see export_pubkey_pem) instead of a predictable path.
-    let Ok(dir) = tempfile::Builder::new()
-        .prefix("cred-piv-probe-")
-        .tempdir()
-    else {
+    let Ok(dir) = tempfile::Builder::new().prefix("cred-piv-probe-").tempdir() else {
         return false;
     };
     let tmp = dir.path().join("probe.pem");

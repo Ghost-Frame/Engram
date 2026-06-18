@@ -277,9 +277,11 @@ fn proxy_gate_decision(
             }
         }
         None if allow_any => Ok(()),
-        None => Err("proxy denied: no proxy domain allowlist configured (set a per-category \
+        None => Err(
+            "proxy denied: no proxy domain allowlist configured (set a per-category \
                      allowlist, or CREDD_PROXY_ALLOW_ANY=1 to allow any host)"
-            .to_string()),
+                .to_string(),
+        ),
     }
 }
 
@@ -568,7 +570,9 @@ mod tests {
     fn proxy_gate_denies_without_allowlist_or_optout() {
         let decision = proxy_gate_decision(None, "aws", "example.com", false);
         assert!(decision.is_err(), "no allowlist + no opt-out must deny");
-        assert!(decision.unwrap_err().contains("no proxy domain allowlist configured"));
+        assert!(decision
+            .unwrap_err()
+            .contains("no proxy domain allowlist configured"));
     }
 
     /// F09: CREDD_PROXY_ALLOW_ANY (allow_any=true) restores forward-to-any-host.
@@ -595,7 +599,13 @@ mod tests {
         assert!(proxy_gate_decision(Some(&allowlist), "aws", "evil-amazonaws.com", false).is_err());
         // Patterns are lowercased at load (see state.rs); the helper compares a
         // lowercased host against lowercased patterns.
-        assert!(proxy_gate_decision(Some(&allowlist), "aws", "S3.AMAZONAWS.COM".to_lowercase().as_str(), false).is_ok());
+        assert!(proxy_gate_decision(
+            Some(&allowlist),
+            "aws",
+            "S3.AMAZONAWS.COM".to_lowercase().as_str(),
+            false
+        )
+        .is_ok());
 
         // Exact match only.
         assert!(proxy_gate_decision(Some(&allowlist), "github", "api.github.com", false).is_ok());

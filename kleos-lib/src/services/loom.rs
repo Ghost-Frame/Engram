@@ -1450,7 +1450,9 @@ const LOOM_ERR_BODY_CAP: usize = 500;
 /// shared `LOOM_HTTP_CLIENT` (built via `net::safe_client_builder`) still
 /// revalidates every redirect hop, so a redirect to a private IP is rejected.
 async fn guard_step_url_ssrf(url: &str) -> Result<()> {
-    crate::webhooks::resolve_and_validate_url(url).await.map(|_| ())
+    crate::webhooks::resolve_and_validate_url(url)
+        .await
+        .map(|_| ())
 }
 
 /// Execute a `webhook`-type step by POSTing `{ step_id, run_id, input, config }`
