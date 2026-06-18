@@ -892,6 +892,13 @@ async fn deprovision_tenant(
     Json(body): Json<DeprovisionBody>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
+    // F28: user_id=1 is the reserved owner/operator account. Deprovisioning it
+    // would tear down the primary store; refuse before any teardown begins.
+    if body.user_id == 1 {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "cannot deprovision the owner account (user_id=1)".into(),
+        )));
+    }
     if let Some(ref registry) = state.tenant_registry {
         let dep_id = kleos_lib::tenant::teardown::begin_deprovision(
             registry,
@@ -1913,6 +1920,13 @@ async fn deprovision_tenant_async(
     Json(body): Json<AsyncDeprovisionBody>,
 ) -> Result<impl IntoResponse, AppError> {
     require_admin(&auth)?;
+    // F28: user_id=1 is the reserved owner/operator account; refuse to tear it
+    // down (path param carries the target here, not the JSON body).
+    if user_id == 1 {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "cannot deprovision the owner account (user_id=1)".into(),
+        )));
+    }
     let registry = require_registry(&state)?;
     let dep_id = kleos_lib::tenant::teardown::begin_deprovision(
         registry,
