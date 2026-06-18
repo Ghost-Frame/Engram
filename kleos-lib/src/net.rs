@@ -176,9 +176,54 @@ pub fn validate_outbound_url(raw: &str) -> Result<Url, EngError> {
     Ok(parsed)
 }
 
+/// Refuse to transmit a Bearer credential (master key, owner key, or agent
+/// key) over plaintext http to a non-loopback host. `https` and loopback
+/// `http` are allowed; remote `http` is rejected so a token cannot leak in
+/// cleartext to a remote service whose URL came from config/env.
+///
+/// This complements [`validate_outbound_url`], which guards SSRF target ranges
+/// but still permits public plaintext http: any caller that attaches a Bearer
+/// must additionally require transport confidentiality.
+pub fn guard_bearer_transport(url: &str) -> Result<(), EngError> {
+    let parsed = Url::parse(url)
+        .map_err(|e| EngError::InvalidInput(format!("invalid url '{}': {}", url, e)))?;
+    if parsed.scheme() == "https" {
+        return Ok(());
+    }
+    let host = parsed.host_str().unwrap_or("");
+    // host_str() brackets an IPv6 literal ("[::1]"); strip them so it parses as an IpAddr.
+    let host_ip = host.trim_start_matches('[').trim_end_matches(']');
+    let is_loopback = host.eq_ignore_ascii_case("localhost")
+        || host_ip
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+    if is_loopback {
+        return Ok(());
+    }
+    Err(EngError::InvalidInput(format!(
+        "refusing to send a bearer credential over plaintext http to non-loopback host '{}'; \
+         use https or a loopback address",
+        host
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guard_bearer_transport_allows_https_and_loopback_only() {
+        // https to any host is fine (transport is encrypted).
+        assert!(guard_bearer_transport("https://vault.example.com/list").is_ok());
+        // loopback http is fine (never leaves the host).
+        assert!(guard_bearer_transport("http://127.0.0.1:4200/list").is_ok());
+        assert!(guard_bearer_transport("http://localhost:4200/list").is_ok());
+        assert!(guard_bearer_transport("http://[::1]:4200/list").is_ok());
+        // remote plaintext http must be rejected -- the bearer would leak.
+        assert!(guard_bearer_transport("http://vault.example.com/list").is_err());
+        assert!(guard_bearer_transport("http://10.0.0.5:4200/list").is_err());
+    }
 
     #[test]
     fn accepts_http_and_https() {

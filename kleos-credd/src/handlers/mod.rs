@@ -116,6 +116,26 @@ pub async fn resolve_from_kleos(
         ))
     })?;
 
+    // The request below attaches the master/PIV-signed Bearer to KLEOS_URL.
+    // Refuse to send it over plaintext http to a non-loopback host so a
+    // misconfigured remote KLEOS_URL cannot leak the credential in cleartext.
+    // Treat an unsafe transport as "vault unavailable" (NotFound) rather than a
+    // request error, matching the unreachable-vault path below and keeping the
+    // resolve semantics unchanged for callers.
+    if let Err(e) = kleos_lib::net::guard_bearer_transport(&kleos_url) {
+        tracing::warn!(
+            "refusing to resolve {}/{} from Kleos: {} (use an https KLEOS_URL or a loopback address)",
+            category,
+            name,
+            e
+        );
+        return Err(CredError::NotFound(format!(
+            "{}/{} not found (vault transport is not confidential)",
+            category, name
+        ))
+        .into());
+    }
+
     let http = reqwest::Client::new();
     let list_url = format!("{}/list", kleos_url.trim_end_matches('/'));
     let mut req = http

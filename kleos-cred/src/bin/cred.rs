@@ -2989,7 +2989,16 @@ fn ssh_ca_sign_impl(identity: &str, principal: &str, ttl: &str, pubkey: &Path) -
              (refusing factory-default to avoid burning PIN retries)"
             )
         })?;
-    let askpass = std::env::temp_dir().join("cred-ssh-ca-askpass.sh");
+    // F08: write the askpass helper to a random-named O_EXCL tempfile instead of
+    // a predictable /tmp path, so a local attacker cannot pre-create or race it.
+    // into_temp_path() drops the write handle (avoids ETXTBSY when ssh-keygen
+    // execs the script); the returned TempPath auto-removes on drop.
+    let askpass = tempfile::Builder::new()
+        .prefix("cred-ssh-ca-askpass-")
+        .suffix(".sh")
+        .tempfile()
+        .context("create askpass helper")?
+        .into_temp_path();
     std::fs::write(&askpass, format!("#!/bin/sh\necho '{}'\n", pin))
         .context("write askpass helper")?;
     #[cfg(unix)]
@@ -3006,12 +3015,14 @@ fn ssh_ca_sign_impl(identity: &str, principal: &str, ttl: &str, pubkey: &Path) -
         .arg(&pkcs11)
         .args(["-I", identity, "-n", principal, "-V", ttl])
         .arg(pubkey)
-        .env("SSH_ASKPASS", &askpass)
+        .env("SSH_ASKPASS", askpass.as_os_str())
         .env("SSH_ASKPASS_REQUIRE", "force")
         .env("DISPLAY", ":0")
         .output()
         .context("ssh-keygen not found")?;
 
+    // Eagerly remove the PIN-bearing helper as soon as ssh-keygen returns to
+    // minimise its lifetime; the TempPath drop is the fallback if this fails.
     let _ = std::fs::remove_file(&askpass);
 
     if !out.status.success() {
@@ -3081,11 +3092,12 @@ async fn ssh_ca_sign_via_phylax(
 ) -> Result<PathBuf> {
     let public_key = std::fs::read_to_string(pubkey)
         .with_context(|| format!("read public key from {}", pubkey.display()))?;
+    // F07: the owner/master key is sent as the Bearer token below; refuse to
+    // transmit it over plaintext http to a non-loopback Phylax host.
+    let base = phylax_url();
+    kleos_cred::net::guard_credd_transport(&base)?;
     let resp = reqwest::Client::new()
-        .post(format!(
-            "{}/phylax/ssh-ca/sign",
-            phylax_url().trim_end_matches('/')
-        ))
+        .post(format!("{}/phylax/ssh-ca/sign", base.trim_end_matches('/')))
         .header("Authorization", format!("Bearer {}", phylax_auth_token()?))
         .json(&serde_json::json!({
             "identity": identity,
@@ -3118,11 +3130,12 @@ async fn ssh_ca_mint_via_phylax(
     principal: &str,
     ttl: &str,
 ) -> Result<PhylaxMintResponse> {
+    // F07: refuse to send the Bearer token over plaintext http to a non-loopback
+    // Phylax host (same transport guard as the sign path).
+    let base = phylax_url();
+    kleos_cred::net::guard_credd_transport(&base)?;
     let resp = reqwest::Client::new()
-        .post(format!(
-            "{}/phylax/ssh-ca/mint",
-            phylax_url().trim_end_matches('/')
-        ))
+        .post(format!("{}/phylax/ssh-ca/mint", base.trim_end_matches('/')))
         .header("Authorization", format!("Bearer {}", phylax_auth_token()?))
         .json(&serde_json::json!({
             "agent": agent,

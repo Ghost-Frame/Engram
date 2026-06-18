@@ -46,6 +46,9 @@ sha2.workspace = true
 hmac.workspace = true
 rand.workspace = true
 zeroize = { workspace = true }
+# Random-named O_EXCL temp files for the ssh-ca askpass helper and PIV exports
+# (used in non-test lib + bin code, so it must be a normal dependency).
+tempfile = { workspace = true }
 
 # Serialization
 serde.workspace = true
@@ -80,7 +83,6 @@ gui = ["eframe", "reqwest/blocking"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
-tempfile = { workspace = true }
 
 # Windows needs bundled SQLCipher since there's no system sqlite3.lib
 [target.'cfg(windows)'.dependencies]

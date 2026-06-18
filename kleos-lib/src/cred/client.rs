@@ -398,6 +398,9 @@ impl CreddClient {
     }
 
     fn build_url(&self, segments: &[&str]) -> Result<Url> {
+        // Every credd request below attaches the agent Bearer; refuse to send it
+        // over plaintext http to a non-loopback host (https or loopback only).
+        crate::net::guard_bearer_transport(&self.base_url)?;
         let mut url = Url::parse(&self.base_url)
             .map_err(|e| EngError::InvalidInput(format!("invalid credd url: {}", e)))?;
         {
