@@ -742,43 +742,16 @@ async fn recall(
         .collect();
 
     // Recall-1.7: compose tiers under `limit` so the always-on static/important tiers cannot
-    // starve the query-relevant semantic tier. Reserve up to RECALL_MIN_SEMANTIC_SLOTS slots
-    // for semantic hits, fill always-on rows up to the remaining cap, then admit semantic, then
-    // backfill any deferred always-on rows when semantic came up short so no slot is wasted.
-    let semantic_reserve = semantic_items.len().min(RECALL_MIN_SEMANTIC_SLOTS);
-    let always_on_cap = limit.saturating_sub(semantic_reserve);
-    let mut output: Vec<Value> = Vec::with_capacity(limit);
-    let mut deferred_always_on: Vec<Value> = Vec::new();
-
-    // Always-on rows first, but only up to the cap that protects the semantic reserve.
-    for item in static_items.into_iter().chain(important_items) {
-        if output.len() < always_on_cap {
-            output.push(item);
-        } else {
-            deferred_always_on.push(item);
-        }
-    }
-    // Semantic (query-relevant) rows fill the reserved space next.
-    for item in semantic_items {
-        if output.len() >= limit {
-            break;
-        }
-        output.push(item);
-    }
-    // Backfill always-on rows the cap deferred, in case semantic was short.
-    for item in deferred_always_on {
-        if output.len() >= limit {
-            break;
-        }
-        output.push(item);
-    }
-    // Recent filler closes out any remaining slots.
-    for item in recent_items {
-        if output.len() >= limit {
-            break;
-        }
-        output.push(item);
-    }
+    // starve the query-relevant semantic tier. The reservation/backfill ordering lives in
+    // memory::compose_recall_tiers so it can be tested independently of the route.
+    let mut output: Vec<Value> = memory::compose_recall_tiers(
+        static_items,
+        important_items,
+        semantic_items,
+        recent_items,
+        limit,
+        RECALL_MIN_SEMANTIC_SLOTS,
+    );
 
     // Breakdown counts reflect what actually survived composition, not the pre-cap tier sizes.
     let tier_count = |src: &str| {

@@ -947,6 +947,62 @@ pub async fn list_important(
     .await
 }
 
+/// Compose recall tiers under `limit`, reserving up to `min_semantic_slots` for the
+/// query-relevant semantic tier so the always-on static/important tiers cannot starve it.
+///
+/// Emission order: always-on rows (static then important) fill up to `limit - reserve`, then
+/// semantic rows fill the reserved space, then any always-on rows the cap deferred backfill
+/// the remaining slots (in case semantic came up short), then recent filler closes out. The
+/// reserve is capped at the number of semantic items actually available, so no slot is wasted
+/// when the query produced few or no semantic hits. Inputs are assumed already deduplicated
+/// across tiers by the caller; this function only orders and truncates. Generic over the row
+/// payload so callers can compose either domain rows or serialized values.
+pub fn compose_recall_tiers<T>(
+    static_items: Vec<T>,
+    important_items: Vec<T>,
+    semantic_items: Vec<T>,
+    recent_items: Vec<T>,
+    limit: usize,
+    min_semantic_slots: usize,
+) -> Vec<T> {
+    // Reserve only as many semantic slots as there are semantic items to fill them.
+    let semantic_reserve = semantic_items.len().min(min_semantic_slots);
+    let always_on_cap = limit.saturating_sub(semantic_reserve);
+    let mut output: Vec<T> = Vec::with_capacity(limit);
+    let mut deferred_always_on: Vec<T> = Vec::new();
+
+    // Always-on rows first, but only up to the cap that protects the semantic reserve.
+    for item in static_items.into_iter().chain(important_items) {
+        if output.len() < always_on_cap {
+            output.push(item);
+        } else {
+            deferred_always_on.push(item);
+        }
+    }
+    // Semantic (query-relevant) rows fill the reserved space next.
+    for item in semantic_items {
+        if output.len() >= limit {
+            break;
+        }
+        output.push(item);
+    }
+    // Backfill always-on rows the cap deferred, in case semantic was short.
+    for item in deferred_always_on {
+        if output.len() >= limit {
+            break;
+        }
+        output.push(item);
+    }
+    // Recent filler closes out any remaining slots.
+    for item in recent_items {
+        if output.len() >= limit {
+            break;
+        }
+        output.push(item);
+    }
+    output
+}
+
 /// Soft-delete an owned memory by marking it forgotten.
 #[tracing::instrument(skip(db))]
 pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
