@@ -470,3 +470,30 @@ words = ["heures", "heure", "minutes", "minute", "mins", "min", "h"]
 [classes.distance_units]
 stem = false
 words = ["kilomètres", "kilomètre", "km", "mètres", "mètre"]
+
+# ---------------------------------------------------------------------------
+# kleos-ingest extraction markers -- voir en.toml. Le stemmer Snowball FR
+# collapse mal les conjugaisons, donc on liste explicitement les formes
+# courantes (infinitif / participe passe m+f / nom) plutot que de compter
+# sur le stemming pour les rapprocher.
+# ---------------------------------------------------------------------------
+
+[classes.ingest_deploy_markers]
+stem = true
+words = ["déployé", "déployée", "déploiement", "livré", "livrée", "poussé sur", "mis en prod", "publié", "publiée", "en production"]
+
+[classes.ingest_decision_markers]
+stem = true
+words = ["décidé", "décidée", "choisi", "choisie", "rejeté", "rejetée", "retenu", "retenue", "opté pour", "on part sur", "parti sur"]
+
+[classes.ingest_preference_markers]
+stem = false
+words = ["je veux", "je préfère", "ne fais pas", "ne pas faire", "toujours faire", "ne jamais", "désormais", "à partir de maintenant"]
+
+[classes.ingest_issue_markers]
+stem = true
+words = ["corrigé", "corrigée", "bug", "cassé", "cassée", "erreur", "trace", "panique", "plantage", "planté", "échoué", "régression"]
+
+[classes.ingest_procedure_markers]
+stem = false
+words = ["comment faire", "étape 1", "étape 2", "étapes", "procédure", "d'abord", "ensuite", "marche à suivre"]

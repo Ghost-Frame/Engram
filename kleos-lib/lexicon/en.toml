@@ -468,3 +468,32 @@ words = ["hours", "hour", "minutes", "minute", "mins", "min"]
 [classes.distance_units]
 stem = false
 words = ["miles", "mile", "km", "kilometers", "kilometer"]
+
+# ---------------------------------------------------------------------------
+# kleos-ingest extraction markers -- classification markers consumed by
+# kleos-ingest/src/extractor.rs to bucket transcript turns into memory
+# categories (deploy/state, decision, preference, issue, procedure).
+# Verb-based classes stem; fixed multi-word phrases keep stem = false.
+# Infra signals (IP/port/systemctl) stay hardcoded in the extractor since
+# they are language-agnostic.
+# ---------------------------------------------------------------------------
+
+[classes.ingest_deploy_markers]
+stem = true
+words = ["deployed", "shipped", "pushed to", "rolled out", "released to", "went live"]
+
+[classes.ingest_decision_markers]
+stem = true
+words = ["decided", "chose", "rejected", "picked", "went with", "opted for", "settled on"]
+
+[classes.ingest_preference_markers]
+stem = false
+words = ["i want", "i prefer", "do not do", "don't do", "always do", "never do", "from now on"]
+
+[classes.ingest_issue_markers]
+stem = true
+words = ["fixed", "bug", "broken", "error", "stack trace", "panic", "crash", "failed", "regression"]
+
+[classes.ingest_procedure_markers]
+stem = false
+words = ["how to", "step 1", "step 2", "steps:", "procedure", "first you", "then you"]
