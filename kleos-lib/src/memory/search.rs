@@ -1100,6 +1100,10 @@ pub async fn hybrid_search(
         || req.tags.is_some()
         || req.space_id.is_some()
         || req.threshold.is_some();
+    // The pool is capped at MAX_LIMIT, so when the caller already requests `limit == MAX_LIMIT`
+    // the over-fetch collapses to `limit` and gives the post-filter no extra candidates. That is
+    // acceptable: a max-limit request already scans the widest legal pool. Over-fetch matters at
+    // the common small limits, where matching rows can sit below the global top-`limit`.
     let pool_limit = if filters_present {
         (limit * 5).min(MAX_LIMIT)
     } else {

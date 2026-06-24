@@ -57,10 +57,13 @@ fn corpus_store_req(
 
 /// Fraction of the relevant set that appears in the top-k ranked keys.
 fn recall_at_k(ranked: &[String], relevant: &HashSet<String>, k: usize) -> f64 {
-    // Empty relevant set is treated as perfect recall so it never drags the mean down.
-    if relevant.is_empty() {
-        return 1.0;
-    }
+    // An empty relevant set is a fixture-authoring mistake, not a 1.0 freebie: silently
+    // returning perfect recall would let a query with no labels inflate the class mean and
+    // mask a regression. Fail loudly so the bad fixture is fixed.
+    assert!(
+        !relevant.is_empty(),
+        "recall@k: query has an empty `relevant` set -- every fixture query must label >=1 doc"
+    );
     // Count distinct relevant keys found within the first k ranked results.
     let hits = ranked
         .iter()
@@ -284,5 +287,15 @@ async fn retrieval_eval_golden() {
             mean_r10 >= STABLE_RECALL_AT_10_FLOOR,
             "`{class}` mean recall@10 {mean_r10:.3} fell below floor {STABLE_RECALL_AT_10_FLOOR:.3}"
         );
+        // probe_filter's three relevant docs all fit within k=5, so recall@10 is trivially 1.0
+        // and would still pass if over-fetch regressed to return only two of three. Assert
+        // recall@5 instead: it is the sensitive metric that catches a dropped in-category doc.
+        if *class == "probe_filter" {
+            let mean_r5 = rows.iter().map(|s| s.r5).sum::<f64>() / rows.len() as f64;
+            assert!(
+                mean_r5 >= 0.999,
+                "`probe_filter` mean recall@5 {mean_r5:.3} below 1.0 -- over-fetch-before-filter regressed"
+            );
+        }
     }
 }

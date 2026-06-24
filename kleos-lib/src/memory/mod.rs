@@ -858,30 +858,32 @@ pub async fn list_static(
     space_id: Option<i64>,
     limit: usize,
 ) -> Result<Vec<Memory>> {
-    // Optional space scoping uses ?3; the LIMIT parameter index shifts accordingly.
-    let space_clause = if space_id.is_some() {
-        "AND space_id = ?3"
+    // Sequential parameters; the space branch adds `space_id = ?2` and shifts LIMIT to ?3.
+    let sql = if space_id.is_some() {
+        format!(
+            "SELECT {cols} FROM memories \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+               AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
+               AND space_id = ?2 \
+             ORDER BY importance DESC, created_at DESC LIMIT ?3",
+            cols = MEMORY_COLUMNS,
+        )
     } else {
-        ""
+        format!(
+            "SELECT {cols} FROM memories \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+               AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
+             ORDER BY importance DESC, created_at DESC LIMIT ?2",
+            cols = MEMORY_COLUMNS,
+        )
     };
-    let limit_idx = if space_id.is_some() { 4 } else { 3 };
-    let sql = format!(
-        "SELECT {cols} FROM memories \
-         WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
-           AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
-           AND ?2 = ?2 {space_clause} \
-         ORDER BY importance DESC, created_at DESC LIMIT ?{limit_idx}",
-        cols = MEMORY_COLUMNS,
-    );
     let cap = limit;
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
         let mut memories = Vec::with_capacity(cap);
-        // The `?2 = ?2` no-op keeps a stable parameter layout (?1 owner, ?2 reserved,
-        // ?3 space, ?4 limit) so the space/no-space branches share index math.
         let mut rows = match space_id {
-            Some(sid) => stmt.query(rusqlite::params![user_id, 1_i64, sid, limit as i64])?,
-            None => stmt.query(rusqlite::params![user_id, 1_i64, limit as i64])?,
+            Some(sid) => stmt.query(rusqlite::params![user_id, sid, limit as i64])?,
+            None => stmt.query(rusqlite::params![user_id, limit as i64])?,
         };
         while let Some(row) = rows.next()? {
             memories.push(row_to_memory(row, user_id)?);
@@ -905,20 +907,25 @@ pub async fn list_important(
     min_importance: i32,
     limit: usize,
 ) -> Result<Vec<Memory>> {
-    // Optional space scoping uses ?3; the LIMIT parameter index shifts accordingly.
-    let space_clause = if space_id.is_some() {
-        "AND space_id = ?3"
+    // Sequential parameters; the space branch adds `space_id = ?3` and shifts LIMIT to ?4.
+    let sql = if space_id.is_some() {
+        format!(
+            "SELECT {cols} FROM memories \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+               AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
+               AND space_id = ?3 \
+             ORDER BY importance DESC, id DESC LIMIT ?4",
+            cols = MEMORY_COLUMNS,
+        )
     } else {
-        ""
+        format!(
+            "SELECT {cols} FROM memories \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+               AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
+             ORDER BY importance DESC, id DESC LIMIT ?3",
+            cols = MEMORY_COLUMNS,
+        )
     };
-    let limit_idx = if space_id.is_some() { 4 } else { 3 };
-    let sql = format!(
-        "SELECT {cols} FROM memories \
-         WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
-           AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 {space_clause} \
-         ORDER BY importance DESC, id DESC LIMIT ?{limit_idx}",
-        cols = MEMORY_COLUMNS,
-    );
     let cap = limit;
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;

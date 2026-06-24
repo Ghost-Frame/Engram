@@ -42,13 +42,15 @@ pub fn rerank_by_retrievability(results: &[SearchResult], w20: Option<f32>) -> V
                         r.memory.source_count,
                     )
                 });
-            let last_review = r
-                .memory
-                .fsrs_last_review_at
-                .as_deref()
-                .unwrap_or(&r.memory.created_at);
-
-            let elapsed_days = elapsed_days_from(last_review, now_ms);
+            // recall-due-fallback: a memory that was never reviewed (no fsrs_last_review_at)
+            // is maximally due, not freshly created. Using created_at here would make a
+            // brand-new memory look just-reviewed (retrievability ~ 1) and hide it from the
+            // recall-due surface on the day it was stored, so treat never-reviewed as long
+            // past instead -- consistent with the default_stability fallback above.
+            let elapsed_days = match r.memory.fsrs_last_review_at.as_deref() {
+                Some(ts) => elapsed_days_from(ts, now_ms),
+                None => NEVER_REVIEWED_ELAPSED_DAYS,
+            };
             let ret = retrievability_with_w20(stability, elapsed_days, w20);
 
             // recall-due score: boost memories that are (a) relevant (high search
@@ -83,6 +85,11 @@ pub fn rerank_by_retrievability(results: &[SearchResult], w20: Option<f32>) -> V
 /// reviewed (elapsed 0 = high retrievability = never surfaced as due); treat it as long
 /// past so the memory is flagged for reinforcement.
 const UNPARSEABLE_ELAPSED_DAYS: f32 = 365.0;
+
+/// Elapsed days for a memory that has never been reviewed. A never-reviewed memory is the one
+/// most in need of reinforcement, so it must surface as due rather than look freshly created;
+/// treat it as long past, matching the unparseable-timestamp fallback.
+const NEVER_REVIEWED_ELAPSED_DAYS: f32 = 365.0;
 
 /// Days between a review timestamp and now, clamped to be non-negative.
 fn elapsed_days_from(date_str: &str, now_ms: i64) -> f32 {
