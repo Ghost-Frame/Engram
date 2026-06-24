@@ -833,6 +833,102 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     .await
 }
 
+/// List the owner's static (pinned) memories, ordered by importance then recency.
+///
+/// Recall must always surface pinned/static memories regardless of how recently they
+/// were written. The previous recall path listed the newest N rows and filtered
+/// `is_static` afterwards, so any pinned memory outside that recency window silently
+/// vanished. This query selects on `is_static = 1` directly and orders by importance so
+/// the most important pinned facts come first. Owner scoping and visibility predicates
+/// mirror `list` (SEC-C3: owner filter is unconditional).
+pub async fn list_static(
+    db: &Database,
+    user_id: i64,
+    space_id: Option<i64>,
+    limit: usize,
+) -> Result<Vec<Memory>> {
+    // Optional space scoping uses ?3; the LIMIT parameter index shifts accordingly.
+    let space_clause = if space_id.is_some() {
+        "AND space_id = ?3"
+    } else {
+        ""
+    };
+    let limit_idx = if space_id.is_some() { 4 } else { 3 };
+    let sql = format!(
+        "SELECT {cols} FROM memories \
+         WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+           AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
+           AND ?2 = ?2 {space_clause} \
+         ORDER BY importance DESC, created_at DESC LIMIT ?{limit_idx}",
+        cols = MEMORY_COLUMNS,
+    );
+    let cap = limit;
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let mut memories = Vec::with_capacity(cap);
+        // The `?2 = ?2` no-op keeps a stable parameter layout (?1 owner, ?2 reserved,
+        // ?3 space, ?4 limit) so the space/no-space branches share index math.
+        let mut rows = match space_id {
+            Some(sid) => stmt.query(rusqlite::params![user_id, 1_i64, sid, limit as i64])?,
+            None => stmt.query(rusqlite::params![user_id, 1_i64, limit as i64])?,
+        };
+        while let Some(row) = rows.next()? {
+            memories.push(row_to_memory(row, user_id)?);
+        }
+        Ok(memories)
+    })
+    .await
+}
+
+/// List the owner's high-importance memories, ordered by importance then id.
+///
+/// The recall "important" tier must rank by importance, not recency. The previous path
+/// listed the newest N rows then filtered `importance >= min`, so a high-importance
+/// memory outside the recency window never surfaced -- recency outranked importance,
+/// inverting the intended priority. This query selects on `importance >= min` directly
+/// and orders by importance. Owner scoping and visibility predicates mirror `list`.
+pub async fn list_important(
+    db: &Database,
+    user_id: i64,
+    space_id: Option<i64>,
+    min_importance: i32,
+    limit: usize,
+) -> Result<Vec<Memory>> {
+    // Optional space scoping uses ?3; the LIMIT parameter index shifts accordingly.
+    let space_clause = if space_id.is_some() {
+        "AND space_id = ?3"
+    } else {
+        ""
+    };
+    let limit_idx = if space_id.is_some() { 4 } else { 3 };
+    let sql = format!(
+        "SELECT {cols} FROM memories \
+         WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+           AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 {space_clause} \
+         ORDER BY importance DESC, id DESC LIMIT ?{limit_idx}",
+        cols = MEMORY_COLUMNS,
+    );
+    let cap = limit;
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let mut memories = Vec::with_capacity(cap);
+        let mut rows = match space_id {
+            Some(sid) => stmt.query(rusqlite::params![
+                user_id,
+                min_importance,
+                sid,
+                limit as i64
+            ])?,
+            None => stmt.query(rusqlite::params![user_id, min_importance, limit as i64])?,
+        };
+        while let Some(row) = rows.next()? {
+            memories.push(row_to_memory(row, user_id)?);
+        }
+        Ok(memories)
+    })
+    .await
+}
+
 /// Soft-delete an owned memory by marking it forgotten.
 #[tracing::instrument(skip(db))]
 pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {

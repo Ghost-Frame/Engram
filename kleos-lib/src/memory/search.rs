@@ -1056,7 +1056,27 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let candidate_count = sorted.len();
-    sorted.truncate(limit);
+
+    // 3.11 recall fix: structured filters (category/source/tags/space/threshold) are
+    // applied AFTER this truncation, on the materialised SearchResult set below. If we
+    // truncate to `limit` first, a filtered query keeps the global top-`limit` and then
+    // drops the non-matching rows, often returning far fewer than `limit` (or zero) even
+    // when matching memories exist deeper in the ranking. When any filter is present,
+    // keep a wider pool (the same limit*5 over-fetch faceted_search uses) so the
+    // post-filter retain has candidates to keep; final_results is re-truncated to `limit`
+    // after filtering.
+    let filters_present = req.category.is_some()
+        || req.source.is_some()
+        || req.source_filter.is_some()
+        || req.tags.is_some()
+        || req.space_id.is_some()
+        || req.threshold.is_some();
+    let pool_limit = if filters_present {
+        (limit * 5).min(MAX_LIMIT)
+    } else {
+        limit
+    };
+    sorted.truncate(pool_limit);
 
     // Build final SearchResult vec -- batch-fetch all memories in one query
     // instead of N separate round-trips.
@@ -1171,6 +1191,13 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
             }
             true
         });
+    }
+
+    // Re-truncate to the caller's requested limit after filtering. With no filters this
+    // is a no-op (the pool was already `limit`); with filters it trims the limit*5
+    // over-fetch back down once the non-matching rows have been removed.
+    if filters_present {
+        final_results.truncate(limit);
     }
 
     // Include linked memories + version chain if requested -- batch queries

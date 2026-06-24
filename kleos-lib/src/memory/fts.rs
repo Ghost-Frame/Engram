@@ -25,6 +25,39 @@ pub fn sanitize_fts_query(query: &str) -> String {
         .join(" ")
 }
 
+/// Build an OR-of-tokens FTS5 MATCH expression for memory search.
+///
+/// Space-joined tokens (see `sanitize_fts_query`) are an implicit AND in FTS5, so a
+/// multi-term natural-language query returns zero hits unless every stem co-occurs in
+/// one document. That collapses hybrid search to vector-only whenever one term is
+/// missing. Memory search instead ORs the tokens, so partial matches surface while
+/// BM25 still ranks documents that match more terms higher. Each token is
+/// alphanumeric-only (special chars already mapped to spaces) and wrapped as a quoted
+/// phrase so that FTS5 boolean keywords appearing inside the user query
+/// (AND/OR/NOT/NEAR) cannot be reinterpreted as operators. Returns an empty string
+/// when no usable token remains, matching `sanitize_fts_query`'s contract.
+pub fn fts_or_match_query(query: &str) -> String {
+    // Same character sanitisation as sanitize_fts_query: keep alphanumerics and
+    // whitespace, replace every other character with a space.
+    let cleaned: String = query
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c.is_whitespace() {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    // Quote each token and join with the OR operator.
+    cleaned
+        .split_whitespace()
+        .filter(|w| w.len() >= 2)
+        .map(|w| format!("\"{w}\""))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
 /// Maximum FTS query length in bytes. Queries beyond this are rejected to
 /// prevent denial-of-service through pathological FTS5 expressions.
 use crate::validation::MAX_FTS_QUERY_LEN;
@@ -46,7 +79,9 @@ pub async fn fts_search(
             MAX_FTS_QUERY_LEN
         )));
     }
-    let sanitized = sanitize_fts_query(query);
+    // Memory search ORs the tokens (not the implicit-AND of sanitize_fts_query) so a
+    // multi-term query does not zero out when one term is absent from a document.
+    let sanitized = fts_or_match_query(query);
     if sanitized.is_empty() {
         return Ok(vec![]);
     }

@@ -598,6 +598,16 @@ async fn explain_search(
     })))
 }
 
+/// Maximum pinned/static memories the recall "static" tier surfaces, ordered by
+/// importance. Independent of the recency window so old pinned facts still appear.
+const RECALL_STATIC_LIMIT: usize = 25;
+
+/// Importance floor for the recall "important" tier.
+const RECALL_IMPORTANT_MIN: i32 = 7;
+
+/// Maximum memories the recall "important" tier surfaces, ordered by importance.
+const RECALL_IMPORTANT_LIMIT: usize = 10;
+
 /// POST /recall -- retrieve memories ranked by importance and recency.
 #[tracing::instrument(skip_all)]
 async fn recall(
@@ -614,18 +624,12 @@ async fn recall(
         .or(body.context)
         .unwrap_or_default();
 
-    let static_opts = ListOptions {
-        limit: 10,
-        offset: 0,
-        category: None,
-        source: None,
-        user_id: Some(user_id),
-        space_id: body.space_id,
-        include_forgotten: false,
-        include_archived: false,
-    };
-    let all_list = memory::list(&db, static_opts).await?;
-    let static_memories: Vec<_> = all_list.into_iter().filter(|m| m.is_static).collect();
+    // Recall-1.1: fetch pinned/static memories by selecting on `is_static` directly and
+    // ordering by importance, so a pinned fact older than the recency window still
+    // surfaces. The prior path listed the 10 newest rows and filtered `is_static`
+    // afterwards, silently dropping every static memory outside that window.
+    let static_memories =
+        memory::list_static(&db, user_id, body.space_id, RECALL_STATIC_LIMIT).await?;
 
     let query_embedding = {
         if let Some(embedder) = state.current_embedder().await {
@@ -651,22 +655,18 @@ async fn recall(
     };
     let semantic_results = hybrid_search(&db, semantic_req).await?;
 
-    let recent_opts = ListOptions {
-        limit: 20,
-        offset: 0,
-        category: None,
-        source: None,
-        user_id: Some(user_id),
-        space_id: body.space_id,
-        include_forgotten: false,
-        include_archived: false,
-    };
-    let recent_all = memory::list(&db, recent_opts).await?;
-    let important_memories: Vec<_> = recent_all
-        .into_iter()
-        .filter(|m| m.importance >= 7)
-        .take(10)
-        .collect();
+    // Recall-1.2: fetch high-importance memories ordered by importance, not recency, so a
+    // 9-10 importance memory outside the recency window is not invisible. The prior path
+    // listed the 20 newest rows then filtered `importance >= 7`, letting recency outrank
+    // importance.
+    let important_memories = memory::list_important(
+        &db,
+        user_id,
+        body.space_id,
+        RECALL_IMPORTANT_MIN,
+        RECALL_IMPORTANT_LIMIT,
+    )
+    .await?;
 
     let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let static_count = static_memories.len();
@@ -735,7 +735,15 @@ async fn recall(
     // Background: update FSRS state (grade=Good) for every recalled memory.
     // Fire-and-forget — never delays or fails the recall response.
     {
-        let recalled_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
+        // Recall-1.5: only grade genuine query-driven retrieval (the semantic tier) as an
+        // active recall. Static/important/recent filler are not retrieval successes, and
+        // grading the whole output Good inflates FSRS stability and corrupts recall-due
+        // ordering and decay for memories that were never actually used.
+        let recalled_ids: Vec<i64> = output
+            .iter()
+            .filter(|v| v["recall_source"].as_str() == Some("semantic"))
+            .filter_map(|v| v["id"].as_i64())
+            .collect();
         let db_clone = db.clone();
         tokio::spawn(async move {
             for id in recalled_ids {
