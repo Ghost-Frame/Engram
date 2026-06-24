@@ -5058,6 +5058,7 @@ dependencies = [
  "dirs 6.0.0",
  "kleos-lib",
  "notify",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",
