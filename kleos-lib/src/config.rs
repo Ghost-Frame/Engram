@@ -947,6 +947,19 @@ impl Config {
                 ),
             }
         }
+        // Vector safety: the embedder output dimension and the vector-store schema
+        // dimension must match. A mismatch otherwise surfaces only later as a runtime
+        // InvalidInput that silently drops vectors from the index. Warn loudly at load so
+        // the misconfiguration is visible immediately rather than as missing recall.
+        if config.embedding_dim != config.vector_dimensions {
+            tracing::warn!(
+                "embedding_dim ({}) != vector_dimensions ({}); embeddings will fail to \
+                 index and semantic recall will silently degrade. Set EMBEDDING_DIM and \
+                 VECTOR_DIMENSIONS to the same value.",
+                config.embedding_dim,
+                config.vector_dimensions
+            );
+        }
         if let Ok(v) = crate::kleos_env("USE_LANCE_INDEX") {
             config.use_lance_index = v != "0" && !v.eq_ignore_ascii_case("false");
         }

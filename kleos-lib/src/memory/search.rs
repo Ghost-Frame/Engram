@@ -638,7 +638,10 @@ async fn centroid_or_sqlite_vector(
     )
 )]
 /// Run the full hybrid memory search pipeline.
-pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<SearchResult>>> {
+pub async fn hybrid_search(
+    db: &Database,
+    mut req: SearchRequest,
+) -> Result<Arc<Vec<SearchResult>>> {
     // SECURITY (SEC-MED-6): clamp at library entry point so MCP, sidecar,
     // and CLI callers inherit the cap. HTTP route-level clamp is kept as
     // defense-in-depth.
@@ -646,6 +649,15 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     let user_id = req
         .user_id
         .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
+
+    // Normalize the query embedding so cosine semantics are correct regardless of which
+    // provider produced it (OnnxProvider already returns unit vectors; HttpProvider and
+    // OpenAiProvider do not). This mirrors the store path and keeps query/stored vectors
+    // on the same scale. Done before hashing so the cache key is stable. l2_normalize is
+    // idempotent for unit-norm input and zero-vector safe.
+    if let Some(ref mut emb) = req.embedding {
+        crate::embeddings::normalize::l2_normalize(emb);
+    }
 
     // 3.5: Check cache before running the full pipeline.
     let param_hash = hash_search_params(&req);

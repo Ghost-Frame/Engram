@@ -61,7 +61,12 @@ pub fn calculate_decay_score(
     }
 }
 
-fn default_stability(access_count: i32, source_count: i32) -> f32 {
+/// Stability to assume for a memory that has no recorded FSRS stability yet.
+///
+/// Used by both decay scoring and recall-due ranking so an unreviewed memory is treated
+/// consistently instead of being dropped. Starts from the Good initial stability and
+/// nudges it up for repeatedly-accessed or multi-source memories.
+pub fn default_stability(access_count: i32, source_count: i32) -> f32 {
     let base = initial_stability(Rating::Good);
     let access_bonus = f32::min(access_count as f32 * 0.3, 3.0);
     let source_bonus = f32::min((source_count - 1) as f32 * 0.2, 1.0);

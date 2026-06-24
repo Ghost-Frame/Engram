@@ -464,17 +464,27 @@ pub async fn store(
     // 2. Compute simhash of content
     let content_hash = simhash::simhash(&content);
 
-    // 3. Check for duplicates within the owner's own memories. The user_id
+    // 3. Check for near-duplicates within the owner's own memories. The user_id
     // predicate keeps single-DB (shared) mode from deduping one user's write
     // against another user's content (and from leaking the other id back).
-    let dup_sql = "SELECT id, content FROM memories \
-        WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
-        ORDER BY id DESC LIMIT 1000";
-
-    let duplicate = db
-        .read(move |conn| {
+    //
+    // Two scoping rules avoid collapsing distinct writes:
+    //   - An explicit version update (parent_memory_id set) is a deliberate re-store
+    //     of evolving content and must NOT be short-circuited as a duplicate of its
+    //     own predecessor; skip the scan entirely.
+    //   - Scope the scan to the same space (`space_id IS ?2`, IS so NULL matches NULL)
+    //     so a write in one space is not deduped against an identical write in another.
+    let duplicate = if req.parent_memory_id.is_some() {
+        None
+    } else {
+        let dup_space_id = req.space_id;
+        let dup_sql = "SELECT id, content FROM memories \
+            WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
+              AND space_id IS ?2 \
+            ORDER BY id DESC LIMIT 1000";
+        db.read(move |conn| {
             let mut stmt = conn.prepare(dup_sql)?;
-            let mut rows = stmt.query(rusqlite::params![user_id])?;
+            let mut rows = stmt.query(rusqlite::params![user_id, dup_space_id])?;
             while let Some(row) = rows.next()? {
                 let existing_id: i64 = row.get(0)?;
                 let existing_content: String = row.get(1)?;
@@ -485,7 +495,8 @@ pub async fn store(
             }
             Ok(None)
         })
-        .await?;
+        .await?
+    };
 
     if let Some(existing_id) = duplicate {
         return Ok(StoreResult {
