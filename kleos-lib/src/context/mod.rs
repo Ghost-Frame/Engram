@@ -426,8 +426,18 @@ pub async fn assemble_context(
     user_id: i64,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     llm_client: Option<Arc<LocalModelClient>>,
+    reranker: Option<Arc<dyn crate::reranker::Reranker>>,
 ) -> Result<ContextResult> {
-    assemble_context_inner(db, opts, user_id, embedding_provider, llm_client, None).await
+    assemble_context_inner(
+        db,
+        opts,
+        user_id,
+        embedding_provider,
+        llm_client,
+        reranker,
+        None,
+    )
+    .await
 }
 
 /// Streaming variant: same as `assemble_context` but sends
@@ -448,6 +458,7 @@ pub async fn assemble_context_streaming(
     user_id: i64,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     llm_client: Option<Arc<LocalModelClient>>,
+    reranker: Option<Arc<dyn crate::reranker::Reranker>>,
     progress_tx: ProgressSender,
 ) -> Result<ContextResult> {
     assemble_context_inner(
@@ -456,6 +467,7 @@ pub async fn assemble_context_streaming(
         user_id,
         embedding_provider,
         llm_client,
+        reranker,
         Some(progress_tx),
     )
     .await
@@ -487,6 +499,7 @@ async fn assemble_context_inner(
     user_id: i64,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     llm_client: Option<Arc<LocalModelClient>>,
+    reranker: Option<Arc<dyn crate::reranker::Reranker>>,
     progress_tx: Option<ProgressSender>,
 ) -> Result<ContextResult> {
     // --- Apply mode preset ---
@@ -639,15 +652,25 @@ async fn assemble_context_inner(
         exclude_consolidated: Some(true),
         ..Default::default()
     };
-    let semantic_results = hybrid_search(db, search_req).await.unwrap_or_default();
+    let mut semantic_results = hybrid_search(db, search_req).await.unwrap_or_default();
     timing.search_ms = Some(t_search.elapsed().as_millis() as u64);
 
-    // Cross-encoder reranking is available via kleos_lib::reranker::Reranker.
-    // To wire it here, add a reranker: Option<Arc<dyn Reranker>> parameter
-    // to assemble_context_inner and call reranker.rerank_results(&opts.query,
-    // &mut semantic_results).await before the scoring loop below.
-    // The server AppState already holds the reranker; threading it through
-    // assemble_context's public signature is the remaining work.
+    // 3.1: context assembly is what the model actually reads, yet without this it ranks
+    // semantic memories with strictly weaker signal than /search (no cross-encoder). When a
+    // reranker is supplied, rerank the semantic results before the budget-gated selection
+    // loop below, so the highest-fidelity ordering drives which memories are selected and
+    // the order in which the model sees them.
+    if let Some(ref rr) = reranker {
+        let t_rerank = Instant::now();
+        let mut reranked = (*semantic_results).clone();
+        match rr.rerank_results(&opts.query, &mut reranked).await {
+            Ok(()) => {
+                semantic_results = Arc::new(reranked);
+                timing.rerank_ms = Some(t_rerank.elapsed().as_millis() as u64);
+            }
+            Err(e) => tracing::warn!("context reranker failed: {e}"),
+        }
+    }
 
     let now_ms = chrono::Utc::now().timestamp_millis();
 
