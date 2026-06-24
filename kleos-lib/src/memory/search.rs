@@ -26,6 +26,15 @@ const DEFAULT_LIMIT: usize = DEFAULT_SEARCH_LIMIT;
 /// level so all consumers (HTTP routes, MCP, sidecar, CLI) inherit the cap.
 const MAX_LIMIT: usize = MAX_SEARCH_LIMIT;
 
+/// Minimum vector/fusion candidate pool, independent of the requested limit. Keeps recall
+/// from being capped by a shallow pool at small limits (see candidate_target in
+/// hybrid_search). Bounded above by the existing 200 ceiling.
+const MIN_CANDIDATE_POOL: usize = 64;
+
+/// Minimum FTS candidate pool, independent of the requested limit. Bounded above by the
+/// existing 250 ceiling.
+const MIN_FTS_POOL: usize = 100;
+
 // ---------------------------------------------------------------------------
 // Search result cache (3.5)
 //
@@ -667,10 +676,18 @@ pub async fn hybrid_search(
 
     let (question_type, strategy) = resolve_strategy(&req);
 
+    // 2.2: floor the per-channel candidate pools independent of `limit`. At the default
+    // limit (10) the strategy multipliers alone produce a shallow pool (~20-24 vector,
+    // ~20-50 fts), which caps achievable recall@k regardless of how good fusion and
+    // reranking are: the heavy multiplicative rescore can promote a true-best candidate
+    // from deep in the vector ranking, but only if it was fetched at all. The floors keep
+    // a meaningful pool even for small limits, bounded by the existing ceilings.
     let candidate_target = limit
         .max((limit * strategy.candidate_multiplier).max(RERANKER_TOP_K))
-        .min(200);
-    let fts_limit = limit.max((limit * strategy.fts_limit_multiplier).min(250));
+        .clamp(MIN_CANDIDATE_POOL, 200);
+    let fts_limit = limit
+        .max((limit * strategy.fts_limit_multiplier).min(250))
+        .max(MIN_FTS_POOL);
     let budget = req.budget.unwrap_or(SearchBudget::High);
 
     // Ranked lists for RRF fusion
@@ -957,7 +974,7 @@ pub async fn hybrid_search(
         let contr = scoring::contradiction_penalty(&c.content, c.is_latest.unwrap_or(true));
 
         let recency = scoring::recency_score(&c.created_at);
-        let recency_boost = 1.0 + recency * scoring::RECENCY_WEIGHT;
+        let recency_boost = 1.0 + recency * scoring::recency_weight();
 
         c.score = rrf
             * decay_factor
@@ -1274,18 +1291,31 @@ pub async fn hybrid_search_reranked(
     query_for_rerank: &str,
     reranker: Option<std::sync::Arc<dyn crate::reranker::Reranker>>,
 ) -> Result<Arc<Vec<SearchResult>>> {
-    let arc_results = hybrid_search(db, req).await?;
     let Some(reranker) = reranker else {
-        return Ok(arc_results);
+        return hybrid_search(db, req).await;
     };
+
+    // SEC-recall-2.1: the cross-encoder can only reorder candidates it is handed. If it
+    // sees only the final top-k, a memory ranked just outside that window by fusion can
+    // never be rescued, so reranking degrades to a reorder of an already-good set. Fetch
+    // a pool at least as deep as the reranker's window, rerank that, then truncate to the
+    // caller's requested limit.
+    let final_limit = req.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+    let pool = final_limit.max(reranker.top_k()).min(MAX_LIMIT);
+
+    let mut pool_req = req;
+    pool_req.limit = Some(pool);
+    let arc_results = hybrid_search(db, pool_req).await?;
+
     let mut results = (*arc_results).clone();
     if let Err(e) = reranker
         .rerank_results(query_for_rerank, &mut results)
         .await
     {
+        // On failure keep the fusion order; still trim the over-fetched pool to limit.
         tracing::warn!("reranker failed in hybrid_search_reranked: {}", e);
-        return Ok(arc_results);
     }
+    results.truncate(final_limit);
     Ok(Arc::new(results))
 }
 

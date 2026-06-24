@@ -689,7 +689,11 @@ impl Default for Config {
             embedding_chunk_overlap: 160,
             embedding_chunk_max_chunks: 6,
             reranker_enabled: true,
-            reranker_top_k: 12,
+            // SEC-recall-2.1: the reranker now sees a candidate pool sized to this window
+            // (see hybrid_search_reranked), so a larger value lets the cross-encoder pull
+            // more buried-but-relevant memories into the final top-k. Tunable via
+            // RERANKER_TOP_K env.
+            reranker_top_k: 24,
             reranker_model_dir: None,
             data_dir: dirs::data_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))

@@ -13,10 +13,28 @@ use crate::{EngError, Result};
 use async_trait::async_trait;
 use ort::session::Session;
 use ort::value::Tensor;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokenizers::Tokenizer;
 use tracing::{info, warn};
+
+/// Default cross-encoder weight in the rerank blend: `final = ce*W + original*(1-W)`.
+const DEFAULT_RERANKER_CE_WEIGHT: f64 = 0.7;
+
+static RERANKER_CE_WEIGHT: LazyLock<f64> = LazyLock::new(|| {
+    std::env::var("KLEOS_RERANKER_CE_WEIGHT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|w| w.clamp(0.0, 1.0))
+        .unwrap_or(DEFAULT_RERANKER_CE_WEIGHT)
+});
+
+/// Runtime cross-encoder blend weight (KLEOS_RERANKER_CE_WEIGHT override, clamped to
+/// [0, 1]). The original fusion score keeps the complementary weight `1 - w`, so recall
+/// tuning can trade cross-encoder precision against fusion recall without a rebuild.
+fn reranker_ce_weight() -> f64 {
+    *RERANKER_CE_WEIGHT
+}
 
 // --- 3.13: Reranker trait -- swappable backends ---
 
@@ -35,6 +53,11 @@ pub trait Reranker: Send + Sync {
 
     /// Human-readable name for logging/diagnostics.
     fn backend_name(&self) -> &str;
+
+    /// Number of top candidates this backend cross-encodes. Callers size the candidate
+    /// pool to at least this many so the reranker can pull a buried-but-relevant memory
+    /// up into the final top-k rather than only reordering an already-truncated set.
+    fn top_k(&self) -> usize;
 }
 
 // --- ONNX cross-encoder backend (IBM Granite) ---
@@ -45,13 +68,19 @@ pub struct OnnxReranker {
     top_k: usize,
 }
 
+/// Shared, thread-safe inner state for the ONNX reranker (model session + tokenizer).
 struct RerankerInner {
+    /// ONNX Runtime session guarded by a mutex (the session is not Sync).
     session: Mutex<Session>,
+    /// Tokenizer for the cross-encoder model.
     tokenizer: Tokenizer,
+    /// Maximum sequence length fed to the model.
     max_seq: usize,
 }
 
+/// Constructor for the local ONNX cross-encoder reranker.
 impl OnnxReranker {
+    /// Load the Granite cross-encoder model and tokenizer and build the reranker.
     pub async fn new(config: &Config) -> Result<Self> {
         let model_dir = config.model_dir("granite-reranker");
         let (tokenizer_path, model_path) =
@@ -95,6 +124,7 @@ impl OnnxReranker {
     }
 }
 
+/// Cross-encoder scoring on the shared model session.
 impl RerankerInner {
     /// Score a single query-document pair. Returns relevance score 0-1 (sigmoid of logit).
     fn score_pair(&self, query: &str, document: &str) -> Result<f32> {
@@ -151,6 +181,7 @@ impl RerankerInner {
     }
 }
 
+/// Reranker implementation backed by the local ONNX cross-encoder.
 #[async_trait]
 impl Reranker for OnnxReranker {
     #[tracing::instrument(
@@ -162,6 +193,7 @@ impl Reranker for OnnxReranker {
             result_count = results.len(),
         )
     )]
+    // Cross-encode the top candidates, blend with the fusion score, and re-sort.
     async fn rerank_results(
         &self,
         query: &str,
@@ -182,8 +214,10 @@ impl Reranker for OnnxReranker {
                 .await
                 .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))??;
 
-            // Blend: 70% cross-encoder, 30% original score
-            result.score = ce_score as f64 * 0.7 + result.score * 0.3;
+            // Blend cross-encoder with the original fusion score (default 70/30,
+            // KLEOS_RERANKER_CE_WEIGHT tunable).
+            let w = reranker_ce_weight();
+            result.score = ce_score as f64 * w + result.score * (1.0 - w);
         }
 
         results.sort_by(|a, b| {
@@ -195,8 +229,14 @@ impl Reranker for OnnxReranker {
         Ok(())
     }
 
+    /// Backend identifier for logs.
     fn backend_name(&self) -> &str {
         "onnx-granite"
+    }
+
+    /// Number of candidates this backend cross-encodes.
+    fn top_k(&self) -> usize {
+        self.top_k
     }
 }
 
@@ -224,6 +264,7 @@ pub struct HttpReranker {
     guard: Option<Arc<ServiceGuard>>,
 }
 
+/// Constructors and request plumbing for the remote HTTP reranker.
 impl HttpReranker {
     /// Construct without a database. Uses an inline retry loop with no
     /// dead-letter recording. Use [`HttpReranker::new_with_db`] for full
@@ -309,6 +350,7 @@ impl HttpReranker {
     }
 }
 
+/// Reranker implementation backed by a remote Cohere/Jina/TEI rerank API.
 #[async_trait]
 impl Reranker for HttpReranker {
     #[tracing::instrument(
@@ -320,6 +362,7 @@ impl Reranker for HttpReranker {
             result_count = results.len(),
         )
     )]
+    // Call the remote rerank endpoint, blend the returned scores, and re-sort.
     async fn rerank_results(
         &self,
         query: &str,
@@ -477,10 +520,12 @@ impl Reranker for HttpReranker {
             }
         };
 
-        // Apply scores: blend 70% remote score, 30% original
+        // Apply scores: blend remote score with the original (default 70/30,
+        // KLEOS_RERANKER_CE_WEIGHT tunable).
+        let w = reranker_ce_weight();
         for item in &rerank_resp {
             if item.index < results.len() {
-                results[item.index].score = item.score * 0.7 + results[item.index].score * 0.3;
+                results[item.index].score = item.score * w + results[item.index].score * (1.0 - w);
             }
         }
 
@@ -493,11 +538,17 @@ impl Reranker for HttpReranker {
         Ok(())
     }
 
+    /// Backend identifier for logs (varies by wire format).
     fn backend_name(&self) -> &str {
         match self.format {
             RerankFormat::Tei => "http-tei",
             RerankFormat::Cohere => "http-cohere",
         }
+    }
+
+    /// Number of candidates this backend reranks.
+    fn top_k(&self) -> usize {
+        self.top_k
     }
 }
 

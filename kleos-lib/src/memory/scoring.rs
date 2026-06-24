@@ -31,6 +31,34 @@ pub const DEFAULT_VECTOR_FLOOR: f64 = 0.15;
 pub const RRF_K: f64 = 60.0;
 pub const RECENCY_WEIGHT: f64 = 0.15;
 
+// 2.3: make the two global ranking-boost weights tunable at runtime without a rebuild,
+// mirroring the KLEOS_DECAY_FLOOR pattern above. Recall tuning (e.g. against the offline
+// eval harness) can sweep these via env instead of recompiling. Values are clamped to a
+// sane range so a typo cannot blow up the multiplicative score chain.
+static PAGERANK_WEIGHT_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
+    std::env::var("KLEOS_PAGERANK_WEIGHT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|w| w.clamp(0.0, 5.0))
+        .unwrap_or(PAGERANK_WEIGHT)
+});
+/// Runtime pagerank boost weight (KLEOS_PAGERANK_WEIGHT override, clamped to [0, 5]).
+pub fn pagerank_weight() -> f64 {
+    *PAGERANK_WEIGHT_OVERRIDE
+}
+
+static RECENCY_WEIGHT_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
+    std::env::var("KLEOS_RECENCY_WEIGHT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|w| w.clamp(0.0, 5.0))
+        .unwrap_or(RECENCY_WEIGHT)
+});
+/// Runtime recency boost weight (KLEOS_RECENCY_WEIGHT override, clamped to [0, 5]).
+pub fn recency_weight() -> f64 {
+    *RECENCY_WEIGHT_OVERRIDE
+}
+
 /// Extra classifier keywords loaded once from env vars at first use.
 /// Each var is a comma-separated list of lowercase phrases that are
 /// merged with the built-in keyword arrays inside `classify_question_mixed`.
@@ -289,8 +317,15 @@ pub fn classify_question_mixed(query: &str) -> HashMap<QuestionType, f64> {
 
     let total: f64 = scores.values().sum();
     if total == 0.0 {
+        // 2.4: no keyword signal means the query is ambiguous natural language. Falling
+        // back to pure FactRecall picks the NARROWEST recall posture (highest vector
+        // floor, lowest candidate multiplier, no relationship expansion), which is exactly
+        // wrong when we know least about intent. Blend FactRecall with Reasoning so the
+        // strategy keeps fact precision but widens the candidate pool and enables light
+        // relationship expansion.
         let mut m = HashMap::new();
-        m.insert(QuestionType::FactRecall, 1.0);
+        m.insert(QuestionType::FactRecall, 0.5);
+        m.insert(QuestionType::Reasoning, 0.5);
         return m;
     }
     for v in scores.values_mut() {
@@ -525,7 +560,7 @@ pub fn static_boost(is_static: bool, is_consolidated: bool) -> f64 {
 
 /// Converts PageRank into a small multiplicative boost.
 pub fn pagerank_boost(pagerank_score: f64) -> f64 {
-    1.0 + pagerank_score * PAGERANK_WEIGHT
+    1.0 + pagerank_score * pagerank_weight()
 }
 
 /// Computes a smooth recency curve from a memory timestamp.
