@@ -8,44 +8,43 @@ use super::network::{self, HopfieldNetwork};
 use super::pattern::{self, BrainPattern};
 
 // ---------------------------------------------------------------------------
-// Causal keyword tables -- ported from eidolon absorb.rs
-// sourced from the i18n lexicon (causal_strong,
-// causal_context, causal_weak, negation_marker) across every supported
-// language. Hardcoded English-only constants removed; the four helpers
-// below assemble the keyword sets on demand. Cost is bounded by the
-// number of supported languages times the words per class (small).
+// Causal keyword tables, ported from eidolon absorb.rs and sourced from the
+// i18n lexicon (causal_strong, causal_context, causal_weak, negation_marker)
+// across every supported language. Hardcoded English-only constants were
+// removed. compute_causal_score runs per memory pair inside the Hopfield
+// update loop, so each set is assembled once and cached in a LazyLock rather
+// than rebuilt (8 word_class lookups + allocations) on every call.
 // ---------------------------------------------------------------------------
 
-fn strong_causal_keywords() -> Vec<String> {
+use std::sync::LazyLock;
+
+/// Lowercased keywords for one lexicon class across all supported languages.
+fn lexicon_keywords(class: &'static str) -> Vec<String> {
     crate::lexicon::supported_languages()
         .iter()
-        .flat_map(|lang| crate::lexicon::word_class(lang, "causal_strong"))
+        .flat_map(|lang| crate::lexicon::word_class(lang, class))
         .map(|w| w.to_lowercase())
         .collect()
 }
 
-fn context_causal_keywords() -> Vec<String> {
-    crate::lexicon::supported_languages()
-        .iter()
-        .flat_map(|lang| crate::lexicon::word_class(lang, "causal_context"))
-        .map(|w| w.to_lowercase())
-        .collect()
+fn strong_causal_keywords() -> &'static [String] {
+    static CACHE: LazyLock<Vec<String>> = LazyLock::new(|| lexicon_keywords("causal_strong"));
+    &CACHE
 }
 
-fn weak_causal_keywords() -> Vec<String> {
-    crate::lexicon::supported_languages()
-        .iter()
-        .flat_map(|lang| crate::lexicon::word_class(lang, "causal_weak"))
-        .map(|w| w.to_lowercase())
-        .collect()
+fn context_causal_keywords() -> &'static [String] {
+    static CACHE: LazyLock<Vec<String>> = LazyLock::new(|| lexicon_keywords("causal_context"));
+    &CACHE
 }
 
-fn negation_keywords() -> Vec<String> {
-    crate::lexicon::supported_languages()
-        .iter()
-        .flat_map(|lang| crate::lexicon::word_class(lang, "negation_marker"))
-        .map(|w| w.to_lowercase())
-        .collect()
+fn weak_causal_keywords() -> &'static [String] {
+    static CACHE: LazyLock<Vec<String>> = LazyLock::new(|| lexicon_keywords("causal_weak"));
+    &CACHE
+}
+
+fn negation_keywords() -> &'static [String] {
+    static CACHE: LazyLock<Vec<String>> = LazyLock::new(|| lexicon_keywords("negation_marker"));
+    &CACHE
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +349,7 @@ fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
             .any(|&pos| pos != word_idx && (pos as isize - word_idx as isize).unsigned_abs() <= 5)
     };
 
-    for kw in &strong {
+    for kw in strong {
         if let Some(pos) = text.find(kw.as_str()) {
             let word_idx = text[..pos].split_whitespace().count();
             let mut pts = 2.0f32;
@@ -361,7 +360,7 @@ fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
         }
     }
 
-    for kw in &context {
+    for kw in context {
         if let Some(pos) = text.find(kw.as_str()) {
             let word_idx = text[..pos].split_whitespace().count();
             let negated = word_idx < words.len() && has_negation(word_idx);
@@ -374,7 +373,7 @@ fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
         }
     }
 
-    for kw in &weak {
+    for kw in weak {
         if let Some(pos) = text.find(kw.as_str()) {
             let word_idx = text[..pos].split_whitespace().count();
             let mut pts = 1.0f32;

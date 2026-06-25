@@ -613,6 +613,22 @@ async fn complete_handler(
     Ok(Json(json!({ "ok": true, "kleos_stores": stored_count })))
 }
 
+/// Non-negotiable prohibition keywords. The i18n lexicon may EXTEND this set
+/// (for example with French markers) through the `prohibition_marker` class,
+/// but it can never SHRINK it: these are always checked so an empty or hostile
+/// lexicon override (via `KLEOS_LEXICON_REPOSITORY`) cannot silently disable
+/// prohibition detection in the gate.
+const BASELINE_PROHIBITIONS: &[&str] = &[
+    "never",
+    "do not",
+    "don't",
+    "must not",
+    "prohibited",
+    "forbidden",
+    "blocked",
+    "banned",
+];
+
 /// Simple guard endpoint that checks if an action conflicts with high-importance static rules.
 /// This is a simplified version without LLM integration - it only does keyword matching.
 async fn guard_handler(
@@ -671,19 +687,11 @@ async fn guard_handler(
     // Simple heuristic: if any rule contains prohibition keywords and the action
     // contains related terms, warn. Without LLM, we can't do semantic matching.
     let action_lower = body.action.to_lowercase();
-    let prohibition_keywords = [
-        "never",
-        "don't",
-        "do not",
-        "must not",
-        "prohibited",
-        "forbidden",
-    ];
 
     let mut matched_rules = Vec::new();
     for rule in &rules {
         let content = rule["content"].as_str().unwrap_or("").to_lowercase();
-        let has_prohibition = prohibition_keywords.iter().any(|k| content.contains(k));
+        let has_prohibition = BASELINE_PROHIBITIONS.iter().any(|k| content.contains(k));
 
         // Very basic: check if any significant word from the action appears in the rule
         let action_words: Vec<&str> = action_lower
@@ -763,17 +771,32 @@ async fn brain_grounded_check(state: &AppState, user_id: i64, command: &str) -> 
         if mem.activation < ACTIVATION_THRESHOLD {
             continue;
         }
-        let has_prohibition = kleos_lib::lexicon::supported_languages().iter().any(|lang| {
-            let folded_content =
-                kleos_lib::lexicon::fold_word_for_class(&mem.content, lang, "prohibition_marker");
-            kleos_lib::lexicon::word_class(lang, "prohibition_marker")
-                .iter()
-                .any(|k| {
-                    folded_content.contains(
-                        &kleos_lib::lexicon::fold_word_for_class(k, lang, "prohibition_marker"),
-                    )
-                })
-        });
+        let content_lower_for_baseline = mem.content.to_lowercase();
+        // Baseline keywords are always enforced (ASCII, case-insensitive) so a
+        // hostile or empty lexicon override cannot disable the gate. The lexicon
+        // adds diacritic-tolerant and multi-language markers on top.
+        let baseline_hit = BASELINE_PROHIBITIONS
+            .iter()
+            .any(|k| content_lower_for_baseline.contains(k));
+        let lexicon_hit = kleos_lib::lexicon::supported_languages()
+            .iter()
+            .any(|lang| {
+                let folded_content = kleos_lib::lexicon::fold_word_for_class(
+                    &mem.content,
+                    lang,
+                    "prohibition_marker",
+                );
+                kleos_lib::lexicon::word_class(lang, "prohibition_marker")
+                    .iter()
+                    .any(|k| {
+                        folded_content.contains(&kleos_lib::lexicon::fold_word_for_class(
+                            k,
+                            lang,
+                            "prohibition_marker",
+                        ))
+                    })
+            });
+        let has_prohibition = baseline_hit || lexicon_hit;
         if !has_prohibition {
             continue;
         }
