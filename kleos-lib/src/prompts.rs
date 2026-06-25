@@ -260,9 +260,11 @@ pub fn scrub_credentials(text: &str) -> String {
             crate::lexicon::word_class(lang, "credential_keywords")
                 .iter()
                 .any(|pat| {
-                    folded_line.contains(
-                        &crate::lexicon::fold_word_for_class(pat, lang, "credential_keywords"),
-                    )
+                    folded_line.contains(&crate::lexicon::fold_word_for_class(
+                        pat,
+                        lang,
+                        "credential_keywords",
+                    ))
                 })
         });
         if is_cred

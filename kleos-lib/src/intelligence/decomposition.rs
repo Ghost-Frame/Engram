@@ -289,9 +289,11 @@ fn decompose_rule_based(content: &str) -> DecompositionResult {
                 crate::lexicon::word_class(lang, "meta_stoplist")
                     .iter()
                     .any(|meta| {
-                        folded_s.contains(
-                            &crate::lexicon::fold_word_for_class(meta, lang, "meta_stoplist"),
-                        )
+                        folded_s.contains(&crate::lexicon::fold_word_for_class(
+                            meta,
+                            lang,
+                            "meta_stoplist",
+                        ))
                     })
             })
         })

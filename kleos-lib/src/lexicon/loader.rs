@@ -123,7 +123,10 @@ words = ["love", "like"]
         assert_eq!(parsed.language, "en");
         assert_eq!(parsed.classes.len(), 1);
         let verb_like = parsed.classes.get("verb_like").expect("verb_like present");
-        assert_eq!(verb_like.words, vec!["love".to_string(), "like".to_string()]);
+        assert_eq!(
+            verb_like.words,
+            vec!["love".to_string(), "like".to_string()]
+        );
     }
 
     #[test]
@@ -138,8 +141,14 @@ valence = 0.7
 intensity = 0.6
 "#;
         let parsed = parse(src).expect("should parse");
-        let happy = parsed.classes.get("emotion_happy").expect("emotion_happy present");
-        assert_eq!(happy.words, vec!["heureux".to_string(), "content".to_string()]);
+        let happy = parsed
+            .classes
+            .get("emotion_happy")
+            .expect("emotion_happy present");
+        assert_eq!(
+            happy.words,
+            vec!["heureux".to_string(), "content".to_string()]
+        );
         assert_eq!(happy.valence, Some(0.7));
         assert_eq!(happy.intensity, Some(0.6));
     }

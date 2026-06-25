@@ -193,38 +193,42 @@ fn stemmer_for(lang: &str) -> Option<Stemmer> {
 /// `école` becomes `ecole`, `déçu` becomes `decu`, `naïve` becomes `naive`.
 fn strip_diacritics(s: &str) -> String {
     use unicode_normalization::char::is_combining_mark;
-    s.nfd()
-        .filter(|c| !is_combining_mark(*c))
-        .nfc()
-        .collect()
+    s.nfd().filter(|c| !is_combining_mark(*c)).nfc().collect()
 }
 
 /// Fold a single token or multi-word phrase for matching.
 ///
-/// Pipeline: lowercase -> strip diacritics -> optional Snowball stem
-/// (per token if the input has spaces). `with_stem = false` skips
-/// the morphological step (used for grammar-word classes).
+/// Pipeline: lowercase -> optional Snowball stem (per token if the input has
+/// spaces) -> strip diacritics. `with_stem = false` skips the morphological
+/// step (used for grammar-word classes) and just lowercases + strips.
+///
+/// The stem step runs BEFORE diacritic stripping on purpose: the Snowball
+/// French (and Romance/Nordic) algorithms use diacritics to identify endings,
+/// so stripping first would mis-stem inflected forms (for example the French
+/// past participle "aimee" would not reduce to the same stem as "aimer").
+/// Stripping the diacritics from the resulting stem keeps the final key
+/// accent-invariant either way.
 ///
 /// The function is invoked at both ends of a comparison so that the
 /// match is invariant to diacritics, casing, and (when stemming
 /// applies) inflection.
 pub fn fold_for_matching(s: &str, lang: &str, with_stem: bool) -> String {
     let lower = s.to_lowercase();
-    let stripped = strip_diacritics(&lower);
     if !with_stem {
-        return stripped;
+        return strip_diacritics(&lower);
     }
     let Some(stemmer) = stemmer_for(lang) else {
-        return stripped;
+        return strip_diacritics(&lower);
     };
     // Snowball operates on a single word. For multi-word entries (causal
-    // phrases like "a cause de"), split on whitespace, stem each token,
-    // then rejoin with spaces to preserve the phrase structure.
-    stripped
+    // phrases like "a cause de"), split on whitespace, stem each token on its
+    // accented form, then rejoin with spaces to preserve the phrase structure.
+    let stemmed = lower
         .split_whitespace()
         .map(|tok| stemmer.stem(tok).into_owned())
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    strip_diacritics(&stemmed)
 }
 
 /// Look up whether `class` has `stem = true` (default) or `stem = false`
@@ -373,19 +377,23 @@ pub fn class_valence_arousal(lang: &str, class: &str) -> Option<(f64, f64)> {
     let from_override = cache::repo_root()
         .and_then(|repo| cache::resolve_override(repo, lang))
         .and_then(|p| {
-            p.classes.get(class).and_then(|c| match (c.valence, c.arousal) {
-                (Some(v), Some(a)) => Some((v, a)),
-                _ => None,
-            })
+            p.classes
+                .get(class)
+                .and_then(|c| match (c.valence, c.arousal) {
+                    (Some(v), Some(a)) => Some((v, a)),
+                    _ => None,
+                })
         });
     if from_override.is_some() {
         return from_override;
     }
     embedded(lang).and_then(|p| {
-        p.classes.get(class).and_then(|c| match (c.valence, c.arousal) {
-            (Some(v), Some(a)) => Some((v, a)),
-            _ => None,
-        })
+        p.classes
+            .get(class)
+            .and_then(|c| match (c.valence, c.arousal) {
+                (Some(v), Some(a)) => Some((v, a)),
+                _ => None,
+            })
     })
 }
 
@@ -396,19 +404,23 @@ pub fn class_emotion_metadata(lang: &str, class: &str) -> Option<(f64, f64)> {
     let from_override = cache::repo_root()
         .and_then(|repo| cache::resolve_override(repo, lang))
         .and_then(|p| {
-            p.classes.get(class).and_then(|c| match (c.valence, c.intensity) {
-                (Some(v), Some(i)) => Some((v, i)),
-                _ => None,
-            })
+            p.classes
+                .get(class)
+                .and_then(|c| match (c.valence, c.intensity) {
+                    (Some(v), Some(i)) => Some((v, i)),
+                    _ => None,
+                })
         });
     if from_override.is_some() {
         return from_override;
     }
     embedded(lang).and_then(|p| {
-        p.classes.get(class).and_then(|c| match (c.valence, c.intensity) {
-            (Some(v), Some(i)) => Some((v, i)),
-            _ => None,
-        })
+        p.classes
+            .get(class)
+            .and_then(|c| match (c.valence, c.intensity) {
+                (Some(v), Some(i)) => Some((v, i)),
+                _ => None,
+            })
     })
 }
 
@@ -431,8 +443,8 @@ mod tests {
         let words = word_class("fr", "verb_like");
         assert!(words.contains(&"aimer".to_string()));
         assert!(words.contains(&"adorer".to_string()));
-        assert!(words.contains(&"apprecier".to_string()));
-        assert!(words.contains(&"preferer".to_string()));
+        assert!(words.contains(&"apprécier".to_string()));
+        assert!(words.contains(&"préférer".to_string()));
     }
 
     #[test]
@@ -498,8 +510,8 @@ mod tests {
     fn fold_stems_french_conjugations() {
         // All four French forms should fold to the same stem.
         let infinitive = fold_for_matching("aimer", "fr", true);
-        let past_participle = fold_for_matching("aimee", "fr", true);
-        let plural = fold_for_matching("aimees", "fr", true);
+        let past_participle = fold_for_matching("aimée", "fr", true);
+        let plural = fold_for_matching("aimées", "fr", true);
         let imperfect = fold_for_matching("aimait", "fr", true);
         assert_eq!(infinitive, past_participle);
         assert_eq!(infinitive, plural);
@@ -558,7 +570,10 @@ mod tests {
     #[test]
     fn class_emotion_metadata_returns_some_for_emotion_classes() {
         let meta = class_emotion_metadata("en", "emotion_happy");
-        assert!(meta.is_some(), "emotion_happy must expose (valence, intensity)");
+        assert!(
+            meta.is_some(),
+            "emotion_happy must expose (valence, intensity)"
+        );
         let (valence, intensity) = meta.unwrap();
         assert!(valence > 0.0, "happy is positive valence");
         assert!(intensity > 0.0 && intensity <= 1.0);
@@ -645,8 +660,17 @@ mod tests {
         let alt = word_class_alternation_stemmed("fr", "verb_like");
         let pattern = format!(r"(?i)\b(?:{alt})\w*\b");
         let re = regex::Regex::new(&pattern).expect("compiled");
-        for inflected in &["j'aime", "j'aimais", "j'aimerions", "j'adore", "j'adorerais"] {
-            assert!(re.is_match(inflected), "FR inflected `{inflected}` must match");
+        for inflected in &[
+            "j'aime",
+            "j'aimais",
+            "j'aimerions",
+            "j'adore",
+            "j'adorerais",
+        ] {
+            assert!(
+                re.is_match(inflected),
+                "FR inflected `{inflected}` must match"
+            );
         }
     }
 

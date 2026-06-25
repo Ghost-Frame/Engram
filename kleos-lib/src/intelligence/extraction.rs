@@ -112,8 +112,9 @@ fn role_regex_for(lang: &str) -> Option<Regex> {
     } else {
         format!(r"(?:{pronouns})\w*\s+")
     };
-    let pattern =
-        format!(r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\w*\s+(?:a\s+|an\s+|my\s+|un\s+|une\s+)?(.+?)(?:\.|,|$)");
+    let pattern = format!(
+        r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\w*\s+(?:a\s+|an\s+|my\s+|un\s+|une\s+)?(.+?)(?:\.|,|$)"
+    );
     compile_lang_regex(&pattern)
 }
 
@@ -166,9 +167,7 @@ fn buy_regex_for(lang: &str) -> Option<Regex> {
     }
     let pronoun_clause = pronoun_clause_for(lang);
     // Cap[1] = verb, cap[2] = quantity, cap[3] = object
-    let pattern = format!(
-        r"(?i)\b{pronoun_clause}((?:{verbs})\w*)\s+(\d+)\s+(.+?)(?:\.|,|$)"
-    );
+    let pattern = format!(r"(?i)\b{pronoun_clause}((?:{verbs})\w*)\s+(\d+)\s+(.+?)(?:\.|,|$)");
     compile_lang_regex(&pattern)
 }
 
@@ -184,9 +183,8 @@ fn spent_regex_for(lang: &str) -> Option<Regex> {
     }
     let pronoun_clause = pronoun_clause_for(lang);
     // Cap[1] = amount, cap[2] = object
-    let pattern = format!(
-        r"(?i)\b{pronoun_clause}(?:{verbs})\w*\s+{amount}\s+(?:{preps})\s+(.+?)(?:\.|,|$)"
-    );
+    let pattern =
+        format!(r"(?i)\b{pronoun_clause}(?:{verbs})\w*\s+{amount}\s+(?:{preps})\s+(.+?)(?:\.|,|$)");
     compile_lang_regex(&pattern)
 }
 
@@ -264,9 +262,8 @@ fn earned_regex_for(lang: &str) -> Option<Regex> {
         format!(r"(?:\s+(?:{preps})\s+(.+?))?")
     };
     // Cap[1] = verb, cap[2] = amount, cap[3] = object (optional)
-    let pattern = format!(
-        r"(?i)\b{pronoun_clause}((?:{verbs})\w*)\s+{amount}{prep_clause}(?:\.|,|$)"
-    );
+    let pattern =
+        format!(r"(?i)\b{pronoun_clause}((?:{verbs})\w*)\s+{amount}{prep_clause}(?:\.|,|$)");
     compile_lang_regex(&pattern)
 }
 
@@ -569,12 +566,7 @@ pub async fn fast_extract_facts(
                     facts.push(FactInsert {
                         subject: "user".to_string(),
                         verb,
-                        object: format_fact_object(
-                            object,
-                            Some(1),
-                            None,
-                            date_ref.as_deref(),
-                        ),
+                        object: format_fact_object(object, Some(1), None, date_ref.as_deref()),
                     });
                 }
             }

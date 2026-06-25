@@ -616,8 +616,7 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
             if matched {
                 break;
             }
-            let folded_sentence =
-                crate::lexicon::fold_for_matching(sentence, &lang, true);
+            let folded_sentence = crate::lexicon::fold_for_matching(sentence, &lang, true);
             for class in EMOTION_CLASSES {
                 if matched {
                     break;
@@ -629,17 +628,14 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
                 };
                 let valence = valence_from_signed(valence_signed);
                 for word in crate::lexicon::word_class(&lang, class) {
-                    let folded_word =
-                        crate::lexicon::fold_word_for_class(&word, &lang, class);
+                    let folded_word = crate::lexicon::fold_word_for_class(&word, &lang, class);
                     if folded_sentence.contains(&folded_word) {
                         signals.push(PersonalitySignal {
                             signal_type: SignalType::Emotion,
                             subject: word.clone(),
                             valence,
                             intensity,
-                            reasoning: format!(
-                                "Expressed {valence} emotion: {word}"
-                            ),
+                            reasoning: format!("Expressed {valence} emotion: {word}"),
                             source_text: sentence.chars().take(500).collect(),
                         });
                         matched = true;

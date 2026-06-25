@@ -227,7 +227,10 @@ words = ["xx_love", "xx_like"]
         .unwrap();
         let got = resolve_override(&dir, "xx").expect("override should load");
         let verb_like = got.classes.get("verb_like").expect("verb_like present");
-        assert_eq!(verb_like.words, vec!["xx_love".to_string(), "xx_like".to_string()]);
+        assert_eq!(
+            verb_like.words,
+            vec!["xx_love".to_string(), "xx_like".to_string()]
+        );
     }
 
     #[test]
@@ -269,7 +272,10 @@ words = ["v1"]
         )
         .unwrap();
         let first = resolve_override(&dir, "ww").expect("v1");
-        assert_eq!(first.classes.get("verb_like").unwrap().words, vec!["v1".to_string()]);
+        assert_eq!(
+            first.classes.get("verb_like").unwrap().words,
+            vec!["v1".to_string()]
+        );
 
         // Wait past the TTL window then rewrite with a different mtime.
         std::thread::sleep(Duration::from_millis(TTL_SECS * 1000 + 200));
@@ -285,6 +291,9 @@ words = ["v2"]
         )
         .unwrap();
         let second = resolve_override(&dir, "ww").expect("v2");
-        assert_eq!(second.classes.get("verb_like").unwrap().words, vec!["v2".to_string()]);
+        assert_eq!(
+            second.classes.get("verb_like").unwrap().words,
+            vec!["v2".to_string()]
+        );
     }
 }

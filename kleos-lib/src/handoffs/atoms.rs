@@ -206,10 +206,11 @@ fn build_atom_regex(lang: &str, class: &str) -> Option<Regex> {
         })
         .collect::<Vec<_>>()
         .join("|");
-    Regex::new(&format!(
-        r"(?i)(?:\b|(?<=^|\s))(?:{alternation})\w*.{{0,120}}"
-    ))
-    .ok()
+    // `\b` already anchors at a word boundary (including string start), so a
+    // lookbehind is unnecessary. The standard `regex` crate has no lookbehind
+    // support, so the previous `(?<=^|\s)` made this pattern fail to compile,
+    // and `.ok()` silently turned that into `None` (no markers ever matched).
+    Regex::new(&format!(r"(?i)\b(?:{alternation})\w*.{{0,120}}")).ok()
 }
 
 fn atom_decision_regex_for(lang: &str) -> Option<Regex> {
