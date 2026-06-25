@@ -564,27 +564,6 @@ struct GenericLlmRequest {
     system: String,
 }
 
-/// Generate a narrative for a stored action via LLM.
-///
-/// Used as a fallback when no template matched at ingest. Returns a short,
-/// human-readable past-tense sentence describing what the agent did.
-///
-/// This function is **infallible**: every error path (no URL configured,
-/// network failure, unexpected response shape) logs a warning via
-/// [`tracing::warn!`] and returns the template fallback string
-/// `"{agent} performed {action}"` instead of propagating an error.
-/// Callers can therefore use the return value directly without `?`.
-///
-/// Endpoint detection:
-/// - URLs containing `/v1/chat`, `/chat/completions`, or port `11434` (Ollama)
-///   are treated as OpenAI-compatible; `/v1/chat/completions` is appended to
-///   raw Ollama base URLs if not already present.
-/// - All other URLs are treated as generic `{prompt, system}` endpoints.
-///
-/// Env vars (first match wins):
-/// - URL:   `BROCA_LLM_URL` -> `LLM_URL`
-/// - Key:   `BROCA_LLM_API_KEY` -> `LLM_API_KEY`
-/// - Model: `BROCA_LLM_MODEL` -> `LLM_MODEL` -> `"qwen2.5:14b"`
 /// Embedded defaults for the narration prompt pair, overridable at runtime via
 /// the prompt repository under `broca/narrate/{system,user}.txt`.
 const NARRATE_SYSTEM_DEFAULT: &str = include_str!("../../prompts/broca/narrate/system.txt");
@@ -613,6 +592,27 @@ fn narrate_user_prompt(
     crate::llm::prompts::load_and_render("broca/narrate/user", NARRATE_USER_DEFAULT, &vars)
 }
 
+/// Generate a narrative for a stored action via LLM.
+///
+/// Used as a fallback when no template matched at ingest. Returns a short,
+/// human-readable past-tense sentence describing what the agent did.
+///
+/// This function is **infallible**: every error path (no URL configured,
+/// network failure, unexpected response shape) logs a warning via
+/// [`tracing::warn!`] and returns the template fallback string
+/// `"{agent} performed {action}"` instead of propagating an error.
+/// Callers can therefore use the return value directly without `?`.
+///
+/// Endpoint detection:
+/// - URLs containing `/v1/chat`, `/chat/completions`, or port `11434` (Ollama)
+///   are treated as OpenAI-compatible; `/v1/chat/completions` is appended to
+///   raw Ollama base URLs if not already present.
+/// - All other URLs are treated as generic `{prompt, system}` endpoints.
+///
+/// Env vars (first match wins):
+/// - URL:   `BROCA_LLM_URL` -> `LLM_URL`
+/// - Key:   `BROCA_LLM_API_KEY` -> `LLM_API_KEY`
+/// - Model: `BROCA_LLM_MODEL` -> `LLM_MODEL` -> `"qwen2.5:14b"`
 #[tracing::instrument(skip(payload), fields(agent, service, action))]
 pub async fn llm_narrate(
     agent: &str,

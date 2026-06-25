@@ -30,7 +30,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -82,7 +82,7 @@ fn repo_root() -> Option<&'static PathBuf> {
     .as_ref()
 }
 
-fn path_for(repo: &PathBuf, id: &str) -> PathBuf {
+fn path_for(repo: &Path, id: &str) -> PathBuf {
     repo.join(format!("{id}.txt"))
 }
 
@@ -142,7 +142,7 @@ pub fn load_and_render(
 
 /// Resolve the override for `id` by hitting the cache first; refresh from
 /// disk when the entry is older than `TTL_SECS` or absent.
-fn resolve_override(repo: &PathBuf, id: &str) -> Option<Arc<String>> {
+fn resolve_override(repo: &Path, id: &str) -> Option<Arc<String>> {
     // Fast path: cache hit within TTL window.
     {
         let cache_g = cache().read().ok()?;
@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(&*resolve_override(&dir, id).unwrap(), "v1");
 
         // Wait past the TTL window and rewrite with a different mtime.
-        std::thread::sleep(Duration::from_millis((TTL_SECS as u64) * 1000 + 200));
+        std::thread::sleep(Duration::from_millis(TTL_SECS * 1000 + 200));
         fs::write(&file, "v2").unwrap();
         assert_eq!(&*resolve_override(&dir, id).unwrap(), "v2");
     }
