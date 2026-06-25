@@ -6,13 +6,13 @@
 -- written under user_id=1". That assumption holds only until a second tenant
 -- writes: in single-DB (monolith) mode every tenant shares one scratchpad
 -- table, so an unscoped read (scratchpad::list_entries) returns other users'
--- entries -- a cross-tenant working-memory leak in assemble_context -- and an
+-- entries (a cross-tenant working-memory leak in assemble_context), and an
 -- unscoped delete or ON CONFLICT upsert can clobber another tenant's row.
 --
 -- This migration restores user_id as a universal, always-applied predicate so
 -- scratchpad read/enumerate/delete/upsert are correct in every deployment mode.
 -- In a shard the predicate is a no-op once existing rows are backfilled to the
--- shard owner's user_id -- the runner (run_tenant_migrations) performs that
+-- shard owner's user_id; the runner (run_tenant_migrations) performs that
 -- backfill after this file runs (see TENANT_MIGRATION_READD_USER_ID_SCRATCHPAD
 -- / backfill_owner_tables_for_version).
 --
