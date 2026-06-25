@@ -1,0 +1,8 @@
+Convert this agent action into a single plain English sentence a non-technical person would understand. Be concise and natural. No technical jargon, no IDs, no JSON terms.
+
+Agent: {{agent}}
+Service: {{service}}
+Action: {{action}}
+Details: {{payload}}
+
+Respond with only the sentence, nothing else.
