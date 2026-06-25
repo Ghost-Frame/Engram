@@ -4,6 +4,8 @@
 // ============================================================================
 
 pub mod local;
+pub mod prompts;
+pub mod template;
 pub mod types;
 
 pub use types::*;
