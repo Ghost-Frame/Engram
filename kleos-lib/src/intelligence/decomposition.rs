@@ -19,24 +19,15 @@ use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-const DECOMPOSITION_PROMPT: &str = r#"You are a fact extraction engine for a memory system. Given a memory entry, extract individual atomic facts.
+/// Embedded default for the decomposition system prompt. Overridable at
+/// runtime via the prompt repository under `memory/decompose/system.txt`.
+const DECOMPOSITION_PROMPT_DEFAULT: &str =
+    include_str!("../../prompts/memory/decompose/system.txt");
 
-Rules:
-- Each fact must be a single, self-contained statement
-- Preserve ALL specific values: IPs, ports, paths, versions, dates, names
-- Each fact should make sense on its own without the others
-- Do NOT add interpretation or inference -- only extract what is explicitly stated
-- Do NOT rephrase into robotic language -- keep the original tone and wording where possible
-- If the memory is already a single atomic fact, return it as-is
-- Aim for 1-8 facts per memory (most will be 2-4)
-
-Respond with ONLY a JSON object:
-{
-  "facts": ["fact 1", "fact 2"],
-  "skip": false
+/// Resolve the decomposition system prompt, honoring any runtime override.
+fn decomposition_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt("memory/decompose/system", DECOMPOSITION_PROMPT_DEFAULT)
 }
-
-Set skip=true if the content is too short, already atomic, or not decomposable."#;
 
 /// Build the filler-prefix list from the i18n lexicon.
 ///
@@ -245,7 +236,7 @@ async fn try_llm_decomposition(content: &str) -> Option<DecompositionResult> {
         max_tokens: 512,
     };
 
-    match call_llm(DECOMPOSITION_PROMPT, content, Some(opts)).await {
+    match call_llm(&decomposition_prompt(), content, Some(opts)).await {
         Ok(response) => {
             let parsed: Option<LlmDecompositionResponse> = repair_and_parse_json(&response);
             match parsed {
