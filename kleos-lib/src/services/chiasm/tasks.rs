@@ -622,24 +622,37 @@ pub async fn generate_plan(db: &Database, id: i64, user_id: i64) -> Result<Task>
         )
     })?;
 
-    let mut user_prompt = format!(
-        "Create a concise step-by-step execution plan for this task:\n\n\
-         Title: {}\n\
-         Project: {}\n\
-         Agent: {}\n",
-        task.title, task.project, task.agent
+    // Prompt overlay for chiasm/generate_plan (system + user template). The
+    // expected_output and summary fields are optional, so we pre-format them
+    // into ready-to-insert blocks (each empty when absent) to preserve the
+    // behavior of omitting the line entirely instead of leaving it dangling
+    // with an empty value.
+    let (system_cow, user_template_cow) = crate::llm::prompts::load_pair(
+        "chiasm/generate_plan",
+        include_str!("../../../prompts/chiasm/generate_plan/system.txt"),
+        include_str!("../../../prompts/chiasm/generate_plan/user.txt"),
     );
-    if let Some(ref expected) = task.expected_output {
-        user_prompt.push_str(&format!("Expected output: {}\n", expected));
-    }
-    if let Some(ref summary) = task.summary {
-        user_prompt.push_str(&format!("Context: {}\n", summary));
-    }
-    user_prompt
-        .push_str("\nRespond with a numbered list of concrete steps. Be specific and actionable.");
-
-    let system =
-        "You are a precise task planner. Return only a numbered list of steps.".to_string();
+    let system = system_cow.to_string();
+    let expected_block = task
+        .expected_output
+        .as_ref()
+        .map(|e| format!("Expected output: {}\n", e))
+        .unwrap_or_default();
+    let summary_block = task
+        .summary
+        .as_ref()
+        .map(|s| format!("Context: {}\n", s))
+        .unwrap_or_default();
+    let user_prompt = crate::llm::template::interpolate(
+        user_template_cow.as_ref(),
+        &serde_json::json!({
+            "title": task.title,
+            "project": task.project,
+            "agent": task.agent,
+            "expected_block": expected_block,
+            "summary_block": summary_block,
+        }),
+    );
 
     let is_openai_compat = url.contains("11434")
         || url.contains("ollama")
