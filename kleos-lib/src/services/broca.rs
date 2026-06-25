@@ -585,6 +585,34 @@ struct GenericLlmRequest {
 /// - URL:   `BROCA_LLM_URL` -> `LLM_URL`
 /// - Key:   `BROCA_LLM_API_KEY` -> `LLM_API_KEY`
 /// - Model: `BROCA_LLM_MODEL` -> `LLM_MODEL` -> `"qwen2.5:14b"`
+/// Embedded defaults for the narration prompt pair, overridable at runtime via
+/// the prompt repository under `broca/narrate/{system,user}.txt`.
+const NARRATE_SYSTEM_DEFAULT: &str = include_str!("../../prompts/broca/narrate/system.txt");
+const NARRATE_USER_DEFAULT: &str = include_str!("../../prompts/broca/narrate/user.txt");
+
+/// Resolves the narration system prompt through the prompt repository.
+fn narrate_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt("broca/narrate/system", NARRATE_SYSTEM_DEFAULT)
+}
+
+/// Renders the narration user prompt for one agent action through the prompt
+/// repository, falling back to the embedded default template.
+fn narrate_user_prompt(
+    agent: &str,
+    service: &str,
+    action: &str,
+    payload: &serde_json::Value,
+) -> String {
+    let payload = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string());
+    let vars = serde_json::json!({
+        "agent": agent,
+        "service": service,
+        "action": action,
+        "payload": payload,
+    });
+    crate::llm::prompts::load_and_render("broca/narrate/user", NARRATE_USER_DEFAULT, &vars)
+}
+
 #[tracing::instrument(skip(payload), fields(agent, service, action))]
 pub async fn llm_narrate(
     agent: &str,
@@ -601,17 +629,8 @@ pub async fn llm_narrate(
 
     let model = broca_llm_model();
 
-    let system = "You translate technical agent actions into plain English. One sentence only.";
-    let user_prompt = format!(
-        "Convert this agent action into a single plain English sentence a non-technical person \
-         would understand. Be concise and natural. No technical jargon, no IDs, no JSON terms.\n\n\
-         Agent: {agent}\n\
-         Service: {service}\n\
-         Action: {action}\n\
-         Details: {payload}\n\n\
-         Respond with only the sentence, nothing else.",
-        payload = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string()),
-    );
+    let system = narrate_system_prompt();
+    let user_prompt = narrate_user_prompt(agent, service, action, payload);
 
     // Detect endpoint style -- mirrors narrator.ts detection logic.
     let is_ollama_or_openai_compat = url_base.contains("11434")
@@ -1061,32 +1080,22 @@ fn scrub_llm_error(e: &str) -> &'static str {
 /// optional fields (`agent`, `service`, `since`, `limit`) and nothing else.
 /// If the LLM is unavailable or returns non-JSON, the function falls back
 /// to [`ask_keyword_heuristic`] so the pipeline always makes progress.
+/// Embedded default for the ask-plan system prompt, overridable at runtime via
+/// the prompt repository under `broca/ask_plan/system.txt`.
+const ASK_PLAN_SYSTEM_DEFAULT: &str = include_str!("../../prompts/broca/ask_plan/system.txt");
+
+/// Resolves the ask-plan system prompt through the prompt repository.
+fn ask_plan_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt("broca/ask_plan/system", ASK_PLAN_SYSTEM_DEFAULT)
+}
+
 async fn ask_plan_call(question: &str) -> AskPlan {
     let Some(url_base) = broca_llm_url() else {
         tracing::debug!("ask: LLM not configured, using keyword heuristic for plan");
         return ask_keyword_heuristic(question);
     };
 
-    let system = "You translate a user question about an agent system into a JSON query plan. \
-        Return ONLY a JSON object with these optional fields and nothing else -- no explanation, \
-        no markdown, no code fences:\n\
-        {\"agent\":\"<agent-name>\",\"service\":\"<service-name>\",\
-        \"since\":\"<ISO-8601-datetime>\",\"limit\":<integer 1-50>}\n\n\
-        SERVICE CATALOG (set `service` to route to the right data source):\n\
-        - broca: action logs, what agents did, activity history (DEFAULT)\n\
-        - soma: agent registry, who is online, agent status, capabilities\n\
-        - chiasm: task coordination, assignments, task status, blockers\n\
-        - thymus: evaluations, quality scores, rubrics, drift detection\n\
-        - axon: events, channels, pub/sub activity\n\
-        - loom: workflows, runs, step execution, orchestration\n\n\
-        Rules:\n\
-        - Omit fields that are not implied by the question.\n\
-        - Set `service` to the most relevant data source for the question.\n\
-        - If the question is about agent activity or \"what did X do\", use broca (default).\n\
-        - For time-based questions (\"today\", \"last hour\", \"recent\") omit `since` and use a \
-          reasonable limit instead.\n\
-        - Default limit is 20. Maximum is 50.\n\
-        - If unsure which service, omit `service` (defaults to broca).";
+    let system = ask_plan_system_prompt();
 
     let model = broca_llm_model();
 
