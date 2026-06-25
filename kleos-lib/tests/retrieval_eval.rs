@@ -62,7 +62,7 @@ fn recall_at_k(ranked: &[String], relevant: &HashSet<String>, k: usize) -> f64 {
     // mask a regression. Fail loudly so the bad fixture is fixed.
     assert!(
         !relevant.is_empty(),
-        "recall@k: query has an empty `relevant` set -- every fixture query must label >=1 doc"
+        "recall@k: query has an empty `relevant` set; every fixture query must label >=1 doc"
     );
     // Count distinct relevant keys found within the first k ranked results.
     let hits = ranked
@@ -294,7 +294,7 @@ async fn retrieval_eval_golden() {
             let mean_r5 = rows.iter().map(|s| s.r5).sum::<f64>() / rows.len() as f64;
             assert!(
                 mean_r5 >= 0.999,
-                "`probe_filter` mean recall@5 {mean_r5:.3} below 1.0 -- over-fetch-before-filter regressed"
+                "`probe_filter` mean recall@5 {mean_r5:.3} below 1.0; over-fetch-before-filter regressed"
             );
         }
     }

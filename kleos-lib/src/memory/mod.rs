@@ -897,7 +897,7 @@ pub async fn list_static(
 ///
 /// The recall "important" tier must rank by importance, not recency. The previous path
 /// listed the newest N rows then filtered `importance >= min`, so a high-importance
-/// memory outside the recency window never surfaced -- recency outranked importance,
+/// memory outside the recency window never surfaced; recency outranked importance,
 /// inverting the intended priority. This query selects on `importance >= min` directly
 /// and orders by importance. Owner scoping and visibility predicates mirror `list`.
 pub async fn list_important(

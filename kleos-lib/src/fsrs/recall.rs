@@ -46,7 +46,7 @@ pub fn rerank_by_retrievability(results: &[SearchResult], w20: Option<f32>) -> V
             // is maximally due, not freshly created. Using created_at here would make a
             // brand-new memory look just-reviewed (retrievability ~ 1) and hide it from the
             // recall-due surface on the day it was stored, so treat never-reviewed as long
-            // past instead -- consistent with the default_stability fallback above.
+            // past instead, consistent with the default_stability fallback above.
             let elapsed_days = match r.memory.fsrs_last_review_at.as_deref() {
                 Some(ts) => elapsed_days_from(ts, now_ms),
                 None => NEVER_REVIEWED_ELAPSED_DAYS,
